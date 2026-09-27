@@ -12,15 +12,19 @@ use std::fs;
 /// events nor log in to Codecov; its reports stay in the artifact. A merge
 /// group also waits for the portability legs and uploads nothing when one
 /// failed, since its commit then never lands.
-const UPLOADS_RUN: &str = "${{ !cancelled() && needs.checks.result == 'success' && \
-     (github.event_name != 'merge_group' || needs.portability.result == 'success' || \
-     needs.portability.result == 'skipped') && inputs.artifact-key == '' && \
-     github.event_name != 'pull_request_target' && (!github.event.pull_request || \
-     github.event.pull_request.head.repo.full_name == github.repository) }}";
+const UPLOADS_RUN: &str = concat!(
+    "${{ !cancelled() && needs.checks.result == 'success' && ",
+    "(needs.checks.outputs.mutation-mode != 'sharded' || ",
+    "needs.mutation-summary.result == 'success') && ",
+    "(github.event_name != 'merge_group' || needs.portability.result == 'success' || ",
+    "needs.portability.result == 'skipped') && inputs.artifact-key == '' && ",
+    "github.event_name != 'pull_request_target' && (!github.event.pull_request || ",
+    "github.event.pull_request.head.repo.full_name == github.repository) }}"
+);
 
 /// The jobs the uploads wait for: the checks that wrote the reports, and the
 /// portability legs that decide whether a merge group's commit lands.
-const UPLOADS_NEED: [&str; 2] = ["checks", "portability"];
+const UPLOADS_NEED: [&str; 3] = ["checks", "portability", "mutation-summary"];
 
 #[test]
 fn sarif_reports_upload_from_the_organizations_check_alone() {

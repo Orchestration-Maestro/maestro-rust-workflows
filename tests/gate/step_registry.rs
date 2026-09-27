@@ -3,7 +3,9 @@
 //! nothing the gate does not register, and the source uses nothing a step
 //! did not declare.
 
-use crate::harness::{Described, describe_text, described, described_step, root, workflow_steps};
+use crate::harness::{
+    Described, describe_text, described, described_step, root, rust_files, workflow_steps,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
@@ -277,12 +279,7 @@ fn step_source(path: &Path) -> String {
         return fs::read_to_string(path).unwrap();
     }
     let mut text = String::new();
-    let mut files: Vec<_> = fs::read_dir(path)
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .filter(|child| child.extension().is_some_and(|kind| kind == "rs"))
-        .collect();
-    files.sort();
+    let files = rust_files(path);
     for child in files {
         // Each file loses its own test module first: concatenating whole files
         // would cut the step at the first `#[cfg(test)]` a seam happens to

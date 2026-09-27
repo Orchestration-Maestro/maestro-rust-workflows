@@ -1,7 +1,7 @@
 //! `rust-gate ci --local`: the `checks` job of `ci.yml` before a push, every
-//! step in its order and environment, over the commit CI would check. The
-//! gate each step starts is a stand-in that records what it was given, so
-//! what is read here is the run's plan, not the steps it runs.
+//! step in its order and environment, over the commit CI would check. Most
+//! tests use a stand-in that records the environment; the unset-input regression
+//! delegates `mutants` to the real gate.
 
 use crate::harness::{Fixture, gate_bin, refused, succeeds, workflow, write_executable};
 use serde_json::Value;
@@ -104,6 +104,24 @@ fn step_line(fixture: &Fixture, id: &str) -> String {
         .map_or_else(|| panic!("{id} never ran"), |(_, line)| line)
 }
 
+fn run_real_mutation_step(fixture: &Fixture) {
+    let path = fixture.root.join("bin/rust-gate");
+    let script = fs::read_to_string(&path).unwrap();
+    let prefix = format!(
+        r#"#!/bin/bash
+set -euo pipefail
+if [[ "$1" == mutants ]]; then exec "{}" "$@"; fi
+if [[ "$1" == validate ]]; then
+  printf 'MUTATION_TEST=true\n' >> "$GITHUB_ENV"
+  mkdir -p "$RUNNER_TEMP/rust-reports"
+fi
+"#,
+        gate_bin().join("rust-gate").display()
+    );
+    let script = script.replacen("#!/bin/bash\nset -euo pipefail\n", &prefix, 1);
+    write_executable(&path, &script);
+}
+
 /// The steps of the `checks` job of `ci.yml`, in order.
 fn checks_job() -> Vec<Value> {
     workflow("ci")["jobs"]["checks"]["steps"]
@@ -148,11 +166,26 @@ fn every_step_of_the_ci_job_runs_locally_or_says_why_not() {
     // The one list of what a local run does is held to ci.yml: a step CI
     // gains and the local run does not know fails this test.
     let fixture = repository();
+    fs::write(
+        fixture.root.join("project/maestro-quality.toml"),
+        "[ci]\nmutation-shards = 0\n",
+    )
+    .unwrap();
+    succeeds(&fixture.run_body(
+        "cd project && git add maestro-quality.toml && \
+         git -c user.name=t -c user.email=t@t commit -qm 'chore: enable mutation sharding'",
+    ));
     let output = run_locally(&fixture, "rust-gate ci --local");
     succeeds(&output);
     let stdout = String::from_utf8(output.stdout).unwrap();
     let ran: Vec<String> = steps(&fixture).into_iter().map(|(id, _)| id).collect();
     assert_eq!(ran, announced_steps(&stdout));
+    assert!(ran.iter().any(|id| id == "mutants"));
+    assert!(!ran.iter().any(|id| id == "mutants-plan"));
+    assert!(stdout.contains(concat!(
+        "Plan mutation shard routing\n",
+        "not applied locally: local CI always runs the full mutation suite inline"
+    )));
     // Just's formatter runs among the hooks and the private documentation in
     // the quality step, so a local run holds a repository to both.
     assert!(ran.iter().any(|id| id == "hooks") && ran.iter().any(|id| id == "quality"));
@@ -181,6 +214,29 @@ fn every_step_of_the_ci_job_runs_locally_or_says_why_not() {
             "{id}: {line}"
         );
     }
+}
+
+#[test]
+fn local_ci_runs_when_internal_shard_selftest_is_unset() {
+    let mut fixture = repository();
+    run_real_mutation_step(&fixture);
+    write_executable(
+        &fixture.root.join("bin/cargo"),
+        concat!(
+            "#!/bin/bash\n",
+            "set -euo pipefail\n",
+            "printf 'WARN No mutants found under the active filters\\n' >&2\n",
+        ),
+    );
+    fixture.env.remove("INTERNAL_SHARD_SELFTEST");
+    let output = run_locally(&fixture, "rust-gate ci --local");
+    succeeds(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("ci --local: every step CI runs here passed\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("scope: full workspace, a first commit"));
 }
 
 #[test]

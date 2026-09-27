@@ -98,10 +98,10 @@ fn run() -> Outcome {
             true,
         )?;
     }
-    if let Err(error) = fs::remove_dir_all(&verify) {
-        if error.kind() != ErrorKind::NotFound {
-            return Err(format!("cannot remove {}: {error}", verify.display()).into());
-        }
+    if let Err(error) = fs::remove_dir_all(&verify)
+        && error.kind() != ErrorKind::NotFound
+    {
+        return Err(format!("cannot remove {}: {error}", verify.display()).into());
     }
     Ok(())
 }

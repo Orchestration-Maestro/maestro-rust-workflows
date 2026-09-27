@@ -98,7 +98,7 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     }
     message.extend_from_slice(&bits.to_be_bytes());
     let mut state = INITIAL;
-    for block in message.chunks_exact(64) {
+    for block in message.as_chunks::<64>().0 {
         compress(&mut state, block);
     }
     state.iter().fold(String::new(), |mut hex, word| {
@@ -110,8 +110,10 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 /// Fold one 64-byte `block` into `state`.
 fn compress(state: &mut [u32; 8], block: &[u8]) {
     let mut schedule: Vec<u32> = block
-        .chunks_exact(4)
-        .map(|chunk| u32::from_be_bytes(chunk.try_into().unwrap_or_default()))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|chunk| u32::from_be_bytes(*chunk))
         .collect();
     while schedule.len() < 64 {
         let back = |distance: usize| {

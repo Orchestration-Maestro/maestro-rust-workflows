@@ -27,12 +27,14 @@ esac"#,
 fn a_run_no_workflow_called_takes_the_ci_table_of_the_base_commit() {
     let fixture = uncalled(concat!(
         "[ci]\nworking-directory = \"project\"\ncoverage-threshold = 95\n",
-        "mutation-test = false\nplatforms = \"macos windows linux-arm\"\n",
+        "mutation-test = false\nmutation-shards = 0\n",
+        "mutation-mutants-per-shard = 25\nplatforms = \"macos windows linux-arm\"\n",
     ));
     // The pull request's own file loosens nothing: the base commit's rules hold.
     fs::write(
         fixture.root.join("maestro-quality.toml"),
-        "[ci]\nworking-directory = \"project\"\nunsafe-policy = \"allow\"\n",
+        "[ci]\nworking-directory = \"project\"\nunsafe-policy = \"allow\"\n\
+         mutation-shards = 12\nmutation-mutants-per-shard = 900\n",
     )
     .unwrap();
     succeeds(&fixture.run("ci", "validate"));
@@ -40,6 +42,8 @@ fn a_run_no_workflow_called_takes_the_ci_table_of_the_base_commit() {
     for line in [
         "COVERAGE=95",
         "MUTATION_TEST=false",
+        "MUTATION_SHARDS=0",
+        "MUTATION_MUTANTS_PER_SHARD=25",
         "UNSAFE_POLICY=deny",
         "DEPENDENCY_AUDIT=true",
     ] {
@@ -69,6 +73,8 @@ fn without_a_ci_table_the_run_takes_every_input_default_and_three_platforms() {
         ("coverage-threshold", "COVERAGE"),
         ("license-policy", "LICENSE_POLICY"),
         ("mutation-test", "MUTATION_TEST"),
+        ("mutation-shards", "MUTATION_SHARDS"),
+        ("mutation-mutants-per-shard", "MUTATION_MUTANTS_PER_SHARD"),
         ("api-compatibility", "API_COMPATIBILITY"),
         ("sarif-reports", "SARIF_REPORTS"),
         ("unsafe-policy", "UNSAFE_POLICY"),

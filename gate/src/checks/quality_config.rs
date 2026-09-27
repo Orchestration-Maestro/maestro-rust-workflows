@@ -23,6 +23,8 @@ const CI_INPUTS: &[&str] = &[
     "artifact-key",
     "license-policy",
     "mutation-test",
+    "mutation-shards",
+    "mutation-mutants-per-shard",
     "sarif-reports",
     "clippy-level",
     "dependency-audit",
@@ -233,6 +235,9 @@ fn check_ci_input(line: &str) -> Result<(), Failure> {
     if key == "platforms" {
         tests_every_desktop(value)?;
     }
+    if matches!(key, "mutation-shards" | "mutation-mutants-per-shard") && kind != "number" {
+        return Err(format!("{FILE}: [ci] {key} must be a number").into());
+    }
     if !matches!(kind, "string" | "number" | "boolean") {
         return Err(format!("{FILE}: [ci] {key} must be a string, a number or a boolean").into());
     }
@@ -327,6 +332,8 @@ mod tests {
             "platforms\tstring\tmacos windows",
             "coverage-threshold\tnumber\t95",
             "mutation-test\tboolean\tfalse",
+            "mutation-shards\tnumber\t0",
+            "mutation-mutants-per-shard\tnumber\t50",
             "rust-version\tstring\t1.85",
         ] {
             assert!(check_ci_input(line).is_ok(), "{line}");
@@ -334,6 +341,15 @@ mod tests {
         // v2.0.0 runs every rule on every call; the switch that held them
         // back is gone.
         assert!(check_ci_input("quality-preview\tboolean\ttrue").is_err());
+        for key in ["mutation-shards", "mutation-mutants-per-shard"] {
+            assert_eq!(
+                check_ci_input(&format!("{key}\tboolean\ttrue"))
+                    .unwrap_err()
+                    .message
+                    .as_deref(),
+                Some(format!("maestro-quality.toml: [ci] {key} must be a number").as_str())
+            );
+        }
         let unknown = check_ci_input("colour\tstring\tred").unwrap_err();
         assert!(unknown.message.unwrap_or_default().starts_with(
             "maestro-quality.toml: [ci] sets `colour`, which ci.yml does not take; it takes \

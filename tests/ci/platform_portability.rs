@@ -47,6 +47,18 @@ fn named_platforms_become_a_matrix_of_pinned_runners() {
 #[test]
 fn requested_platforms_must_pass_for_the_required_status() {
     let mut fixture = Fixture::new();
+    for (key, value) in [
+        ("MUTATION_TEST", "false"),
+        ("MUTATION_MODE", "disabled"),
+        ("MUTATION_COUNT", "0"),
+        ("MUTATION_SHARDS", "0"),
+        ("MUTATION_MATRIX", "[]"),
+        ("MUTATIONS_RESULT", "skipped"),
+        ("MUTATION_SUMMARY_RESULT", "skipped"),
+        ("MUTATION_ATTEMPT", "1"),
+    ] {
+        fixture.set(key, value);
+    }
     fixture.set("RESULT", "success");
     fixture.set("RUNNERS", r#"["macos-15"]"#);
     for status in ["failure", "cancelled", "skipped", ""] {
@@ -127,7 +139,10 @@ fn checks_hand_the_runners_to_portability_and_the_result_to_the_required_status(
         "${{ steps.validate.outputs.directory }}"
     );
     let gate = &ci["jobs"]["gate"];
-    assert_eq!(gate["needs"], json!(["checks", "portability"]));
+    assert_eq!(
+        gate["needs"],
+        json!(["checks", "portability", "mutations", "mutation-summary"])
+    );
     let required = gate["steps"]
         .as_array()
         .unwrap()
@@ -141,6 +156,14 @@ fn checks_hand_the_runners_to_portability_and_the_result_to_the_required_status(
     assert_eq!(
         required["env"]["RUNNERS"],
         "${{ needs.checks.outputs.platforms }}"
+    );
+    assert_eq!(
+        required["env"]["MUTATIONS_RESULT"],
+        "${{ needs.mutations.result }}"
+    );
+    assert_eq!(
+        required["env"]["MUTATION_SUMMARY_RESULT"],
+        "${{ needs.mutation-summary.result }}"
     );
 }
 

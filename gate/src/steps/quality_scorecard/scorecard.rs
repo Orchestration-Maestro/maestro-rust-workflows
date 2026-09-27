@@ -34,6 +34,18 @@ impl State {
         }
     }
 
+    /// Parse the stable state spelling shared by JSON and Markdown.
+    pub(super) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "passed" => Some(Self::Passed),
+            "disabled" => Some(Self::Disabled),
+            "not-applicable" => Some(Self::NotApplicable),
+            "failed" => Some(Self::Failed),
+            "not-run" => Some(Self::NotRun),
+            _ => None,
+        }
+    }
+
     /// Stable spellings shared by JSON and Markdown.
     fn as_str(self) -> &'static str {
         match self {
@@ -49,17 +61,22 @@ impl State {
 /// One control's name, `enforced` or `optional` classification, and proven state.
 pub(super) type Control = (&'static str, &'static str, State);
 
+/// An owned row read back from the preliminary JSON scorecard.
+pub(super) type OwnedControl = (String, String, State);
+
 /// One run's scorecard: the controls it gathered and the facts every
 /// rendering of them repeats.
 pub(super) struct Scorecard {
     /// Every control, in the order the table lists them.
-    pub(super) controls: Vec<Control>,
+    pub(super) controls: Vec<OwnedControl>,
     /// The revision this run checked.
     pub(super) revision: String,
     /// The compiler this run used.
     pub(super) toolchain: String,
     /// Line coverage, when the coverage gate left a report.
     pub(super) coverage: Option<String>,
+    /// Optional complexity data, when that step produced a report.
+    pub(super) complexity: Option<String>,
 }
 
 impl Scorecard {
@@ -86,9 +103,14 @@ impl Scorecard {
             })
             .collect();
         let (revision, toolchain) = (&self.revision, &self.toolchain);
+        let complexity = self
+            .complexity
+            .as_deref()
+            .map(|data| format!(",\"complexity\":{data}"))
+            .unwrap_or_default();
         format!(
             "{{\"revision\":\"{revision}\",\"toolchain\":\"{toolchain}\",\"coverage\":{},\
-             \"controls\":[{}],\"active\":{},\"available\":{}}}\n",
+             \"controls\":[{}],\"active\":{},\"available\":{}{complexity}}}\n",
             self.coverage.as_deref().unwrap_or("null"),
             rows.join(","),
             self.active(),
@@ -195,10 +217,14 @@ mod tests {
     /// A scorecard of the given controls, the rest of its facts fixed.
     fn scorecard(controls: Vec<Control>, coverage: Option<&str>) -> Scorecard {
         Scorecard {
-            controls,
+            controls: controls
+                .into_iter()
+                .map(|(name, kind, state)| (name.to_owned(), kind.to_owned(), state))
+                .collect(),
             revision: "abc".to_owned(),
             toolchain: "1.98.1".to_owned(),
             coverage: coverage.map(str::to_owned),
+            complexity: None,
         }
     }
 

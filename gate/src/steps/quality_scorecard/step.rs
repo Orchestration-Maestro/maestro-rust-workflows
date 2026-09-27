@@ -5,56 +5,68 @@
 
 use super::scorecard::{Control, Scorecard, State};
 use crate::checks::inputs::{LicensePolicy, UnsafePolicy, license_policy, unsafe_policy};
-use crate::runner::{Failure, Job, Outcome, Step, flag, input, optional, summary, write};
+use crate::runner::{Cmd, Failure, Job, Outcome, Step, flag, input, optional, summary, write};
 use std::fs;
+use std::path::Path;
 
 /// What this step declares: its inputs, its tools and its reports.
-pub(crate) const STEPS: &[Step] = &[Step {
-    workflow: "ci",
-    id: "scorecard",
-    summary: "Build quality scorecard",
-    inputs: &[
-        "API_APPLIED",
-        "API_COMPATIBILITY",
-        "CHANGED_COVERAGE_APPLIED",
-        "DEPENDENCY_AUDIT",
-        "FEATURES_APPLIED",
-        "GITHUB_SHA",
-        "HOOKS_APPLIED",
-        "LICENSE_POLICY",
-        "MUTANTS_APPLIED",
-        "MUTATION_TEST",
-        "OUT_API",
-        "OUT_ARCHITECTURE",
-        "OUT_AUDIT",
-        "OUT_CHANGED_COVERAGE",
-        "OUT_COVERAGE",
-        "OUT_DUPLICATION",
-        "OUT_FEATURES",
-        "OUT_HOOKS",
-        "OUT_HYGIENE",
-        "OUT_LICENCES",
-        "OUT_MANAGED_FILES",
-        "OUT_MSRV",
-        "OUT_MUTANTS",
-        "OUT_PERFORMANCE",
-        "OUT_PULL_REQUEST",
-        "OUT_QUALITY",
-        "OUT_SECRETS",
-        "OUT_STAGE",
-        "OUT_UNUSED",
-        "OUT_VET",
-        "PERFORMANCE_APPLIED",
-        "PULL_REQUEST_APPLIED",
-        "RUSTUP_TOOLCHAIN",
-        "SARIF_REPORTS",
-        "UNSAFE_POLICY",
-        "UNUSED_DEPENDENCIES",
-    ],
-    tools: &[],
-    reports: &["scorecard.json", "scorecard.md", "scorecard.svg"],
-    run,
-}];
+pub(crate) const STEPS: &[Step] = &[
+    Step {
+        workflow: "ci",
+        id: "scorecard",
+        summary: "Build quality scorecard",
+        inputs: &[
+            "API_APPLIED",
+            "API_COMPATIBILITY",
+            "CHANGED_COVERAGE_APPLIED",
+            "DEPENDENCY_AUDIT",
+            "FEATURES_APPLIED",
+            "GITHUB_SHA",
+            "HOOKS_APPLIED",
+            "LICENSE_POLICY",
+            "MUTANTS_APPLIED",
+            "MUTATION_TEST",
+            "OUT_API",
+            "OUT_ARCHITECTURE",
+            "OUT_AUDIT",
+            "OUT_CHANGED_COVERAGE",
+            "OUT_COVERAGE",
+            "OUT_DUPLICATION",
+            "OUT_FEATURES",
+            "OUT_HOOKS",
+            "OUT_HYGIENE",
+            "OUT_LICENCES",
+            "OUT_MANAGED_FILES",
+            "OUT_MSRV",
+            "OUT_MUTANTS",
+            "OUT_PERFORMANCE",
+            "OUT_PULL_REQUEST",
+            "OUT_QUALITY",
+            "OUT_SECRETS",
+            "OUT_STAGE",
+            "OUT_UNUSED",
+            "OUT_VET",
+            "PERFORMANCE_APPLIED",
+            "PULL_REQUEST_APPLIED",
+            "RUSTUP_TOOLCHAIN",
+            "SARIF_REPORTS",
+            "UNSAFE_POLICY",
+            "UNUSED_DEPENDENCIES",
+        ],
+        tools: &[],
+        reports: &["scorecard.json", "scorecard.md", "scorecard.svg"],
+        run,
+    },
+    Step {
+        workflow: "ci",
+        id: "scorecard-finalize",
+        summary: "Finalize mutation scorecard",
+        inputs: &["MUTATION_STATE"],
+        tools: &["jaq"],
+        reports: &["scorecard.json", "scorecard.md", "scorecard.svg"],
+        run: finalize,
+    },
+];
 
 /// Run the step: the controls gathered once, then written as JSON, as
 /// Markdown for the log and the summary, and as the badge.
@@ -71,20 +83,25 @@ fn run() -> Outcome {
         .and_then(|lcov| line_coverage(&lcov));
     let mut controls = controls()?;
     controls.extend(organization_controls()?);
+    let controls = controls
+        .into_iter()
+        .map(|(name, kind, state)| (name.to_owned(), kind.to_owned(), state))
+        .collect();
+    // Informational, so its absence is not an error: the line appears only
+    // when the complexity step ran.
+    let complexity = fs::read_to_string(job.earlier("complexity.json")).ok();
     let scorecard = Scorecard {
         controls,
         revision: input("GITHUB_SHA")?,
         toolchain: input("RUSTUP_TOOLCHAIN")?,
         coverage,
+        complexity: complexity.as_deref().map(|data| data.trim().to_owned()),
     };
-    // Informational, so its absence is not an error: the line appears only
-    // when the complexity step ran.
-    let complexity = fs::read_to_string(job.earlier("complexity.json")).ok();
-    let mut json = scorecard.json();
-    if let Some(data) = &complexity {
-        json = json.replacen("}\n", &format!(",\"complexity\":{}}}\n", data.trim()), 1);
-    }
-    write(&job.report("scorecard.json")?, json.as_bytes(), false)?;
+    write(
+        &job.report("scorecard.json")?,
+        scorecard.json().as_bytes(),
+        false,
+    )?;
     let mut markdown = scorecard.markdown();
     if let Some(data) = &complexity {
         markdown.push_str(&complexity_line(data));
@@ -97,6 +114,83 @@ fn run() -> Outcome {
         scorecard.badge().as_bytes(),
         false,
     )
+}
+
+/// Rebuild the reports after shard aggregation changes mutation from not-run.
+fn finalize() -> Outcome {
+    let job = Job::current()?;
+    let mutation_state = State::parse(&input("MUTATION_STATE")?)
+        .filter(|state| matches!(state, State::Passed | State::Failed | State::NotRun))
+        .ok_or("MUTATION_STATE must be passed, failed or not-run")?;
+    let path = job.earlier("scorecard.json");
+    let rows = Cmd::new("jaq -r")
+        .arg(".controls[] | [.control,.kind,.state] | @tsv")
+        .arg(&path)
+        .capture()?;
+    let mut controls = Vec::new();
+    let mut mutation_seen = false;
+    for row in rows.lines() {
+        let mut columns = row.split('\t');
+        let name = columns.next().unwrap_or_default();
+        let kind = columns.next().unwrap_or_default();
+        let state_text = columns.next().unwrap_or_default();
+        if name.is_empty() || kind.is_empty() || columns.next().is_some() {
+            return Err("scorecard controls have an invalid shape".into());
+        }
+        let mut state =
+            State::parse(state_text).ok_or("scorecard contains an unknown control state")?;
+        if name == "mutation testing" {
+            if mutation_seen || kind != "optional" {
+                return Err("scorecard mutation control is duplicated or invalid".into());
+            }
+            mutation_seen = true;
+            state = mutation_state;
+        }
+        controls.push((name.to_owned(), kind.to_owned(), state));
+    }
+    if !mutation_seen {
+        return Err("scorecard has no mutation testing control".into());
+    }
+    let revision = field(&path, ".revision")?;
+    let toolchain = field(&path, ".toolchain")?;
+    if revision.is_empty() || toolchain.is_empty() {
+        return Err("scorecard revision or toolchain is missing".into());
+    }
+    let coverage = field(&path, ".coverage // empty")?;
+    let complexity = Cmd::new("jaq -c")
+        .arg(".complexity // empty")
+        .arg(&path)
+        .capture()?;
+    let complexity = (!complexity.trim().is_empty()).then(|| complexity.trim().to_owned());
+    let scorecard = Scorecard {
+        controls,
+        revision,
+        toolchain,
+        coverage: (!coverage.is_empty()).then_some(coverage),
+        complexity: complexity.clone(),
+    };
+    write(&path, scorecard.json().as_bytes(), false)?;
+    let mut markdown = scorecard.markdown();
+    if let Some(data) = &complexity {
+        markdown.push_str(&complexity_line(data));
+    }
+    print!("{markdown}");
+    write(&job.report("scorecard.md")?, markdown.as_bytes(), false)?;
+    summary(&markdown)?;
+    write(
+        &job.report("scorecard.svg")?,
+        scorecard.badge().as_bytes(),
+        false,
+    )
+}
+
+/// Read one already checked field from the previous scorecard.
+fn field(path: &Path, expression: &str) -> Result<String, Failure> {
+    Cmd::new("jaq -r")
+        .arg(expression)
+        .arg(path)
+        .capture()
+        .map(|value| value.trim().to_owned())
 }
 
 /// Selection alone never proves execution. Steps that can find no applicable

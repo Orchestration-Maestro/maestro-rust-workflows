@@ -175,6 +175,7 @@ fn the_scorecard_distinguishes_disabled_inapplicable_failed_and_unrun_controls()
 fn mutation_testing_records_no_application_when_the_workspace_has_no_mutants() {
     let mut fixture = Fixture::new();
     fixture.set("MUTATION_TEST", "true");
+    fixture.stub("git", "exit 1");
     succeeds(&fixture.run_body("cd \"$PROJECT\"; cargo generate-lockfile --offline"));
     succeeds(&fixture.run("ci", "mutants"));
     let output = fs::read_to_string(fixture.root.join("output")).unwrap();

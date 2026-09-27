@@ -39,6 +39,18 @@ name: Publish Rust binaries
           the committed pin
         type: boolean
         default: true
+      mutation-shards:
+        description: >-
+          Forwarded unchanged to the CI run; `1` keeps one inline run, `0`
+          selects automatically, and `2` through `32` request a fixed count
+        type: number
+        default: 1
+      mutation-mutants-per-shard:
+        description: >-
+          Forwarded unchanged to the CI run; automatic mode target from `1`
+          through `1000`, an adjustable calibration knob, not a time guarantee
+        type: number
+        default: 50
       sarif-reports:
         description: >-
           Forwarded unchanged to the CI run, so a release passes the same gates
@@ -153,6 +165,8 @@ jobs:
       coverage-threshold: ${{ inputs.coverage-threshold }}
       license-policy: ${{ inputs.license-policy }}
       mutation-test: ${{ inputs.mutation-test }}
+      mutation-shards: ${{ inputs.mutation-shards }}
+      mutation-mutants-per-shard: ${{ inputs.mutation-mutants-per-shard }}
       sarif-reports: ${{ inputs.sarif-reports }}
       clippy-level: ${{ inputs.clippy-level }}
       dependency-audit: ${{ inputs.dependency-audit }}

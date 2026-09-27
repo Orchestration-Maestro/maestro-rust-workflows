@@ -100,11 +100,18 @@ proofs = [
 name = "Mutation testing"
 kind = "default"
 switch = "`mutation-test: false`"
-fails = "A surviving or timed-out mutant in the change: a pull request mutates its diff, a push or tag its own commit"
+fails = "A surviving or timed-out mutant in the change: a pull request mutates its diff, a push or tag its own commit; shard evidence must be complete"
 standard = "North Star, Quality"
 proofs = [
   "mutation_testing_scopes_a_pull_request_to_its_diff",
   "mutation_testing_scopes_a_push_to_its_own_commit",
+  "disabled_and_default_plans_never_invoke_cargo_mutants",
+  "automatic_counts_choose_only_nonempty_complete_shards",
+  "real_pinned_listings_partition_nested_push_diff_with_config_exclusions",
+  "internal_shard_selftest_has_a_behavior_equivalent_two_shard_diff",
+  "aggregation_merges_only_complete_identity_and_outcome_evidence",
+  "aggregation_refuses_missing_duplicate_foreign_or_partial_results",
+  "the_required_status_fails_unless_every_result_succeeded",
   "example_gate_replays_ci_step_bodies_against_every_fixture",
 ]
 

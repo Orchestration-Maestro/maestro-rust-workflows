@@ -17,12 +17,6 @@ path = "gate/src/runner/mod.rs"
 item = "enter"
 reason = "the step registry is the only thing that can run a step"
 
-[[exception]]
-rule = "ARC-005"
-path = "tests/harness/mod.rs"
-item = "describe_text"
-reason = "the gate's description of itself is read through the harness alone"
-
 # The words this repository means that the spell checker reads as mistakes:
 # FND, the identifier prefix of the Foundation standards in docs/standards.
 [typos]
