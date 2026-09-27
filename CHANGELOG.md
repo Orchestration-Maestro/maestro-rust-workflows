@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.4.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.3.1...v4.4.0) (2026-09-27)
+
+
+### Features
+
+* shard mutation testing across remote runners ([#84](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/84)) ([6a8e673](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/6a8e6730356ad69773fd755d9fc343e0de6bdcb7))
+
 ## [Unreleased]
 
 ### Changed
