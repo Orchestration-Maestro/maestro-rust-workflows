@@ -1,6 +1,6 @@
 //! Prepare the repository-owned mutation-shard fixture before planning or execution.
 
-use crate::runner::{Cmd, Job, Outcome, flag};
+use crate::runner::{Cmd, Job, Outcome, optional};
 use std::fs;
 
 /// The expression the repository-owned fixture begins with.
@@ -18,8 +18,10 @@ fn rewritten_source(contents: &str) -> Result<String, &'static str> {
 
 /// Change only the owned workspace fixture and commit it to create a diff.
 pub(super) fn prepare(job: &Job) -> Outcome {
-    if !flag("INTERNAL_SHARD_SELFTEST")? {
-        return Ok(());
+    match optional("INTERNAL_SHARD_SELFTEST")?.as_str() {
+        "" | "false" => return Ok(()),
+        "true" => {}
+        _ => return Err("internal-shard-selftest must be true or false".into()),
     }
 
     let source = job.project.join("core/src/lib.rs");
