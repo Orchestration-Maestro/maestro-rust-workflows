@@ -6,7 +6,8 @@
 use crate::checks::checkout_paths::{canonical, committed_file, inside, project_directory};
 use crate::checks::digests::sha256_hex;
 use crate::checks::inputs::{
-    LicensePolicy, artifact_key, clippy_level, coverage_threshold, license_policy, unsafe_policy,
+    LicensePolicy, artifact_key, clippy_level, coverage_threshold, license_policy,
+    mutation_mutants_per_shard, mutation_shards, unsafe_policy,
 };
 use crate::checks::quality_config::{FILE, read_config};
 use crate::checks::rust_versions::{channel_value, is_exact_stable, parse};
@@ -32,6 +33,8 @@ pub(crate) const STEPS: &[Step] = &[Step {
         "GITHUB_SHA",
         "GITHUB_WORKSPACE",
         "LICENSE_POLICY",
+        "MUTATION_MUTANTS_PER_SHARD",
+        "MUTATION_SHARDS",
         "MUTATION_TEST",
         "PLATFORMS",
         "REQUESTED_TOOLCHAIN",
@@ -57,6 +60,12 @@ const SETTINGS: &[(&str, &str, &str)] = &[
     ("artifact-key", "ARTIFACT_KEY", "ci"),
     ("license-policy", "LICENSE_POLICY", "auto"),
     ("mutation-test", "MUTATION_TEST", "true"),
+    ("mutation-shards", "MUTATION_SHARDS", "1"),
+    (
+        "mutation-mutants-per-shard",
+        "MUTATION_MUTANTS_PER_SHARD",
+        "50",
+    ),
     ("sarif-reports", "SARIF_REPORTS", "true"),
     ("clippy-level", "CLIPPY_LEVEL", "default"),
     ("dependency-audit", "DEPENDENCY_AUDIT", "true"),
@@ -92,6 +101,8 @@ fn run() -> Outcome {
     let clippy_level = clippy_level()?;
     let unused_dependencies = flag("UNUSED_DEPENDENCIES")?.to_string();
     let mutation_test = flag("MUTATION_TEST")?.to_string();
+    let mutation_shards = mutation_shards()?.to_string();
+    let mutation_mutants_per_shard = mutation_mutants_per_shard()?.to_string();
     let api_compatibility = flag("API_COMPATIBILITY")?.to_string();
     let sarif_reports = flag("SARIF_REPORTS")?.to_string();
     let dependency_audit = flag("DEPENDENCY_AUDIT")?.to_string();
@@ -105,6 +116,8 @@ fn run() -> Outcome {
     output("directory", &directory)?;
     output("platforms", &runners)?;
     output("toolchain", &toolchain)?;
+    output("mutation-test", &mutation_test)?;
+    output("mutation-mutants-per-shard", &mutation_mutants_per_shard)?;
     let temp = input("RUNNER_TEMP")?;
     export(&[
         ("PROJECT", &project.display().to_string()),
@@ -116,6 +129,8 @@ fn run() -> Outcome {
         ("LICENSE_POLICY", license_policy.as_str()),
         ("DENY_CONFIG", &deny_config),
         ("MUTATION_TEST", &mutation_test),
+        ("MUTATION_SHARDS", &mutation_shards),
+        ("MUTATION_MUTANTS_PER_SHARD", &mutation_mutants_per_shard),
         ("API_COMPATIBILITY", &api_compatibility),
         ("SARIF_REPORTS", &sarif_reports),
         ("UNSAFE_POLICY", unsafe_policy.as_str()),

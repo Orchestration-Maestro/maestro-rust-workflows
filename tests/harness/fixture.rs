@@ -88,6 +88,8 @@ impl Fixture {
             ("COVERAGE", "90"),
             ("LICENSE_POLICY", "auto"),
             ("MUTATION_TEST", "false"),
+            ("MUTATION_SHARDS", "1"),
+            ("MUTATION_MUTANTS_PER_SHARD", "50"),
             ("API_COMPATIBILITY", "false"),
             ("PLATFORMS", ""),
             ("SARIF_REPORTS", "false"),
@@ -151,6 +153,20 @@ impl Fixture {
         let project = fixture.root.join("project");
         fs::remove_dir_all(&project).unwrap();
         copy_tree(&root().join("examples").join(name), &project);
+        let run_git = |arguments: &[&str]| {
+            let output = tool("git")
+                .args(arguments)
+                .current_dir(&project)
+                .output()
+                .unwrap();
+            succeeds(&output);
+        };
+        run_git(&["init", "--quiet"]);
+        run_git(&["config", "user.name", "Fixture"]);
+        run_git(&["config", "user.email", "fixture@example.invalid"]);
+        run_git(&["commit", "--allow-empty", "--quiet", "-m", "base"]);
+        run_git(&["add", "--all"]);
+        run_git(&["commit", "--quiet", "-m", "fixture sources"]);
         for (key, value) in [
             ("CARGO_BUILD_TARGET", "x86_64-unknown-linux-gnu"),
             ("COVERAGE", "90"),

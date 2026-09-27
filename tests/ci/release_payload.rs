@@ -93,6 +93,15 @@ fn example_gate_replays_ci_step_bodies_against_every_fixture() {
         ] {
             fixture.set(key, value);
         }
+        // Publication runs in a fresh checkout, so discard CI-generated SBOMs
+        // before replaying its package check against this fixture.
+        succeeds(
+            &tool("git")
+                .args(["clean", "-fd"])
+                .current_dir(&project)
+                .output()
+                .unwrap(),
+        );
         succeeds(&fixture.run("publish-crate", "package"));
         if example == "binary" {
             // The one crates.io dependency must reach the payload SBOM, and the

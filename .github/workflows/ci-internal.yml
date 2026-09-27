@@ -101,6 +101,17 @@ jobs:
       artifact-key: matrix-ci
       coverage-threshold: 90
       rust-version: ${{ matrix.rust-version }}
+  sharded-consumer:
+    name: Sharded workspace consumer
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      security-events: write  # static ceiling for ci.yml's skipped SARIF upload
+      id-token: write  # static ceiling for ci.yml's skipped Codecov login
+    with:
+      working-directory: examples/workspace
+      artifact-key: sharded-consumer
+      mutation-shards: 2
   binary-dry-run:
     name: Binary publisher dry run
     strategy:
@@ -157,6 +168,7 @@ jobs:
     name: Required consumer tests
     needs:
       - consumers
+      - sharded-consumer
       - portability-ci
       - binary-dry-run
       - crate-dry-run
@@ -170,12 +182,13 @@ jobs:
         shell: bash
         env:
           CI_RESULT: ${{ needs.consumers.result }}
+          SHARDED_RESULT: ${{ needs.sharded-consumer.result }}
           PORTABILITY_RESULT: ${{ needs.portability-ci.result }}
           BINARY_RESULT: ${{ needs.binary-dry-run.result }}
           CRATE_RESULT: ${{ needs.crate-dry-run.result }}
         run: |
           set -euo pipefail
-          for result in "$CI_RESULT" "$PORTABILITY_RESULT" "$BINARY_RESULT" "$CRATE_RESULT"; do
+          for result in "$CI_RESULT" "$SHARDED_RESULT" "$PORTABILITY_RESULT" "$BINARY_RESULT" "$CRATE_RESULT"; do
             [[ "$result" == success ]] || {
               echo 'A required consumer workflow failed, was cancelled or was skipped' >&2; exit 1;
             }
@@ -185,8 +198,8 @@ jobs:
         if: ${{ always() }}
         shell: bash
         env:
-          CHECK_RESULTS: ${{ needs.consumers.result }} ${{ needs.portability-ci.result }} ${{ needs.binary-dry-run.result }} ${{ needs.crate-dry-run.result }}
-          EVIDENCE_SCOPE: All consumer matrix cases, the portability case and binary/crate dry-run publishers
+          CHECK_RESULTS: ${{ needs.consumers.result }} ${{ needs.sharded-consumer.result }} ${{ needs.portability-ci.result }} ${{ needs.binary-dry-run.result }} ${{ needs.crate-dry-run.result }}
+          EVIDENCE_SCOPE: Default and sharded consumer cases, portability and binary/crate dry-run publishers
         run: |
           set -euo pipefail
           [[ "$CHECK_RESULTS" =~ ^success(\ success)*$ ]] || { echo 'Required checks did not all succeed' >&2; exit 1; }

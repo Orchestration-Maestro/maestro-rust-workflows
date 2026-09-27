@@ -91,7 +91,9 @@ committed `deny.toml` applies the same way to every pull request. See [runner se
 | `coverage-threshold` | number | `90` | Finite minimum line percentage, from the organization's floor of 90 to 100 |
 | `artifact-key` | string | `ci` | Invocation identity, 1 to 40 alphanumeric/underscore/hyphen characters, starting alphanumeric |
 | `license-policy` | string | `auto` | Kept for the repositories that set it: `auto` and `enforce` both apply the organization's licence and source policy; `off` is refused, since no repository opts out |
-| `mutation-test` | boolean | `true` | Run cargo-mutants and fail on surviving mutants; a pull request mutates its diff, a push or tag its own commit; set `false` when run time exceeds the job |
+| `mutation-test` | boolean | `true` | Run cargo-mutants and fail on surviving mutants; a pull request mutates its diff, a push or tag its own commit |
+| `mutation-shards` | number | `1` | `1` keeps one inline run without discovery, `0` selects all mutants automatically, and `2` through `32` request a fixed shard count |
+| `mutation-mutants-per-shard` | number | `50` | Automatic mode target mutants per shard, an adjustable calibration knob from `1` to `1000`, not a time guarantee |
 | `sarif-reports` | boolean | `true` | Also emit Clippy and secret findings as SARIF, which the organization's check uploads to code scanning |
 | `clippy-level` | string | `default` | `pedantic` or `nursery` also deny those Clippy groups |
 | `dependency-audit` | boolean | `true` | Require a recorded cargo-vet audit for every dependency, the organization's and five public audit sets imported (VET-001) |
@@ -137,8 +139,10 @@ repository; see
 
 When no workflow called `ci.yml`, in the run the organization's ruleset starts
 on a pull request or a merge group, two jobs upload the same run's
-`<artifact-name>-reports` artifact once the checks passed and the portability
-legs ended. No repository holds a workflow for them.
+`<artifact-name>-reports` artifact after `checks`, portability and any planned
+mutation aggregation finish. A sharded run uploads the canonical bundle only
+when `mutation-summary` succeeds; nonsharded runs intentionally skip that job.
+No repository holds a workflow for these uploads.
 
 - `upload`, "Upload Clippy and secret-scan SARIF", shows the Clippy and
   secret-scan SARIF in the Security tab under the categories `clippy` and
@@ -181,8 +185,9 @@ request's run keeps its own ref and commit. No repository holds a file for
 this, no secret is stored and no app gains a permission.
 
 Only a commit that lands may be filed on the default branch. A merge group
-whose portability legs failed uploads nothing, since the queue drops it, while
-a pull request uploads whatever the legs say. The ruleset builds one group at a
+whose portability legs or mutation aggregation failed uploads nothing, since
+the queue drops it; a pull request may upload after a portability failure, but
+never after failed or incomplete mutation evidence. The ruleset builds one group at a
 time, `max_entries_to_build: 1`, so no group is built on an entry ahead of it
 that may still fail. One case remains: a required check outside `ci.yml`, such
 as CodeQL's, that fails a group after both uploads ran. Its results then stay
@@ -928,7 +933,9 @@ for its turn; every release tag is its own group.
 
 The `<artifact-name>-reports` artifact carries the results that were produced.
 The table describes selection, not a promise that every file exists after an
-earlier failure. The scorecard identifies controls that never ran.
+earlier failure. The scorecard identifies controls that never ran. In sharded mode, `checks`
+first records mutation as `not-run`; only aggregation can finalize it as passed
+or failed from complete evidence.
 
 | File | Contents | Selection |
 | --- | --- | --- |
@@ -953,7 +960,9 @@ earlier failure. The scorecard identifies controls that never ran.
 | `payload.cdx.json` | Merged CycloneDX bill of materials for the release payload | always |
 | `*.spdx.json` | One SPDX 2.3 document per workspace member | always |
 | `scorecard.json`, `scorecard.md`, `scorecard.svg` | Per-control states; only passed controls count as active | always |
-| `mutants.json`, `mutants.txt` | Available mutation outcomes, including failures; a text-only skip when no mutants apply | `mutation-test` |
+| `mutants.json`, `mutants.txt` | Inline outcomes or the complete aggregate, including failures; text-only no-work skips never invent outcomes | `mutation-test` |
+| `mutants-plan.txt`, `mutants-plan.log`, `mutants-list.json`, `mutation-plan.json`, `mutants.diff` | Full filtered listing, planner log and immutable run identity; diff only when a first parent exists | `mutation-shards` is not `1` |
+| `mutation-shards` | Each raw shard output, outcome, log, diff and `mutants-shard.json` identity receipt, retained separately | sharded mode |
 | `clippy.sarif`, `secrets.sarif` | The same findings as SARIF | `sarif-reports` |
 | `unused-dependencies.txt` | Declared dependencies no source file references | `unused-dependencies` |
 | `api-compatibility.txt` | The cargo-semver-checks comparison with the base branch, or why none applied | `api-compatibility` |
@@ -996,21 +1005,53 @@ license-policy=off is refused: the organization's licence policy always applies,
 
 Mutation testing builds and tests the workspace once per generated mutant. It
 is on by default, because a golden workflow enforces the standard, and every
-run mutates only its change, so the cost scales with the change: a pull request
-its diff against the base branch, a merge group, a push or a tag its own commit
-against the parent. Squash-only merges make each default-branch commit exactly one pull
-request's change. Only a repository's first commit, which has no parent,
-mutates the whole workspace. The gate fails on any surviving or
-timed-out mutant. When outcomes exist, it copies `mutants.json` before returning
-the tool's original exit status, including survivors and timeouts. If the pinned
-tool explicitly reports that no mutants apply, the step records `SKIPPED` in
-`mutants.txt` without inventing JSON outcomes. An empty diff, a documentation-only
-diff and changed Rust lines without mutants all qualify. A workspace with no
-mutants also records `not-applicable` after the tool's explicit no-work message.
-A missing or empty
-outcomes file without that explicit successful no-work result still fails.
-Scope a large workspace with a committed `.cargo/mutants.toml`, keep the job
-timeout in mind, and set `mutation-test: false` when the run outgrows the job.
+run mutates only its change: a pull request's merge diff against the base, a
+merge group's diff, or a push or tag's first-parent diff. Squash-only merges
+make each default-branch commit exactly one pull request's change. Only a
+repository's first commit, which has no parent, mutates the whole workspace.
+
+`mutation-shards: 1` is the compatible default: it runs the existing inline
+mutation command once, with no discovery listing and no extra jobs. Opt-in
+`mutation-shards: 0` lists all filtered mutants in the `checks` job and chooses
+`N = min(32, max(1, ceil(M / target)))`, where `M` is the full count and
+`target` is `mutation-mutants-per-shard` (default 50). A fixed value `2` through
+`32` selects `min(requested, M)` shards. No mode samples or discards mutants;
+when `N = 1`, execution stays inline. With `M = 0`, no workers are scheduled
+and the inline step records its established no-work message without inventing
+outcomes. Reaching the 32-shard ceiling is reported; the target is then
+exceeded, not guaranteed.
+
+The target is a calibration knob, not a time estimate. Every shard runs its
+own baseline and complete assigned mutant set with pinned cargo-mutants 27.1.0
+using round-robin identity assignment. The `mutations` matrix runs only after
+all of `checks` succeeds, so it cannot start before the main checks finish; at
+most eight workers run together. Each worker has a 45-minute job limit and a
+35-minute mutation-command limit. The `mutation-summary` job runs after the
+matrix even on a failed or skipped worker, keeps raw shard directories separate,
+and cross-checks each receipt, discovery list, completed outcome and counter
+against the complete plan. A missing artifact, incomplete result, failed
+baseline, survivor, timeout, foreign identity or invalid path blocks
+`Required Rust CI`. A successful upload or matrix leg alone is never proof.
+Sharded runs require a whole-workflow rerun so artifacts from separate attempts
+cannot be mixed.
+
+`mutation-test: false` disables planning and execution; both shard inputs are
+still validated. Ruleset runs take `[ci]` settings from the first parent, so a
+change to `maestro-quality.toml` cannot relax its own pull request. A called
+workflow takes its declared inputs instead: a publisher or consumer caller
+must forward shard settings explicitly. Locally, `rust-gate ci --local` marks
+remote planning not applied and still runs the full mutation command once,
+unsharded. Keep project-specific exclusions in `.cargo/mutants.toml`; do not
+turn off mutation testing just because a change outgrows one job.
+
+In a sharded run, `checks` uploads `<artifact-name>-checks-reports` with the
+plan; after aggregation, `mutation-summary` creates the canonical
+`<artifact-name>-reports` bundle, including merged `mutants.json`, the summary
+and the original per-shard outcomes, logs and diffs. Other callers keep the
+existing report artifact name. The scorecard in `checks` marks mutation
+`not-run` until aggregation finalizes it from verified evidence. The one
+required job, `Required Rust CI`, requires every planned index and a successful
+summary in addition to the `checks` and requested portability results.
 
 ### Platform portability
 
@@ -1121,8 +1162,11 @@ Publishers omit this override and use the committed consumer pin.
    so a workspace whose members depend on each other could not package.
 5. Dependency sources and versions: `cargo deny check bans sources` against the
    consumer's `deny.toml`, or against the generated default policy without one.
-6. `Required Rust CI` runs with `always()` and fails on failure, cancellation or
-   unexpected skip of `checks`. Reports cannot convert failures into success.
+6. `Required Rust CI` runs with `always()` and refuses failed, cancelled or
+   unexpectedly skipped `checks`, each requested portability leg, the complete
+   shard matrix and its summary. Missing plan outputs and a mismatched run
+   attempt fail closed; report uploads cannot convert a failed check to success.
+   Release artifact outputs are empty unless this required step succeeds.
 
 Auxiliary tools are pinned independently of consumer Rust: cargo-llvm-cov 0.9.0,
 cargo-audit 0.22.2, cargo-deny 0.20.2, cargo-cyclonedx 0.5.7, Gitleaks 8.24.3 and

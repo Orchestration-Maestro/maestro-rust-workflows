@@ -144,31 +144,88 @@ fn the_required_status_fails_unless_every_result_succeeded() {
         );
     }
     fixture.set("RESULT", "success");
+    for (key, value) in [
+        ("PORTABILITY", "skipped"),
+        ("RUNNERS", ""),
+        ("MUTATION_TEST", "false"),
+        ("MUTATION_MODE", "disabled"),
+        ("MUTATION_COUNT", "0"),
+        ("MUTATIONS_RESULT", "skipped"),
+        ("MUTATION_SUMMARY_RESULT", "skipped"),
+        ("MUTATION_SHARDS", "0"),
+        ("MUTATION_MATRIX", "[]"),
+        ("MUTATION_ATTEMPT", "1"),
+        ("GITHUB_RUN_ATTEMPT", "1"),
+    ] {
+        fixture.set(key, value);
+    }
     succeeds(&fixture.run("ci", "required"));
-    for key in [
-        "CI_RESULT",
-        "BINARY_RESULT",
-        "CRATE_RESULT",
-        "PORTABILITY_RESULT",
+    for (mode, count, shards) in [
+        ("inline", "", "1"),
+        ("inline", "50", "1"),
+        ("empty", "0", "0"),
     ] {
-        fixture.set(key, "success");
+        fixture.set("MUTATION_TEST", "true");
+        fixture.set("MUTATION_MODE", mode);
+        fixture.set("MUTATION_COUNT", count);
+        fixture.set("MUTATION_SHARDS", shards);
+        succeeds(&fixture.run("ci", "required"));
     }
-    succeeds(&fixture.run("ci-internal", "required"));
-    for key in [
-        "CI_RESULT",
-        "BINARY_RESULT",
-        "CRATE_RESULT",
-        "PORTABILITY_RESULT",
+    fixture.set("MUTATION_MODE", "inline");
+    fixture.set("MUTATION_SHARDS", "1");
+    for count in ["0", "-1", "not-a-number"] {
+        fixture.set("MUTATION_COUNT", count);
+        assert!(!fixture.run("ci", "required").status.success(), "{count}");
+    }
+    for status in ["failure", "cancelled", "skipped", ""] {
+        fixture.set("MUTATION_TEST", "true");
+        fixture.set("MUTATION_MODE", "sharded");
+        fixture.set("MUTATION_COUNT", "3");
+        fixture.set("MUTATION_SHARDS", "2");
+        fixture.set("MUTATION_MATRIX", "[0,1]");
+        fixture.set("MUTATIONS_RESULT", status);
+        fixture.set("MUTATION_SUMMARY_RESULT", "success");
+        assert!(!fixture.run("ci", "required").status.success(), "{status}");
+        fixture.set("MUTATIONS_RESULT", "success");
+        fixture.set("MUTATION_SUMMARY_RESULT", status);
+        assert!(!fixture.run("ci", "required").status.success(), "{status}");
+    }
+    fixture.set("MUTATION_SUMMARY_RESULT", "success");
+    fixture.set("MUTATIONS_RESULT", "success");
+    fixture.set("MUTATION_ATTEMPT", "1");
+    fixture.set("GITHUB_RUN_ATTEMPT", "1");
+    succeeds(&fixture.run("ci", "required"));
+    for (mode, count, shards, matrix) in [
+        ("", "", "", ""),
+        ("sharded", "1", "2", "[0,1]"),
+        ("sharded", "3", "2", "[1,0]"),
+        ("sharded", "3", "3", "[0,1]"),
     ] {
-        fixture.set(key, "skipped");
-        assert!(!fixture.run("ci-internal", "required").status.success());
-        fixture.set(key, "success");
+        fixture.set("MUTATION_MODE", mode);
+        fixture.set("MUTATION_COUNT", count);
+        fixture.set("MUTATION_SHARDS", shards);
+        fixture.set("MUTATION_MATRIX", matrix);
+        assert!(
+            !fixture.run("ci", "required").status.success(),
+            "{mode} {count} {shards} {matrix}"
+        );
     }
+    fixture.set("MUTATION_MODE", "sharded");
+    fixture.set("MUTATION_COUNT", "3");
+    fixture.set("MUTATION_SHARDS", "2");
+    fixture.set("MUTATION_MATRIX", "[0,1]");
+    fixture.set("MUTATION_ATTEMPT", "1");
+    fixture.set("GITHUB_RUN_ATTEMPT", "2");
+    assert!(!fixture.run("ci", "required").status.success());
 }
 
-/// Stand-ins for a mutation run: git answers `rev-parse` with `parent` and
-/// prints a one-file diff, cargo-mutants catches its one mutant.
-fn prepare_mutants(fixture: &Fixture, parent: &str) {
+/// Stand-ins for a mutation run: git supplies a parent only when one is asked for.
+fn prepare_mutants(fixture: &Fixture, has_parent: bool) {
+    let parent = if has_parent {
+        "echo bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    } else {
+        "exit 1"
+    };
     fixture.stub(
         "git",
         &format!(
@@ -193,7 +250,7 @@ fn mutation_testing_scopes_a_pull_request_to_its_diff() {
     // A pull request mutates only what it changed, and the report says which
     // scope applied.
     let mut pr = Fixture::new();
-    prepare_mutants(&pr, "exit 0");
+    prepare_mutants(&pr, true);
     pr.set("MUTATION_TEST", "true");
     pr.set("GITHUB_BASE_REF", "main");
     succeeds(&pr.run("ci", "mutants"));
@@ -216,7 +273,7 @@ fn mutation_testing_scopes_a_push_to_its_own_commit() {
     // push or a release tag mutates its commit's diff, never the whole
     // workspace inside a job with a timeout. The checkout keeps the parent.
     let mut push = Fixture::new();
-    prepare_mutants(&push, "exit 0");
+    prepare_mutants(&push, true);
     push.set("MUTATION_TEST", "true");
     succeeds(&push.run("ci", "mutants"));
     assert!(push.calls().contains("--in-diff"), "{}", push.calls());
@@ -236,7 +293,7 @@ fn mutation_testing_scopes_a_push_to_its_own_commit() {
 
     // A repository's first commit has no parent: everything in it is new.
     let mut first = Fixture::new();
-    prepare_mutants(&first, "exit 1");
+    prepare_mutants(&first, false);
     first.set("MUTATION_TEST", "true");
     succeeds(&first.run("ci", "mutants"));
     assert!(!first.calls().contains("--in-diff"));
@@ -290,7 +347,7 @@ fn mutation_testing_accepts_real_diffs_without_applicable_mutants() {
         // Only Git is a stand-in: discovery and diff filtering use the pinned tool.
         fixture.stub(
             "git",
-            "case \"$1\" in rev-parse) exit 0 ;; diff) cat \"$RUNNER_TEMP/changes.diff\" ;; esac",
+            "[[ $1 == rev-parse ]] && echo \"$GITHUB_SHA\" || cat \"$RUNNER_TEMP/changes.diff\"",
         );
         succeeds(&fixture.run("ci", "mutants"));
         let report = fs::read_to_string(fixture.root.join("reports/mutants.txt")).unwrap();
@@ -311,15 +368,19 @@ fn mutation_testing_never_treats_an_unexplained_missing_report_as_a_skip() {
     // a first commit, with no parent, mutates the whole workspace.
     for (base, git, cargo) in [
         ("", "exit 1", "echo 'INFO Diff file is empty' >&2"),
-        ("main", "exit 0", "exit 0"),
         (
             "main",
+            "echo bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "exit 0",
+        ),
+        (
+            "main",
+            "echo bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "echo 'unexpected: INFO Diff file is empty' >&2",
         ),
         (
             "main",
-            "exit 0",
+            "echo bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             "mkdir -p \"$RUNNER_TEMP/mutants/mutants.out\"\n\
              touch \"$RUNNER_TEMP/mutants/mutants.out/outcomes.json\"\n\
              echo 'INFO Diff file is empty' >&2",
@@ -338,7 +399,10 @@ fn mutation_testing_never_treats_an_unexplained_missing_report_as_a_skip() {
     let mut fixture = Fixture::new();
     fixture.set("MUTATION_TEST", "true");
     fixture.set("GITHUB_BASE_REF", "main");
-    fixture.stub("git", "exit 0");
+    fixture.stub(
+        "git",
+        "[[ \"$1\" == rev-parse ]] && echo \"$GITHUB_SHA\" || exit 0",
+    );
     fixture.stub("cargo", "echo 'INFO Diff file is empty' >&2; exit 7");
     assert_eq!(fixture.run("ci", "mutants").status.code(), Some(7));
 }
@@ -362,7 +426,7 @@ fn mutation_testing_keeps_real_survivors_and_invalid_diffs_blocking() {
     .unwrap();
     fixture.stub(
         "git",
-        "case \"$1\" in rev-parse) exit 0 ;; diff) cat \"$RUNNER_TEMP/changes.diff\" ;; esac",
+        "[[ \"$1\" == rev-parse ]] && echo \"$GITHUB_SHA\" || cat \"$RUNNER_TEMP/changes.diff\"",
     );
     assert_eq!(fixture.run("ci", "mutants").status.code(), Some(2));
     let outcomes: Value = serde_json::from_str(
@@ -381,24 +445,6 @@ fn mutation_testing_keeps_real_survivors_and_invalid_diffs_blocking() {
     assert_eq!(archived, outcomes);
     fs::write(fixture.root.join("changes.diff"), "not a unified diff\n").unwrap();
     assert!(!fixture.run("ci", "mutants").status.success());
-}
-
-#[test]
-fn mutation_failures_keep_their_reports_and_original_status() {
-    for (code, timeout) in [(3, 1), (4, 0)] {
-        let mut fixture = Fixture::new();
-        fixture.set("MUTATION_TEST", "true");
-        fixture.stub(
-            "cargo",
-            &format!(
-                "mkdir -p \"$RUNNER_TEMP/mutants/mutants.out\"\n\
-             printf '{{\"caught\":0,\"missed\":0,\"timeout\":{timeout},\"unviable\":0}}' \
-             > \"$RUNNER_TEMP/mutants/mutants.out/outcomes.json\"\nexit {code}"
-            ),
-        );
-        assert_eq!(fixture.run("ci", "mutants").status.code(), Some(code));
-        assert!(fixture.root.join("reports/mutants.json").is_file());
-    }
 }
 
 #[test]
@@ -421,6 +467,7 @@ printf '{{"caught":1,"missed":{missed},"timeout":0,"unviable":0}}\n' > "$file""#
     );
     let mut survivors = Fixture::new();
     survivors.set("MUTATION_TEST", "true");
+    survivors.stub("git", "exit 1");
     survivors.stub("cargo", &outcomes(1));
     refused(
         &survivors.run("ci", "mutants"),
@@ -428,6 +475,7 @@ printf '{{"caught":1,"missed":{missed},"timeout":0,"unviable":0}}\n' > "$file""#
     );
     let mut silent = Fixture::new();
     silent.set("MUTATION_TEST", "true");
+    silent.stub("git", "exit 1");
     silent.stub("cargo", "exit 0");
     refused(
         &silent.run("ci", "mutants"),

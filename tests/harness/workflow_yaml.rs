@@ -123,11 +123,12 @@ pub(crate) fn step(name: &str, id: &str) -> String {
 
 /// The `ci.yml` steps the example gate replays, in workflow order. The gate
 /// and the North Star test read this one list.
-pub(crate) const GATE_STEPS: [&str; 11] = [
+pub(crate) const GATE_STEPS: [&str; 12] = [
     "quality",
     "complexity",
     "duplication",
     "coverage",
+    "mutants-plan",
     "mutants",
     "msrv",
     "features",

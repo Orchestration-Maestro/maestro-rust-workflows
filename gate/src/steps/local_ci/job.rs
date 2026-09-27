@@ -97,6 +97,12 @@ pub(super) const CHECKS: &[(&str, Local)] = &[
         "Licence, dependency-ban and source policy",
         Local::Gate("licenses"),
     ),
+    (
+        "Plan mutation shard routing",
+        Local::NotApplied(
+            "local CI always runs the full mutation suite inline; shard planning is remote-only",
+        ),
+    ),
     ("Mutation testing", Local::Gate("mutants")),
     (
         "Instruction counts of the declared benchmarks against the base",
@@ -140,6 +146,14 @@ pub(super) const OTHER_JOBS: &[(&str, &str)] = &[
     (
         "portability",
         "it builds and tests on GitHub's macOS and Windows runners",
+    ),
+    (
+        "mutations",
+        "only a GitHub run schedules the remote mutation matrix",
+    ),
+    (
+        "mutation-summary",
+        "only a GitHub run aggregates remote mutation shards",
     ),
     ("upload", "only a GitHub run uploads SARIF to code scanning"),
     ("coverage", "only a GitHub run uploads coverage to Codecov"),

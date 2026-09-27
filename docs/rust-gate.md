@@ -86,6 +86,21 @@ imports flowing one way only:
   `steps/registry.rs` holds the registry and `run` and `describe`, the two
   doors `main.rs` uses.
 
+### Mutation workflow steps
+
+`rust-gate mutants-plan` writes the full filtered listing and immutable run
+manifest only for opted-in automatic or fixed sharding; the serial default and
+disabled mode write routing outputs without invoking cargo-mutants. The manifest
+binds workers to the tested revision, first parent, project directory, compiler,
+tool version, run attempt, config and diff digests. `rust-gate mutants` keeps
+its existing inline path when `MUTATION_SHARD` is empty; a worker validates its
+zero-based `K/N` and the manifest before passing `--shard K/N
+--sharding round-robin` to cargo-mutants. `rust-gate mutants-aggregate` treats
+downloaded artifacts as data, validates receipts, assigned identities, raw
+outcomes and counters, and writes the merged canonical reports only after every
+planned worker is complete. Local CI skips planning and still runs the full
+mutation command unsharded.
+
 The compiler keeps the layers apart: a step is private to `gate/src/steps/`, so
 neither the checks nor the runner can reach it. ARC-004, declared in
 `maestro-quality.toml`, keeps the imports one way, and

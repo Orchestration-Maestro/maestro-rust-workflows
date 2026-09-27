@@ -370,7 +370,8 @@ _tables:
     done < <(jaq -r --from toml '.tools | keys[]' mise.toml)
     # The diagram quotes how many controls the scorecard reports; a test runs
     # the scorecard and holds this count to it.
-    controls="$(grep -oE '"(enforced|optional)"' gate/src/steps/quality_scorecard/step.rs | wc -l)"
+    controls="$(sed -n '/^fn controls()/,/^}/p; /^fn organization_controls()/,/^}/p' \
+      gate/src/steps/quality_scorecard/step.rs | grep -oE '"(enforced|optional)"' | wc -l)"
     sed -i -E "s/>[0-9]+ controls</>${controls} controls</" .github/assets/how-it-works.svg
     for document in README.md docs/*.md; do
       rendered="$(mktemp)"

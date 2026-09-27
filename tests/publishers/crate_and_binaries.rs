@@ -57,7 +57,7 @@ fn publication_defaults_and_required_dependencies() {
     let ci = workflow("ci");
     assert_eq!(
         ci["jobs"]["gate"]["needs"],
-        json!(["checks", "portability"])
+        json!(["checks", "portability", "mutations", "mutation-summary"])
     );
     assert!(
         ci["jobs"]["gate"]["if"]
@@ -124,6 +124,9 @@ fn publishers_forward_every_ci_input_except_the_compiler_override() {
     // rust-version stays out: a release builds with the committed pin.
     let ci = workflow("ci");
     let ci_inputs = ci["on"]["workflow_call"]["inputs"].as_object().unwrap();
+    for input in ["mutation-shards", "mutation-mutants-per-shard"] {
+        assert!(ci_inputs.contains_key(input), "ci.yml must expose {input}");
+    }
     for name in ["publish-binaries", "publish-crate"] {
         let data = workflow(name);
         let inputs = &data["on"]["workflow_call"]["inputs"];

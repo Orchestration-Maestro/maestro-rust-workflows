@@ -160,6 +160,11 @@ impl Cmd {
         failed(output.status)
     }
 
+    /// Run with both streams captured, retaining partial output and exit status.
+    pub(crate) fn capture_output(mut self) -> Result<Output, Failure> {
+        self.execute(Stdio::piped(), Stdio::piped())
+    }
+
     /// Run with stdout captured and returned, stderr on the log, like `$(...)`.
     pub(crate) fn capture(self) -> Result<String, Failure> {
         let bytes = self.capture_bytes()?;

@@ -148,6 +148,40 @@ pub(crate) fn coverage_threshold() -> Result<String, String> {
     Ok(coverage)
 }
 
+/// `mutation-shards`: one keeps today's serial run, zero selects automatic
+/// count-based sharding, and two through thirty-two request a fixed count.
+pub(crate) fn mutation_shards() -> Result<usize, String> {
+    whole_number("mutation-shards", &input("MUTATION_SHARDS")?, 0, 32)
+}
+
+/// `mutation-mutants-per-shard`: automatic mode's target, checked even when
+/// fixed-count or disabled mode means it is not used.
+pub(crate) fn mutation_mutants_per_shard() -> Result<usize, String> {
+    whole_number(
+        "mutation-mutants-per-shard",
+        &input("MUTATION_MUTANTS_PER_SHARD")?,
+        1,
+        1000,
+    )
+}
+
+/// A finite integral number inside the input's inclusive range.
+fn whole_number(name: &str, value: &str, minimum: u32, maximum: u32) -> Result<usize, String> {
+    let refusal = || format!("{name} must be a whole number between {minimum} and {maximum}");
+    let Ok(number) = value.parse::<f64>() else {
+        return Err(refusal());
+    };
+    if !number.is_finite()
+        || number.fract() != 0.0
+        || !(f64::from(minimum)..=f64::from(maximum)).contains(&number)
+    {
+        return Err(refusal());
+    }
+    format!("{number:.0}")
+        .parse::<usize>()
+        .map_err(|_| refusal())
+}
+
 /// `ARTIFACT_KEY`, `artifact-key` in `ci.yml`: one to forty safe characters,
 /// the caller's part of the artifact name.
 pub(crate) fn artifact_key() -> Result<String, String> {

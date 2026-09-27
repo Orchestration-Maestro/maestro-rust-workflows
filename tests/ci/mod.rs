@@ -13,6 +13,7 @@ mod input_validation;
 mod install_tools;
 mod local_ci_run;
 mod managed_files;
+mod mutation_shards;
 mod organization_lints;
 mod performance_budget;
 mod platform_portability;
