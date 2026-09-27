@@ -121,7 +121,7 @@ fn live_publication_requires_trusted_event_ref_and_configuration() {
 fn publishers_forward_every_ci_input_except_the_compiler_override() {
     // A publication reruns CI on the tag; a consumer that needs
     // unsafe-policy: allow or a lower coverage floor in CI needs it there too.
-    // rust-version stays out: a release builds with the committed pin.
+    // The compiler override and repository-only self-test stay out.
     let ci = workflow("ci");
     let ci_inputs = ci["on"]["workflow_call"]["inputs"].as_object().unwrap();
     for input in ["mutation-shards", "mutation-mutants-per-shard"] {
@@ -132,7 +132,7 @@ fn publishers_forward_every_ci_input_except_the_compiler_override() {
         let inputs = &data["on"]["workflow_call"]["inputs"];
         let with = &data["jobs"]["ci"]["with"];
         for (input, contract) in ci_inputs {
-            if input == "rust-version" {
+            if matches!(input.as_str(), "rust-version" | "internal-shard-selftest") {
                 assert!(inputs.get(input).is_none(), "{name}/{input}");
                 assert!(with.get(input).is_none(), "{name}/{input}");
                 continue;

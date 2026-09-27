@@ -1,6 +1,7 @@
 //! Decide whether the current mutation run stays inline or needs every shard.
 
 use super::scope::{self, Scope};
+use super::selftest;
 use crate::checks::digests::sha256_hex;
 use crate::checks::inputs::{mutation_mutants_per_shard, mutation_shards};
 use crate::runner::{Cmd, Failure, Job, Outcome, flag, input, optional, output, tee_line, write};
@@ -35,6 +36,7 @@ pub(super) fn run() -> Outcome {
         tee_line("Mutation plan: disabled", &report, false)?;
         return routing("disabled", Some(0), 0, &[]);
     }
+    selftest::prepare(&job)?;
     let requested = mutation_shards()?;
     if requested == 1 {
         tee_line(
@@ -322,7 +324,8 @@ pub(super) fn verify_worker(
         .arg(WORKER_IDENTITY_QUERY)
         .arg(&manifest)
         .capture();
-    identity.map_err(|_| "mutation worker identity or scope differs from its plan")?;
+    identity
+        .map_err(|_| "mutation worker identity or scope differs from its plan; Re-run all jobs")?;
     let expected = if index >= mutants {
         0
     } else {

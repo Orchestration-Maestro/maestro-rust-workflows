@@ -1,7 +1,6 @@
 //! Mutation input forwarding and deterministic shard selection tests.
 
-use super::common::{output, planning_fixture};
-use crate::harness::{Fixture, refused, succeeds, workflow};
+use crate::harness::{Fixture, output, planning_fixture, refused, succeeds, workflow};
 use serde_json::{Value, json};
 use std::fs;
 
@@ -83,6 +82,23 @@ fn automatic_counts_choose_only_nonempty_complete_shards() {
         assert_eq!(
             fs::read_to_string(fixture.root.join("reports/mutants-plan.txt"))
                 .unwrap_or_default()
+                .contains("ceiling reached"),
+            ceiling,
+            "M={count}"
+        );
+    }
+}
+
+#[test]
+fn automatic_shard_ceiling_is_reported_only_above_thirty_two() {
+    for (count, ceiling) in [(1599, false), (1600, false), (1601, true)] {
+        let fixture = planning_fixture(count, 0, 50);
+        succeeds(&fixture.run_body("rust-gate mutants-plan"));
+        assert_eq!(output(&fixture, "mutation-mode"), "sharded", "M={count}");
+        assert_eq!(output(&fixture, "mutation-shards"), "32", "M={count}");
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("reports/mutants-plan.txt"))
+                .unwrap()
                 .contains("ceiling reached"),
             ceiling,
             "M={count}"
@@ -195,91 +211,5 @@ fn inline_mutation_uses_only_a_verified_plan_scope() {
         }
         fixture.set("MUTATION_TEST", "true");
         refused(&fixture.run_body("rust-gate mutants"), message);
-    }
-}
-
-#[test]
-fn workers_reject_wrong_count_scope_shard_count_and_empty_assignments() {
-    fn worker() -> Fixture {
-        let mut fixture = planning_fixture(5, 2, 1);
-        succeeds(&fixture.run_body("rust-gate mutants-plan"));
-        fixture.set(
-            "MUTATION_PLAN",
-            &fixture
-                .root
-                .join("reports/mutation-plan.json")
-                .display()
-                .to_string(),
-        );
-        fixture.set(
-            "MUTATION_LIST",
-            &fixture
-                .root
-                .join("reports/mutants-list.json")
-                .display()
-                .to_string(),
-        );
-        fixture.set("MUTATION_SHARD", "0/2");
-        fixture
-    }
-
-    let count_mismatch = worker();
-    let manifest = count_mismatch.root.join("reports/mutation-plan.json");
-    let mut plan: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-    plan["mutant_count"] = json!(4);
-    fs::write(manifest, serde_json::to_vec(&plan).unwrap()).unwrap();
-    refused(
-        &count_mismatch.run_body("rust-gate mutants"),
-        "mutation plan count does not match its complete listing",
-    );
-
-    let mut shards_mismatch = worker();
-    shards_mismatch.set("MUTATION_SHARDS", "3");
-    refused(
-        &shards_mismatch.run_body("rust-gate mutants"),
-        "mutation worker shard count differs from its planned matrix",
-    );
-
-    let mut identity_mismatch = worker();
-    identity_mismatch.set("GITHUB_SHA", "cccccccccccccccccccccccccccccccccccccccc");
-    refused(
-        &identity_mismatch.run_body("rust-gate mutants"),
-        "mutation worker identity or scope differs from its plan",
-    );
-
-    let mut empty_shard = worker();
-    let manifest = empty_shard.root.join("reports/mutation-plan.json");
-    let mut plan: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-    plan["shard_count"] = json!(6);
-    fs::write(manifest, serde_json::to_vec(&plan).unwrap()).unwrap();
-    empty_shard.set("MUTATION_SHARDS", "6");
-    empty_shard.set("MUTATION_SHARD", "5/6");
-    refused(
-        &empty_shard.run_body("rust-gate mutants"),
-        "mutation plan assigns an empty shard",
-    );
-}
-
-#[test]
-fn shard_workers_require_both_plan_inputs() {
-    for name in ["MUTATION_PLAN", "MUTATION_LIST"] {
-        let mut fixture = planning_fixture(2, 2, 50);
-        succeeds(&fixture.run_body("rust-gate mutants-plan"));
-        fixture.set("MUTATION_SHARD", "0/2");
-        if name == "MUTATION_LIST" {
-            fixture.set(
-                "MUTATION_PLAN",
-                &fixture
-                    .root
-                    .join("reports/mutation-plan.json")
-                    .display()
-                    .to_string(),
-            );
-        }
-        fixture.set(name, "");
-        refused(
-            &fixture.run_body("rust-gate mutants"),
-            &format!("{name} is required for a mutation shard"),
-        );
     }
 }

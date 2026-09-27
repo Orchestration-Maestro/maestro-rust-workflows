@@ -21,6 +21,12 @@ const PLAN_IDENTITY: &str = concat!(
 /// Aggregate the evidence even on failure, so diagnostics remain available.
 pub(in super::super) fn run() -> Outcome {
     let job = Job::current()?;
+    fs::create_dir_all(&job.reports).map_err(|error| {
+        format!(
+            "cannot create report directory {}: {error}",
+            job.reports.display()
+        )
+    })?;
     let report = job.report("mutants.txt")?;
     tee_line("Mutation shard aggregation", &report, false)?;
     match aggregate(&job, &report) {

@@ -56,7 +56,7 @@ in place.
 │   │   └── manifest.json                                        # Current released version per package
 │   ├── workflows/                                               # Callable workflows and this repository own CI
 │   │   ├── attest-binaries.yml                                  # Isolated signing job; re-verifies before it signs
-│   │   ├── ci-internal.yml                                      # Repository quality, default and sharded consumer workflows, and both dry-run publishers
+│   │   ├── ci-internal.yml                                      # Repository quality, the consumer matrix and both dry-run publishers on every pull request
 │   │   ├── ci.yml                                               # The Rust CI a ruleset runs, uploads included, or a workflow calls
 │   │   ├── dependabot-auto-merge.yml                            # Queues Dependabot patch and minor updates to merge on the organization's bot token
 │   │   ├── docs-sync.yml                                        # On a pull request from this repository, the bot commits the tables just docs regenerated
@@ -247,6 +247,7 @@ in place.
 │   │   │   │   ├── mod.rs                                       # rust-gate's mutation planning, scoped execution and shard aggregation
 │   │   │   │   ├── plan.rs                                      # Decide whether the current mutation run stays inline or needs every shard
 │   │   │   │   ├── scope.rs                                     # The existing first-parent scope, named relative to the checkout and hashed
+│   │   │   │   ├── selftest.rs                                  # Prepare the repository-owned mutation-shard fixture before planning or execution
 │   │   │   │   └── step.rs                                      # rust-gate mutants: cargo-mutants over the checked source scope, failing on
 │   │   │   ├── quality_scorecard/                               # rust-gate scorecard: the step and the value it renders
 │   │   │   │   ├── mod.rs                                       # The step's door: its two modules and its declaration
@@ -308,13 +309,15 @@ in place.
 │   ├── ci/                                                      # ci.yml, one module per gate it runs: what each step accepts, refuses, builds and reports
 │   │   ├── mutation_shards/                                     # ci.yml: mutation selection, full shard matrices and fail-closed planning
 │   │   │   ├── aggregation_evidence.rs                          # Mutation evidence validation and aggregation tests
-│   │   │   ├── common.rs                                        # Shared test fixtures for mutation planning and evidence aggregation
+│   │   │   ├── aggregation_rejections.rs                        # Mutation aggregation refusal cases for incomplete or inconsistent evidence
 │   │   │   ├── inline_execution.rs                              # The serial mutation run preserves reports and cargo-mutants' exit status
 │   │   │   ├── mod.rs                                           # ci.yml: mutation selection, full shard matrices and fail-closed planning
 │   │   │   ├── pinned_mutants.rs                                # Real pinned cargo-mutants listing and two-worker execution tests
+│   │   │   ├── shard_execution.rs                               # Mutation worker plan validation and execution tests
 │   │   │   ├── shard_inputs.rs                                  # Mutation shard input validation before environment exports
 │   │   │   ├── shard_planning.rs                                # Mutation input forwarding and deterministic shard selection tests
-│   │   │   └── shard_workflow.rs                                # Workflow routing, required status and final scorecard contract tests
+│   │   │   ├── shard_workflow.rs                                # Workflow routing, required status and final scorecard contract tests
+│   │   │   └── workflow_contracts.rs                            # Static workflow wiring contracts for mutation planning and shards
 │   │   ├── api_compatibility.rs                                 # ci.yml: an undeclared API break fails a pull request; what has no API is not applicable
 │   │   ├── architecture_rules.rs                                # ci.yml: ARC-001 to ARC-007, each refused by name, and the exceptions maestro-quality.toml takes
 │   │   ├── central_uploads.rs                                   # ci.yml: SARIF and Codecov uploads from the ruleset's run, on a merge group to the default branch
@@ -325,6 +328,7 @@ in place.
 │   │   ├── feature_combinations.rs                              # ci.yml: real per-feature and combined compilation, plus replay coverage
 │   │   ├── input_validation.rs                                  # unsafe-audit.yml and fuzz.yml: every malformed input refused before a toolchain is touched
 │   │   ├── install_tools.rs                                     # rust-gate install-tools: what it refuses, honours, and ci.yml installs
+│   │   ├── internal_shard_selftest.rs                           # Repository-only synthetic mutation-shard input validation
 │   │   ├── local_ci_run.rs                                      # rust-gate ci --local: every ci.yml step run or said not applied, a branch as its pull request
 │   │   ├── managed_files.rs                                     # init, sync, sync --check and managed-files: written, refused by name, written back
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
@@ -355,6 +359,7 @@ in place.
 │   │   ├── fixture.rs                                           # One temporary checkout, one environment table, a step run against stand-ins, every command traced
 │   │   ├── gate_declarations.rs                                 # The gate built once per test process, and what rust-gate describe declares about its steps
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
+│   │   ├── mutation_shards.rs                                   # Shared test fixtures for mutation planning and evidence aggregation
 │   │   ├── repository.rs                                        # The repository root, the toolbelt, commands run to completion, temporary directories, stand-in executables, every test file
 │   │   └── workflow_yaml.rs                                     # Readers of workflow and action YAML: whole documents, one step's body, tool rows, jaq queries
 │   ├── nightly/                                                 # The nightly workflows, unsafe-audit.yml and fuzz.yml, outside the stable policy

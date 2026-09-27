@@ -6,8 +6,8 @@
 use crate::checks::checkout_paths::{canonical, committed_file, inside, project_directory};
 use crate::checks::digests::sha256_hex;
 use crate::checks::inputs::{
-    LicensePolicy, artifact_key, clippy_level, coverage_threshold, license_policy,
-    mutation_mutants_per_shard, mutation_shards, unsafe_policy,
+    LicensePolicy, artifact_key, clippy_level, coverage_threshold, internal_shard_selftest,
+    license_policy, mutation_mutants_per_shard, mutation_shards, unsafe_policy,
 };
 use crate::checks::quality_config::{FILE, read_config};
 use crate::checks::rust_versions::{channel_value, is_exact_stable, parse};
@@ -30,8 +30,10 @@ pub(crate) const STEPS: &[Step] = &[Step {
         "DIRECTORY",
         "GITHUB_RUN_ATTEMPT",
         "GITHUB_RUN_ID",
+        "GITHUB_REPOSITORY",
         "GITHUB_SHA",
         "GITHUB_WORKSPACE",
+        "INTERNAL_SHARD_SELFTEST",
         "LICENSE_POLICY",
         "MUTATION_MUTANTS_PER_SHARD",
         "MUTATION_SHARDS",
@@ -80,6 +82,17 @@ const SETTINGS: &[(&str, &str, &str)] = &[
 fn run() -> Outcome {
     if !flag("CALLED")? {
         return from_settings();
+    }
+    if internal_shard_selftest()?
+        && (input("DIRECTORY")? != "examples/workspace"
+            || input("MUTATION_TEST")? != "true"
+            || mutation_shards()? != 2)
+    {
+        return Err(concat!(
+            "internal-shard-selftest requires mutation-test=true, mutation-shards=2, and ",
+            "working-directory=examples/workspace"
+        )
+        .into());
     }
     let root = canonical(Path::new(&input("GITHUB_WORKSPACE")?))?;
     let project = project_directory()?;

@@ -1,58 +1,220 @@
 //! Real pinned cargo-mutants listing and two-worker execution tests.
 
-use super::common::{copy_tree, output};
-use crate::harness::{Fixture, succeeds};
+use crate::harness::{Fixture, copy_tree, output, root, succeeds, tool};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
 
+fn git(project: &Path, arguments: &[&str]) -> String {
+    let output = tool("git")
+        .args(arguments)
+        .current_dir(project)
+        .output()
+        .unwrap();
+    succeeds(&output);
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+fn commit(project: &Path, message: &str) {
+    git(project, &["add", "--all"]);
+    git(
+        project,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            message,
+        ],
+    );
+}
+
 #[test]
-fn real_pinned_listings_partition_round_robin_by_mutant_identity() {
+fn internal_shard_selftest_has_a_behavior_equivalent_two_shard_diff() {
     let mut fixture = Fixture::new();
+    let project = fixture.root.join("project");
+    copy_tree(&root().join("examples/workspace"), &project);
+    git(&project, &["init", "--quiet", "-b", "main"]);
+    commit(&project, "base");
+    let base_sha = git(&project, &["rev-parse", "HEAD"]);
+    fixture.set("PROJECT", &project.display().to_string());
+    fixture.set("GITHUB_WORKSPACE", &project.display().to_string());
     fixture.set("MUTATION_TEST", "true");
-    fixture.set("MUTATION_SHARDS", "0");
-    fixture.set("MUTATION_MUTANTS_PER_SHARD", "1");
+    fixture.set("INTERNAL_SHARD_SELFTEST", "true");
+    fixture.set("MUTATION_SHARDS", "2");
+    fixture.set("MUTATION_MUTANTS_PER_SHARD", "50");
     fixture.set("CARGO_MUTANTS_VERSION", "27.1.0");
     fixture.set("CARGO_BUILD_JOBS", "3");
-    let fixture_project = fixture.root.join("project");
+    fixture.set("GITHUB_BASE_REF", "main");
+    fixture.set("GITHUB_SHA", &base_sha);
+    succeeds(&fixture.run_body("rust-gate mutants-plan"));
+
+    let baseline = Command::new("cargo")
+        .args(["test", "--workspace", "--locked"])
+        .envs(&fixture.env)
+        .current_dir(&project)
+        .output()
+        .unwrap();
+    succeeds(&baseline);
+    assert_eq!(output(&fixture, "mutation-mode"), "sharded");
+    assert_eq!(output(&fixture, "mutation-shards"), "2");
+    assert!(output(&fixture, "mutation-count").parse::<usize>().unwrap() >= 2);
+    assert_eq!(
+        git(&project, &["diff", "--name-only", "HEAD^1", "HEAD"]),
+        "core/src/lib.rs"
+    );
+    assert!(
+        fs::read_to_string(fixture.root.join("mutants.diff"))
+            .unwrap()
+            .contains("core/src/lib.rs")
+    );
+
+    let mut worker = Fixture::new();
+    let worker_project = worker.root.join("project");
+    fs::remove_dir_all(&worker_project).unwrap();
+    let clone = tool("git")
+        .args([
+            "clone",
+            "--quiet",
+            project.to_str().unwrap(),
+            worker_project.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    succeeds(&clone);
+    git(
+        &worker_project,
+        &["checkout", "--quiet", "--detach", &base_sha],
+    );
+    worker.set("PROJECT", &worker_project.display().to_string());
+    worker.set("GITHUB_WORKSPACE", &worker_project.display().to_string());
+    worker.set("GITHUB_SHA", &base_sha);
+    worker.set("GITHUB_BASE_REF", "main");
+    worker.set("MUTATION_TEST", "true");
+    worker.set("INTERNAL_SHARD_SELFTEST", "true");
+    worker.set("MUTATION_SHARDS", "2");
+    worker.set("MUTATION_SHARD", "0/2");
+    worker.set("MUTATION_MUTANTS_PER_SHARD", "50");
+    worker.set("CARGO_MUTANTS_VERSION", "27.1.0");
+    worker.set("CARGO_BUILD_JOBS", "3");
+    let plan = worker.root.join("mutation-plan.json");
+    let listing = worker.root.join("mutants-list.json");
+    fs::copy(fixture.root.join("reports/mutation-plan.json"), &plan).unwrap();
+    fs::copy(fixture.root.join("reports/mutants-list.json"), &listing).unwrap();
+    worker.set("MUTATION_PLAN", &plan.display().to_string());
+    worker.set("MUTATION_LIST", &listing.display().to_string());
+    worker.stub(
+        "cargo",
+        r#"[[ "$1" == mutants ]] || exit 88
+out=""
+while [[ $# -gt 0 ]]; do
+  if [[ "$1" == --output ]]; then out=$2; shift 2; else shift; fi
+done
+[[ -n "$out" ]] || exit 89
+mkdir -p "$out/mutants.out"
+printf '{"caught":1,"missed":0,"timeout":0,"unviable":0}' > "$out/mutants.out/outcomes.json""#,
+    );
+    succeeds(&worker.run_body("rust-gate mutants"));
+    assert_eq!(
+        git(&worker_project, &["diff", "--name-only", "HEAD^1", "HEAD"]),
+        "core/src/lib.rs"
+    );
+}
+
+#[test]
+fn real_pinned_listings_partition_nested_push_diff_with_config_exclusions() {
+    let mut fixture = Fixture::new();
+    for (key, value) in [
+        ("MUTATION_TEST", "true"),
+        ("MUTATION_SHARDS", "0"),
+        ("MUTATION_MUTANTS_PER_SHARD", "1"),
+        ("CARGO_MUTANTS_VERSION", "27.1.0"),
+        ("CARGO_BUILD_JOBS", "3"),
+        ("GITHUB_BASE_REF", ""),
+    ] {
+        fixture.set(key, value);
+    }
+    let workspace = fixture.root.join("project");
+    let project = workspace.join("crates/service");
+    fs::create_dir_all(project.join("src")).unwrap();
+    fs::create_dir_all(project.join(".cargo")).unwrap();
     fs::write(
-        fixture_project.join("src/lib.rs"),
-        r"pub fn first(left: i32, right: i32) -> i32 { left + right }
-pub fn second(left: i32, right: i32) -> i32 { left * right }
-",
+        project.join("Cargo.toml"),
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n",
     )
     .unwrap();
-    let change = r"--- a/src/lib.rs
-+++ b/src/lib.rs
-@@ -0,0 +1,2 @@
-+pub fn first(left: i32, right: i32) -> i32 { left + right }
-+pub fn second(left: i32, right: i32) -> i32 { left * right }
-";
-    fs::write(fixture.root.join("changes.diff"), change).unwrap();
-    fixture.stub(
-        "git",
-        concat!(
-            r#"case "$1" in rev-parse) printf '%s\n' "#,
-            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;; diff) cat ",
-            r#""$RUNNER_TEMP/changes.diff" ;; esac"#
-        ),
+    fs::write(
+        project.join("Cargo.lock"),
+        "version = 4\n\n[[package]]\nname = \"fixture\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join(".cargo/mutants.toml"),
+        "exclude_globs = [\"src/excluded.rs\"]\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/lib.rs"),
+        "//! Nested fixture crate.\npub mod excluded;\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/excluded.rs"),
+        "pub fn excluded(left: i32, right: i32) -> i32 { left + right }\n",
+    )
+    .unwrap();
+    git(&workspace, &["init", "--quiet"]);
+    git(&workspace, &["config", "user.name", "Fixture"]);
+    git(
+        &workspace,
+        &["config", "user.email", "fixture@example.invalid"],
     );
-    let fixture_report = fixture.root.join("reports").display().to_string();
-    fixture.set("REPORTS", &fixture_report);
-    fixture.set("PROJECT", &fixture_project.display().to_string());
+    commit(&workspace, "base");
+
+    fs::write(
+        project.join("src/lib.rs"),
+        concat!(
+            "//! Nested fixture crate.\n",
+            "pub mod excluded;\n",
+            "pub fn first(left: i32, right: i32) -> i32 { left + right }\n",
+            "pub fn second(left: i32, right: i32) -> i32 { left - right }\n",
+            "pub fn third(left: i32, right: i32) -> i32 { left * right }\n",
+        ),
+    )
+    .unwrap();
+    fs::write(
+        project.join("src/excluded.rs"),
+        "pub fn excluded(left: i32, right: i32) -> i32 { left - right }\n",
+    )
+    .unwrap();
+    commit(&workspace, "change nested fixture sources");
+    fixture.set("GITHUB_WORKSPACE", &workspace.display().to_string());
+    fixture.set("PROJECT", &project.display().to_string());
+    fixture.set("GITHUB_SHA", &git(&workspace, &["rev-parse", "HEAD"]));
     succeeds(&fixture.run_body("rust-gate mutants-plan"));
+
     let listing: Value =
         serde_json::from_slice(&fs::read(fixture.root.join("reports/mutants-list.json")).unwrap())
             .unwrap();
     let mutants = listing.as_array().unwrap();
-    assert!(!mutants.is_empty());
+    assert!(mutants.len() > 1);
+    assert!(mutants.iter().all(|mutant| mutant["file"] == "src/lib.rs"));
+    let diff = fs::read_to_string(fixture.root.join("mutants.diff")).unwrap();
+    assert!(diff.contains("src/lib.rs") && diff.contains("src/excluded.rs"));
     let shards = output(&fixture, "mutation-shards")
         .parse::<usize>()
         .unwrap();
     assert!(shards > 1);
     assert!(fixture.root.join("reports/mutation-plan.json").is_file());
 
+    assert_shard_assignments(&fixture, &project, mutants, shards);
+}
+
+fn assert_shard_assignments(fixture: &Fixture, project: &Path, mutants: &[Value], shards: usize) {
     for index in 0..shards {
         let result = Command::new("cargo")
             .args([
@@ -71,7 +233,7 @@ pub fn second(left: i32, right: i32) -> i32 { left * right }
                 fixture.root.join("mutants.diff").to_str().unwrap(),
             ])
             .envs(&fixture.env)
-            .current_dir(&fixture_project)
+            .current_dir(project)
             .output()
             .unwrap();
         succeeds(&result);
@@ -121,10 +283,14 @@ fn real_sharded_worker() -> Fixture {
          }\n",
     )
     .unwrap();
-    fixture.stub(
-        "git",
-        "[[ \"$*\" == \"rev-parse --verify -q HEAD^1\" ]] && exit 1; exit 88",
+    git(&project, &["init", "--quiet"]);
+    git(&project, &["config", "user.name", "Fixture"]);
+    git(
+        &project,
+        &["config", "user.email", "fixture@example.invalid"],
     );
+    commit(&project, "root");
+    fixture.set("GITHUB_SHA", &git(&project, &["rev-parse", "HEAD"]));
     succeeds(&fixture.run_body("rust-gate mutants-plan"));
     assert_eq!(output(&fixture, "mutation-mode"), "sharded");
     assert_eq!(output(&fixture, "mutation-shards"), "2");

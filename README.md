@@ -277,7 +277,7 @@ Each is one input to switch off, documented in [docs/ci.md](docs/ci.md).
 
 | Gate | Input | What fails the run | Standard | Proof |
 | --- | --- | --- | --- | --- |
-| Mutation testing | `mutation-test: false` | A surviving or timed-out mutant in the change: a pull request mutates its diff, a push or tag its own commit; shard evidence must be complete | North Star, Quality | `mutation_testing_scopes_a_pull_request_to_its_diff`, `mutation_testing_scopes_a_push_to_its_own_commit`, `disabled_and_default_plans_never_invoke_cargo_mutants`, `automatic_counts_choose_only_nonempty_complete_shards`, `real_pinned_listings_partition_round_robin_by_mutant_identity`, `aggregation_merges_only_complete_identity_and_outcome_evidence`, `aggregation_refuses_missing_duplicate_foreign_or_partial_results`, `the_required_status_fails_unless_every_result_succeeded`, `example_gate_replays_ci_step_bodies_against_every_fixture` |
+| Mutation testing | `mutation-test: false` | A surviving or timed-out mutant in the change: a pull request mutates its diff, a push or tag its own commit; shard evidence must be complete | North Star, Quality | `mutation_testing_scopes_a_pull_request_to_its_diff`, `mutation_testing_scopes_a_push_to_its_own_commit`, `disabled_and_default_plans_never_invoke_cargo_mutants`, `automatic_counts_choose_only_nonempty_complete_shards`, `real_pinned_listings_partition_nested_push_diff_with_config_exclusions`, `internal_shard_selftest_has_a_behavior_equivalent_two_shard_diff`, `aggregation_merges_only_complete_identity_and_outcome_evidence`, `aggregation_refuses_missing_duplicate_foreign_or_partial_results`, `the_required_status_fails_unless_every_result_succeeded`, `example_gate_replays_ci_step_bodies_against_every_fixture` |
 | Unused dependencies | `unused-dependencies: false` | A declared dependency no source file uses | SCH-010 | `unused_dependencies_and_recorded_audits_fail_the_run_when_their_tool_does` |
 | `unsafe` ban | `unsafe-policy: allow` | An `unsafe` block in your crates; dependencies are unaffected | SST-001 | `clippy_denies_leftover_scaffolding_at_every_level` |
 | SARIF reports | `sarif-reports: false` | A Clippy or secret-scan SARIF report that is missing or empty; the organization's check shows the findings in code scanning | SST-003 | `sarif_reports_are_written_only_when_asked_and_never_empty`, `sarif_reports_upload_from_the_organizations_check_alone` |
@@ -303,12 +303,13 @@ Each is one input to switch off, documented in [docs/ci.md](docs/ci.md).
 
 <!-- end generated -->
 
-The default `mutation-shards: 1` keeps today's single inline mutation run,
-without discovery or extra jobs. To opt a ruleset run into distributing every
-mutant, set `mutation-shards = 0` in the base branch's root
-`maestro-quality.toml`; the default target is 50 mutants per shard, capped at
-32 shards. This is a calibration target, not a duration guarantee. A
-`workflow_call` caller must pass the same settings explicitly, and local CI
+The default `mutation-shards: 1` keeps today's single inline mutation run
+without discovery; shard-worker and summary jobs stay skipped. To opt a ruleset
+run into distributing every mutant, set `mutation-shards = 0` in the base
+branch's root `maestro-quality.toml`. The default target is 50 mutants per
+shard, capped at 32 shards. This is a calibration target, not a duration
+guarantee. A `workflow_call` caller must pass the same settings explicitly,
+and local CI
 still runs the full mutation scope inline. See [mutation testing](docs/ci.md#mutation-testing).
 
 ```toml
@@ -326,7 +327,7 @@ not to drop mutants only to fit a time limit.
     with:
       working-directory: crates/service
       clippy-level: pedantic
-``
+```
 
 Advisories stay with `cargo audit` and the RustSec database; licences, banned
 dependencies and package sources are a separate gate. A short MSRV declaration

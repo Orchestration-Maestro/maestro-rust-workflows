@@ -52,9 +52,15 @@ pub(super) fn safe_component(value: &str) -> bool {
     !value.is_empty()
         && value != "."
         && value != ".."
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        && !value.contains('/')
+        && !value.contains('\\')
+        && !value.contains('\0')
+        && value.chars().all(|character| {
+            character.is_alphanumeric() || matches!(character, '.' | '_' | '-' | '+' | '@')
+        })
+        && Path::new(value)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }
 
 /// Whether any raw outcome was available, controlling passed versus not-run scorecard state.
@@ -207,17 +213,16 @@ pub(super) fn preserve_unverified(job: &Job, report: &Path) -> Outcome {
         && let Some(checks) = optional_root("MUTATION_PLAN_DIR")
         && let Ok(checks) = safe_directory(job, Path::new(&checks))
         && validate_tree(&checks).is_ok()
+        && let Err(error) = copy_tree(&checks, &job.reports)
     {
-        if let Err(error) = copy_tree(&checks, &job.reports) {
-            tee_line(
-                &format!(
-                    "Could not retain checks reports: {}",
-                    error.message.as_deref().unwrap_or("copy failed")
-                ),
-                report,
-                true,
-            )?;
-        }
+        tee_line(
+            &format!(
+                "Could not retain checks reports: {}",
+                error.message.as_deref().unwrap_or("copy failed")
+            ),
+            report,
+            true,
+        )?;
     }
     let destination = job.reports.join("mutation-shards");
     if fs::read_dir(&destination).is_ok_and(|mut entries| entries.next().is_some()) {
@@ -275,6 +280,13 @@ mod tests {
     #[test]
     fn paths_reject_escape_and_unsafe_names() {
         assert!(safe_component("rust-abc-0-of-2"));
+        assert!(safe_component("module+@Módulo.rs_line_3_col_2.log"));
+        assert!(!safe_component("."));
+        assert!(!safe_component(".."));
+        assert!(!safe_component("a/b"));
+        assert!(!safe_component("a\\b"));
+        assert!(!safe_component("nul\0name"));
+        assert!(!safe_component("unsafe name"));
         assert!(!safe_component("../shard"));
         assert!(safe_relative("log/baseline.log"));
         assert!(!safe_relative("../../outside"));

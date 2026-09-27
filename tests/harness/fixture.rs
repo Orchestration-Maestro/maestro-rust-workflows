@@ -88,6 +88,7 @@ impl Fixture {
             ("COVERAGE", "90"),
             ("LICENSE_POLICY", "auto"),
             ("MUTATION_TEST", "false"),
+            ("INTERNAL_SHARD_SELFTEST", "false"),
             ("MUTATION_SHARDS", "1"),
             ("MUTATION_MUTANTS_PER_SHARD", "50"),
             ("API_COMPATIBILITY", "false"),

@@ -103,19 +103,13 @@ pub(super) fn read_shard(
     validate_receipt(&receipt, plan, index, expected)?;
     super::super::plan::validate_listing(&discovered)?;
     let discovered_rows = identity_rows(&discovered)?;
-    same_rows(
-        &planned_rows,
-        &discovered_rows,
-        "shard discovery differs from round-robin assignment",
-    )?;
+    same_rows(&planned_rows, &discovered_rows)
+        .map_err(|_| Failure::from("shard discovery differs from round-robin assignment"))?;
     validate_outcomes(&outcomes)?;
     validate_result_paths(&source.join("mutants/mutants.out"), &outcomes)?;
     let result_rows = outcome_rows(&outcomes)?;
-    same_rows(
-        &discovered_rows,
-        &result_rows,
-        "completed outcomes omit or duplicate a planned mutant",
-    )?;
+    same_rows(&discovered_rows, &result_rows)
+        .map_err(|_| Failure::from("completed outcomes omit or duplicate a planned mutant"))?;
     let counts = read_counts(&outcomes)?;
     if counts.total != expected || counts.total != result_rows.len() {
         return Err("outcome counters do not cover every assigned mutant".into());
@@ -341,14 +335,19 @@ fn outcome_rows(path: &Path) -> Result<Vec<String>, Failure> {
     Ok(rows.lines().map(str::to_owned).collect())
 }
 
+/// A mutant identity set differs or contains duplicates.
+#[derive(Debug)]
+struct RowMismatch;
+
 /// Compare identities as sets and reject duplicate records in either document.
-fn same_rows(planned: &[String], observed: &[String], message: &str) -> Outcome {
+fn same_rows(planned: &[String], observed: &[String]) -> Result<(), RowMismatch> {
     let expected: BTreeSet<&str> = planned.iter().map(String::as_str).collect();
     let actual: BTreeSet<&str> = observed.iter().map(String::as_str).collect();
     if expected.len() != planned.len() || actual.len() != observed.len() || expected != actual {
-        return Err(message.into());
+        Err(RowMismatch)
+    } else {
+        Ok(())
     }
-    Ok(())
 }
 
 /// Full listing entries assigned to one shard by the pinned round-robin rule.

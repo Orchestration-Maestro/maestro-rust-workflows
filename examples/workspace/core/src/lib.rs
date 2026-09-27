@@ -12,7 +12,7 @@
 /// ```
 #[must_use]
 pub const fn checked_sum(left: u32, right: u32) -> Option<u32> {
-    left.checked_add(right)
+    right.checked_add(left)
 }
 
 #[cfg(test)]

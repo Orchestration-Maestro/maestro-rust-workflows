@@ -1,6 +1,6 @@
-//! Workflow routing, required status and final scorecard contract tests.
+//! Required mutation status and final scorecard contract tests.
 
-use crate::harness::{Fixture, SCORECARD_OUTCOMES, describe_text, refused, succeeds, workflow};
+use crate::harness::{Fixture, SCORECARD_OUTCOMES, describe_text, refused, succeeds};
 use serde_json::{Value, json};
 use std::fs;
 
@@ -13,131 +13,6 @@ fn scorecard_fixture(scorecard: &Value, state: &str) -> Fixture {
     )
     .unwrap();
     fixture
-}
-
-fn assert_required_gate_wiring(ci: &Value) {
-    let jobs = &ci["jobs"];
-    for name in ["checks", "portability", "mutations", "mutation-summary"] {
-        assert!(
-            jobs["gate"]["needs"]
-                .as_array()
-                .unwrap()
-                .contains(&json!(name))
-        );
-    }
-    for output in ["artifact-id", "artifact-name", "revision"] {
-        assert_eq!(
-            jobs["gate"]["outputs"][output],
-            format!(
-                concat!(
-                    "${{{{ steps.required.outcome == 'success' && ",
-                    "needs.checks.outputs.{} || '' }}}}"
-                ),
-                output
-            )
-        );
-    }
-}
-
-fn assert_matrix_and_summary_contract(ci: &Value) {
-    let jobs = &ci["jobs"];
-    let workers = &jobs["mutations"];
-    assert_eq!(workers["strategy"]["fail-fast"], false);
-    assert_eq!(workers["strategy"]["max-parallel"], 8);
-    assert!(
-        workers["if"]
-            .as_str()
-            .unwrap()
-            .contains("mutation-mode == 'sharded'")
-    );
-    assert_eq!(
-        workers["strategy"]["matrix"]["shard"],
-        "${{ fromJSON(needs.checks.outputs.mutation-matrix) }}"
-    );
-    let worker_steps = workers["steps"].as_array().unwrap();
-    let execution = worker_steps
-        .iter()
-        .find(|step| step["id"] == "mutation-worker-run")
-        .unwrap();
-    assert_eq!(execution["timeout-minutes"], 35);
-    assert_eq!(execution["run"], "rust-gate mutants");
-    assert!(worker_steps.iter().any(|step| {
-        step["uses"]
-            .as_str()
-            .unwrap_or_default()
-            .starts_with("actions/upload-artifact@")
-            && step["if"] == "${{ always() }}"
-    }));
-    let summary = &jobs["mutation-summary"];
-    for name in ["checks", "mutations"] {
-        assert!(summary["needs"].as_array().unwrap().contains(&json!(name)));
-    }
-    assert!(summary["if"].as_str().unwrap().contains("always()"));
-    let summary_steps = summary["steps"].as_array().unwrap();
-    let aggregate = summary_steps
-        .iter()
-        .position(|step| step["run"] == "rust-gate mutants-aggregate")
-        .unwrap();
-    let finalize = summary_steps
-        .iter()
-        .position(|step| step["run"] == "rust-gate scorecard-finalize")
-        .unwrap();
-    assert!(aggregate < finalize);
-    for name in ["upload", "coverage"] {
-        assert!(
-            jobs[name]["needs"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("mutation-summary"))
-        );
-        assert!(
-            jobs[name]["if"]
-                .as_str()
-                .unwrap()
-                .contains("needs.mutation-summary.result == 'success'")
-        );
-    }
-}
-
-fn assert_planner_and_consumer_contract(ci: &Value) {
-    let mutation_steps = ci["jobs"]["checks"]["steps"].as_array().unwrap();
-    let planner = mutation_steps
-        .iter()
-        .position(|step| step["id"] == "mutants-plan")
-        .unwrap();
-    let runner = mutation_steps
-        .iter()
-        .position(|step| step["id"] == "mutants")
-        .unwrap();
-    assert!(planner < runner);
-    assert_eq!(mutation_steps[planner]["run"], "rust-gate mutants-plan");
-
-    let internal = workflow("ci-internal");
-    let sharded = &internal["jobs"]["sharded-consumer"];
-    assert_eq!(sharded["uses"], "./.github/workflows/ci.yml");
-    assert_eq!(sharded["with"]["working-directory"], "examples/workspace");
-    assert_eq!(sharded["with"]["mutation-shards"], 2);
-    assert_eq!(sharded["with"]["artifact-key"], "sharded-consumer");
-    assert!(
-        internal["jobs"]["required"]["needs"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("sharded-consumer"))
-    );
-    let required_steps = internal["jobs"]["required"]["steps"].as_array().unwrap();
-    assert!(
-        required_steps
-            .iter()
-            .any(|step| step["env"]["SHARDED_RESULT"] == "${{ needs.sharded-consumer.result }}")
-    );
-}
-
-#[test]
-fn shard_workflow_contract_names_matrix_and_summary_jobs() {
-    let ci = workflow("ci");
-    assert_required_gate_wiring(&ci);
-    assert_matrix_and_summary_contract(&ci);
-    assert_planner_and_consumer_contract(&ci);
 }
 
 #[test]
@@ -287,7 +162,7 @@ fn mutation_steps_and_required_status_refuse_missing_evidence() {
     fixture.set("MUTATION_ATTEMPT", "2");
     refused(
         &fixture.run("ci", "required"),
-        "Mutation plan belongs to a different run attempt",
+        "Mutation plan belongs to a different run attempt; Re-run all jobs",
     );
     fixture.set("MUTATION_MODE", "inline");
     fixture.set("MUTATION_COUNT", "");
@@ -297,6 +172,97 @@ fn mutation_steps_and_required_status_refuse_missing_evidence() {
         &fixture.run("ci", "required"),
         "Mutation jobs were not intentionally skipped",
     );
+}
+
+#[test]
+fn internal_shard_selftest_requires_exactly_two_shards() {
+    let mut fixture = Fixture::new();
+    for (name, value) in [
+        ("RESULT", "success"),
+        ("PORTABILITY", "skipped"),
+        ("RUNNERS", ""),
+        ("MUTATION_TEST", "true"),
+        ("MUTATION_MODE", "sharded"),
+        ("MUTATION_COUNT", "2"),
+        ("MUTATIONS_RESULT", "success"),
+        ("MUTATION_SUMMARY_RESULT", "success"),
+        ("MUTATION_SHARDS", "2"),
+        ("MUTATION_MATRIX", "[0,1]"),
+        ("MUTATION_ATTEMPT", "1"),
+        ("GITHUB_RUN_ATTEMPT", "1"),
+        ("INTERNAL_SHARD_SELFTEST", "true"),
+    ] {
+        fixture.set(name, value);
+    }
+    succeeds(&fixture.run("ci", "required"));
+    for (mode, count, shards, matrix) in [("empty", "0", "0", "[]"), ("sharded", "2", "1", "[0]")] {
+        fixture.set("MUTATION_MODE", mode);
+        fixture.set("MUTATION_COUNT", count);
+        fixture.set("MUTATION_SHARDS", shards);
+        fixture.set("MUTATION_MATRIX", matrix);
+        refused(
+            &fixture.run("ci", "required"),
+            "internal shard self-test did not run exactly two shards",
+        );
+    }
+}
+
+#[test]
+fn one_unplanned_mutation_job_must_still_be_skipped() {
+    for (mutations, summary) in [("success", "skipped"), ("skipped", "success")] {
+        let mut fixture = Fixture::new();
+        for (name, value) in [
+            ("RESULT", "success"),
+            ("RUNNERS", ""),
+            ("MUTATION_TEST", "true"),
+            ("MUTATION_MODE", "inline"),
+            ("MUTATION_COUNT", ""),
+            ("MUTATIONS_RESULT", mutations),
+            ("MUTATION_SUMMARY_RESULT", summary),
+            ("MUTATION_SHARDS", "1"),
+            ("MUTATION_MATRIX", "[]"),
+        ] {
+            fixture.set(name, value);
+        }
+        refused(
+            &fixture.run("ci", "required"),
+            "Mutation jobs were not intentionally skipped",
+        );
+    }
+}
+
+#[test]
+fn required_status_rejects_shard_counts_outside_two_to_thirty_two() {
+    for shards in [1, 33] {
+        let mut fixture = Fixture::new();
+        let matrix = format!(
+            "[{}]",
+            (0..shards)
+                .map(|index| index.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        for (name, value) in [
+            ("RESULT", "success".to_owned()),
+            ("PORTABILITY", "skipped".to_owned()),
+            ("RUNNERS", String::new()),
+            ("MUTATION_TEST", "true".to_owned()),
+            ("MUTATION_MODE", "sharded".to_owned()),
+            ("MUTATION_COUNT", shards.to_string()),
+            ("MUTATIONS_RESULT", "success".to_owned()),
+            ("MUTATION_SUMMARY_RESULT", "success".to_owned()),
+            ("MUTATION_SHARDS", shards.to_string()),
+            ("MUTATION_MATRIX", matrix),
+            ("MUTATION_ATTEMPT", "1".to_owned()),
+            ("GITHUB_RUN_ATTEMPT", "1".to_owned()),
+        ] {
+            fixture.set(name, &value);
+        }
+        refused(
+            &fixture.run("ci", "required"),
+            "Mutation shard plan is missing or invalid",
+        );
+    }
 }
 
 #[test]

@@ -112,6 +112,7 @@ jobs:
       working-directory: examples/workspace
       artifact-key: sharded-consumer
       mutation-shards: 2
+      internal-shard-selftest: true
   binary-dry-run:
     name: Binary publisher dry run
     strategy:

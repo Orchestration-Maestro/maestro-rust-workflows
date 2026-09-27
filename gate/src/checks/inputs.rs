@@ -10,7 +10,7 @@
 //! and `docs/steps.md` would then name inputs the step never uses.
 
 use super::simple_names::simple;
-use crate::runner::input;
+use crate::runner::{input, optional};
 
 /// `license-policy`, kept for the repositories that set it: the
 /// organization's licence policy applies whatever it says.
@@ -152,6 +152,22 @@ pub(crate) fn coverage_threshold() -> Result<String, String> {
 /// count-based sharding, and two through thirty-two request a fixed count.
 pub(crate) fn mutation_shards() -> Result<usize, String> {
     whole_number("mutation-shards", &input("MUTATION_SHARDS")?, 0, 32)
+}
+
+/// An internal-only input for this repository's hosted sharding contract test.
+pub(crate) fn internal_shard_selftest() -> Result<bool, String> {
+    match optional("INTERNAL_SHARD_SELFTEST")?.as_str() {
+        "" | "false" => Ok(false),
+        "true" if input("GITHUB_REPOSITORY")? == "Orchestration-Maestro/maestro-rust-workflows" => {
+            Ok(true)
+        }
+        "true" => Err(concat!(
+            "internal-shard-selftest is only allowed in ",
+            "Orchestration-Maestro/maestro-rust-workflows"
+        )
+        .into()),
+        _ => Err("internal-shard-selftest must be true or false".into()),
+    }
 }
 
 /// `mutation-mutants-per-shard`: automatic mode's target, checked even when

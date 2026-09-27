@@ -56,6 +56,13 @@ name: Rust CI
           knob from `1` to `1000`, not a time guarantee
         type: number
         default: 50
+      internal-shard-selftest:
+        description: >-
+          Internal to this repository's own CI only: create a behavior-equivalent
+          workspace diff and require its two-shard mutation matrix. Refused for
+          every other repository.
+        type: boolean
+        default: false
       sarif-reports:
         description: >-
           Also emit Clippy and secret findings as SARIF, which the
@@ -188,6 +195,7 @@ jobs:
           MUTATION_TEST: ${{ inputs.mutation-test }}
           MUTATION_SHARDS: ${{ inputs.mutation-shards }}
           MUTATION_MUTANTS_PER_SHARD: ${{ inputs.mutation-mutants-per-shard }}
+          INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           API_COMPATIBILITY: ${{ inputs.api-compatibility }}
           PLATFORMS: ${{ inputs.platforms }}
           SARIF_REPORTS: ${{ inputs.sarif-reports }}
@@ -326,10 +334,14 @@ jobs:
         run: rust-gate licenses
       - name: Plan mutation shard routing
         id: mutants-plan
+        env:
+          INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
         run: rust-gate mutants-plan
       - name: Mutation testing
         id: mutants
         if: ${{ steps.mutants-plan.outputs.mutation-mode != 'sharded' }}
+        env:
+          INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
         run: rust-gate mutants
       - name: Instruction counts of the declared benchmarks against the base
         id: performance
@@ -425,7 +437,7 @@ jobs:
     if: ${{ needs.checks.result == 'success' && needs.checks.outputs.mutation-mode == 'sharded' }}
     strategy:
       fail-fast: false
-      max-parallel: 8
+      max-parallel: 16
       matrix:
         shard: ${{ fromJSON(needs.checks.outputs.mutation-matrix) }}
     runs-on: ubuntu-24.04
@@ -434,7 +446,6 @@ jobs:
       contents: read
     env:
       CARGO_MUTANTS_VERSION: '27.1.0'
-      RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
     defaults:
       run:
         shell: bash
@@ -477,6 +488,7 @@ jobs:
           MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
           MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-shards }}
           MUTATION_MUTANTS_PER_SHARD: ${{ needs.checks.outputs.mutation-mutants-per-shard }}
+          INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           API_COMPATIBILITY: 'false'
           PLATFORMS: ''
           SARIF_REPORTS: 'false'
@@ -521,6 +533,7 @@ jobs:
           MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
           MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-shards }}
           MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.checks.outputs.mutation-shards }}
+          INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           MUTATION_PLAN: ${{ runner.temp }}/mutation-plan/mutation-plan.json
           MUTATION_LIST: ${{ runner.temp }}/mutation-plan/mutants-list.json
         run: rust-gate mutants
@@ -545,13 +558,11 @@ jobs:
     if: ${{ always() && needs.checks.outputs.mutation-mode == 'sharded' && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: read
+    permissions: {}
     env:
       CARGO_MUTANTS_VERSION: '27.1.0'
       PROJECT: ${{ github.workspace }}
       REPORTS: ${{ github.workspace }}/rust-reports
-      RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
     steps:
       - name: Checkout the gate at this workflow's commit
         id: mutation-summary-gate-checkout
@@ -568,11 +579,6 @@ jobs:
         run: rust-gate install-tools
         env:
           TOOLS: jaq 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-unknown-linux-gnu 5922c7b67d9bd6841d6676d1f954410c6bf04b47203dcb661c4f052dfef7f454
-      - name: Prepare the final reports directory
-        id: mutation-summary-reports
-        run: |
-          set -euo pipefail
-          mkdir -p "$REPORTS"
       - name: Download checks reports and the complete plan
         id: mutation-summary-checks-download
         if: ${{ always() }}
@@ -594,6 +600,7 @@ jobs:
         env:
           CHECKS_RESULT: ${{ needs.checks.result }}
           MUTATIONS_RESULT: ${{ needs.mutations.result }}
+          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
           MUTATION_MODE: ${{ needs.checks.outputs.mutation-mode }}
           MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-shards }}
           MUTATION_MATRIX: ${{ needs.checks.outputs.mutation-matrix }}
@@ -606,7 +613,6 @@ jobs:
         if: ${{ always() }}
         env:
           MUTATION_STATE: ${{ steps.mutation-aggregate.outputs.mutation-state }}
-          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
         run: rust-gate scorecard-finalize
       - name: Upload the canonical reports bundle
         id: mutation-summary-upload
@@ -795,6 +801,7 @@ jobs:
           MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-shards }}
           MUTATION_MATRIX: ${{ needs.checks.outputs.mutation-matrix }}
           MUTATION_ATTEMPT: ${{ needs.checks.outputs.mutation-attempt }}
+          INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           MUTATIONS_RESULT: ${{ needs.mutations.result }}
           MUTATION_SUMMARY_RESULT: ${{ needs.mutation-summary.result }}
         run: rust-gate required

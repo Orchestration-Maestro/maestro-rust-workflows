@@ -11,6 +11,7 @@ pub(crate) const STEPS: &[Step] = &[Step {
     summary: "Require every check",
     inputs: &[
         "GITHUB_RUN_ATTEMPT",
+        "INTERNAL_SHARD_SELFTEST",
         "MUTATION_ATTEMPT",
         "MUTATION_COUNT",
         "MUTATION_MATRIX",
@@ -54,6 +55,9 @@ fn run() -> Outcome {
     summary(&format!(
         "Mutation plan: {mode} (mutants={count}, shards={shards}, matrix={matrix})\n"
     ))?;
+    if optional("INTERNAL_SHARD_SELFTEST")? == "true" && (mode != "sharded" || shards != "2") {
+        return Err("internal shard self-test did not run exactly two shards".into());
+    }
 
     match (enabled, mode.as_str()) {
         (false, "disabled") | (true, "empty")
@@ -82,7 +86,9 @@ fn run() -> Outcome {
                 return Err("Mutation shard plan is missing or invalid".into());
             }
             if input("MUTATION_ATTEMPT")? != input("GITHUB_RUN_ATTEMPT")? {
-                return Err("Mutation plan belongs to a different run attempt".into());
+                return Err(
+                    "Mutation plan belongs to a different run attempt; Re-run all jobs".into(),
+                );
             }
             if mutations != "success" || aggregate != "success" {
                 return Err("Mutation shards failed or were incomplete".into());

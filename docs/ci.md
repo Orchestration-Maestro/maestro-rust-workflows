@@ -94,6 +94,7 @@ committed `deny.toml` applies the same way to every pull request. See [runner se
 | `mutation-test` | boolean | `true` | Run cargo-mutants and fail on surviving mutants; a pull request mutates its diff, a push or tag its own commit |
 | `mutation-shards` | number | `1` | `1` keeps one inline run without discovery, `0` selects all mutants automatically, and `2` through `32` request a fixed shard count |
 | `mutation-mutants-per-shard` | number | `50` | Automatic mode target mutants per shard, an adjustable calibration knob from `1` to `1000`, not a time guarantee |
+| `internal-shard-selftest` | boolean | `false` | Internal to this repository's own CI only: create a behavior-equivalent workspace diff and require its two-shard mutation matrix. Refused for every other repository. |
 | `sarif-reports` | boolean | `true` | Also emit Clippy and secret findings as SARIF, which the organization's check uploads to code scanning |
 | `clippy-level` | string | `default` | `pedantic` or `nursery` also deny those Clippy groups |
 | `dependency-audit` | boolean | `true` | Require a recorded cargo-vet audit for every dependency, the organization's and five public audit sets imported (VET-001) |
@@ -173,10 +174,11 @@ Organization rulesets start `ci.yml` on pull requests and merge groups, never
 on a push, so the default branch's baselines come from the merge queue. A
 `merge-queue` ruleset on each repository sends every merge of the default
 branch through a merge group, squashed; GitHub accepts its `merge_queue` rule
-in a repository ruleset only, never in an organization's. GitHub moves the
-branch to the group's commit only once every required check passed on it, so
-the merge group's run tests the exact commit that lands. On a merge group both jobs file that run's
-results on the default branch, the SARIF with `ref` set to
+in a repository ruleset only, never in an organization's. The ruleset builds up
+to five merge groups concurrently (`max_entries_to_build: 5`). GitHub moves the
+branch to a group's commit only once every required check passed on it, so the
+merge group's run tests the exact commit that lands. On a merge group both jobs
+file that run's results on the default branch, the SARIF with `ref` set to
 `refs/heads/<default branch>` and `sha` to the group's commit, the Codecov
 reports with that branch and commit. Code scanning then compares each pull
 request with the analysis of the commit it branched from, and Codecov's project
@@ -916,9 +918,17 @@ Every pinned Rust tool is installed from a checksum-verified prebuilt release
 rather than built with `cargo install`. Compiling them from source cost each
 caller minutes of runner time on every job, multiplied by the compiler matrix.
 Optional tools download only when their gate is selected. On every action
-invocation, `rust-gate` compiles from this repository at the workflow's commit with its
-own pinned compiler in a fresh directory. Neither its executable nor its Cargo
-build fingerprints are restored from a previous job.
+invocation, `rust-gate` compiles from this repository at the workflow's commit
+with its own pinned compiler in a fresh directory. Neither its executable nor
+its Cargo build fingerprints are restored from a previous job.
+
+Opt-in mutation sharding adds one worker job per shard (up to 32) and a summary
+job; the matrix runs at most 16 workers concurrently, so five merge groups may
+request up to 80 worker slots while the runner plan provides 60. Each worker
+builds the gate, downloads the plan and checks reports, runs a baseline and its
+mutants, then uploads evidence. Treat these as runner-minute costs, not a wall-
+clock promise; the hosted pilot measures actual setup, execution and summary
+latency.
 
 The workflow restores a Cargo registry and build cache keyed on the resolved
 `Cargo.lock` and the selected compiler, so a lockfile or toolchain change can
@@ -961,7 +971,9 @@ or failed from complete evidence.
 | `*.spdx.json` | One SPDX 2.3 document per workspace member | always |
 | `scorecard.json`, `scorecard.md`, `scorecard.svg` | Per-control states; only passed controls count as active | always |
 | `mutants.json`, `mutants.txt` | Inline outcomes or the complete aggregate, including failures; text-only no-work skips never invent outcomes | `mutation-test` |
-| `mutants-plan.txt`, `mutants-plan.log`, `mutants-list.json`, `mutation-plan.json`, `mutants.diff` | Full filtered listing, planner log and immutable run identity; diff only when a first parent exists | `mutation-shards` is not `1` |
+| `mutants-plan.txt` | Mutation-plan mode or the explicit disabled/no-work decision | always |
+| `mutants-plan.log`, `mutants-list.json`, `mutation-plan.json` | Full filtered listing, planner log and immutable run identity | `mutation-shards` is not `1` and `mutation-test` is true |
+| `mutants.diff` | First-parent source diff used to constrain mutation scope | Mutation execution with a first parent |
 | `mutation-shards` | Each raw shard output, outcome, log, diff and `mutants-shard.json` identity receipt, retained separately | sharded mode |
 | `clippy.sarif`, `secrets.sarif` | The same findings as SARIF | `sarif-reports` |
 | `unused-dependencies.txt` | Declared dependencies no source file references | `unused-dependencies` |
@@ -1011,7 +1023,8 @@ make each default-branch commit exactly one pull request's change. Only a
 repository's first commit, which has no parent, mutates the whole workspace.
 
 `mutation-shards: 1` is the compatible default: it runs the existing inline
-mutation command once, with no discovery listing and no extra jobs. Opt-in
+mutation command once, with no discovery listing; the worker and summary jobs
+stay skipped. Opt-in
 `mutation-shards: 0` lists all filtered mutants in the `checks` job and chooses
 `N = min(32, max(1, ceil(M / target)))`, where `M` is the full count and
 `target` is `mutation-mutants-per-shard` (default 50). A fixed value `2` through
@@ -1025,7 +1038,7 @@ The target is a calibration knob, not a time estimate. Every shard runs its
 own baseline and complete assigned mutant set with pinned cargo-mutants 27.1.0
 using round-robin identity assignment. The `mutations` matrix runs only after
 all of `checks` succeeds, so it cannot start before the main checks finish; at
-most eight workers run together. Each worker has a 45-minute job limit and a
+most 16 workers run together. Each worker has a 45-minute job limit and a
 35-minute mutation-command limit. The `mutation-summary` job runs after the
 matrix even on a failed or skipped worker, keeps raw shard directories separate,
 and cross-checks each receipt, discovery list, completed outcome and counter

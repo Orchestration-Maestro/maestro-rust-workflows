@@ -11,6 +11,7 @@ mod duplication_report;
 mod feature_combinations;
 mod input_validation;
 mod install_tools;
+mod internal_shard_selftest;
 mod local_ci_run;
 mod managed_files;
 mod mutation_shards;

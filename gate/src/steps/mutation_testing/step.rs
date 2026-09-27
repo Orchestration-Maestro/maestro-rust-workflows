@@ -1,7 +1,7 @@
 //! `rust-gate mutants`: cargo-mutants over the checked source scope, failing on
 //! every survivor, timeout, baseline failure or incomplete shard execution.
 
-use super::{aggregate, plan, scope};
+use super::{aggregate, plan, scope, selftest};
 use crate::runner::{
     Cmd, Failure, Job, Outcome, Step, flag, non_empty, optional, output, tee_line,
 };
@@ -21,6 +21,7 @@ pub(crate) const STEPS: &[Step] = &[
             "GITHUB_RUN_ID",
             "GITHUB_SHA",
             "GITHUB_WORKSPACE",
+            "INTERNAL_SHARD_SELFTEST",
             "MUTATION_MUTANTS_PER_SHARD",
             "MUTATION_SHARDS",
             "MUTATION_TEST",
@@ -47,6 +48,7 @@ pub(crate) const STEPS: &[Step] = &[
             "GITHUB_RUN_ID",
             "GITHUB_SHA",
             "GITHUB_WORKSPACE",
+            "INTERNAL_SHARD_SELFTEST",
             "MUTATION_LIST",
             "MUTATION_PLAN",
             "MUTATION_SHARD",
@@ -96,6 +98,7 @@ fn run() -> Outcome {
         tee_line("SKIPPED: mutation-test=false", &report, false)?;
         return output("applied", "false");
     }
+    selftest::prepare(&job)?;
     let shard_value = optional("MUTATION_SHARD")?;
     let shard = if shard_value.is_empty() {
         None
@@ -103,7 +106,7 @@ fn run() -> Outcome {
         Some(plan::parse_shard(&shard_value)?)
     };
     let base = optional("GITHUB_BASE_REF")?;
-    let scope = if let Some((index, count)) = shard {
+    let (scope, expected_mutants) = if let Some((index, count)) = shard {
         let source_scope = scope::prepare(&job, &base)?;
         let manifest = required_plan_path("MUTATION_PLAN")?;
         let listing = required_plan_path("MUTATION_LIST")?;
@@ -121,9 +124,9 @@ fn run() -> Outcome {
         )?;
         output("shard", &format!("{index}/{count}"))?;
         output("planned-mutants", &expected.to_string())?;
-        source_scope
+        (source_scope, Some(expected))
     } else {
-        plan::planned_scope(&job, &base)?
+        (plan::planned_scope(&job, &base)?, None)
     };
     if !base.is_empty() && scope.parent.is_some() {
         tee_line(&format!("scope: changes against {base}"), &report, true)?;
@@ -161,7 +164,7 @@ fn run() -> Outcome {
     };
     verdict?;
     saved?;
-    report_outcomes(&job, &outcomes, scope.change.as_deref())
+    report_outcomes(&job, &outcomes, scope.change.as_deref(), expected_mutants)
 }
 
 /// Resolve a worker's plan input without accepting a missing path.
@@ -178,7 +181,12 @@ fn required_path(name: &str, value: &str) -> Result<PathBuf, Failure> {
 }
 
 /// Interpret only successful tool runs, after raw outcomes were preserved.
-fn report_outcomes(job: &Job, outcomes: &Path, change: Option<&str>) -> Outcome {
+fn report_outcomes(
+    job: &Job,
+    outcomes: &Path,
+    change: Option<&str>,
+    expected_mutants: Option<usize>,
+) -> Outcome {
     let report = job.report("mutants.txt")?;
     if !outcomes.exists() {
         let log = fs::read_to_string(&report)
@@ -195,6 +203,11 @@ fn report_outcomes(job: &Job, outcomes: &Path, change: Option<&str>) -> Outcome 
                             | "INFO No mutants to filter"
                     ))
         }) {
+            if expected_mutants.is_some_and(|expected| expected > 0) {
+                return Err(
+                    "cargo-mutants reported no work for a shard with planned mutants".into(),
+                );
+            }
             let message = format!(
                 "SKIPPED: no mutants apply to {}",
                 change.unwrap_or("this workspace")

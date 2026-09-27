@@ -3,6 +3,7 @@
 mod aggregate;
 mod plan;
 mod scope;
+mod selftest;
 mod step;
 
 pub(super) use step::STEPS;

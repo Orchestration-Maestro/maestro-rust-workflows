@@ -1,6 +1,6 @@
 //! Shared test fixtures for mutation planning and evidence aggregation.
 
-use crate::harness::{Fixture, succeeds};
+use super::fixture::{Fixture, succeeds};
 use serde_json::{Value, json};
 use std::fs;
 use std::iter;
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 /// A listing with `count` distinct pinned-tool mutant records and a changed
 /// Rust diff, run against the real `mutants-plan` executable boundary.
-pub(super) fn planning_fixture(count: usize, shards: usize, target: usize) -> Fixture {
+pub(crate) fn planning_fixture(count: usize, shards: usize, target: usize) -> Fixture {
     let mut fixture = Fixture::new();
     fixture.set("MUTATION_TEST", "true");
     fixture.set("MUTATION_SHARDS", &shards.to_string());
@@ -51,7 +51,7 @@ cat "$RUNNER_TEMP/listing.json""#,
 }
 
 /// Read one small routing output written by the planning step.
-pub(super) fn output(fixture: &Fixture, name: &str) -> String {
+pub(crate) fn output(fixture: &Fixture, name: &str) -> String {
     fs::read_to_string(fixture.root.join("output"))
         .unwrap_or_default()
         .lines()
@@ -60,7 +60,7 @@ pub(super) fn output(fixture: &Fixture, name: &str) -> String {
         .to_owned()
 }
 
-pub(super) fn copy_tree(source: &Path, destination: &Path) {
+pub(crate) fn copy_tree(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).unwrap();
     for entry in fs::read_dir(source).unwrap() {
         let entry = entry.unwrap();
@@ -74,7 +74,7 @@ pub(super) fn copy_tree(source: &Path, destination: &Path) {
     }
 }
 
-pub(super) fn shard_outcomes(fixture: &Fixture, index: usize) -> PathBuf {
+pub(crate) fn shard_outcomes(fixture: &Fixture, index: usize) -> PathBuf {
     Path::new(&fixture.env["MUTATION_ARTIFACTS"]).join(format!(
         "fixture-mutants-{index}-of-2/mutants/mutants.out/outcomes.json"
     ))
@@ -159,7 +159,7 @@ fn write_fixture_shard(fixture: &mut Fixture, listing: &[Value], artifacts: &Pat
     }
 }
 
-pub(super) fn aggregation_fixture(complete: bool) -> Fixture {
+pub(crate) fn aggregation_fixture(complete: bool) -> Fixture {
     let mut fixture = planning_fixture(5, 2, 1);
     succeeds(&fixture.run_body("rust-gate mutants-plan"));
     let listing: Value =
