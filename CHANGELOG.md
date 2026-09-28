@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.4.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.4.0...v4.4.1) (2026-09-28)
+
+
+### Bug Fixes
+
+* bound mutation shard runtime ([#86](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/86)) ([39fbe9e](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/39fbe9e3cb667103acd32bb747b553614f989978))
+
 ## [4.4.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.3.1...v4.4.0) (2026-09-27)
 
 
