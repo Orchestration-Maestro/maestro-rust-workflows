@@ -158,12 +158,13 @@ proofs = [
 [[gate]]
 name = "Dependency policy"
 kind = "always"
-fails = "A violation of DEP-001, the organization's policy the gate renders at run time: a duplicate version not excused in `maestro-quality.toml`, a wildcard, a source other than crates.io, a yanked or unmaintained crate, or a licence outside the reviewed list and `LICENSE_ALLOWLIST`; a committed `deny.toml`. No repository opts out: `license-policy: off` is refused"
+fails = "A violation of DEP-001, the organization's policy the gate renders at run time: a duplicate version not excused in `maestro-quality.toml`, a wildcard, a source other than crates.io and the organization's git repositories `maestro-quality.toml` allows, a yanked or unmaintained crate, or a licence outside the reviewed list and `LICENSE_ALLOWLIST`; a committed `deny.toml`. No repository opts out: `license-policy: off` is refused"
 standard = "SCH-010, DEP-001"
 proofs = [
   "ci_validates_the_licence_and_unsafe_policies_before_any_work",
   "the_organization_allowlist_adds_licences_and_a_committed_policy_is_refused",
   "the_organization_dependency_policy_applies_to_every_repository",
+  "a_dependency_policy_exception_allows_only_the_organization_git_repositories",
 ]
 
 [[gate]]

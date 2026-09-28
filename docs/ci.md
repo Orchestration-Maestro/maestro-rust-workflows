@@ -407,7 +407,11 @@ caller's, `[ci] platforms = "macos windows linux-arm"`, where
 crates.io alone, no yanked or unmaintained crate, and the reviewed licences; a
 duplicate the ecosystem forces is a DEP-001 exception whose `path` names the
 crate and version, `windows-sys@0.52`, rendered as one of cargo-deny's skips
-with its reason. The files every
+with its reason. A git dependency the organization patched, pinned by commit in
+`Cargo.lock`, is a DEP-001 exception whose `path` is the https URL of the
+organization's repository, `https://github.com/Orchestration-Maestro/lbug`,
+rendered into cargo-deny's `allow-git`; a source outside
+`https://github.com/Orchestration-Maestro/` is refused. The files every
 repository holds as they are here are maestro-rust-workflows' own, read in when the
 gate is built: `.editorconfig`, `.gitattributes` and `rust-toolchain.toml`. In
 maestro-rust-workflows itself neither `managed-files` nor `sync --check` compares
