@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.5.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.4.1...v4.5.0) (2026-09-28)
+
+
+### Features
+
+* allow the organization's git repositories in DEP-001 ([#88](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/88)) ([da63bc5](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/da63bc53f4337dd82beb7f146976afab42c9a1b1))
+
 ## [4.4.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.4.0...v4.4.1) (2026-09-28)
 
 
