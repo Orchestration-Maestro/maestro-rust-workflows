@@ -151,7 +151,7 @@ pub(crate) fn coverage_threshold() -> Result<String, String> {
 /// `mutation-shards`: one keeps today's serial run, zero selects automatic
 /// count-based sharding, and two through thirty-two request a fixed count.
 pub(crate) fn mutation_shards() -> Result<usize, String> {
-    whole_number("mutation-shards", &input("MUTATION_SHARDS")?, 0, 32)
+    whole_number("mutation-shards", &input("MUTATION_SHARDS")?, 0, 64)
 }
 
 /// An internal-only input for this repository's hosted sharding contract test.

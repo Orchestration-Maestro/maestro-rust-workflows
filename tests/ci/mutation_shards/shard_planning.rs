@@ -62,13 +62,15 @@ fn automatic_counts_choose_only_nonempty_complete_shards() {
         (51, 50, "sharded", "2", "[0,1]", false),
         (100, 50, "sharded", "2", "[0,1]", false),
         (
-            1601,
+            3500,
             50,
             "sharded",
-            "32",
+            "64",
             concat!(
-                "[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,",
-                "19,20,21,22,23,24,25,26,27,28,29,30,31]"
+                "[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,",
+                "20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,",
+                "40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,",
+                "60,61,62,63]"
             ),
             true,
         ),
@@ -90,12 +92,12 @@ fn automatic_counts_choose_only_nonempty_complete_shards() {
 }
 
 #[test]
-fn automatic_shard_ceiling_is_reported_only_above_thirty_two() {
-    for (count, ceiling) in [(1599, false), (1600, false), (1601, true)] {
+fn automatic_shard_ceiling_is_reported_only_above_sixty_four() {
+    for (count, ceiling) in [(3199, false), (3200, false), (3201, true)] {
         let fixture = planning_fixture(count, 0, 50);
         succeeds(&fixture.run_body("rust-gate mutants-plan"));
         assert_eq!(output(&fixture, "mutation-mode"), "sharded", "M={count}");
-        assert_eq!(output(&fixture, "mutation-shards"), "32", "M={count}");
+        assert_eq!(output(&fixture, "mutation-shards"), "64", "M={count}");
         assert_eq!(
             fs::read_to_string(fixture.root.join("reports/mutants-plan.txt"))
                 .unwrap()
@@ -112,7 +114,7 @@ fn fixed_counts_reduce_to_the_number_of_available_mutants() {
         (2, 2, "sharded", "[0,1]"),
         (5, 5, "sharded", "[0,1,2,3,4]"),
         (8, 5, "sharded", "[0,1,2,3,4]"),
-        (32, 5, "sharded", "[0,1,2,3,4]"),
+        (64, 5, "sharded", "[0,1,2,3,4]"),
     ] {
         let fixture = planning_fixture(5, requested, 1);
         succeeds(&fixture.run_body("rust-gate mutants-plan"));

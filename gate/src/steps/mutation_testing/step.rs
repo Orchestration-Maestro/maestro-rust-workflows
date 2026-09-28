@@ -56,7 +56,7 @@ pub(crate) const STEPS: &[Step] = &[
             "MUTATION_TEST",
             "RUSTUP_TOOLCHAIN",
         ],
-        tools: &["cargo mutants", "git", "jaq"],
+        tools: &["cargo mutants", "git", "jaq", "timeout"],
         reports: &[
             "mutants.json",
             "mutants.txt",
@@ -137,8 +137,15 @@ fn run() -> Outcome {
     }
 
     let output_dir = job.temp.join("mutants");
-    let mut command =
-        Cmd::new("cargo mutants --no-shuffle --cargo-arg=--locked --colors=never --level=info");
+    let command_line = if shard.is_some() {
+        concat!(
+            "timeout --kill-after=1m 30m ",
+            "cargo mutants --no-shuffle --cargo-arg=--locked --colors=never --level=info"
+        )
+    } else {
+        "cargo mutants --no-shuffle --cargo-arg=--locked --colors=never --level=info"
+    };
+    let mut command = Cmd::new(command_line);
     if let Some(diff) = &scope.diff {
         let diff = diff.to_string_lossy().into_owned();
         command = command.args(["--in-diff", &diff]);

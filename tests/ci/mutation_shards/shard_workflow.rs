@@ -232,8 +232,8 @@ fn one_unplanned_mutation_job_must_still_be_skipped() {
 }
 
 #[test]
-fn required_status_rejects_shard_counts_outside_two_to_thirty_two() {
-    for shards in [1, 33] {
+fn required_status_rejects_shard_counts_outside_two_to_sixty_four() {
+    for shards in [1, 65] {
         let mut fixture = Fixture::new();
         let matrix = format!(
             "[{}]",

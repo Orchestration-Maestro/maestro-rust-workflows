@@ -47,7 +47,7 @@ name: Rust CI
       mutation-shards:
         description: >-
           `1` keeps one inline run without discovery, `0` selects all mutants
-          automatically, and `2` through `32` request a fixed shard count
+          automatically, and `2` through `64` request a fixed shard count
         type: number
         default: 1
       mutation-mutants-per-shard:
@@ -437,7 +437,7 @@ jobs:
     if: ${{ needs.checks.result == 'success' && needs.checks.outputs.mutation-mode == 'sharded' }}
     strategy:
       fail-fast: false
-      max-parallel: 16
+      max-parallel: 32
       matrix:
         shard: ${{ fromJSON(needs.checks.outputs.mutation-matrix) }}
     runs-on: ubuntu-24.04
