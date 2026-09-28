@@ -307,8 +307,9 @@ The default `mutation-shards: 1` keeps today's single inline mutation run
 without discovery; shard-worker and summary jobs stay skipped. To opt a ruleset
 run into distributing every mutant, set `mutation-shards = 0` in the base
 branch's root `maestro-quality.toml`. The default target is 50 mutants per
-shard, capped at 32 shards. This is a calibration target, not a duration
-guarantee. A `workflow_call` caller must pass the same settings explicitly,
+shard, capped at 64 shards. Workers run at most 8 at a time and their mutation
+commands stop after 30 minutes to preserve partial evidence before the step
+limit. This is a calibration target, not a duration guarantee. A `workflow_call` caller must pass the same settings explicitly,
 and local CI
 still runs the full mutation scope inline. See [mutation testing](docs/ci.md#mutation-testing).
 

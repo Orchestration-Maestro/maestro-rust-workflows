@@ -92,7 +92,7 @@ committed `deny.toml` applies the same way to every pull request. See [runner se
 | `artifact-key` | string | `ci` | Invocation identity, 1 to 40 alphanumeric/underscore/hyphen characters, starting alphanumeric |
 | `license-policy` | string | `auto` | Kept for the repositories that set it: `auto` and `enforce` both apply the organization's licence and source policy; `off` is refused, since no repository opts out |
 | `mutation-test` | boolean | `true` | Run cargo-mutants and fail on surviving mutants; a pull request mutates its diff, a push or tag its own commit |
-| `mutation-shards` | number | `1` | `1` keeps one inline run without discovery, `0` selects all mutants automatically, and `2` through `32` request a fixed shard count |
+| `mutation-shards` | number | `1` | `1` keeps one inline run without discovery, `0` selects all mutants automatically, and `2` through `64` request a fixed shard count |
 | `mutation-mutants-per-shard` | number | `50` | Automatic mode target mutants per shard, an adjustable calibration knob from `1` to `1000`, not a time guarantee |
 | `internal-shard-selftest` | boolean | `false` | Internal to this repository's own CI only: create a behavior-equivalent workspace diff and require its two-shard mutation matrix. Refused for every other repository. |
 | `sarif-reports` | boolean | `true` | Also emit Clippy and secret findings as SARIF, which the organization's check uploads to code scanning |
@@ -922,13 +922,24 @@ invocation, `rust-gate` compiles from this repository at the workflow's commit
 with its own pinned compiler in a fresh directory. Neither its executable nor
 its Cargo build fingerprints are restored from a previous job.
 
-Opt-in mutation sharding adds one worker job per shard (up to 32) and a summary
-job; the matrix runs at most 16 workers concurrently, so five merge groups may
-request up to 80 worker slots while the runner plan provides 60. Each worker
+Opt-in mutation sharding adds one worker job per shard (up to 64) and a summary
+job; the matrix runs at most 8 workers concurrently, so five merge groups may
+request up to 40 worker slots while the runner plan provides 60. Each mutation
+command is interrupted after 30 minutes, leaving four minutes before its
+35-minute step limit for evidence upload; the 45-minute job limit also leaves
+setup and upload time. Each worker
 builds the gate, downloads the plan and checks reports, runs a baseline and its
 mutants, then uploads evidence. Treat these as runner-minute costs, not a wall-
 clock promise; the hosted pilot measures actual setup, execution and summary
 latency.
+
+For a 3,500-mutant diff at the 50-mutant target, automatic planning creates 64
+shards averaging about 55 mutants. Based on the v4.4.0 observation that 100
+mutants took 32.5-35.8 minutes, a linear estimate is about 18-20 minutes of
+mutation work per shard. At 8 workers, 8 waves plus up to 5 minutes of setup
+per wave and the summary gives an expected wall time of about 3 hours 25
+minutes. This is an estimate, not hosted timing evidence. Eight workers per run also
+keeps five concurrent merge groups to 40 of the organization's 60 runner slots.
 
 The workflow restores a Cargo registry and build cache keyed on the resolved
 `Cargo.lock` and the selected compiler, so a lockfile or toolchain change can
@@ -1026,21 +1037,25 @@ repository's first commit, which has no parent, mutates the whole workspace.
 mutation command once, with no discovery listing; the worker and summary jobs
 stay skipped. Opt-in
 `mutation-shards: 0` lists all filtered mutants in the `checks` job and chooses
-`N = min(32, max(1, ceil(M / target)))`, where `M` is the full count and
+`N = min(64, max(1, ceil(M / target)))`, where `M` is the full count and
 `target` is `mutation-mutants-per-shard` (default 50). A fixed value `2` through
-`32` selects `min(requested, M)` shards. No mode samples or discards mutants;
+`64` selects `min(requested, M)` shards. No mode samples or discards mutants;
 when `N = 1`, execution stays inline. With `M = 0`, no workers are scheduled
 and the inline step records its established no-work message without inventing
-outcomes. Reaching the 32-shard ceiling is reported; the target is then
+outcomes. Reaching the 64-shard ceiling is reported; the target is then
 exceeded, not guaranteed.
 
 The target is a calibration knob, not a time estimate. Every shard runs its
 own baseline and complete assigned mutant set with pinned cargo-mutants 27.1.0
 using round-robin identity assignment. The `mutations` matrix runs only after
 all of `checks` succeeds, so it cannot start before the main checks finish; at
-most 16 workers run together. Each worker has a 45-minute job limit and a
-35-minute mutation-command limit. The `mutation-summary` job runs after the
-matrix even on a failed or skipped worker, keeps raw shard directories separate,
+most 8 workers run together. Each worker has a 45-minute job limit, a
+35-minute mutation-step limit and a 30-minute command timeout. GNU `timeout`
+sends `SIGTERM` at that deadline and allows one minute for cargo-mutants to
+write partial outcomes before it sends `SIGKILL`. The always-run artifact upload retains the raw `caught.txt`, `missed.txt` and
+`timeout.txt` lists; aggregation identifies incomplete shard indices, and
+incomplete evidence fails `Required Rust CI`. The `mutation-summary` job runs after the matrix even on a failed or
+skipped worker, keeps raw shard directories separate,
 and cross-checks each receipt, discovery list, completed outcome and counter
 against the complete plan. A missing artifact, incomplete result, failed
 baseline, survivor, timeout, foreign identity or invalid path blocks

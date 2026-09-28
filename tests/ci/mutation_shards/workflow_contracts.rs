@@ -43,7 +43,7 @@ fn assert_matrix_and_summary_contract(ci: &Value) {
 
 fn assert_worker_matrix_contract(workers: &Value) {
     assert_eq!(workers["strategy"]["fail-fast"], false);
-    assert_eq!(workers["strategy"]["max-parallel"], 16);
+    assert_eq!(workers["strategy"]["max-parallel"], 8);
     assert!(
         workers["if"]
             .as_str()

@@ -42,7 +42,7 @@ name: Publish Rust crate
       mutation-shards:
         description: >-
           Forwarded unchanged to the CI run; `1` keeps one inline run, `0`
-          selects automatically, and `2` through `32` request a fixed count
+          selects automatically, and `2` through `64` request a fixed count
         type: number
         default: 1
       mutation-mutants-per-shard:

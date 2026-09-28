@@ -89,8 +89,8 @@ fn read_plan(job: &Job, report: &Path) -> Result<Plan, Failure> {
     let shards = input("MUTATION_SHARDS")?
         .parse::<usize>()
         .map_err(|_| "MUTATION_SHARDS is not an integer")?;
-    if !(2..=32).contains(&shards) {
-        return Err("sharded aggregation requires 2 through 32 planned shards".into());
+    if !(2..=64).contains(&shards) {
+        return Err("sharded aggregation requires 2 through 64 planned shards".into());
     }
     validate_plan(&manifest, mutants, shards)?;
     let matrix = format!(

@@ -12,7 +12,8 @@
 ### Changed
 
 * Keep the default mutation verdicts while documenting the added `mutants-plan.txt` and first-parent `mutants.diff` evidence; fail closed when Git cannot resolve the mutation scope instead of widening it to the whole workspace.
-* Run up to 16 mutation workers per CI group, with plans capped at 32 shards; five concurrent merge groups may request 80 worker slots against the existing 60-runner capacity.
+* Run up to 8 mutation workers per CI group, with plans capped at 64 shards; five concurrent merge groups may request 40 worker slots against the existing 60-runner capacity.
+* Stop each mutation worker after 30 minutes, preserve its partial outcomes, and fail aggregation with the incomplete shard indices.
 
 ## [4.3.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.3.0...v4.3.1) (2026-09-26)
 

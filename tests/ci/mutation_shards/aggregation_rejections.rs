@@ -71,7 +71,9 @@ fn aggregation_refuses_missing_duplicate_foreign_or_partial_results() {
         &result,
         "one or more expected mutation shards are missing or incomplete",
     );
-    assert!(String::from_utf8_lossy(&result.stdout).contains("missing mutation evidence"));
+    let output = String::from_utf8_lossy(&result.stdout);
+    assert!(output.contains("missing mutation evidence"));
+    assert!(output.contains("Incomplete shard indices: 1"));
 }
 
 #[test]
@@ -119,7 +121,7 @@ fn aggregate_refuses_invalid_plan_metadata_before_accepting_shards() {
         (
             "MUTATION_SHARDS",
             "1",
-            "sharded aggregation requires 2 through 32 planned shards",
+            "sharded aggregation requires 2 through 64 planned shards",
         ),
         (
             "MUTATION_MODE",

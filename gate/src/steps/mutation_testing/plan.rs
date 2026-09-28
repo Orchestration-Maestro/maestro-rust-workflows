@@ -158,7 +158,7 @@ fn selection(
     }
     let (shards, ceiling) = if requested == 0 {
         let desired = mutants.div_ceil(target);
-        (desired.min(32), desired > 32)
+        (desired.min(64), desired > 64)
     } else {
         (requested.min(mutants), false)
     };
@@ -219,7 +219,7 @@ fn write_manifest(
 fn plan_report(path: &Path, mode: &str, mutants: usize, shards: usize, ceiling: bool) -> Outcome {
     let mut text = format!("Mutation plan: {mode}; {mutants} mutants; {shards} shard(s)");
     if ceiling {
-        text.push_str("; automatic 32-shard ceiling reached, target exceeded");
+        text.push_str("; automatic 64-shard ceiling reached, target exceeded");
     }
     tee_line(&text, path, false)
 }
@@ -392,7 +392,7 @@ fn safe_plan_file(job: &Job, path: &Path) -> Result<PathBuf, Failure> {
 
 /// Parse only a zero-based shard index/count the complete matrix can contain.
 pub(super) fn parse_shard(value: &str) -> Result<(usize, usize), Failure> {
-    let refusal = || "MUTATION_SHARD must be a zero-based K/N with 2 <= N <= 32 and K < N";
+    let refusal = || "MUTATION_SHARD must be a zero-based K/N with 2 <= N <= 64 and K < N";
     let Some((index, count)) = value.split_once('/') else {
         return Err(refusal().into());
     };
@@ -402,7 +402,7 @@ pub(super) fn parse_shard(value: &str) -> Result<(usize, usize), Failure> {
     let (Ok(index), Ok(count)) = (index.parse::<usize>(), count.parse::<usize>()) else {
         return Err(refusal().into());
     };
-    if !(2..=32).contains(&count) || index >= count {
+    if !(2..=64).contains(&count) || index >= count {
         return Err(refusal().into());
     }
     Ok((index, count))
@@ -455,11 +455,11 @@ mod tests {
     fn selection_and_worker_numbers_are_complete_and_bounded() {
         assert_eq!(selection(0, 0, 50), ("empty", 0, vec![], false));
         assert_eq!(selection(51, 0, 50), ("sharded", 2, vec![0, 1], false));
-        assert_eq!(parse_shard("31/32").unwrap(), (31, 32));
-        for value in ["", "2/2", "0/33", "0/x"] {
+        assert_eq!(parse_shard("63/64").unwrap(), (63, 64));
+        for value in ["", "2/2", "0/65", "0/x"] {
             assert_eq!(
                 parse_shard(value).unwrap_err().message.as_deref(),
-                Some("MUTATION_SHARD must be a zero-based K/N with 2 <= N <= 32 and K < N")
+                Some("MUTATION_SHARD must be a zero-based K/N with 2 <= N <= 64 and K < N")
             );
         }
     }
