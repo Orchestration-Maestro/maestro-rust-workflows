@@ -123,6 +123,62 @@ fn the_organization_allowlist_adds_licences_and_a_committed_policy_is_refused() 
 }
 
 #[test]
+fn a_dependency_policy_exception_allows_only_the_organization_git_repositories() {
+    // A DEP-001 exception whose path is an https URL under the organization
+    // allows that git repository as a source; any other source is refused
+    // before cargo-deny runs.
+    let record = r#"[[ "$1" == deny ]] || exit 0"#;
+    let mut allowed = Fixture::new();
+    allowed.set("DENY_CONFIG", "");
+    allowed.stub("cargo", record);
+    fs::write(
+        allowed.root.join("maestro-quality.toml"),
+        "[[exception]]\nrule = \"DEP-001\"\n\
+         path = \"https://github.com/Orchestration-Maestro/lbug\"\n\
+         reason = \"the organization's patched fork\"\n",
+    )
+    .unwrap();
+    succeeds(&allowed.run("ci", "licenses"));
+    let config = fs::read_to_string(allowed.root.join("organization-deny.toml")).unwrap();
+    assert!(
+        config.contains(
+            "unknown-git = \"deny\"\n\
+             allow-registry = [\"https://github.com/rust-lang/crates.io-index\"]\n\
+             allow-git = [\n  \"https://github.com/Orchestration-Maestro/lbug\",\n]\n\n[bans]\n"
+        ),
+        "{config}"
+    );
+    assert!(!config.contains("skip = ["), "{config}");
+
+    for source in [
+        "https://github.com/someone-else/lbug",
+        "http://github.com/Orchestration-Maestro/lbug",
+        "ssh://git@github.com/Orchestration-Maestro/lbug",
+        "https://github.com/Orchestration-Maestro/",
+        "https://github.com/Orchestration-Maestro/lbug/../../x",
+    ] {
+        let mut outside = Fixture::new();
+        outside.set("DENY_CONFIG", "");
+        outside.stub("cargo", record);
+        fs::write(
+            outside.root.join("maestro-quality.toml"),
+            format!(
+                "[[exception]]\nrule = \"DEP-001\"\npath = \"{source}\"\nreason = \"a fork\"\n"
+            ),
+        )
+        .unwrap();
+        refused(
+            &outside.run("ci", "licenses"),
+            &format!(
+                "maestro-quality.toml: the DEP-001 exception {source} is not a repository of the \
+                 organization; DEP-001 allows only https://github.com/Orchestration-Maestro/<name>"
+            ),
+        );
+        assert!(outside.calls().is_empty(), "{source}");
+    }
+}
+
+#[test]
 fn ci_configures_direct_crates_io_without_writing_credentials() {
     let mut fixture = Fixture::new();
     fixture.set("CARGO_REGISTRY_TOKEN", "synthetic-unused-token");
