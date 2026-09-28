@@ -133,6 +133,11 @@ fn workers_preserve_cargo_mutants_exit_statuses_and_outcomes() {
         );
         let result = fixture.run_body("rust-gate mutants");
         assert_eq!(result.status.code(), Some(code));
+        assert!(
+            fixture
+                .trace()
+                .contains("timeout --kill-after=1m 30m cargo mutants")
+        );
         assert!(fixture.root.join("reports/mutants.json").is_file());
         assert!(
             fixture

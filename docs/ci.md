@@ -923,23 +923,25 @@ with its own pinned compiler in a fresh directory. Neither its executable nor
 its Cargo build fingerprints are restored from a previous job.
 
 Opt-in mutation sharding adds one worker job per shard (up to 64) and a summary
-job; the matrix runs at most 8 workers concurrently, so five merge groups may
-request up to 40 worker slots while the runner plan provides 60. Each mutation
-command is interrupted after 30 minutes, leaving four minutes before its
+job; the matrix runs at most 32 workers concurrently, so five merge groups may
+request up to 160 worker slots while the runner plan provides 60. Excess jobs
+queue at GitHub; small plans use fewer than 32 workers. Remote Linux shard
+commands are interrupted after 30 minutes, leaving four minutes before the
 35-minute step limit for evidence upload; the 45-minute job limit also leaves
-setup and upload time. Each worker
-builds the gate, downloads the plan and checks reports, runs a baseline and its
-mutants, then uploads evidence. Treat these as runner-minute costs, not a wall-
+setup and upload time. Local and unsharded runs invoke cargo-mutants directly,
+without a platform-specific timeout command. Each worker builds the gate,
+downloads the plan and checks reports, runs a baseline and its mutants, then
+uploads evidence. Treat these as runner-minute costs, not a wall-
 clock promise; the hosted pilot measures actual setup, execution and summary
 latency.
 
 For a 3,500-mutant diff at the 50-mutant target, automatic planning creates 64
 shards averaging about 55 mutants. Based on the v4.4.0 observation that 100
 mutants took 32.5-35.8 minutes, a linear estimate is about 18-20 minutes of
-mutation work per shard. At 8 workers, 8 waves plus up to 5 minutes of setup
-per wave and the summary gives an expected wall time of about 3 hours 25
-minutes. This is an estimate, not hosted timing evidence. Eight workers per run also
-keeps five concurrent merge groups to 40 of the organization's 60 runner slots.
+mutation work per shard. At 32 workers, two waves plus setup and summary give an expected wall time of
+about 55 minutes, or roughly one hour. This is an estimate, not hosted timing
+evidence. Five concurrent merge groups can request 160 worker slots against
+the organization's 60-runner capacity; GitHub queues excess jobs.
 
 The workflow restores a Cargo registry and build cache keyed on the resolved
 `Cargo.lock` and the selected compiler, so a lockfile or toolchain change can
@@ -1049,10 +1051,11 @@ The target is a calibration knob, not a time estimate. Every shard runs its
 own baseline and complete assigned mutant set with pinned cargo-mutants 27.1.0
 using round-robin identity assignment. The `mutations` matrix runs only after
 all of `checks` succeeds, so it cannot start before the main checks finish; at
-most 8 workers run together. Each worker has a 45-minute job limit, a
-35-minute mutation-step limit and a 30-minute command timeout. GNU `timeout`
-sends `SIGTERM` at that deadline and allows one minute for cargo-mutants to
-write partial outcomes before it sends `SIGKILL`. The always-run artifact upload retains the raw `caught.txt`, `missed.txt` and
+most 32 workers run together. Each worker has a 45-minute job limit, a
+35-minute mutation-step limit and a 30-minute command timeout. On remote Linux shard jobs, GNU `timeout`
+sends `SIGTERM` at that deadline and allows one minute before it sends
+`SIGKILL`; local runs use the direct cargo-mutants invocation. The always-run
+artifact upload retains the raw `caught.txt`, `missed.txt` and
 `timeout.txt` lists; aggregation identifies incomplete shard indices, and
 incomplete evidence fails `Required Rust CI`. The `mutation-summary` job runs after the matrix even on a failed or
 skipped worker, keeps raw shard directories separate,

@@ -18,5 +18,6 @@ fn mutation_failures_keep_their_reports_and_original_status() {
         );
         assert_eq!(fixture.run("ci", "mutants").status.code(), Some(code));
         assert!(fixture.root.join("reports/mutants.json").is_file());
+        assert!(!fixture.trace().contains("timeout --kill-after"));
     }
 }
