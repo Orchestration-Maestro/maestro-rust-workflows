@@ -28,7 +28,8 @@ fn a_run_no_workflow_called_takes_the_ci_table_of_the_base_commit() {
     let fixture = uncalled(concat!(
         "[ci]\nworking-directory = \"project\"\ncoverage-threshold = 95\n",
         "mutation-test = false\nmutation-shards = 0\n",
-        "mutation-mutants-per-shard = 25\nplatforms = \"macos windows linux-arm\"\n",
+        "mutation-mutants-per-shard = 25\nmutation-windows = [\"src/lib.rs\"]\n",
+        "platforms = \"macos windows linux-arm\"\n",
     ));
     // The pull request's own file loosens nothing: the base commit's rules hold.
     fs::write(
@@ -44,6 +45,7 @@ fn a_run_no_workflow_called_takes_the_ci_table_of_the_base_commit() {
         "MUTATION_TEST=false",
         "MUTATION_SHARDS=0",
         "MUTATION_MUTANTS_PER_SHARD=25",
+        "MUTATION_WINDOWS=[\"src/lib.rs\"]",
         "UNSAFE_POLICY=deny",
         "DEPENDENCY_AUDIT=true",
     ] {
@@ -75,6 +77,7 @@ fn without_a_ci_table_the_run_takes_every_input_default_and_three_platforms() {
         ("mutation-test", "MUTATION_TEST"),
         ("mutation-shards", "MUTATION_SHARDS"),
         ("mutation-mutants-per-shard", "MUTATION_MUTANTS_PER_SHARD"),
+        ("mutation-windows", "MUTATION_WINDOWS"),
         ("api-compatibility", "API_COMPATIBILITY"),
         ("sarif-reports", "SARIF_REPORTS"),
         ("unsafe-policy", "UNSAFE_POLICY"),

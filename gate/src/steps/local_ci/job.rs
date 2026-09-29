@@ -155,6 +155,10 @@ pub(super) const OTHER_JOBS: &[(&str, &str)] = &[
         "mutation-summary",
         "only a GitHub run aggregates remote mutation shards",
     ),
+    (
+        "mutation-windows",
+        "Windows-owned mutation testing runs on GitHub's Windows runner",
+    ),
     ("upload", "only a GitHub run uploads SARIF to code scanning"),
     ("coverage", "only a GitHub run uploads coverage to Codecov"),
     (

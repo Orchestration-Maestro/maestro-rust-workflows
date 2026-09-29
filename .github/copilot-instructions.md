@@ -175,6 +175,7 @@ in place.
 │   │   │   ├── manifests.rs                                     # What Cargo says beyond module trees: packages, the workspace, what members inherit
 │   │   │   ├── mod.rs                                           # The registry of every step, run and describe, the two doors main.rs calls
 │   │   │   ├── module_tree.rs                                   # Every Cargo target's module tree: files, items, named paths and re-exports
+│   │   │   ├── mutation_windows.rs                              # Validate the configured Windows-owned mutation paths before use
 │   │   │   ├── organization_config.rs                           # The tools' configuration passed at run time, and the header sync writes
 │   │   │   ├── private_directories.rs                           # Private temporary directories under the runner's own
 │   │   │   ├── pull_request.rs                                  # A pull request against its base: added and touched lines, the title's type
@@ -246,9 +247,11 @@ in place.
 │   │   │   │   │   └── run.rs                                   # Run the aggregate job and validate the full plan before accepting worker evidence
 │   │   │   │   ├── mod.rs                                       # rust-gate's mutation planning, scoped execution and shard aggregation
 │   │   │   │   ├── plan.rs                                      # Decide whether the current mutation run stays inline or needs every shard
+│   │   │   │   ├── reports.rs                                   # Preserve standard mutation summaries and reject incomplete outcomes
 │   │   │   │   ├── scope.rs                                     # The existing first-parent scope, named relative to the checkout and hashed
 │   │   │   │   ├── selftest.rs                                  # Prepare the repository-owned mutation-shard fixture before planning or execution
-│   │   │   │   └── step.rs                                      # rust-gate mutants: cargo-mutants over the checked source scope, failing on
+│   │   │   │   ├── step.rs                                      # rust-gate mutants: cargo-mutants over the checked source scope, failing on
+│   │   │   │   └── windows.rs                                   # Select and run mutations for Windows-owned files only
 │   │   │   ├── quality_scorecard/                               # rust-gate scorecard: the step and the value it renders
 │   │   │   │   ├── mod.rs                                       # The step's door: its two modules and its declaration
 │   │   │   │   ├── scorecard.rs                                 # A run's scorecard as a value: its controls, and the JSON, Markdown and badge of them
@@ -341,6 +344,7 @@ in place.
 │   │   ├── release_payload.rs                                   # ci.yml: release build, payload, bills of materials, and the example gate
 │   │   ├── release_payload_refusals.rs                          # The release payload's refusals: lockfile drift, unhardened or irreproducible binaries, malformed staging
 │   │   ├── repository_hygiene.rs                                # ci.yml: HYG-001 to HYG-005 and shell width, each refused by name
+│   │   ├── required_status.rs                                   # Contract tests for the sole branch-protection status
 │   │   ├── rule_map.rs                                          # rules and rules --check: written, kept, refused when stale or unmapped
 │   │   ├── ruleset_settings.rs                                  # ci.yml run by a ruleset: its inputs from the base commit's [ci], macOS and Windows kept
 │   │   ├── scorecard_and_required_status.rs                     # ci.yml: the scorecard, the required status and mutation testing

@@ -5,6 +5,7 @@
 //! reads TOML, so the gate stays standard-library only.
 
 use crate::checks::gate_rules::excepted;
+pub(crate) use crate::checks::mutation_windows::mutation_windows;
 use crate::runner::{Cmd, Failure};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -25,6 +26,7 @@ const CI_INPUTS: &[&str] = &[
     "mutation-test",
     "mutation-shards",
     "mutation-mutants-per-shard",
+    "mutation-windows",
     "sarif-reports",
     "clippy-level",
     "dependency-audit",
@@ -238,7 +240,10 @@ fn check_ci_input(line: &str) -> Result<(), Failure> {
     if matches!(key, "mutation-shards" | "mutation-mutants-per-shard") && kind != "number" {
         return Err(format!("{FILE}: [ci] {key} must be a number").into());
     }
-    if !matches!(kind, "string" | "number" | "boolean") {
+    if key == "mutation-windows" && kind != "array" {
+        return Err(format!("{FILE}: [ci] {key} must be an array of file paths").into());
+    }
+    if key != "mutation-windows" && !matches!(kind, "string" | "number" | "boolean") {
         return Err(format!("{FILE}: [ci] {key} must be a string, a number or a boolean").into());
     }
     Ok(())
@@ -330,6 +335,7 @@ mod tests {
     fn a_ci_input_is_known_and_of_a_plain_type() {
         for line in [
             "platforms\tstring\tmacos windows",
+            "mutation-windows\tarray\t[\"src/windows.rs\"]",
             "coverage-threshold\tnumber\t95",
             "mutation-test\tboolean\tfalse",
             "mutation-shards\tnumber\t0",
@@ -341,6 +347,13 @@ mod tests {
         // v2.0.0 runs every rule on every call; the switch that held them
         // back is gone.
         assert!(check_ci_input("quality-preview\tboolean\ttrue").is_err());
+        assert_eq!(
+            check_ci_input("mutation-windows\tstring\tsrc/windows.rs")
+                .unwrap_err()
+                .message
+                .as_deref(),
+            Some("maestro-quality.toml: [ci] mutation-windows must be an array of file paths")
+        );
         for key in ["mutation-shards", "mutation-mutants-per-shard"] {
             assert_eq!(
                 check_ci_input(&format!("{key}\tboolean\ttrue"))
@@ -361,6 +374,7 @@ mod tests {
             "maestro-quality.toml: [ci] coverage-threshold must be a string, a number or a \
              boolean"
         );
+        assert!(check_ci_input("platforms\tarray\t[]").is_err());
     }
 
     #[test]

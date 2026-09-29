@@ -15,6 +15,7 @@ pub(crate) mod inputs;
 pub(crate) mod lint_policy;
 pub(crate) mod manifests;
 pub(crate) mod module_tree;
+pub(crate) mod mutation_windows;
 pub(crate) mod organization_config;
 pub(crate) mod private_directories;
 pub(crate) mod pull_request;

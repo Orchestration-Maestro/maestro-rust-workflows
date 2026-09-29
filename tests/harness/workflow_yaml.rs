@@ -66,8 +66,7 @@ pub(crate) fn action(name: &str) -> Value {
     yaml(root().join(format!(".github/actions/{name}/action.yml")))
 }
 
-/// One line of a `rust-gate install-tools` table: the executable's name, its
-/// GitHub release asset path, the digest, and the member inside an archive.
+/// One line of a `rust-gate install-tools` table: name, platform asset, digest and optional member.
 pub(crate) struct ToolRow {
     pub(crate) name: String,
     pub(crate) asset: String,
@@ -92,15 +91,32 @@ pub(crate) fn tool_rows(step: &Value) -> Vec<ToolRow> {
         .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with('#'))
         .map(|line| {
             let words: Vec<&str> = line.split_whitespace().collect();
-            assert!(
-                words.len() == 3 || words.len() == 4,
-                "malformed tool line: {line}"
-            );
+            let explicit = words
+                .get(1)
+                .is_some_and(|word| ["linux", "windows", "macos"].contains(word));
+            let (asset, digest, member) = if explicit {
+                assert_eq!(words.len(), 6, "malformed platform tool line: {line}");
+                (
+                    words[2],
+                    words[3],
+                    (words[4] != "file").then(|| words[5].to_owned()),
+                )
+            } else {
+                assert!(
+                    words.len() == 3 || words.len() == 4,
+                    "malformed tool line: {line}"
+                );
+                (
+                    words[1],
+                    words[2],
+                    words.get(3).map(|member| (*member).to_owned()),
+                )
+            };
             ToolRow {
                 name: words[0].to_owned(),
-                asset: words[1].to_owned(),
-                digest: words[2].to_owned(),
-                member: words.get(3).map(|member| (*member).to_owned()),
+                asset: asset.to_owned(),
+                digest: digest.to_owned(),
+                member,
             }
         })
         .collect()

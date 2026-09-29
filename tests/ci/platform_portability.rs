@@ -141,7 +141,13 @@ fn checks_hand_the_runners_to_portability_and_the_result_to_the_required_status(
     let gate = &ci["jobs"]["gate"];
     assert_eq!(
         gate["needs"],
-        json!(["checks", "portability", "mutations", "mutation-summary"])
+        json!([
+            "checks",
+            "portability",
+            "mutations",
+            "mutation-summary",
+            "mutation-windows"
+        ])
     );
     let required = gate["steps"]
         .as_array()

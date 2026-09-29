@@ -56,6 +56,11 @@ name: Rust CI
           knob from `1` to `1000`, not a time guarantee
         type: number
         default: 50
+      mutation-windows:
+        description: >-
+          JSON array of exact repository-relative files owned by Windows mutation testing
+        type: string
+        default: '[]'
       internal-shard-selftest:
         description: >-
           Internal to this repository's own CI only: create a behavior-equivalent
@@ -158,6 +163,7 @@ jobs:
       mutation-test: ${{ steps.validate.outputs.mutation-test }}
       mutation-mutants-per-shard: ${{ steps.validate.outputs.mutation-mutants-per-shard }}
       mutation-attempt: ${{ github.run_attempt }}
+      mutation-windows: ${{ steps.validate.outputs.mutation-windows }}
     steps:
       - name: Checkout the gate at this workflow's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -195,6 +201,7 @@ jobs:
           MUTATION_TEST: ${{ inputs.mutation-test }}
           MUTATION_SHARDS: ${{ inputs.mutation-shards }}
           MUTATION_MUTANTS_PER_SHARD: ${{ inputs.mutation-mutants-per-shard }}
+          MUTATION_WINDOWS: ${{ inputs.mutation-windows }}
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           API_COMPATIBILITY: ${{ inputs.api-compatibility }}
           PLATFORMS: ${{ inputs.platforms }}
@@ -336,12 +343,14 @@ jobs:
         id: mutants-plan
         env:
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
+          MUTATION_WINDOWS: ${{ steps.validate.outputs.mutation-windows }}
         run: rust-gate mutants-plan
       - name: Mutation testing
         id: mutants
         if: ${{ steps.mutants-plan.outputs.mutation-mode != 'sharded' }}
         env:
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
+          MUTATION_WINDOWS: ${{ steps.validate.outputs.mutation-windows }}
         run: rust-gate mutants
       - name: Instruction counts of the declared benchmarks against the base
         id: performance
@@ -488,6 +497,7 @@ jobs:
           MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
           MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-shards }}
           MUTATION_MUTANTS_PER_SHARD: ${{ needs.checks.outputs.mutation-mutants-per-shard }}
+          MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           API_COMPATIBILITY: 'false'
           PLATFORMS: ''
@@ -518,6 +528,7 @@ jobs:
         env:
           TOOLS: |
             cargo-mutants sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e cargo-mutants
+            cargo-mutants windows sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-pc-windows-msvc.zip 2a2f00e47d4b458262a41501b0820aa26015fd35779903d2c8b30b2993f36791 zip cargo-mutants.exe
             cargo-nextest nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-musl.tar.gz b64617e8640624e8f9ba99819e37d7971154e97836d7ae4774fed4715501a6aa cargo-nextest
       - name: Download this run's immutable mutation plan
         id: mutation-plan-download
@@ -533,6 +544,7 @@ jobs:
           MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
           MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-shards }}
           MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.checks.outputs.mutation-shards }}
+          MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           MUTATION_PLAN: ${{ runner.temp }}/mutation-plan/mutation-plan.json
           MUTATION_LIST: ${{ runner.temp }}/mutation-plan/mutants-list.json
@@ -548,6 +560,71 @@ jobs:
             ${{ runner.temp }}/rust-reports/mutants.json
             ${{ runner.temp }}/rust-reports/mutants.txt
             ${{ runner.temp }}/rust-reports/mutants-shard.json
+          if-no-files-found: error
+          retention-days: 7
+  mutation-windows:
+    name: Windows-owned mutations
+    needs:
+      - checks
+    if: ${{ needs.checks.result == 'success' && needs.checks.outputs.mutation-test == 'true' && needs.checks.outputs.mutation-windows != '[]' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      CARGO_MUTANTS_VERSION: '27.1.0'
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ needs.checks.outputs.directory }}
+    steps:
+      - name: Checkout the gate at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - name: Build the gate
+        uses: ./.github/actions/gate
+      - name: Checkout the exact consumer revision and first parent
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Install the toolchain
+        run: rust-gate tools
+        env:
+          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+      - name: Install pinned Windows mutation tools
+        id: windows-mutation-tools
+        run: rust-gate install-tools
+        env:
+          TOOLS: |
+            cargo-mutants windows sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-pc-windows-msvc.zip 2a2f00e47d4b458262a41501b0820aa26015fd35779903d2c8b30b2993f36791 zip cargo-mutants.exe
+            jaq windows 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-pc-windows-msvc.exe 7b2f5153d11118c3ccff01859743e09842cabc42ba08f8876489c1be30d1d08d file jaq.exe
+      - name: Windows mutation testing
+        id: windows-mutation-run
+        run: rust-gate mutants-windows
+        env:
+          GITHUB_BASE_REF: ${{ github.base_ref }}
+          GITHUB_WORKSPACE: ${{ github.workspace }}
+          MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
+          MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
+          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          REPORTS: ${{ runner.temp }}/rust-reports
+          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+      - name: Upload Windows mutation reports
+        id: windows-mutation-upload
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ needs.checks.outputs.artifact-name }}-mutants-windows
+          path: |
+            ${{ runner.temp }}/mutants/mutants.out/
+            ${{ runner.temp }}/rust-reports/mutants.json
+            ${{ runner.temp }}/rust-reports/mutants.txt
+            ${{ runner.temp }}/rust-reports/mutants.diff
           if-no-files-found: error
           retention-days: 7
   mutation-summary:
@@ -772,6 +849,7 @@ jobs:
       - portability
       - mutations
       - mutation-summary
+      - mutation-windows
     if: ${{ always() && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -802,6 +880,8 @@ jobs:
           MUTATION_MATRIX: ${{ needs.checks.outputs.mutation-matrix }}
           MUTATION_ATTEMPT: ${{ needs.checks.outputs.mutation-attempt }}
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
+          MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
           MUTATIONS_RESULT: ${{ needs.mutations.result }}
           MUTATION_SUMMARY_RESULT: ${{ needs.mutation-summary.result }}
+          WINDOWS_MUTATIONS_RESULT: ${{ needs.mutation-windows.result }}
         run: rust-gate required

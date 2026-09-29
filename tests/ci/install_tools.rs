@@ -6,28 +6,30 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fs;
 
-/// The stand-ins a download needs: curl leaves the file behind, sha256sum
-/// answers as told, tar does nothing, install creates the target.
+/// The stand-ins a download needs: curl leaves verified bytes, tar creates the
+/// selected member, install creates the target.
 fn prepare(fixture: &Fixture, checksum_holds: bool) {
     // curl must leave the file behind, or verification has nothing to read.
-    fixture.stub(
-        "curl",
-        r#"out=""
-while [[ $# -gt 0 ]]; do
-  [[ "$1" == --output ]] && { out=$2; shift 2; continue; }
-  shift
-done
-printf 'downloaded' > "$out""#,
+    let downloaded = if checksum_holds { "abc" } else { "tampered" };
+    let curl = format!(
+        concat!(
+            "out=\"\"\n",
+            "while [[ $# -gt 0 ]]; do\n",
+            "  [[ \"$1\" == --output ]] && {{ out=$2; shift 2; continue; }}\n",
+            "  shift\n",
+            "done\n",
+            "printf '{downloaded}' > \"$out\""
+        ),
+        downloaded = downloaded
     );
+    fixture.stub("curl", &curl);
     fixture.stub(
-        "sha256sum",
-        if checksum_holds {
-            "cat > /dev/null; exit 0"
-        } else {
-            "cat > /dev/null; exit 1"
-        },
+        "tar",
+        r#"directory=${@: -2:1}
+member=${@: -1}
+mkdir -p "$directory/$(dirname "$member")"
+printf abc > "$directory/$member""#,
     );
-    fixture.stub("tar", "");
     fixture.stub(
         "install",
         r#"dst=${@: -1}
@@ -49,11 +51,11 @@ fn downloads(fixture: &Fixture) -> usize {
 /// Two tools: a bare binary and an archive member, with a comment and a
 /// blank line between them.
 const TABLE: &str = "jaq 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-unknown-linux-gnu \
-    5922c7b67d9bd6841d6676d1f954410c6bf04b47203dcb661c4f052dfef7f454\n\
+    ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n\
     # a comment, and a blank line, are allowed between tools\n\n\
     cargo-vet mozilla/cargo-vet/releases/download/v0.10.0/\
     cargo-vet-x86_64-unknown-linux-gnu.tar.xz \
-    c7664d9db5dd2ff813f20303650ac8253fa712ff2a1ea9ce12bed71e346f1744 \
+    ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad \
     cargo-vet-x86_64-unknown-linux-gnu/cargo-vet\n";
 
 #[test]
@@ -101,6 +103,45 @@ fn tool_installation_verifies_every_download_and_fetches_nothing_unasked() {
 }
 
 #[test]
+fn unsupported_runner_os_fails_before_downloading_tools() {
+    let mut fixture = Fixture::new();
+    fixture.set("RUNNER_OS", "FreeBSD");
+    fixture.set("TOOLS", TABLE);
+    refused(
+        &fixture.run("ci", "install"),
+        "Unsupported runner OS: FreeBSD",
+    );
+    assert_eq!(downloads(&fixture), 0);
+}
+
+#[test]
+fn windows_assets_are_verified_extracted_and_added_to_path() {
+    let mut fixture = Fixture::new();
+    prepare(&fixture, true);
+    fixture.set("RUNNER_OS", "Windows");
+    fixture.set(
+        "TOOLS",
+        concat!(
+            "jaq windows 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-pc-windows-msvc.exe ",
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad file jaq.exe\n",
+            "cargo-mutants windows sourcefrog/cargo-mutants/releases/download/v27.1.0/",
+            "cargo-mutants-x86_64-pc-windows-msvc.zip ",
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad zip cargo-mutants.exe"
+        ),
+    );
+    succeeds(&fixture.run("ci", "install"));
+    let bin = fixture.root.join("rust-tools/bin");
+    assert!(bin.join("jaq.exe").is_file() && bin.join("cargo-mutants.exe").is_file());
+    let calls = fixture.calls();
+    assert!(calls.contains("tar\n-xf"), "{calls}");
+    assert!(
+        fs::read_to_string(fixture.root.join("path"))
+            .unwrap()
+            .contains("rust-tools/bin")
+    );
+}
+
+#[test]
 fn a_dropped_connection_is_retried_before_a_download_fails() {
     // A connection GitHub's release storage reset once failed a whole run
     // (curl exit 35), and five HTTP 500 in a row another. curl retries only
@@ -144,7 +185,7 @@ fn a_tool_line_names_an_immutable_release_asset_with_its_own_digest() {
     // Every line must name an immutable release asset with its own digest. An
     // absolute URL, a tag or branch archive, a malformed digest, or a name or
     // member that escapes its directory is refused before anything is fetched.
-    let digest = "020468de7539ce70ef1bceaf7cde2e8c4f2ca6c3afb84642aabc5c97d9fc2a0d";
+    let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
     let asset = "01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-unknown-linux-gnu";
     for (line, message) in [
         (
@@ -196,7 +237,7 @@ fn ci_installs_its_toolbelt_once_and_each_optional_tool_behind_its_gate() {
                 "not a release asset: {}",
                 row.asset
             );
-            let archive = [".tar.gz", ".tgz", ".tar.xz"]
+            let archive = [".tar.gz", ".tgz", ".tar.xz", ".zip"]
                 .iter()
                 .any(|suffix| row.asset.ends_with(suffix));
             assert_eq!(

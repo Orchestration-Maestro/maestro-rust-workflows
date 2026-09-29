@@ -91,6 +91,8 @@ impl Fixture {
             ("INTERNAL_SHARD_SELFTEST", "false"),
             ("MUTATION_SHARDS", "1"),
             ("MUTATION_MUTANTS_PER_SHARD", "50"),
+            ("MUTATION_WINDOWS", "[]"),
+            ("WINDOWS_MUTATIONS_RESULT", "skipped"),
             ("API_COMPATIBILITY", "false"),
             ("PLATFORMS", ""),
             ("SARIF_REPORTS", "false"),

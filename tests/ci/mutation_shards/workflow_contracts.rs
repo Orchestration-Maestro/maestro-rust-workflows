@@ -13,7 +13,13 @@ fn workflow_step<'a>(steps: &'a [Value], id: &str) -> &'a Value {
 
 fn assert_required_gate_wiring(ci: &Value) {
     let jobs = &ci["jobs"];
-    for name in ["checks", "portability", "mutations", "mutation-summary"] {
+    for name in [
+        "checks",
+        "portability",
+        "mutations",
+        "mutation-summary",
+        "mutation-windows",
+    ] {
         assert!(
             jobs["gate"]["needs"]
                 .as_array()
@@ -139,6 +145,74 @@ fn assert_planner_and_consumer_contract(ci: &Value) {
 }
 
 #[test]
+fn windows_mutation_job_is_required_and_uses_its_pinned_asset() {
+    let ci = workflow("ci");
+    let windows = &ci["jobs"]["mutation-windows"];
+    assert_eq!(windows["runs-on"], "windows-latest");
+    assert_eq!(windows["needs"], json!(["checks"]));
+    assert!(
+        windows["if"]
+            .as_str()
+            .unwrap()
+            .contains("mutation-windows != '[]'")
+    );
+    assert_eq!(windows["env"]["CARGO_MUTANTS_VERSION"], "27.1.0");
+    let steps = windows["steps"].as_array().unwrap();
+    let install = workflow_step(steps, "windows-mutation-tools");
+    let tools = install["env"]["TOOLS"].as_str().unwrap();
+    assert!(tools.contains("cargo-mutants-x86_64-pc-windows-msvc.zip"));
+    assert!(tools.contains("2a2f00e47d4b458262a41501b0820aa26015fd35779903d2c8b30b2993f36791"));
+    let linux_steps = ci["jobs"]["mutations"]["steps"].as_array().unwrap();
+    let linux_tools = tool_rows(workflow_step(linux_steps, "mutation-tools"));
+    assert!(linux_tools.iter().any(|row| {
+        row.asset
+            .contains("cargo-mutants-x86_64-unknown-linux-gnu.tar.gz")
+            && row.digest == "dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e"
+    }));
+    assert!(linux_tools.iter().any(|row| {
+        row.asset
+            .contains("cargo-mutants-x86_64-pc-windows-msvc.zip")
+            && row.digest == "2a2f00e47d4b458262a41501b0820aa26015fd35779903d2c8b30b2993f36791"
+    }));
+    assert_eq!(
+        workflow_step(steps, "windows-mutation-run")["run"],
+        "rust-gate mutants-windows"
+    );
+    let upload = workflow_step(steps, "windows-mutation-upload");
+    let artifact = upload["with"]["path"].as_str().unwrap();
+    for path in [
+        "mutants.out/",
+        "rust-reports/mutants.json",
+        "rust-reports/mutants.txt",
+    ] {
+        assert!(artifact.contains(path), "{artifact}");
+    }
+    let required_steps = ci["jobs"]["gate"]["steps"].as_array().unwrap();
+    let required = workflow_step(required_steps, "required");
+    assert_eq!(
+        required["env"]["WINDOWS_MUTATIONS_RESULT"],
+        "${{ needs.mutation-windows.result }}"
+    );
+}
+
+#[test]
+fn linux_mutation_workers_exclude_windows_owned_files() {
+    let ci = workflow("ci");
+    let workers = ci["jobs"]["mutations"]["steps"].as_array().unwrap();
+    let execute = workflow_step(workers, "mutation-worker-run");
+    assert_eq!(
+        execute["env"]["MUTATION_WINDOWS"],
+        "${{ needs.checks.outputs.mutation-windows }}"
+    );
+    let inline = ci["jobs"]["checks"]["steps"].as_array().unwrap();
+    let execute = workflow_step(inline, "mutants");
+    assert_eq!(
+        execute["env"]["MUTATION_WINDOWS"],
+        "${{ steps.validate.outputs.mutation-windows }}"
+    );
+}
+
+#[test]
 fn shard_workflow_contract_names_matrix_and_summary_jobs() {
     let ci = workflow("ci");
     assert_required_gate_wiring(&ci);
@@ -163,7 +237,12 @@ fn cargo_mutants_version_environment_matches_the_installed_pin() {
         .split('/')
         .next()
         .unwrap();
-    for name in ["checks", "mutations", "mutation-summary"] {
+    for name in [
+        "checks",
+        "mutations",
+        "mutation-summary",
+        "mutation-windows",
+    ] {
         assert_eq!(
             ci["jobs"][name]["env"]["CARGO_MUTANTS_VERSION"], version,
             "{name} must use the installed cargo-mutants version"
