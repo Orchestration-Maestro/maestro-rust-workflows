@@ -25,7 +25,7 @@ extended controls, SDL, SST, SCH and VR.
 | Rule | Held here by |
 | --- | --- |
 | SEC-001 Minimise sensitive data | **Deterministic.** Gitleaks scans source; the secrets report is redacted; tokens are masked and never become action outputs. |
-| SEC-002 Treat input as data | **Deterministic in part.** Consumer inputs are data: every workflow validates them and none is interpolated into a shell command unquoted. |
+| SEC-002 Treat input as data | **Deterministic in part.** Consumer inputs are data: every workflow validates them and none is interpolated into a shell command unquoted. A ruleset run takes its `[ci]` inputs from the base commit, so a pull request cannot loosen its own gate, and `mutation-windows` alone from the head, since it moves mutants to the Windows job and never skips one: `a_run_no_workflow_called_takes_the_ci_table_of_the_base_commit` and `a_head_listing_a_missing_windows_file_is_refused`. |
 | SEC-003 Validate boundaries | **Deterministic.** `ci_rejects_unsafe_paths_and_symlinks` and `every_live_publisher_requires_reviewers_and_only_release_tag_deployments` prove traversal, symlink and out-of-scope rejection. |
 | SEC-004 Use real authority | **Deterministic.** Each job declares `permissions:`; a test asserts least privilege. Elevated scopes sit in separate callable workflows. |
 | SEC-005 Scope sensitive approvals | **Deterministic.** All publishers are dry-run by default; live writes require an explicit input, a protected tag and API-verified reviewer/tag rules on the `release` environment, which GitHub Team offers because the organization's repositories are public. |

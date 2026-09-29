@@ -1,7 +1,8 @@
 //! `rust-gate validate`: every `ci.yml` input checked before any side effect,
 //! then the resolved project, toolchain and gate selectors exported to the
 //! rest of the job. A run no workflow called, the one an organization ruleset
-//! starts, takes the same values from `maestro-quality.toml` instead.
+//! starts, takes the same values from `maestro-quality.toml` instead: the
+//! base commit's, and the head's for `mutation-windows`.
 
 use crate::checks::checkout_paths::{canonical, committed_file, inside, project_directory};
 use crate::checks::digests::sha256_hex;
@@ -9,7 +10,7 @@ use crate::checks::inputs::{
     LicensePolicy, artifact_key, clippy_level, coverage_threshold, internal_shard_selftest,
     license_policy, mutation_mutants_per_shard, mutation_shards, unsafe_policy,
 };
-use crate::checks::quality_config::{FILE, mutation_windows, read_config};
+use crate::checks::quality_config::{FILE, QualityConfig, mutation_windows, read_config};
 use crate::checks::rust_versions::{channel_value, is_exact_stable, parse};
 use crate::runner::{Cmd, Failure, Outcome, Step, export, flag, input, optional, output};
 use std::fs;
@@ -167,25 +168,24 @@ fn run() -> Outcome {
 /// base commit's `maestro-quality.toml` in place of the inputs, so a pull
 /// request cannot loosen its own gate. The checkout holds the merge commit
 /// and its first parent, the base branch or the merge queue's base.
+///
+/// `mutation-windows` alone comes from the head, the merge commit itself: it
+/// only moves a file's mutants from the Linux shards to the Windows job, where
+/// every one still runs and must be caught, so it can never skip a mutant. A
+/// pull request that adds a Windows-only file lists it in the same change, and
+/// a head that drops one only makes the Linux shards stricter.
 fn from_settings() -> Outcome {
     let root = canonical(Path::new(&input("GITHUB_WORKSPACE")?))?;
-    let base = Path::new(&input("RUNNER_TEMP")?).join("ci-settings");
-    fs::create_dir_all(&base).map_err(|error| format!("{}: {error}", base.display()))?;
-    let listed = Cmd::new("git -C")
-        .arg(&root)
-        .args(["ls-tree", "--name-only", "HEAD^1", "--", FILE])
-        .capture()?;
-    if !listed.trim().is_empty() {
-        let text = Cmd::new("git -C")
-            .arg(&root)
-            .arg("show")
-            .arg(format!("HEAD^1:{FILE}"))
-            .capture()?;
-        fs::write(base.join(FILE), text).map_err(|error| format!("{FILE}: {error}"))?;
-    }
-    let config = read_config(&base)?;
+    let settings = Path::new(&input("RUNNER_TEMP")?).join("ci-settings");
+    let base = committed_config(&root, "HEAD^1", &settings.join("base"))?;
+    let head = committed_config(&root, "HEAD", &settings.join("head"))?;
     let mut validate = Cmd::new("rust-gate validate").env("CALLED", "true");
     for (key, variable, default) in SETTINGS {
+        let config = if *key == "mutation-windows" {
+            &head
+        } else {
+            &base
+        };
         let value = config
             .settings
             .iter()
@@ -194,6 +194,29 @@ fn from_settings() -> Outcome {
         validate = validate.env(variable, value);
     }
     validate.run()
+}
+
+/// The `maestro-quality.toml` that `revision` of the checkout at `root`
+/// commits, copied into `directory` and read there; empty when it has none.
+fn committed_config(
+    root: &Path,
+    revision: &str,
+    directory: &Path,
+) -> Result<QualityConfig, Failure> {
+    fs::create_dir_all(directory).map_err(|error| format!("{}: {error}", directory.display()))?;
+    let listed = Cmd::new("git -C")
+        .arg(root)
+        .args(["ls-tree", "--name-only", revision, "--", FILE])
+        .capture()?;
+    if !listed.trim().is_empty() {
+        let text = Cmd::new("git -C")
+            .arg(root)
+            .arg("show")
+            .arg(format!("{revision}:{FILE}"))
+            .capture()?;
+        fs::write(directory.join(FILE), text).map_err(|error| format!("{FILE}: {error}"))?;
+    }
+    read_config(directory)
 }
 
 /// The compiler this run uses: the exact stable version the project pins,

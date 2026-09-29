@@ -30,7 +30,12 @@ at the base commit, the tested commit's first parent: a pull request's base
 branch, or on a merge group the commit the entry lands on. A pull request
 therefore cannot loosen its own gate;
 an input the table leaves out takes its default below, and `platforms` takes
-`macos windows`. The same run uploads the Clippy and secret-scan SARIF to code
+`macos windows`. `mutation-windows` alone comes from the head, the tested
+commit itself: it only moves a file's mutants from the Linux shards to the
+Windows job, where every one still runs and must be caught, so it can never
+skip a mutant. A pull request that adds a Windows-only file lists it in the
+same change, and a head that drops one only makes the Linux shards stricter.
+The head's list is validated as a caller's is. The same run uploads the Clippy and secret-scan SARIF to code
 scanning and the coverage to Codecov; see
 [uploads](#uploads-to-code-scanning-and-codecov). Inside this repository, only a
 caller runs `ci.yml` and nothing runs `hygiene.yml`.
@@ -1083,7 +1088,9 @@ cannot be mixed.
 
 `mutation-test: false` disables planning and execution; both shard inputs are
 still validated. Ruleset runs take `[ci]` settings from the first parent, so a
-change to `maestro-quality.toml` cannot relax its own pull request. A called
+change to `maestro-quality.toml` cannot relax its own pull request; they take
+`mutation-windows` from the head, which moves mutants to the Windows job and
+never skips one. A called
 workflow takes its declared inputs instead: a publisher or consumer caller
 must forward shard settings and `mutation-windows` explicitly. Locally,
 `rust-gate ci --local` marks remote planning and the Windows job not applied,
