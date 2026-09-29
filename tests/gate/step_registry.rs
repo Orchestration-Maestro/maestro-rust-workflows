@@ -292,6 +292,74 @@ fn step_source(path: &Path) -> String {
 }
 
 #[test]
+fn windows_mutation_commands_are_declared_by_their_windows_steps() {
+    let install_tools = fs::read_to_string(root().join("gate/src/steps/install_tools.rs")).unwrap();
+    let windows_tools = install_tools
+        .split("tools: if cfg!(windows) {")
+        .nth(1)
+        .unwrap()
+        .split("} else {")
+        .next()
+        .unwrap();
+    let declared_install_tools: BTreeSet<_> = windows_tools
+        .split('\"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect();
+    let mut install_commands = BTreeSet::new();
+    for path in [
+        "gate/src/steps/install_tools.rs",
+        "gate/src/checks/private_directories.rs",
+    ] {
+        let source = fs::read_to_string(root().join(path)).unwrap();
+        let source = source.split("#[cfg(test)]").next().unwrap_or_default();
+        install_commands.extend(
+            quoted_after(source, "Cmd::new(")
+                .iter()
+                .map(|command| tool_key(command)),
+        );
+    }
+    install_commands.remove("install"); // Unix-only executable installation.
+    assert_eq!(
+        install_commands, declared_install_tools,
+        "Windows install-tools command set differs from its platform declaration"
+    );
+
+    let mutation_source =
+        fs::read_to_string(root().join("gate/src/steps/mutation_testing/windows.rs")).unwrap();
+    let mutation_commands: BTreeSet<_> = quoted_after(&mutation_source, "Cmd::new(")
+        .iter()
+        .map(|command| tool_key(command))
+        .collect();
+    let declarations =
+        fs::read_to_string(root().join("gate/src/steps/mutation_testing/step.rs")).unwrap();
+    let windows_step = declarations
+        .split("id: \"mutants-windows\"")
+        .nth(1)
+        .unwrap()
+        .split("run: super::windows::run")
+        .next()
+        .unwrap();
+    let declared_mutation_tools: BTreeSet<_> = windows_step
+        .split("tools: &[")
+        .nth(1)
+        .unwrap()
+        .split(']')
+        .next()
+        .unwrap()
+        .split('\"')
+        .skip(1)
+        .step_by(2)
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        mutation_commands, declared_mutation_tools,
+        "Windows mutation command set differs from its step declaration"
+    );
+}
+
+#[test]
 fn every_step_module_declares_what_its_source_uses_and_nothing_else() {
     // The gate refuses an undeclared input, tool or report while a step runs,
     // which proves the declaration on the paths the contract tests exercise.

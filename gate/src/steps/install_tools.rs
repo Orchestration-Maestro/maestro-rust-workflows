@@ -218,8 +218,9 @@ fn extract(archive: &Path, directory: &Path, member: &str, kind: &str) -> Outcom
             .map_err(|error| format!("cannot copy {}: {error}", archive.display()))?;
         return Ok(());
     }
-    let (command, arguments) = extraction_arguments(kind, archive, directory, member)?;
-    Cmd::new(command).args(arguments).run()
+    Cmd::new("tar")
+        .args(extraction_arguments(kind, archive, directory, member)?)
+        .run()
 }
 
 /// Select the native tar arguments for one archive kind.
@@ -228,23 +229,20 @@ fn extraction_arguments(
     archive: &Path,
     directory: &Path,
     member: &str,
-) -> Result<(&'static str, Vec<String>), String> {
+) -> Result<Vec<String>, String> {
     let flags = match kind {
         "tar.gz" => "-xzf",
         "tar.xz" => "-xJf",
         "zip" => "-xf",
         _ => return Err(format!("Unsupported archive kind: {kind}")),
     };
-    Ok((
-        "tar",
-        vec![
-            flags.to_owned(),
-            archive.display().to_string(),
-            "-C".to_owned(),
-            directory.display().to_string(),
-            member.to_owned(),
-        ],
-    ))
+    Ok(vec![
+        flags.to_owned(),
+        archive.display().to_string(),
+        "-C".to_owned(),
+        directory.display().to_string(),
+        member.to_owned(),
+    ])
 }
 
 /// An immutable release asset path, `owner/repo/releases/download/tag/asset`,
@@ -338,14 +336,13 @@ mod tests {
 
     #[test]
     fn zip_extraction_uses_bsd_tar_with_the_named_windows_executable() {
-        let (command, arguments) = extraction_arguments(
+        let arguments = extraction_arguments(
             "zip",
             Path::new("cargo-mutants.zip"),
             Path::new("downloads"),
             "cargo-mutants.exe",
         )
         .unwrap();
-        assert_eq!(command, "tar");
         assert_eq!(
             arguments,
             [
