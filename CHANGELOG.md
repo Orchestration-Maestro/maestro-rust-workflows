@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.6.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.5.0...v4.6.0) (2026-09-29)
+
+
+### Features
+
+* **ci:** test Windows-owned mutations ([#90](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/90)) ([0c7aad4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/0c7aad4478d5a17b4215a86f812b3915c7030f28))
+
 ## [4.5.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.4.1...v4.5.0) (2026-09-28)
 
 
