@@ -179,6 +179,9 @@ impl Fixture {
         ] {
             fixture.set(key, value);
         }
+        if name == "workspace" {
+            fixture.set("MUTATION_WINDOWS", "[\"core/src/windows.rs\"]");
+        }
         fixture.set(
             "CARGO_TARGET_DIR",
             &fixture.root.join("target").display().to_string(),
