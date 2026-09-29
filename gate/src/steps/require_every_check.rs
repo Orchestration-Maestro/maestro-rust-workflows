@@ -19,7 +19,9 @@ pub(crate) const STEPS: &[Step] = &[Step {
         "MUTATION_SHARDS",
         "MUTATION_SUMMARY_RESULT",
         "MUTATION_TEST",
+        "MUTATION_WINDOWS",
         "MUTATIONS_RESULT",
+        "WINDOWS_MUTATIONS_RESULT",
         "PORTABILITY",
         "RESULT",
         "RUNNERS",
@@ -108,5 +110,15 @@ fn run() -> Outcome {
             "Mutation workers: {mutations}; aggregation: {aggregate} (intentionally skipped)\n"
         ))?;
     }
+    let windows = optional("MUTATION_WINDOWS")?;
+    let windows_result = optional("WINDOWS_MUTATIONS_RESULT")?;
+    let windows_expected = enabled && windows != "[]";
+    if windows_expected && windows_result != "success" {
+        return Err("Windows-owned mutation job failed or was skipped".into());
+    }
+    if !windows_expected && windows_result != "skipped" {
+        return Err("Windows-owned mutation job ran without configured files".into());
+    }
+    summary(&format!("Windows-owned mutations: {windows_result}\n"))?;
     Ok(())
 }

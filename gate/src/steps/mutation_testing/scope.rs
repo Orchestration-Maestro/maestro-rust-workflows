@@ -3,7 +3,8 @@
 
 use crate::checks::checkout_paths::canonical;
 use crate::checks::digests::sha256_hex;
-use crate::runner::{Cmd, Failure, Job, input};
+use crate::checks::quality_config::mutation_windows;
+use crate::runner::{Cmd, Failure, Job, input, optional};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -63,6 +64,14 @@ pub(super) fn prepare(job: &Job, base: &str) -> Result<Scope, Failure> {
         change,
         diff_digest,
     })
+}
+
+/// Exclude every Windows-owned file from the Linux mutation listing or run.
+pub(super) fn exclude_windows_files(mut command: Cmd, project: &Path) -> Result<Cmd, Failure> {
+    for file in mutation_windows(project, &optional("MUTATION_WINDOWS")?)? {
+        command = command.args(["--exclude", &file]);
+    }
+    Ok(command)
 }
 
 /// The project path the checks and worker can both independently resolve.

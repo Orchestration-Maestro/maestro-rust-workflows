@@ -9,7 +9,7 @@ use crate::checks::inputs::{
     LicensePolicy, artifact_key, clippy_level, coverage_threshold, internal_shard_selftest,
     license_policy, mutation_mutants_per_shard, mutation_shards, unsafe_policy,
 };
-use crate::checks::quality_config::{FILE, read_config};
+use crate::checks::quality_config::{FILE, mutation_windows, read_config};
 use crate::checks::rust_versions::{channel_value, is_exact_stable, parse};
 use crate::runner::{Cmd, Failure, Outcome, Step, export, flag, input, optional, output};
 use std::fs;
@@ -38,6 +38,7 @@ pub(crate) const STEPS: &[Step] = &[Step {
         "MUTATION_MUTANTS_PER_SHARD",
         "MUTATION_SHARDS",
         "MUTATION_TEST",
+        "MUTATION_WINDOWS",
         "PLATFORMS",
         "REQUESTED_TOOLCHAIN",
         "SARIF_REPORTS",
@@ -68,6 +69,7 @@ const SETTINGS: &[(&str, &str, &str)] = &[
         "MUTATION_MUTANTS_PER_SHARD",
         "50",
     ),
+    ("mutation-windows", "MUTATION_WINDOWS", "[]"),
     ("sarif-reports", "SARIF_REPORTS", "true"),
     ("clippy-level", "CLIPPY_LEVEL", "default"),
     ("dependency-audit", "DEPENDENCY_AUDIT", "true"),
@@ -116,6 +118,12 @@ fn run() -> Outcome {
     let mutation_test = flag("MUTATION_TEST")?.to_string();
     let mutation_shards = mutation_shards()?.to_string();
     let mutation_mutants_per_shard = mutation_mutants_per_shard()?.to_string();
+    let mutation_windows = mutation_windows(&project, &input("MUTATION_WINDOWS")?)?;
+    let mutation_windows_json = Cmd::new("jaq -cn")
+        .arg("$ARGS.positional")
+        .args(["--args"])
+        .args(mutation_windows.iter())
+        .capture()?;
     let api_compatibility = flag("API_COMPATIBILITY")?.to_string();
     let sarif_reports = flag("SARIF_REPORTS")?.to_string();
     let dependency_audit = flag("DEPENDENCY_AUDIT")?.to_string();
@@ -131,6 +139,7 @@ fn run() -> Outcome {
     output("toolchain", &toolchain)?;
     output("mutation-test", &mutation_test)?;
     output("mutation-mutants-per-shard", &mutation_mutants_per_shard)?;
+    output("mutation-windows", mutation_windows_json.trim())?;
     let temp = input("RUNNER_TEMP")?;
     export(&[
         ("PROJECT", &project.display().to_string()),
@@ -144,6 +153,7 @@ fn run() -> Outcome {
         ("MUTATION_TEST", &mutation_test),
         ("MUTATION_SHARDS", &mutation_shards),
         ("MUTATION_MUTANTS_PER_SHARD", &mutation_mutants_per_shard),
+        ("MUTATION_WINDOWS", mutation_windows_json.trim()),
         ("API_COMPATIBILITY", &api_compatibility),
         ("SARIF_REPORTS", &sarif_reports),
         ("UNSAFE_POLICY", unsafe_policy.as_str()),

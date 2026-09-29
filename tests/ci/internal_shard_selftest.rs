@@ -6,7 +6,7 @@ use std::fs;
 #[test]
 fn selftest_refuses_when_the_example_source_drifted() {
     let mut fixture = Fixture::new();
-    let source = fixture.root.join("project/core/src/lib.rs");
+    let source = fixture.root.join("project/core/src/arithmetic.rs");
     fs::create_dir_all(source.parent().unwrap()).unwrap();
     fs::write(source, "//! A different fixture.\\n").unwrap();
     fixture.set("MUTATION_TEST", "true");

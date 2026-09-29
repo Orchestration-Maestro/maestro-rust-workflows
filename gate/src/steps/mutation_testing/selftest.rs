@@ -24,14 +24,14 @@ pub(super) fn prepare(job: &Job) -> Outcome {
         _ => return Err("internal-shard-selftest must be true or false".into()),
     }
 
-    let source = job.project.join("core/src/lib.rs");
+    let source = job.project.join("core/src/arithmetic.rs");
     let contents = fs::read_to_string(&source)
         .map_err(|error| format!("cannot read internal shard self-test source: {error}"))?;
     let contents = rewritten_source(&contents).map_err(str::to_owned)?;
     fs::write(&source, contents)
         .map_err(|error| format!("cannot write internal shard self-test source: {error}"))?;
 
-    Cmd::new("git add -- core/src/lib.rs")
+    Cmd::new("git add -- core/src/arithmetic.rs")
         .cwd(&job.project)
         .run()?;
     Cmd::new("git")

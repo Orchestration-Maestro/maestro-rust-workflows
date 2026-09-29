@@ -159,6 +159,15 @@ fn planning_preserves_scope_and_refuses_unexplained_empty_output() {
 }
 
 #[test]
+fn linux_mutation_listing_excludes_windows_owned_files() {
+    let mut fixture = planning_fixture(2, 2, 50);
+    fs::write(fixture.root.join("project/src/windows.rs"), "").unwrap();
+    fixture.set("MUTATION_WINDOWS", "[\"src/windows.rs\"]");
+    succeeds(&fixture.run_body("rust-gate mutants-plan"));
+    assert!(fixture.calls().contains("--exclude src/windows.rs"));
+}
+
+#[test]
 fn plan_rejects_duplicate_listing_identity_and_invalid_first_parent() {
     let duplicate = planning_fixture(2, 2, 50);
     let path = duplicate.root.join("listing.json");

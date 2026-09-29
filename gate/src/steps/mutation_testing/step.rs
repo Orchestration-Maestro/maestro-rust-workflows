@@ -1,12 +1,10 @@
 //! `rust-gate mutants`: cargo-mutants over the checked source scope, failing on
 //! every survivor, timeout, baseline failure or incomplete shard execution.
 
-use super::{aggregate, plan, scope, selftest};
-use crate::runner::{
-    Cmd, Failure, Job, Outcome, Step, flag, non_empty, optional, output, tee_line,
-};
+use super::{aggregate, plan, reports, scope, selftest};
+use crate::runner::{Cmd, Failure, Job, Outcome, Step, flag, optional, output, tee_line};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// What the mutation family declares: planning, execution and aggregation.
 pub(crate) const STEPS: &[Step] = &[
@@ -25,6 +23,7 @@ pub(crate) const STEPS: &[Step] = &[
             "MUTATION_MUTANTS_PER_SHARD",
             "MUTATION_SHARDS",
             "MUTATION_TEST",
+            "MUTATION_WINDOWS",
             "RUSTUP_TOOLCHAIN",
         ],
         tools: &["cargo mutants", "git", "jaq"],
@@ -54,6 +53,7 @@ pub(crate) const STEPS: &[Step] = &[
             "MUTATION_SHARD",
             "MUTATION_SHARDS",
             "MUTATION_TEST",
+            "MUTATION_WINDOWS",
             "RUSTUP_TOOLCHAIN",
         ],
         tools: &["cargo mutants", "git", "jaq", "timeout"],
@@ -64,6 +64,23 @@ pub(crate) const STEPS: &[Step] = &[
             "mutants.diff",
         ],
         run,
+    },
+    Step {
+        workflow: "ci",
+        id: "mutants-windows",
+        summary: "Windows mutation testing",
+        inputs: &[
+            "CARGO_MUTANTS_VERSION",
+            "GITHUB_BASE_REF",
+            "GITHUB_WORKSPACE",
+            "MUTATION_TEST",
+            "MUTATION_WINDOWS",
+            "PROJECT",
+            "RUSTUP_TOOLCHAIN",
+        ],
+        tools: &["cargo mutants", "git", "jaq"],
+        reports: &["mutants.json", "mutants.txt", "mutants.diff"],
+        run: super::windows::run,
     },
     Step {
         workflow: "ci",
@@ -150,6 +167,7 @@ fn run() -> Outcome {
         let diff = diff.to_string_lossy().into_owned();
         command = command.args(["--in-diff", &diff]);
     }
+    command = scope::exclude_windows_files(command, &job.project)?;
     if let Some((index, count)) = shard {
         command = command
             .arg("--shard")
@@ -171,7 +189,7 @@ fn run() -> Outcome {
     };
     verdict?;
     saved?;
-    report_outcomes(&job, &outcomes, scope.change.as_deref(), expected_mutants)
+    reports::report_outcomes(&job, &outcomes, scope.change.as_deref(), expected_mutants)
 }
 
 /// Resolve a worker's plan input without accepting a missing path.
@@ -185,62 +203,6 @@ fn required_path(name: &str, value: &str) -> Result<PathBuf, Failure> {
         return Err(format!("{name} is required for a mutation shard").into());
     }
     Ok(value.into())
-}
-
-/// Interpret only successful tool runs, after raw outcomes were preserved.
-fn report_outcomes(
-    job: &Job,
-    outcomes: &Path,
-    change: Option<&str>,
-    expected_mutants: Option<usize>,
-) -> Outcome {
-    let report = job.report("mutants.txt")?;
-    if !outcomes.exists() {
-        let log = fs::read_to_string(&report)
-            .map_err(|error| format!("{}: {error}", report.display()))?;
-        // ponytail: pinned 27.1.0 reports these skips only as text; use a structured
-        // skip when upstream provides one. Silence is never proof of no work.
-        if log.lines().any(|line| {
-            line.trim() == "WARN No mutants found under the active filters"
-                || (change.is_some()
-                    && matches!(
-                        line.trim(),
-                        "INFO Diff file is empty"
-                            | "INFO Diff changes no Rust source files"
-                            | "INFO No mutants to filter"
-                    ))
-        }) {
-            if expected_mutants.is_some_and(|expected| expected > 0) {
-                return Err(
-                    "cargo-mutants reported no work for a shard with planned mutants".into(),
-                );
-            }
-            let message = format!(
-                "SKIPPED: no mutants apply to {}",
-                change.unwrap_or("this workspace")
-            );
-            tee_line(&message, &report, true)?;
-            return output("applied", "false");
-        }
-    }
-    non_empty(outcomes).map_err(|_| "cargo-mutants produced no outcomes")?;
-    Cmd::new("jaq -er")
-        .arg(
-            "\"caught=\\(.caught) missed=\\(.missed) timeout=\\(.timeout) unviable=\\(.unviable)\"",
-        )
-        .arg(outcomes)
-        .tee(&report, true)?;
-    Cmd::new("jaq -e")
-        .arg(".missed == 0 and .timeout == 0")
-        .arg(outcomes)
-        .capture()
-        .map(|_| ())
-        .map_err(|_| "Surviving or timed-out mutants; strengthen the tests that should fail")?;
-    let applied = Cmd::new("jaq -r")
-        .arg("(.caught + .unviable) > 0")
-        .arg(outcomes)
-        .capture()?;
-    output("applied", applied.trim())
 }
 
 #[cfg(test)]

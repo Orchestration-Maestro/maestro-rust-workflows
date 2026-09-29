@@ -24,6 +24,7 @@ mod quality_reports;
 mod release_payload;
 mod release_payload_refusals;
 mod repository_hygiene;
+mod required_status;
 mod rule_map;
 mod ruleset_settings;
 mod scorecard_and_required_status;

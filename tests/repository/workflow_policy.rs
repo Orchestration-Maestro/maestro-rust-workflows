@@ -120,10 +120,12 @@ fn all_jobs_use_github_runners_without_caller_overrides() {
             );
         }
         for (id, job) in data["jobs"].as_object().unwrap() {
-            // The one exception: ci.yml's portability job runs on the runners
-            // validate derived from the caller's platforms, each pinned.
+            // The portability matrix and Windows mutation job use pinned
+            // platform runners; every other job stays on Ubuntu.
             if name == "ci" && id == "portability" {
                 assert_eq!(job["runs-on"], "${{ matrix.runner }}");
+            } else if name == "ci" && id == "mutation-windows" {
+                assert_eq!(job["runs-on"], "windows-2025");
             } else if job.get("steps").is_some() {
                 assert_eq!(job["runs-on"], "ubuntu-24.04", "{name}/{id}");
             }

@@ -144,7 +144,9 @@ in place.
 │       │   └── LICENSE                                          # MIT notice included in the Cargo package
 │       ├── core/                                                # Workspace library package
 │       │   ├── src/                                             # Workspace library sources
-│       │   │   └── lib.rs                                       # Workspace library surface with doc comments
+│       │   │   ├── arithmetic.rs                                # Checked arithmetic exposed by the workspace consumer fixture
+│       │   │   ├── lib.rs                                       # Workspace library surface with doc comments
+│       │   │   └── windows.rs                                   # Small Windows-only behavior owned by the native mutation job
 │       │   ├── Cargo.toml                                       # Isolated workflow-contract test target
 │       │   ├── LICENSE                                          # MIT notice included in the Cargo package
 │       │   └── README.md                                        # What the member is, for crates.io
@@ -175,6 +177,7 @@ in place.
 │   │   │   ├── manifests.rs                                     # What Cargo says beyond module trees: packages, the workspace, what members inherit
 │   │   │   ├── mod.rs                                           # The registry of every step, run and describe, the two doors main.rs calls
 │   │   │   ├── module_tree.rs                                   # Every Cargo target's module tree: files, items, named paths and re-exports
+│   │   │   ├── mutation_windows.rs                              # Validate the configured Windows-owned mutation paths before use
 │   │   │   ├── organization_config.rs                           # The tools' configuration passed at run time, and the header sync writes
 │   │   │   ├── private_directories.rs                           # Private temporary directories under the runner's own
 │   │   │   ├── pull_request.rs                                  # A pull request against its base: added and touched lines, the title's type
@@ -246,9 +249,11 @@ in place.
 │   │   │   │   │   └── run.rs                                   # Run the aggregate job and validate the full plan before accepting worker evidence
 │   │   │   │   ├── mod.rs                                       # rust-gate's mutation planning, scoped execution and shard aggregation
 │   │   │   │   ├── plan.rs                                      # Decide whether the current mutation run stays inline or needs every shard
+│   │   │   │   ├── reports.rs                                   # Preserve standard mutation summaries and reject incomplete outcomes
 │   │   │   │   ├── scope.rs                                     # The existing first-parent scope, named relative to the checkout and hashed
 │   │   │   │   ├── selftest.rs                                  # Prepare the repository-owned mutation-shard fixture before planning or execution
-│   │   │   │   └── step.rs                                      # rust-gate mutants: cargo-mutants over the checked source scope, failing on
+│   │   │   │   ├── step.rs                                      # rust-gate mutants: cargo-mutants over the checked source scope, failing on
+│   │   │   │   └── windows.rs                                   # Select and run mutations for Windows-owned files only
 │   │   │   ├── quality_scorecard/                               # rust-gate scorecard: the step and the value it renders
 │   │   │   │   ├── mod.rs                                       # The step's door: its two modules and its declaration
 │   │   │   │   ├── scorecard.rs                                 # A run's scorecard as a value: its controls, and the JSON, Markdown and badge of them
@@ -317,6 +322,7 @@ in place.
 │   │   │   ├── shard_inputs.rs                                  # Mutation shard input validation before environment exports
 │   │   │   ├── shard_planning.rs                                # Mutation input forwarding and deterministic shard selection tests
 │   │   │   ├── shard_workflow.rs                                # Workflow routing, required status and final scorecard contract tests
+│   │   │   ├── windows_execution.rs                             # The Windows mutation step guards configured files and runs exact diff scopes
 │   │   │   └── workflow_contracts.rs                            # Static workflow wiring contracts for mutation planning and shards
 │   │   ├── api_compatibility.rs                                 # ci.yml: an undeclared API break fails a pull request; what has no API is not applicable
 │   │   ├── architecture_rules.rs                                # ci.yml: ARC-001 to ARC-007, each refused by name, and the exceptions maestro-quality.toml takes
@@ -341,6 +347,7 @@ in place.
 │   │   ├── release_payload.rs                                   # ci.yml: release build, payload, bills of materials, and the example gate
 │   │   ├── release_payload_refusals.rs                          # The release payload's refusals: lockfile drift, unhardened or irreproducible binaries, malformed staging
 │   │   ├── repository_hygiene.rs                                # ci.yml: HYG-001 to HYG-005 and shell width, each refused by name
+│   │   ├── required_status.rs                                   # Contract tests for the sole branch-protection status
 │   │   ├── rule_map.rs                                          # rules and rules --check: written, kept, refused when stale or unmapped
 │   │   ├── ruleset_settings.rs                                  # ci.yml run by a ruleset: its inputs from the base commit's [ci], macOS and Windows kept
 │   │   ├── scorecard_and_required_status.rs                     # ci.yml: the scorecard, the required status and mutation testing

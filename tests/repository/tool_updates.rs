@@ -16,25 +16,58 @@ fn install_rows(dir: &Path) -> Vec<(String, String, String, Option<String>)> {
         for line in text.lines() {
             let line = line.trim().trim_start_matches("TOOLS: ");
             let words: Vec<&str> = line.split_whitespace().collect();
-            if words.len() >= 3 && words[1].contains("/releases/download/") {
-                rows.push((
-                    words[0].to_owned(),
-                    words[1].to_owned(),
-                    words[2].to_owned(),
-                    words.get(3).map(|member| (*member).to_owned()),
-                ));
-            }
+            let (asset, digest, member) = match words.as_slice() {
+                [
+                    _,
+                    platform @ ("linux" | "windows" | "macos"),
+                    asset,
+                    digest,
+                    _,
+                    members @ ..,
+                ] => {
+                    let locked_asset = locked_platform(dir, words[0], platform, "url");
+                    let locked_digest = locked_platform(dir, words[0], platform, "checksum");
+                    assert_eq!(
+                        format!("https://github.com/{}", asset.replace("%2F", "/")),
+                        locked_asset,
+                        "{} {platform}",
+                        words[0]
+                    );
+                    assert_eq!(
+                        format!("sha256:{digest}"),
+                        locked_digest,
+                        "{} {platform}",
+                        words[0]
+                    );
+                    (*asset, *digest, members.first().copied())
+                }
+                [name, asset, digest, members @ ..] if asset.contains("/releases/download/") => {
+                    let _ = name;
+                    (*asset, *digest, members.first().copied())
+                }
+                _ => continue,
+            };
+            rows.push((
+                words[0].to_owned(),
+                asset.to_owned(),
+                digest.to_owned(),
+                member.map(str::to_owned),
+            ));
         }
     }
     rows
 }
 
 fn locked(dir: &Path, name: &str, field: &str) -> String {
+    locked_platform(dir, name, "linux", field)
+}
+
+fn locked_platform(dir: &Path, name: &str, platform: &str, field: &str) -> String {
     let output = tool("jaq")
         .args([
-            "-r", "--from", "toml", "--arg", "t", name, "--arg", "f", field,
+            "-r", "--from", "toml", "--arg", "t", name, "--arg", "p", platform, "--arg", "f", field,
         ])
-        .arg(r#".tools[$t][0]["platforms.linux-x64"][$f] // "missing""#)
+        .arg(r#".tools[$t][0][("platforms." + $p + "-x64")][$f] // "missing""#)
         .arg(dir.join("mise.lock"))
         .output()
         .unwrap();
@@ -59,6 +92,13 @@ fn every_install_row_is_the_asset_mise_locked() {
             .to_owned()
     };
     for (name, asset, digest, _) in rows {
+        let platform = if asset.contains("windows-msvc") {
+            "windows"
+        } else if asset.contains("apple-darwin") {
+            "macos"
+        } else {
+            "linux"
+        };
         let url = format!("https://github.com/{}", asset.replace("%2F", "/"));
         // The Codecov CLI runs only in ci.yml's upload job, never locally, so
         // mise does not lock it; update-tools checks its row against the
@@ -84,8 +124,12 @@ fn every_install_row_is_the_asset_mise_locked() {
             assert_eq!(digest, pinned("MISE_SHA256"));
             continue;
         }
-        assert_eq!(locked(&root(), &name, "url"), url, "{name}");
-        let checksum = locked(&root(), &name, "checksum");
+        assert_eq!(
+            locked_platform(&root(), &name, platform, "url"),
+            url,
+            "{name} {platform}"
+        );
+        let checksum = locked_platform(&root(), &name, platform, "checksum");
         if let Some(sha256) = checksum.strip_prefix("sha256:") {
             assert_eq!(sha256, digest, "{name}");
         }
@@ -120,6 +164,14 @@ fn next_major(version: &str) -> String {
     format!("{}.0.0", major + 1)
 }
 
+fn mutants_member(asset: &str) -> &'static str {
+    if asset.contains("windows-msvc") {
+        "cargo-mutants.exe"
+    } else {
+        "cargo-mutants"
+    }
+}
+
 /// A copy of what `update-tools` reads and writes, with stand-ins for the
 /// network: mise names the latest releases, curl returns fixed bytes and gh
 /// names the latest Codecov CLI.
@@ -139,6 +191,10 @@ fn sandbox(latest_mutants: &str, codecov: &str) -> PathBuf {
         .unwrap();
     }
     let (pinned, sha256) = mutants_pin();
+    let windows_sha256 = locked_platform(&root(), "cargo-mutants", "windows", "checksum")
+        .strip_prefix("sha256:")
+        .unwrap()
+        .to_owned();
     let bin = dir.join(".tools/bin");
     fs::create_dir_all(&bin).unwrap();
     let current = concat!(
@@ -155,7 +211,8 @@ fn sandbox(latest_mutants: &str, codecov: &str) -> PathBuf {
         sum=$(printf 'new cargo-mutants' | sha256sum | cut -d' ' -f1)
         from=cargo-mutants/releases/download/v{pinned}/
         to=cargo-mutants/releases/download/v{latest_mutants}/
-        sed -i -e "s#$from#$to#" -e "s#{sha256}#$sum#" mise.lock ;;
+        sed -i -e "s#$from#$to#" -e "s#{sha256}#$sum#" \
+          -e "s#{windows_sha256}#$sum#" mise.lock ;;
   *) exit 1 ;;
 esac"#
             ),
@@ -248,7 +305,7 @@ fn update_tools_moves_a_pin_everywhere_it_is_installed() {
     for (_, asset, sha, member) in mutants {
         assert!(asset.contains(&format!("/v{next}/")), "{asset}");
         assert_eq!(sha, digest);
-        assert_eq!(member.as_deref(), Some("cargo-mutants"));
+        assert_eq!(member.as_deref(), Some(mutants_member(asset)));
     }
     // Every other row is exactly as it was.
     let others = |rows: &[(String, String, String, Option<String>)]| -> Vec<_> {

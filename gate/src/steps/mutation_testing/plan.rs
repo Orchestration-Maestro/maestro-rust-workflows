@@ -6,8 +6,7 @@ use crate::checks::digests::sha256_hex;
 use crate::checks::inputs::{mutation_mutants_per_shard, mutation_shards};
 use crate::runner::{Cmd, Failure, Job, Outcome, flag, input, optional, output, tee_line, write};
 use std::fs;
-use std::io;
-use std::io::Write as _;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -69,6 +68,7 @@ fn listing(project: &Path, scope: &Scope, json: &Path, log: &Path) -> Outcome {
         let diff = diff.to_string_lossy().into_owned();
         command = command.args(["--in-diff", &diff]);
     }
+    command = scope::exclude_windows_files(command, project)?;
     let result = command.cwd(project).capture_output()?;
     show(&result)?;
     write(log, &result.stderr, false)?;
