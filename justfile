@@ -170,7 +170,9 @@ update-tools:
           echo "${name}: the download differs from mise.lock" >&2; exit 1
         fi
       done
-      row='^([[:space:]]*(TOOLS:[[:space:]])?)([a-z0-9-]+) ([a-z-]+ )?([^ ]+/releases/download/[^ ]+) ([0-9a-f]{64})( (.+))?$'
+      row='^([[:space:]]*(TOOLS:[[:space:]])?)([a-z0-9-]+) '
+      row+='([a-z-]+ )?([^ ]+/releases/download/[^ ]+) '
+      row+='([0-9a-f]{64})( (.+))?$'
       for file in .github/workflows/*.yml; do
         moved="$(mktemp)"
         while IFS= read -r line; do
@@ -183,9 +185,11 @@ update-tools:
               url="$(locked_platform "$name" "$platform" url)"
               checksum="$(locked_platform "$name" "$platform" checksum)"
               digest_value="${checksum#sha256:}"
-              [[ "$url" == https://github.com/*/releases/download/*/* && "$checksum" == sha256:* ]] || {
-                echo "${name} ${platform}: mise.lock has no pinned release asset" >&2; exit 1;
-              }
+              if [[ "$url" != https://github.com/*/releases/download/*/* ||
+                    "$checksum" != sha256:* ]]; then
+                echo "${name} ${platform}: mise.lock has no pinned release asset" >&2
+                exit 1
+              fi
               path="${url#https://github.com/}"
               rest="${path#*/releases/download/}"
               tag="${rest%/*}"
