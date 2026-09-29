@@ -99,6 +99,7 @@ jobs:
     with:
       working-directory: examples/${{ matrix.example }}
       artifact-key: matrix-ci
+      mutation-windows: ${{ matrix.example == 'workspace' && '["core/src/windows.rs"]' || '[]' }}
       coverage-threshold: 90
       rust-version: ${{ matrix.rust-version }}
   sharded-consumer:
@@ -132,6 +133,7 @@ jobs:
     with:
       working-directory: examples/${{ matrix.example }}
       artifact-key: matrix-binaries
+      mutation-windows: ${{ matrix.example == 'workspace' && '["core/src/windows.rs"]' || '[]' }}
       dry-run: true
   crate-dry-run:
     name: Crate publisher dry run
@@ -153,6 +155,7 @@ jobs:
       working-directory: examples/${{ matrix.example }}
       package: ${{ matrix.package }}
       artifact-key: matrix-crate
+      mutation-windows: ${{ matrix.example == 'workspace' && '["core/src/windows.rs"]' || '[]' }}
       dry-run: true
   # Every platform ci.yml can test on, with a fixture that fetches a crate.
   portability-ci:

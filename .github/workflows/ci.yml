@@ -598,6 +598,7 @@ jobs:
       - name: Install the toolchain
         run: rust-gate tools
         env:
+          REPORTS: ${{ runner.temp }}/rust-reports
           RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
       - name: Install pinned Windows mutation tools
         id: windows-mutation-tools

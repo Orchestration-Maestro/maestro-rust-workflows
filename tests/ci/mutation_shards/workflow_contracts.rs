@@ -125,6 +125,14 @@ fn assert_planner_and_consumer_contract(ci: &Value) {
     assert_eq!(mutation_steps[planner]["run"], "rust-gate mutants-plan");
 
     let internal = workflow("ci-internal");
+    let windows_files =
+        "${{ matrix.example == 'workspace' && '[\"core/src/windows.rs\"]' || '[]' }}";
+    for job in ["consumers", "binary-dry-run", "crate-dry-run"] {
+        assert_eq!(
+            internal["jobs"][job]["with"]["mutation-windows"], windows_files,
+            "{job} must exclude its Windows-owned source from Linux mutation runs"
+        );
+    }
     let sharded = &internal["jobs"]["sharded-consumer"];
     assert_eq!(sharded["uses"], "./.github/workflows/ci.yml");
     assert_eq!(sharded["with"]["working-directory"], "examples/workspace");
@@ -166,6 +174,10 @@ fn windows_mutation_job_is_required_and_uses_its_pinned_asset() {
         .iter()
         .position(|step| step["run"] == "rust-gate tools")
         .unwrap();
+    assert_eq!(
+        steps[toolchain]["env"]["REPORTS"],
+        "${{ runner.temp }}/rust-reports"
+    );
     let install = workflow_step(steps, "windows-mutation-tools");
     let tools_position = steps
         .iter()

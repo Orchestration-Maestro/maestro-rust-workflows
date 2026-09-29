@@ -144,6 +144,7 @@ in place.
 │       │   └── LICENSE                                          # MIT notice included in the Cargo package
 │       ├── core/                                                # Workspace library package
 │       │   ├── src/                                             # Workspace library sources
+│       │   │   ├── arithmetic.rs                                # Checked arithmetic exposed by the workspace consumer fixture
 │       │   │   ├── lib.rs                                       # Workspace library surface with doc comments
 │       │   │   └── windows.rs                                   # Small Windows-only behavior owned by the native mutation job
 │       │   ├── Cargo.toml                                       # Isolated workflow-contract test target

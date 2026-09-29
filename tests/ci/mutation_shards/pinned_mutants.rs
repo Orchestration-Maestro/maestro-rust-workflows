@@ -65,12 +65,12 @@ fn internal_shard_selftest_has_a_behavior_equivalent_two_shard_diff() {
     assert!(output(&fixture, "mutation-count").parse::<usize>().unwrap() >= 2);
     assert_eq!(
         git(&project, &["diff", "--name-only", "HEAD^1", "HEAD"]),
-        "core/src/lib.rs"
+        "core/src/arithmetic.rs"
     );
     assert!(
         fs::read_to_string(fixture.root.join("mutants.diff"))
             .unwrap()
-            .contains("core/src/lib.rs")
+            .contains("core/src/arithmetic.rs")
     );
 
     let mut worker = Fixture::new();
@@ -121,7 +121,7 @@ printf '{"caught":1,"missed":0,"timeout":0,"unviable":0}' > "$out/mutants.out/ou
     succeeds(&worker.run_body("rust-gate mutants"));
     assert_eq!(
         git(&worker_project, &["diff", "--name-only", "HEAD^1", "HEAD"]),
-        "core/src/lib.rs"
+        "core/src/arithmetic.rs"
     );
 }
 
