@@ -8,6 +8,7 @@ use crate::checks::digests::sha256_hex;
 use crate::checks::private_directories::private_directory;
 use crate::checks::simple_names::{is_hex, simple};
 use crate::runner::{Cmd, Outcome, Step, add_to_path, input, optional, path};
+use std::env::consts;
 use std::fs;
 use std::path::Path;
 
@@ -52,6 +53,14 @@ fn run() -> Outcome {
     } else {
         &runner_os_input
     })?;
+    if os != consts::OS || consts::ARCH != "x86_64" {
+        return Err(format!(
+            "RUNNER_OS {os} requires an x86_64 {os} host, found {} {}",
+            consts::OS,
+            consts::ARCH
+        )
+        .into());
+    }
     let mut installed = 0;
     for line in input("TOOLS")?.lines() {
         let Some(tool) = parse_tool(line, os)? else {

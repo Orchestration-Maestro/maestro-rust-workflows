@@ -90,13 +90,11 @@ fn tool_installation_verifies_every_download_and_fetches_nothing_unasked() {
     let mut tampered = Fixture::new();
     prepare(&tampered, false);
     tampered.set("TOOLS", TABLE);
-    assert!(
-        !tampered.run("ci", "install").status.success(),
-        "a download failing its checksum must not be installed"
-    );
+    let output = tampered.run("ci", "install");
+    refused(&output, "sha256 mismatch for jaq; refusing extraction");
     let calls = tampered.calls();
     assert!(
-        !calls.contains("tar ") && !calls.contains("install "),
+        !calls.contains("tar\n") && !calls.contains("install\n"),
         "{calls}"
     );
     assert!(!tampered.root.join("path").exists());
@@ -115,7 +113,7 @@ fn unsupported_runner_os_fails_before_downloading_tools() {
 }
 
 #[test]
-fn windows_assets_are_verified_extracted_and_added_to_path() {
+fn windows_assets_refuse_a_non_windows_host_before_downloading() {
     let mut fixture = Fixture::new();
     prepare(&fixture, true);
     fixture.set("RUNNER_OS", "Windows");
@@ -129,16 +127,13 @@ fn windows_assets_are_verified_extracted_and_added_to_path() {
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad zip cargo-mutants.exe"
         ),
     );
-    succeeds(&fixture.run("ci", "install"));
-    let bin = fixture.root.join("rust-tools/bin");
-    assert!(bin.join("jaq.exe").is_file() && bin.join("cargo-mutants.exe").is_file());
-    let calls = fixture.calls();
-    assert!(calls.contains("tar\n-xf"), "{calls}");
-    assert!(
-        fs::read_to_string(fixture.root.join("path"))
-            .unwrap()
-            .contains("rust-tools/bin")
+    refused(
+        &fixture.run("ci", "install"),
+        "RUNNER_OS windows requires an x86_64 windows host",
     );
+    let bin = fixture.root.join("rust-tools/bin");
+    assert!(!bin.join("jaq.exe").exists() && !bin.join("cargo-mutants.exe").exists());
+    assert!(!fixture.calls().contains("curl\n"));
 }
 
 #[test]

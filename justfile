@@ -144,6 +144,10 @@ update-tools:
       locked() {
         jaq -r --from toml ".tools[\"$1\"][0][\"platforms.linux-x64\"].$2 // \"\"" mise.lock
       }
+      locked_platform() {
+        jaq -r --from toml --arg platform "$2" \
+          ".tools[\"$1\"][0][\"platforms.${platform}-x64\"].$3 // \"\"" mise.lock
+      }
       downloads="$(mktemp -d)"
       trap 'rm -rf "$downloads"' EXIT
       for name in "${!was[@]}"; do
@@ -166,16 +170,32 @@ update-tools:
           echo "${name}: the download differs from mise.lock" >&2; exit 1
         fi
       done
-      row='^([[:space:]]*(TOOLS:[[:space:]])?)([a-z0-9-]+) [^ ]+/releases/download/[^ ]+'
-      row+=' [0-9a-f]{64}( ([^ ]+))?$'
+      row='^([[:space:]]*(TOOLS:[[:space:]])?)([a-z0-9-]+) ([a-z-]+ )?([^ ]+/releases/download/[^ ]+) ([0-9a-f]{64})( (.+))?$'
       for file in .github/workflows/*.yml; do
         moved="$(mktemp)"
         while IFS= read -r line; do
           if [[ "$line" =~ $row ]] && [[ -n "${was[${BASH_REMATCH[3]}]:-}" ]]; then
             name="${BASH_REMATCH[3]}"
-            member="${BASH_REMATCH[5]}"
+            platform="${BASH_REMATCH[4]% }"
+            member="${BASH_REMATCH[8]}"
             member="${member//"${was[$name]}"/"${now[$name]}"}"
-            line="${BASH_REMATCH[1]}${name} ${asset[$name]} ${digest[$name]}"
+            if [[ -n "$platform" ]]; then
+              url="$(locked_platform "$name" "$platform" url)"
+              checksum="$(locked_platform "$name" "$platform" checksum)"
+              digest_value="${checksum#sha256:}"
+              [[ "$url" == https://github.com/*/releases/download/*/* && "$checksum" == sha256:* ]] || {
+                echo "${name} ${platform}: mise.lock has no pinned release asset" >&2; exit 1;
+              }
+              path="${url#https://github.com/}"
+              rest="${path#*/releases/download/}"
+              tag="${rest%/*}"
+              repository="${path%%/releases/download/*}"
+              asset_value="${repository}/releases/download/${tag//\//%2F}/${rest##*/}"
+            else
+              asset_value="${asset[$name]}"
+              digest_value="${digest[$name]}"
+            fi
+            line="${BASH_REMATCH[1]}${name} ${platform:+$platform }${asset_value} ${digest_value}"
             line+="${member:+ $member}"
           fi
           printf '%s\n' "$line"

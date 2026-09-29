@@ -144,7 +144,8 @@ in place.
 │       │   └── LICENSE                                          # MIT notice included in the Cargo package
 │       ├── core/                                                # Workspace library package
 │       │   ├── src/                                             # Workspace library sources
-│       │   │   └── lib.rs                                       # Workspace library surface with doc comments
+│       │   │   ├── lib.rs                                       # Workspace library surface with doc comments
+│       │   │   └── windows.rs                                   # Small Windows-only behavior owned by the native mutation job
 │       │   ├── Cargo.toml                                       # Isolated workflow-contract test target
 │       │   ├── LICENSE                                          # MIT notice included in the Cargo package
 │       │   └── README.md                                        # What the member is, for crates.io
@@ -320,6 +321,7 @@ in place.
 │   │   │   ├── shard_inputs.rs                                  # Mutation shard input validation before environment exports
 │   │   │   ├── shard_planning.rs                                # Mutation input forwarding and deterministic shard selection tests
 │   │   │   ├── shard_workflow.rs                                # Workflow routing, required status and final scorecard contract tests
+│   │   │   ├── windows_execution.rs                             # The Windows mutation step guards configured files and runs exact diff scopes
 │   │   │   └── workflow_contracts.rs                            # Static workflow wiring contracts for mutation planning and shards
 │   │   ├── api_compatibility.rs                                 # ci.yml: an undeclared API break fails a pull request; what has no API is not applicable
 │   │   ├── architecture_rules.rs                                # ci.yml: ARC-001 to ARC-007, each refused by name, and the exceptions maestro-quality.toml takes

@@ -24,7 +24,7 @@ pub(super) fn run() -> Outcome {
     let source_scope = scope::prepare(&job, &optional("GITHUB_BASE_REF")?)?;
     let diff_run = source_scope.diff.is_some();
     let touched = if diff_run {
-        Cmd::new("git diff --name-only HEAD^1 HEAD -- .")
+        Cmd::new("git -c core.quotePath=false diff --relative --name-only HEAD^1 HEAD -- .")
             .cwd(&job.project)
             .capture()?
     } else {
@@ -39,18 +39,34 @@ pub(super) fn run() -> Outcome {
     }
     let mut counts = Vec::with_capacity(selected.len());
     for file in &selected {
-        let count = list_file(&job, &source_scope, file)?;
-        require_mutants(&[*file], &[count])?;
+        let available = list_file(&job, &source_scope, file, false)?;
+        require_mutants(&[*file], &[available])?;
+        let count = if diff_run {
+            let changed = list_file(&job, &source_scope, file, true)?;
+            if changed == 0 {
+                tee_line(
+                    &format!("SKIPPED: no mutants in the changed lines of {file}"),
+                    &report,
+                    false,
+                )?;
+            } else {
+                tee_line(&format!("{file}: {changed} mutants"), &report, false)?;
+            }
+            changed
+        } else {
+            tee_line(&format!("{file}: {available} mutants"), &report, false)?;
+            available
+        };
         counts.push(count);
-        tee_line(&format!("{file}: {count} mutants"), &report, false)?;
     }
-    run_files(&job, &source_scope, &selected, &report)?;
+    let verdict = run_files(&job, &source_scope, &selected, &report);
     let expected = counts.into_iter().sum();
     let outcomes = job.temp.join("mutants/mutants.out/outcomes.json");
     if outcomes.is_file() {
         fs::copy(&outcomes, job.report("mutants.json")?)
             .map_err(|error| format!("cannot copy the outcomes: {error}"))?;
     }
+    verdict?;
     reports::report_outcomes(
         &job,
         &outcomes,
@@ -61,18 +77,21 @@ pub(super) fn run() -> Outcome {
 }
 
 /// List one exact file so empty per-file scopes cannot pass silently.
-fn list_file(job: &Job, scope: &scope::Scope, file: &str) -> Result<usize, Failure> {
+fn list_file(job: &Job, scope: &scope::Scope, file: &str, in_diff: bool) -> Result<usize, Failure> {
     let listing = job.temp.join("windows-mutants-list.json");
     let mut command = Cmd::new(
         "cargo mutants --list --json --no-shuffle --cargo-arg=--locked --colors=never --level=info",
     )
     .arg("--file")
     .arg(file);
-    if let Some(diff) = &scope.diff {
+    if in_diff && let Some(diff) = &scope.diff {
         command = command.args(["--in-diff", &diff.to_string_lossy()]);
     }
     let listed = command.cwd(&job.project).capture()?;
     fs::write(&listing, &listed).map_err(|error| format!("{}: {error}", listing.display()))?;
+    if listed.trim().is_empty() {
+        return Ok(0);
+    }
     let count = Cmd::new("jaq -er").arg("length").arg(&listing).capture()?;
     parse_listing_count(&count)
 }

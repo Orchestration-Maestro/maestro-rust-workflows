@@ -112,7 +112,7 @@ jobs:
       working-directory: examples/workspace
       artifact-key: sharded-consumer
       mutation-shards: 2
-      mutation-windows: '[]'
+      mutation-windows: '["core/src/windows.rs"]'
       internal-shard-selftest: true
   binary-dry-run:
     name: Binary publisher dry run

@@ -2,6 +2,11 @@
 
 #![forbid(unsafe_code)]
 
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub use windows::line_ending;
+
 /// Adds two bounded integers, returning `None` on overflow.
 ///
 /// # Examples

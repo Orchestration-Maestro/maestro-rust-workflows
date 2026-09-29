@@ -58,7 +58,7 @@ name: Rust CI
         default: 50
       mutation-windows:
         description: >-
-          JSON array of exact repository-relative files owned by Windows mutation testing
+          JSON array of exact files relative to `working-directory` owned by Windows mutation testing
         type: string
         default: '[]'
       internal-shard-selftest:
@@ -567,7 +567,7 @@ jobs:
     needs:
       - checks
     if: ${{ needs.checks.result == 'success' && needs.checks.outputs.mutation-test == 'true' && needs.checks.outputs.mutation-windows != '[]' }}
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 60
     permissions:
       contents: read
@@ -592,6 +592,9 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 2
           persist-credentials: false
+      - name: Configure private Cargo state for direct crates.io access
+        id: windows-registry
+        run: rust-gate registry
       - name: Install the toolchain
         run: rust-gate tools
         env:
@@ -602,6 +605,7 @@ jobs:
         env:
           TOOLS: |
             cargo-mutants windows sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-pc-windows-msvc.zip 2a2f00e47d4b458262a41501b0820aa26015fd35779903d2c8b30b2993f36791 zip cargo-mutants.exe
+            cargo-nextest windows nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-pc-windows-msvc.zip 0fa689815c8157e4633225b6b173184b3d546eb6ffb754c3d0e6ea5973284a20 zip cargo-nextest.exe
             jaq windows 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-pc-windows-msvc.exe 7b2f5153d11118c3ccff01859743e09842cabc42ba08f8876489c1be30d1d08d file jaq.exe
       - name: Windows mutation testing
         id: windows-mutation-run
@@ -619,7 +623,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: ${{ needs.checks.outputs.artifact-name }}-mutants-windows
+          name: ${{ needs.checks.outputs.artifact-name }}-windows-mutants
           path: |
             ${{ runner.temp }}/mutants/mutants.out/
             ${{ runner.temp }}/rust-reports/mutants.json

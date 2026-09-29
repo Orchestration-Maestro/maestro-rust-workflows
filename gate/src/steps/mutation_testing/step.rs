@@ -79,7 +79,7 @@ pub(crate) const STEPS: &[Step] = &[
             "RUSTUP_TOOLCHAIN",
         ],
         tools: &["cargo mutants", "git", "jaq"],
-        reports: &["mutants.json", "mutants.txt", "mutants.diff", "mutants"],
+        reports: &["mutants.json", "mutants.txt", "mutants.diff"],
         run: super::windows::run,
     },
     Step {

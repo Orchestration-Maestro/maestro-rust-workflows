@@ -8,4 +8,5 @@ mod shard_execution;
 mod shard_inputs;
 mod shard_planning;
 mod shard_workflow;
+mod windows_execution;
 mod workflow_contracts;

@@ -94,7 +94,7 @@ committed `deny.toml` applies the same way to every pull request. See [runner se
 | `mutation-test` | boolean | `true` | Run cargo-mutants and fail on surviving mutants; a pull request mutates its diff, a push or tag its own commit |
 | `mutation-shards` | number | `1` | `1` keeps one inline run without discovery, `0` selects all mutants automatically, and `2` through `64` request a fixed shard count |
 | `mutation-mutants-per-shard` | number | `50` | Automatic mode target mutants per shard, an adjustable calibration knob from `1` to `1000`, not a time guarantee |
-| `mutation-windows` | string | `[]` | JSON array of exact repository-relative files owned by Windows mutation testing |
+| `mutation-windows` | string | `[]` | JSON array of exact files relative to `working-directory` owned by Windows mutation testing |
 | `internal-shard-selftest` | boolean | `false` | Internal to this repository's own CI only: create a behavior-equivalent workspace diff and require its two-shard mutation matrix. Refused for every other repository. |
 | `sarif-reports` | boolean | `true` | Also emit Clippy and secret findings as SARIF, which the organization's check uploads to code scanning |
 | `clippy-level` | string | `default` | `pedantic` or `nursery` also deny those Clippy groups |
@@ -1042,11 +1042,13 @@ repository's first commit, which has no parent, mutates the whole workspace.
 
 A repository that owns Windows-only Rust code lists its exact relative paths in
 `[ci].mutation-windows`. The Linux mutation listing and workers exclude those
-files; the pinned Windows job mutates them on `windows-latest` and uploads its
-raw outcomes as an artifact. A pull request mutates only listed files it touched,
-and reports a successful no-op when it touched none. A full run requires at least
-one mutant from every listed file. Missing files, empty required listings,
-survivors and timeouts fail the job, which the required status holds.
+files; the pinned Windows job mutates them on `windows-2025` and uploads its
+raw outcomes as an artifact. A pull request first confirms each touched file has
+mutants, then mutates only those in changed lines; a file with no changed-line
+mutants is reported as skipped. A pull request reports a successful no-op when
+it touched none. A full run requires at least one mutant from every listed file.
+Missing files, empty required listings, survivors and timeouts fail the job,
+which the required status holds.
 
 `mutation-shards: 1` is the compatible default: it runs the existing inline
 mutation command once, with no discovery listing; the worker and summary jobs

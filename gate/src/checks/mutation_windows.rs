@@ -26,7 +26,12 @@ pub(crate) fn mutation_windows(project: &Path, value: &str) -> Result<Vec<String
             || path
                 .components()
                 .any(|part| !matches!(part, Component::Normal(_)))
-            || name.contains(['*', '?', '[', ']'])
+            || !name.contains('/')
+            || !matches!(
+                path.extension().and_then(|extension| extension.to_str()),
+                Some("rs")
+            )
+            || name.contains(['*', '?', '[', ']', '{', '}', '\\', '!'])
         {
             return Err(format!(
                 "MUTATION_WINDOWS path `{name}` must be an exact relative file path"
@@ -59,6 +64,7 @@ mod tests {
     fn mutation_windows_accepts_existing_exact_files_and_refuses_unsafe_paths() {
         let project = env::temp_dir().join(format!("mutation-windows-{}", process::id()));
         fs::remove_dir_all(&project).ok();
+        fs::create_dir_all(project.join("src/windows-dir.rs")).unwrap();
         fs::create_dir_all(project.join("src")).unwrap();
         fs::write(project.join("src/windows.rs"), "").unwrap();
         assert_eq!(
@@ -75,16 +81,44 @@ mod tests {
                 "MUTATION_WINDOWS file `src/windows.rs` is listed more than once",
             ),
             (
-                r#"["src"]"#,
-                "MUTATION_WINDOWS file `src` must stay inside the Cargo workspace",
+                r#"["src/windows-dir.rs"]"#,
+                "MUTATION_WINDOWS file `src/windows-dir.rs` must stay inside the Cargo workspace",
             ),
             (
                 r#"["src/*.rs"]"#,
                 "MUTATION_WINDOWS path `src/*.rs` must be an exact relative file path",
             ),
             (
-                r#"["missing.rs"]"#,
-                "MUTATION_WINDOWS file `missing.rs` does not exist",
+                r#"["windows.rs"]"#,
+                "MUTATION_WINDOWS path `windows.rs` must be an exact relative file path",
+            ),
+            (
+                r#"["src/{windows}.rs"]"#,
+                "MUTATION_WINDOWS path `src/{windows}.rs` must be an exact relative file path",
+            ),
+            (
+                r#"["src/a{b.rs"]"#,
+                "MUTATION_WINDOWS path `src/a{b.rs` must be an exact relative file path",
+            ),
+            (
+                r#"["src/a}b.rs"]"#,
+                "MUTATION_WINDOWS path `src/a}b.rs` must be an exact relative file path",
+            ),
+            (
+                r#"["src/windows.txt"]"#,
+                "MUTATION_WINDOWS path `src/windows.txt` must be an exact relative file path",
+            ),
+            (
+                r#"["src/!windows.rs"]"#,
+                "MUTATION_WINDOWS path `src/!windows.rs` must be an exact relative file path",
+            ),
+            (
+                r#"["src/windows\\file.rs"]"#,
+                "MUTATION_WINDOWS path `src/windows\\file.rs` must be an exact relative file path",
+            ),
+            (
+                r#"["missing/windows.rs"]"#,
+                "MUTATION_WINDOWS file `missing/windows.rs` does not exist",
             ),
             (
                 r#"["../outside.rs"]"#,

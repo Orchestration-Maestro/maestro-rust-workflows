@@ -148,7 +148,7 @@ fn assert_planner_and_consumer_contract(ci: &Value) {
 fn windows_mutation_job_is_required_and_uses_its_pinned_asset() {
     let ci = workflow("ci");
     let windows = &ci["jobs"]["mutation-windows"];
-    assert_eq!(windows["runs-on"], "windows-latest");
+    assert_eq!(windows["runs-on"], "windows-2025");
     assert_eq!(windows["needs"], json!(["checks"]));
     assert!(
         windows["if"]
@@ -158,10 +158,22 @@ fn windows_mutation_job_is_required_and_uses_its_pinned_asset() {
     );
     assert_eq!(windows["env"]["CARGO_MUTANTS_VERSION"], "27.1.0");
     let steps = windows["steps"].as_array().unwrap();
+    let registry = steps
+        .iter()
+        .position(|step| step["id"] == "windows-registry")
+        .unwrap();
+    let toolchain = steps
+        .iter()
+        .position(|step| step["run"] == "rust-gate tools")
+        .unwrap();
     let install = workflow_step(steps, "windows-mutation-tools");
+    let tools_position = steps
+        .iter()
+        .position(|step| step["id"] == "windows-mutation-tools")
+        .unwrap();
+    assert!(registry < toolchain && toolchain < tools_position);
     let tools = install["env"]["TOOLS"].as_str().unwrap();
-    assert!(tools.contains("cargo-mutants-x86_64-pc-windows-msvc.zip"));
-    assert!(tools.contains("2a2f00e47d4b458262a41501b0820aa26015fd35779903d2c8b30b2993f36791"));
+    assert_windows_tool_rows(tools);
     let linux_steps = ci["jobs"]["mutations"]["steps"].as_array().unwrap();
     let linux_tools = tool_rows(workflow_step(linux_steps, "mutation-tools"));
     assert!(linux_tools.iter().any(|row| {
@@ -179,7 +191,29 @@ fn windows_mutation_job_is_required_and_uses_its_pinned_asset() {
         "rust-gate mutants-windows"
     );
     let upload = workflow_step(steps, "windows-mutation-upload");
-    let artifact = upload["with"]["path"].as_str().unwrap();
+    let upload_name = upload["with"]["name"].as_str().unwrap();
+    assert!(upload_name.ends_with("-windows-mutants"), "{upload_name}");
+    assert!(!upload_name.contains("-mutants-"), "{upload_name}");
+    assert_windows_report_paths(upload["with"]["path"].as_str().unwrap());
+    let required_steps = ci["jobs"]["gate"]["steps"].as_array().unwrap();
+    let required = workflow_step(required_steps, "required");
+    assert_eq!(
+        required["env"]["WINDOWS_MUTATIONS_RESULT"],
+        "${{ needs.mutation-windows.result }}"
+    );
+}
+
+fn assert_windows_tool_rows(tools: &str) {
+    assert!(tools.contains("cargo-mutants-x86_64-pc-windows-msvc.zip"));
+    assert!(tools.contains(concat!(
+        "cargo-nextest windows nextest-rs/nextest/releases/download/",
+        "cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-pc-windows-msvc.zip ",
+        "0fa689815c8157e4633225b6b173184b3d546eb6ffb754c3d0e6ea5973284a20 zip cargo-nextest.exe"
+    )));
+    assert!(tools.contains("2a2f00e47d4b458262a41501b0820aa26015fd35779903d2c8b30b2993f36791"));
+}
+
+fn assert_windows_report_paths(artifact: &str) {
     for path in [
         "mutants.out/",
         "rust-reports/mutants.json",
@@ -187,12 +221,6 @@ fn windows_mutation_job_is_required_and_uses_its_pinned_asset() {
     ] {
         assert!(artifact.contains(path), "{artifact}");
     }
-    let required_steps = ci["jobs"]["gate"]["steps"].as_array().unwrap();
-    let required = workflow_step(required_steps, "required");
-    assert_eq!(
-        required["env"]["WINDOWS_MUTATIONS_RESULT"],
-        "${{ needs.mutation-windows.result }}"
-    );
 }
 
 #[test]
@@ -237,6 +265,17 @@ fn cargo_mutants_version_environment_matches_the_installed_pin() {
         .split('/')
         .next()
         .unwrap();
+    let windows_tools = workflow_step(
+        ci["jobs"]["mutation-windows"]["steps"].as_array().unwrap(),
+        "windows-mutation-tools",
+    )["env"]["TOOLS"]
+        .as_str()
+        .unwrap();
+    let windows_mutants = windows_tools
+        .lines()
+        .find(|line| line.starts_with("cargo-mutants "))
+        .unwrap();
+    assert!(windows_mutants.contains(&format!("/download/v{version}/")));
     for name in [
         "checks",
         "mutations",
