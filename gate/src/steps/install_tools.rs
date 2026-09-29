@@ -19,7 +19,7 @@ pub(crate) const STEPS: &[Step] = &[Step {
     summary: "Install pinned tools, each download verified by digest before extraction",
     inputs: &["RUNNER_OS", "TOOLS"],
     tools: if cfg!(windows) {
-        &["powershell.exe"]
+        &["curl", "powershell.exe"]
     } else {
         &["curl", "install", "tar"]
     },
