@@ -52,10 +52,14 @@ pub(super) fn run() -> Outcome {
     listing(&job.project, &scope, &listing_path, &log)?;
     let mutants = listing_count(&listing_path)?;
     let target = mutation_mutants_per_shard()?;
-    let (mode, shards, matrix, ceiling) = selection(mutants, requested, target);
+    let (mode, shards, matrix) = selection(mutants, requested, target)?;
     let manifest = job.report("mutation-plan.json")?;
     write_manifest(&manifest, &job.project, &scope, mutants, shards)?;
-    plan_report(&report, mode, mutants, shards, ceiling)?;
+    tee_line(
+        &format!("Mutation plan: {mode}; {mutants} mutants; {shards} shard(s)"),
+        &report,
+        false,
+    )?;
     routing(mode, Some(mutants), shards, &matrix)
 }
 
@@ -152,27 +156,36 @@ fn selection(
     mutants: usize,
     requested: usize,
     target: usize,
-) -> (&'static str, usize, Vec<usize>, bool) {
+) -> Result<(&'static str, usize, Vec<usize>), Failure> {
     if mutants == 0 {
-        return ("empty", 0, Vec::new(), false);
+        return Ok(("empty", 0, Vec::new()));
     }
-    let (shards, ceiling) = if requested == 0 {
+    let shards = if requested == 0 {
         let desired = mutants.div_ceil(target);
-        (desired.min(64), desired > 64)
+        if desired > 256 {
+            return Err(format!(
+                concat!(
+                    "automatic mutation plan needs {} shards for {} mutants ",
+                    "at target {}; GitHub's matrix limit is 256"
+                ),
+                desired, mutants, target
+            )
+            .into());
+        }
+        desired
     } else {
-        (requested.min(mutants), false)
+        requested.min(mutants)
     };
     let matrix = if shards == 1 {
         Vec::new()
     } else {
         (0..shards).collect()
     };
-    (
+    Ok((
         if shards == 1 { "inline" } else { "sharded" },
         shards,
         matrix,
-        ceiling,
-    )
+    ))
 }
 
 /// Save the full run identity outside job outputs; workers and aggregation verify it.
@@ -213,15 +226,6 @@ fn write_manifest(
         .arg(MANIFEST_QUERY)
         .capture()?;
     write(path, format!("{json}\n").as_bytes(), false)
-}
-
-/// Write one human-readable, complete selection decision.
-fn plan_report(path: &Path, mode: &str, mutants: usize, shards: usize, ceiling: bool) -> Outcome {
-    let mut text = format!("Mutation plan: {mode}; {mutants} mutants; {shards} shard(s)");
-    if ceiling {
-        text.push_str("; automatic 64-shard ceiling reached, target exceeded");
-    }
-    tee_line(&text, path, false)
 }
 
 /// Reuse the planning diff for inline work, or build the original scope once.
@@ -392,7 +396,7 @@ fn safe_plan_file(job: &Job, path: &Path) -> Result<PathBuf, Failure> {
 
 /// Parse only a zero-based shard index/count the complete matrix can contain.
 pub(super) fn parse_shard(value: &str) -> Result<(usize, usize), Failure> {
-    let refusal = || "MUTATION_SHARD must be a zero-based K/N with 2 <= N <= 64 and K < N";
+    let refusal = || "MUTATION_SHARD must be a zero-based K/N with 2 <= N <= 256 and K < N";
     let Some((index, count)) = value.split_once('/') else {
         return Err(refusal().into());
     };
@@ -402,7 +406,7 @@ pub(super) fn parse_shard(value: &str) -> Result<(usize, usize), Failure> {
     let (Ok(index), Ok(count)) = (index.parse::<usize>(), count.parse::<usize>()) else {
         return Err(refusal().into());
     };
-    if !(2..=64).contains(&count) || index >= count {
+    if !(2..=256).contains(&count) || index >= count {
         return Err(refusal().into());
     }
     Ok((index, count))
@@ -453,13 +457,13 @@ mod tests {
 
     #[test]
     fn selection_and_worker_numbers_are_complete_and_bounded() {
-        assert_eq!(selection(0, 0, 50), ("empty", 0, vec![], false));
-        assert_eq!(selection(51, 0, 50), ("sharded", 2, vec![0, 1], false));
-        assert_eq!(parse_shard("63/64").unwrap(), (63, 64));
-        for value in ["", "2/2", "0/65", "0/x"] {
+        assert_eq!(selection(0, 0, 50).unwrap(), ("empty", 0, vec![]));
+        assert_eq!(selection(51, 0, 50).unwrap(), ("sharded", 2, vec![0, 1]));
+        assert_eq!(parse_shard("255/256").unwrap(), (255, 256));
+        for value in ["", "2/2", "0/257", "0/x"] {
             assert_eq!(
                 parse_shard(value).unwrap_err().message.as_deref(),
-                Some("MUTATION_SHARD must be a zero-based K/N with 2 <= N <= 64 and K < N")
+                Some("MUTATION_SHARD must be a zero-based K/N with 2 <= N <= 256 and K < N")
             );
         }
     }
@@ -467,23 +471,18 @@ mod tests {
     #[test]
     fn json_counts_require_unsigned_integral_values() {
         assert_eq!(parse_count("5", "unused").unwrap(), 5);
-        assert_eq!(
-            parse_count(
+        for (value, message) in [
+            (
                 "not-a-count",
-                "cargo-mutants listing has no integral length"
-            )
-            .unwrap_err()
-            .message
-            .as_deref(),
-            Some("cargo-mutants listing has no integral length")
-        );
-        assert_eq!(
-            parse_count("5.5", "mutation plan has no integral mutant count")
-                .unwrap_err()
-                .message
-                .as_deref(),
-            Some("mutation plan has no integral mutant count")
-        );
+                "cargo-mutants listing has no integral length",
+            ),
+            ("5.5", "mutation plan has no integral mutant count"),
+        ] {
+            assert_eq!(
+                parse_count(value, message).unwrap_err().message.as_deref(),
+                Some(message)
+            );
+        }
     }
 
     #[test]

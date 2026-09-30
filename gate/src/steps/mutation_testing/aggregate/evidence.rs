@@ -85,6 +85,30 @@ pub(super) struct Plan {
     pub(super) artifact_name: String,
 }
 
+/// Estimate unfinished assigned mutants from a failed shard's retained JSON.
+pub(super) fn untested_mutants(source: &Path, plan: &Plan, index: usize) -> usize {
+    let expected = assigned_count(plan.mutants, index, plan.shards);
+    let Ok(discovered) = safe_file(&source.join("mutants/mutants.out/mutants.json")) else {
+        return expected;
+    };
+    let Ok(outcomes) = safe_file(&source.join("mutants/mutants.out/outcomes.json")) else {
+        return expected;
+    };
+    let planned = jaq("length", &discovered)
+        .ok()
+        .and_then(|count| count.parse::<usize>().ok())
+        .unwrap_or(expected);
+    let tested = jaq(
+        "[.outcomes[] | select(.scenario != \"Baseline\")] | length",
+        &outcomes,
+    )
+    .ok()
+    .and_then(|count| count.parse::<usize>().ok())
+    .unwrap_or(0);
+    // Do not let a shard's incomplete listing lower the plan's assigned count.
+    expected.max(planned).saturating_sub(tested)
+}
+
 /// Validate one shard's receipt, assignment, outcomes, logs and counters.
 pub(super) fn read_shard(
     source: &Path,

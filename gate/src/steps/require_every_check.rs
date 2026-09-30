@@ -80,7 +80,7 @@ fn run() -> Outcome {
             let expected = format!("[{}]", expected.join(","));
             if mutant_count == 0
                 || mutant_count.to_string() != count
-                || !(2..=64).contains(&shard_count)
+                || !(2..=256).contains(&shard_count)
                 || shard_count > mutant_count
                 || shard_count.to_string() != shards
                 || matrix != expected

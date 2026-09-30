@@ -6,6 +6,17 @@ use std::fs;
 use std::iter;
 use std::path::{Path, PathBuf};
 
+/// Form the aggregate failure reason, including incompletes distinct from survivors.
+pub(crate) fn incomplete_reason(untested: usize, shards: usize) -> String {
+    format!(
+        concat!(
+            "{} mutants untested in {} shards; ",
+            "one or more expected mutation shards are missing or incomplete"
+        ),
+        untested, shards
+    )
+}
+
 /// A listing with `count` distinct pinned-tool mutant records and a changed
 /// Rust diff, run against the real `mutants-plan` executable boundary.
 pub(crate) fn planning_fixture(count: usize, shards: usize, target: usize) -> Fixture {

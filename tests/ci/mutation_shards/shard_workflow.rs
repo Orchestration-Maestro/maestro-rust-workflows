@@ -232,8 +232,38 @@ fn one_unplanned_mutation_job_must_still_be_skipped() {
 }
 
 #[test]
-fn required_status_rejects_shard_counts_outside_two_to_sixty_four() {
-    for shards in [1, 65] {
+fn required_status_accepts_a_256_entry_shard_matrix() {
+    let mut fixture = Fixture::new();
+    let shards = 256;
+    let matrix = format!(
+        "[{}]",
+        (0..shards)
+            .map(|index| index.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    for (name, value) in [
+        ("RESULT", "success".to_owned()),
+        ("PORTABILITY", "skipped".to_owned()),
+        ("RUNNERS", String::new()),
+        ("MUTATION_TEST", "true".to_owned()),
+        ("MUTATION_MODE", "sharded".to_owned()),
+        ("MUTATION_COUNT", shards.to_string()),
+        ("MUTATIONS_RESULT", "success".to_owned()),
+        ("MUTATION_SUMMARY_RESULT", "success".to_owned()),
+        ("MUTATION_SHARDS", shards.to_string()),
+        ("MUTATION_MATRIX", matrix),
+        ("MUTATION_ATTEMPT", "1".to_owned()),
+        ("GITHUB_RUN_ATTEMPT", "1".to_owned()),
+    ] {
+        fixture.set(name, &value);
+    }
+    succeeds(&fixture.run("ci", "required"));
+}
+
+#[test]
+fn required_status_rejects_shard_counts_outside_two_to_two_hundred_fifty_six() {
+    for shards in [1, 257] {
         let mut fixture = Fixture::new();
         let matrix = format!(
             "[{}]",
