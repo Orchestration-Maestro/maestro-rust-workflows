@@ -922,6 +922,53 @@ access, which the hosted run has.
 
 CI accepts no secret.
 
+### Reviewed secret-scan exceptions
+
+The gate embeds [the organization's reviewed list](../policy/secret-scan-exceptions.json)
+when built from the workflow's pinned revision. No list, `.gitleaks.toml`,
+`.gitleaksignore` or inline Gitleaks allow comment in the consumer checkout grants
+an exception. Every approval requires four exact keys: `GITHUB_REPOSITORY` as
+`owner/name`, repository-relative `path`, Gitleaks `rule` (`RuleID`), and `sha256`.
+There are no globs, wildcard rules or line-number keys. Built-in Gitleaks rules
+remain unchanged. A separate scan uses only the gate-owned `gitleaks-allow` rule,
+without inherited rules or global allowlists, and combines its findings with the
+secret scan. Every inline suppression marker is itself a finding, even on a line
+containing no secret or in a path the built-in rules allow. Its `Match` is the
+entire line, so approving one marker cannot approve changed surrounding code.
+
+Gitleaks automatically loads an archived root `.gitleaksignore`, regardless of
+its explicit ignore-path option. The gate moves that file to an unused archive
+name before scanning and maps findings back to `.gitleaksignore`. Its content is
+still scanned, but its fingerprints cannot suppress findings. A consumer
+`.gitleaks.toml`, `GITLEAKS_CONFIG` or `GITLEAKS_CONFIG_TOML` cannot replace the
+gate's explicit configuration.
+
+Approvals apply only in hosted CI (`GITHUB_ACTIONS=true`), using the runner's
+nonempty `GITHUB_REPOSITORY`. A hosted scan with missing or empty repository
+identity fails as a misconfiguration. A local scan, including `ci --local`,
+prints a notice and scans without exceptions or stale-entry warnings, even if a
+repository variable was supplied manually. Identity is never inferred from
+consumer files or Git remotes.
+
+The SHA256 covers the UTF-8 bytes of Gitleaks' entire unredacted `Match`, including
+whitespace, not just `Secret`. This binds surrounding flagged code as well as the
+secret candidate: any change to the flagged text requires a new review, while
+moving it to another line does not. The raw scanner report travels only through
+private process pipes and memory, never a file or job log. JSON and SARIF contain
+only redacted values, locations, hashes and approval metadata.
+
+Excepted findings remain visible in the step log and `secrets.json`, marked
+`Status: excepted` with their full `Exception` entry. SARIF marks them with accepted
+external suppressions. Every other finding fails the step. An approval for the
+current repository that matches nothing produces a stale-entry warning, not a
+failure; approvals for other repositories produce no warning.
+
+To request an exception, open a pull request to this repository adding the four
+keys plus `reason`, `approved_by` and `approved_on` to the central list. Provide
+false-positive evidence without publishing matched text or secret material.
+An organization review and a release are required before the pinned gate can
+use it. Consumers cannot approve their own findings.
+
 ### Run cost
 
 Every pinned Rust tool is installed from a checksum-verified prebuilt release
@@ -1195,7 +1242,9 @@ Publishers omit this override and use the committed consumer pin.
 3. Pinned cargo-audit checks the lockfile against the live RustSec database.
    Pinned Gitleaks scans an archive of the entire current source revision (not
    Git history), uses built-in rules without consumer allowlists, and redacts
-   100% of detected secret values. Findings **and scanner execution errors fail**.
+   100% of detected secret values. Unreviewed findings **and scanner execution
+   errors fail**. Only [gate-owned reviewed exceptions](#reviewed-secret-scan-exceptions)
+   can excuse a finding.
 4. Release build and release-mode tests, verified packages of the members that
    may be published, per-member CycloneDX 1.5 JSON SBOMs, and release artifact
    staging. cargo-cyclonedx lacks `--locked`: a before/after lockfile comparison

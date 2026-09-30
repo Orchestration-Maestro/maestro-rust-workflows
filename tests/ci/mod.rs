@@ -29,6 +29,7 @@ mod rule_map;
 mod ruleset_settings;
 mod scorecard_and_required_status;
 mod scorecard_states;
+mod secret_exceptions;
 mod source_rules;
 mod supply_chain;
 mod toolbelt_setup;
