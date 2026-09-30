@@ -94,13 +94,14 @@ fn refuse_global_mutation_features(project: &Path) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Read a required array of strings from the policy's JSON object.
+/// Preserve exact entries: the raw line transport cannot carry embedded CR or LF.
 fn strings(value: &str, key: &str) -> Result<Vec<String>, Failure> {
     let listed = Cmd::new("jaq -nr")
         .env("MUTATION_ENGINE", value)
         .arg(concat!(
             "$ENV.MUTATION_ENGINE | fromjson | .[$ENV.MUTATION_KEY] | if type == \"array\" ",
-            "and all(.[]; type == \"string\") then .[] else ",
+            "and all(.[]; type == \"string\" and (contains(\"\\n\") | not) ",
+            "and (contains(\"\\r\") | not)) then .[] else ",
             "error(\"expected an array of strings\") end"
         ))
         .env("MUTATION_KEY", key)
@@ -242,6 +243,15 @@ mod tests {
                 files: vec!["crates/a/src/engine.rs".into()]
             }
         );
+        for invalid in [
+            policy.replace(r#""engine""#, r#""engine\n""#),
+            policy.replace(r#""engine""#, r#""engine\r""#),
+            policy.replace("engine.rs", r"engine.rs\n"),
+            policy.replace("engine.rs", r"engine.rs\r"),
+            policy.replace("engine.rs", r"engine.rs\ncrates/a/src/default.rs"),
+        ] {
+            assert!(parse(&root, &invalid, &[]).is_err(), "{invalid}");
+        }
         assert_eq!(
             parse(&root, policy, &["crates/a/src/engine.rs".into()])
                 .unwrap_err()
