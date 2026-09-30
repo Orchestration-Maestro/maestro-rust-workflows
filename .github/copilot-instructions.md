@@ -264,6 +264,12 @@ in place.
 │   │   │   │   ├── page.rs                                      # What a repository wrote, read back; paragraphs wrapped at 80
 │   │   │   │   ├── render.rs                                    # The three pages: kept rows, organization defaults, not mapped
 │   │   │   │   └── step.rs                                      # rust-gate rules: the pages written where they differ
+│   │   │   ├── secret_scan/                                     # Source secret scanning with gate-owned, reviewed exact-content exceptions
+│   │   │   │   ├── archive.rs                                   # Neutralize Gitleaks' automatic root ignore-file loading without dropping its content
+│   │   │   │   ├── mod.rs                                       # Source secret scanning with gate-owned, reviewed exact-content exceptions
+│   │   │   │   ├── policy.rs                                    # The exception authority is compiled into the gate, never read from a consumer
+│   │   │   │   ├── reports.rs                                   # Decode raw findings in memory and emit only locations, hashes and review metadata
+│   │   │   │   └── step.rs                                      # rust-gate secrets: built-in Gitleaks rules, no consumer allowlist, and
 │   │   │   ├── api_compatibility.rs                             # rust-gate api: cargo-semver-checks against the base branch unless the title declares a break
 │   │   │   ├── attest_binaries.rs                               # rust-gate attest-binaries: validate, extract the SBOM, verify, record the outcome
 │   │   │   ├── binary_hardening.rs                              # rust-gate hardening: reproducible, PIE, RELRO, no executable stack, auditable
@@ -293,7 +299,6 @@ in place.
 │   │   │   ├── report_duplicates.rs                             # rust-gate duplication: pairs of alike functions reported, three alike refused (DUP-001)
 │   │   │   ├── report_sizes.rs                                  # rust-gate complexity: function and file sizes, reported and never enforced
 │   │   │   ├── require_every_check.rs                           # rust-gate required: the one status a branch protection can require
-│   │   │   ├── secret_scan.rs                                   # rust-gate secrets: Gitleaks over the current revision, findings redacted
 │   │   │   ├── stage_payload.rs                                 # rust-gate stage: the immutable payload, its provenance and checksums
 │   │   │   ├── toolbelt_setup.rs                                # rust-gate setup: the pinned toolbelt for this user, its PATH line, the commit hooks
 │   │   │   ├── unsafe_audit.rs                                  # rust-gate unsafe-audit: inputs, nightly toolchain with Miri, the run and its reach
@@ -306,6 +311,8 @@ in place.
 │   ├── Cargo.lock                                               # Locked resolution for the test crate
 │   ├── Cargo.toml                                               # Isolated workflow-contract test target
 │   └── LICENSE                                                  # MIT notice included in the Cargo package
+├── policy/                                                      # Policy
+│   └── secret-scan-exceptions.json                              # JSON data: secret scan exceptions
 ├── scripts/                                                     # Provisioning that has to run before the toolbelt exists
 │   └── bootstrap.sh                                             # This repository's own verified toolbelt and hooks, on Linux x64
 ├── supply-chain/                                                # The audits the organization publishes for every repository to import
@@ -352,6 +359,7 @@ in place.
 │   │   ├── ruleset_settings.rs                                  # ci.yml run by a ruleset: its inputs from the base commit's [ci], macOS and Windows kept
 │   │   ├── scorecard_and_required_status.rs                     # ci.yml: the scorecard, the required status and mutation testing
 │   │   ├── scorecard_states.rs                                  # ci.yml: selection, applicability and execution reported separately
+│   │   ├── secret_exceptions.rs                                 # Reviewed secret exceptions are gate-owned and require all four exact keys
 │   │   ├── source_rules.rs                                      # ci.yml: SIZE, NAME, DOC, LIB, TST and WSP, each refused by name, and the limits a repository tightens
 │   │   ├── supply_chain.rs                                      # ci.yml: dependency policy, direct crates.io reads and the scanners
 │   │   ├── toolbelt_setup.rs                                    # rust-gate setup: the locked toolbelt linked and its PATH printed, a bad mise digest refused
