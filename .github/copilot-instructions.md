@@ -324,6 +324,7 @@ in place.
 │   │   │   ├── aggregation_rejections.rs                        # Mutation aggregation refusal cases for incomplete or inconsistent evidence
 │   │   │   ├── engine_aggregation.rs                            # Every engine mode and its featureless control are required mutation evidence
 │   │   │   ├── engine_execution.rs                              # Engine worker selection, bound modes and complete execution
+│   │   │   ├── engine_input_ownership.rs                        # Input-only ownership follows immutable checks outputs through every mutation worker
 │   │   │   ├── engine_planning.rs                               # Mode-aware engine ownership plans at the executable boundary
 │   │   │   ├── engine_regression.rs                             # Real, offline three-package regression of the complete required mutation gate
 │   │   │   ├── engine_rejections.rs                             # Plan, artifact and outcome corruption never becomes engine gate success
@@ -377,6 +378,7 @@ in place.
 │   │   └── step_registry.rs                                     # The step registry: declarations, the generated document, every body registered
 │   ├── harness/                                                 # The one door of the tests: the repository, YAML readers, gate declarations and the fixture
 │   │   ├── engine_mutations.rs                                  # Shared mode-aware engine planner, worker and aggregate fixtures
+│   │   ├── engine_workspace.rs                                  # Shared real A/B/C source and Git setup for mode and input-only ownership regressions
 │   │   ├── fixture.rs                                           # One temporary checkout, one environment table, a step run against stand-ins, every command traced
 │   │   ├── gate_declarations.rs                                 # The gate built once per test process, and what rust-gate describe declares about its steps
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else

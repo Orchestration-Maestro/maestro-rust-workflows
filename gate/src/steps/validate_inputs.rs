@@ -196,6 +196,12 @@ fn export_engine_policy(project: &Path, windows: &[String]) -> Outcome {
     })?;
     let features = json_strings(&policy.features)?;
     let files = json_strings(&policy.files)?;
+    let resolved = if policy.files.is_empty() {
+        "{}".to_owned()
+    } else {
+        format!(r#"{{"features":{features},"files":{files}}}"#)
+    };
+    output("mutation-engine-policy", &resolved)?;
     output("mutation-engine-features", &features)?;
     output("mutation-engine-files", &files)?;
     export(&[

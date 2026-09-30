@@ -171,6 +171,7 @@ jobs:
       mutation-mutants-per-shard: ${{ steps.validate.outputs.mutation-mutants-per-shard }}
       mutation-attempt: ${{ github.run_attempt }}
       mutation-windows: ${{ steps.validate.outputs.mutation-windows }}
+      mutation-engine-policy: ${{ steps.validate.outputs.mutation-engine-policy }}
       mutation-engine-features: ${{ steps.validate.outputs.mutation-engine-features }}
       mutation-engine-files: ${{ steps.validate.outputs.mutation-engine-files }}
       mutation-engine-count: ${{ steps.mutants-plan.outputs.mutation-engine-count }}
@@ -494,6 +495,9 @@ jobs:
       contents: read
     env:
       CARGO_MUTANTS_VERSION: '27.1.0'
+      MUTATION_ENGINE_POLICY: ${{ needs.checks.outputs.mutation-engine-policy }}
+      MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
+      MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
     defaults:
       run:
         shell: bash
@@ -616,6 +620,9 @@ jobs:
       contents: read
     env:
       CARGO_MUTANTS_VERSION: '27.1.0'
+      MUTATION_ENGINE_POLICY: ${{ needs.checks.outputs.mutation-engine-policy }}
+      MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
+      MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
     defaults:
       run:
         shell: bash
@@ -728,6 +735,9 @@ jobs:
       contents: read
     env:
       CARGO_MUTANTS_VERSION: '27.1.0'
+      MUTATION_ENGINE_POLICY: ${{ needs.checks.outputs.mutation-engine-policy }}
+      MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
+      MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
     defaults:
       run:
         shell: bash
@@ -836,6 +846,9 @@ jobs:
       contents: read
     env:
       CARGO_MUTANTS_VERSION: '27.1.0'
+      MUTATION_ENGINE_POLICY: ${{ needs.checks.outputs.mutation-engine-policy }}
+      MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
+      MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
     defaults:
       run:
         shell: bash

@@ -1,88 +1,16 @@
 //! Real, offline three-package regression of the complete required mutation gate.
 
-use crate::harness::{Fixture, copy_tree, output, refused, succeeds, tool};
+use crate::harness::{
+    Fixture, copy_tree, engine_workspace, fixture_git, output, refused, succeeds,
+};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use std::process::Output;
 
-/// Run real Git, never a fixture stand-in, and return its trimmed output.
-fn git(project: &Path, args: &[&str]) -> String {
-    let result = tool("git")
-        .args(args)
-        .current_dir(project)
-        .output()
-        .unwrap();
-    succeeds(&result);
-    String::from_utf8(result.stdout).unwrap().trim().to_owned()
-}
-
-/// A and B declare/forward engine; C is unrelated and declares no features.
-fn workspace(project: &Path, killing: bool) {
-    fs::write(
-        project.join("Cargo.toml"),
-        "[workspace]\nmembers=['crates/a','crates/b','crates/c']\nresolver='3'\n",
-    )
-    .unwrap();
-    for (package, extras) in [
-        ("a", "[features]\nengine=[]\n"),
-        (
-            "b",
-            "[features]\nengine=['crate-a/engine']\n[dependencies]\ncrate-a={path='../a'}\n",
-        ),
-        ("c", ""),
-    ] {
-        let root = project.join("crates").join(package);
-        fs::create_dir_all(root.join("src")).unwrap();
-        fs::write(
-            root.join("Cargo.toml"),
-            format!("[package]\nname='crate-{package}'\nversion='0.1.0'\nedition='2024'\n{extras}"),
-        )
-        .unwrap();
-        let module = if package == "a" {
-            "#[cfg(feature=\"engine\")] pub mod engine;\n"
-        } else {
-            ""
-        };
-        fs::write(
-            root.join("src/lib.rs"),
-            format!(
-                concat!(
-                    "//! Feature-partition regression.\n{}pub fn answer() -> u8 {{ 7 }}\n",
-                    "#[cfg(test)] mod tests {{ #[test] fn answer_is_seven() {{ ",
-                    "assert_eq!(super::answer(), 7); }} }}\n"
-                ),
-                module
-            ),
-        )
-        .unwrap();
-    }
-    let assertion = if killing {
-        "assert_eq!(super::engine_answer(), 9);"
-    } else {
-        ""
-    };
-    fs::write(
-        project.join("crates/a/src/engine.rs"),
-        format!(
-            concat!(
-                "//! Engine-only regression.\npub fn engine_answer() -> u8 {{ 9 }}\n",
-                "#[cfg(test)] mod tests {{ #[test] fn engine_answer_is_nine() {{ {} }} }}\n"
-            ),
-            assertion
-        ),
-    )
-    .unwrap();
-    fs::write(
-        project.join("maestro-quality.toml"),
-        "[ci.mutation-engine]\nfeatures=['engine']\nfiles=['crates/a/src/engine.rs']\n",
-    )
-    .unwrap();
-}
-
 /// Default builds/catches `Default::default()`; the engine type deliberately lacks `Default`.
 fn rising_workspace(project: &Path) {
-    workspace(project, true);
+    engine_workspace(project, true);
     fs::write(
         project.join("crates/a/src/lib.rs"),
         concat!(
@@ -179,7 +107,7 @@ fn restart(fixture: &Fixture) {
 /// Commit a parentless snapshot to exercise every package rather than a changed-line sample.
 fn snapshot(fixture: &mut Fixture, amended: bool) {
     let project = fixture.root.join("project");
-    git(&project, &["add", "--all"]);
+    fixture_git(&project, &["add", "--all"]);
     let mut args = vec![
         "-c",
         "commit.gpgsign=false",
@@ -191,8 +119,8 @@ fn snapshot(fixture: &mut Fixture, amended: bool) {
     if amended {
         args.push("--amend");
     }
-    git(&project, &args);
-    fixture.set("GITHUB_SHA", &git(&project, &["rev-parse", "HEAD"]));
+    fixture_git(&project, &args);
+    fixture.set("GITHUB_SHA", &fixture_git(&project, &["rev-parse", "HEAD"]));
 }
 
 /// Export planner outputs exactly as the reusable workflow transports them to workers and gate.
@@ -252,7 +180,7 @@ fn routing(fixture: &mut Fixture) {
 fn three_package_gate_refuses_engine_survivors_then_catches_every_default_and_engine_mutant() {
     let mut fixture = Fixture::new();
     let project = fixture.root.join("project");
-    workspace(&project, false);
+    engine_workspace(&project, false);
     for (key, value) in [
         ("DIRECTORY", "."),
         ("MUTATION_TEST", "true"),
@@ -271,9 +199,9 @@ fn three_package_gate_refuses_engine_survivors_then_catches_every_default_and_en
     }
     fixture.set("GITHUB_WORKSPACE", project.to_str().unwrap());
     succeeds(&fixture.run_body("cd project && cargo generate-lockfile --offline"));
-    git(&project, &["init", "--quiet", "-b", "main"]);
-    git(&project, &["config", "user.name", "Fixture"]);
-    git(
+    fixture_git(&project, &["init", "--quiet", "-b", "main"]);
+    fixture_git(&project, &["config", "user.name", "Fixture"]);
+    fixture_git(
         &project,
         &["config", "user.email", "fixture@example.invalid"],
     );
@@ -284,7 +212,7 @@ fn three_package_gate_refuses_engine_survivors_then_catches_every_default_and_en
     fixture.set("MUTATION_ENGINE_FILES", "[\"crates/a/src/engine.rs\"]");
     survivor_phase(&mut fixture);
     restart(&fixture);
-    workspace(&project, true);
+    engine_workspace(&project, true);
     snapshot(&mut fixture, true);
     caught_phase(&mut fixture);
     restart(&fixture);

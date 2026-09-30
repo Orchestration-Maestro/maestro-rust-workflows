@@ -1072,6 +1072,12 @@ A shared default-caught mutant becoming unviable fails; an already-unviable shar
 identity is allowed; a newly discovered feature-only unviable fails. Package and
 partition counts are reported so offsets cannot hide regressions.
 
+The checks job exports its resolved policy, features and files as immutable job outputs.
+Every mutation worker validates that resolved policy, including input-only ownership when
+no repository policy exists; workers never reselect ownership from the caller or checkout.
+Without an engine policy, existing `.cargo/mutants.toml` settings remain unchanged. Global
+feature/workspace-test restrictions apply only when engine ownership is configured.
+
 The featureless control can report MISSED for a cfg-disabled engine body: its mutation is in
 code that is not compiled without features. Such an outcome is accepted **only** when the
 engine run caught its exact twin (package, file, complete source span, function and mutation

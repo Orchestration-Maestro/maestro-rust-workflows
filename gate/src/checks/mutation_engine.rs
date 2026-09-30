@@ -21,13 +21,13 @@ pub(crate) fn engine_policy(
     windows: &[String],
     metadata: impl FnOnce() -> Result<String, Failure>,
 ) -> Result<EnginePolicy, Failure> {
-    refuse_global_mutation_features(project)?;
     if value.trim() == "{}" {
         return Ok(EnginePolicy {
             features: Vec::new(),
             files: Vec::new(),
         });
     }
+    refuse_global_mutation_features(project)?;
     let exact_shape = Cmd::new("jaq -en")
         .env("MUTATION_ENGINE", value)
         .arg("$ENV.MUTATION_ENGINE | fromjson | keys | sort == [\"features\", \"files\"]")
@@ -172,6 +172,33 @@ mod tests {
                 .cwd(project)
                 .capture()
         })
+    }
+
+    #[test]
+    fn an_unconfigured_engine_policy_does_not_restrict_existing_mutants_configuration() {
+        let root = env::temp_dir().join(format!("engine-policy-disabled-{}", process::id()));
+        fs::create_dir_all(root.join(".cargo")).unwrap();
+        fs::write(
+            root.join(".cargo/mutants.toml"),
+            "features = [\"default\"]\n",
+        )
+        .unwrap();
+        let disabled =
+            parse_policy(&root, "{}", &[], || panic!("disabled policy read metadata")).unwrap();
+        assert!(disabled.features.is_empty() && disabled.files.is_empty());
+        assert_eq!(
+            parse_policy(
+                &root,
+                r#"{"features":["engine"],"files":["src/engine.rs"]}"#,
+                &[],
+                || panic!("global features should be refused before metadata")
+            )
+            .unwrap_err()
+            .message
+            .as_deref(),
+            Some(".cargo/mutants.toml must not set global features or test_workspace")
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
