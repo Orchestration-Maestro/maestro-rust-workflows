@@ -105,7 +105,8 @@ pub(super) fn untested_mutants(source: &Path, plan: &Plan, index: usize) -> usiz
     .ok()
     .and_then(|count| count.parse::<usize>().ok())
     .unwrap_or(0);
-    planned.saturating_sub(tested)
+    // Do not let a shard's incomplete listing lower the plan's assigned count.
+    expected.max(planned).saturating_sub(tested)
 }
 
 /// Validate one shard's receipt, assignment, outcomes, logs and counters.

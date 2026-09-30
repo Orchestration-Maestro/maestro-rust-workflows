@@ -1,8 +1,12 @@
 //! Mutation aggregation refusal cases for incomplete or inconsistent evidence.
 
-use crate::harness::{aggregation_fixture, copy_tree, incomplete_reason, refused, shard_outcomes};
+use crate::harness::{
+    Fixture, aggregation_fixture, copy_tree, incomplete_reason, planning_fixture, refused,
+    shard_outcomes, succeeds,
+};
 use serde_json::{Value, json};
 use std::fs;
+use std::os::unix::fs::symlink;
 use std::path::Path;
 
 #[test]
@@ -90,6 +94,84 @@ fn malformed_outcomes_are_rejected_before_path_scanning() {
         String::from_utf8_lossy(&result.stdout)
             .contains("outcomes JSON is malformed or has invalid counters")
     );
+}
+
+fn aggregation_fixture_at_matrix_limit() -> Fixture {
+    let planner = planning_fixture(256, 256, 1);
+    succeeds(&planner.run_body("rust-gate mutants-plan"));
+    let mut fixture = Fixture::new();
+    let checks = fixture.root.join("checks");
+    fs::create_dir_all(&checks).unwrap();
+    for name in ["mutation-plan.json", "mutants-list.json"] {
+        fs::copy(planner.root.join("reports").join(name), checks.join(name)).unwrap();
+    }
+    let artifacts = fixture.root.join("artifacts");
+    fs::create_dir_all(&artifacts).unwrap();
+    for (name, value) in [
+        ("CARGO_MUTANTS_VERSION", "27.1.0".to_owned()),
+        ("CHECKS_RESULT", "success".to_owned()),
+        ("MUTATIONS_RESULT", "success".to_owned()),
+        ("MUTATION_MODE", "sharded".to_owned()),
+        ("MUTATION_SHARDS", "256".to_owned()),
+        (
+            "MUTATION_MATRIX",
+            format!(
+                "[{}]",
+                (0..256)
+                    .map(|i| i.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        ),
+        ("MUTATION_ARTIFACT_NAME", "fixture".to_owned()),
+    ] {
+        fixture.set(name, &value);
+    }
+    fixture.set("MUTATION_PLAN_DIR", &checks.display().to_string());
+    fixture.set("MUTATION_ARTIFACTS", &artifacts.display().to_string());
+    fixture
+}
+
+#[test]
+fn aggregate_accepts_plan_metadata_at_256_shards() {
+    let fixture = aggregation_fixture_at_matrix_limit();
+    let result = fixture.run_body("rust-gate mutants-aggregate");
+    refused(&result, &incomplete_reason(256, 256));
+    assert!(
+        String::from_utf8_lossy(&result.stdout).contains("planned: 256 mutants across 256 shards")
+    );
+}
+
+#[test]
+fn aggregate_marks_a_symlinked_shard_artifact_incomplete() {
+    let fixture = aggregation_fixture(true);
+    let artifacts = Path::new(&fixture.env["MUTATION_ARTIFACTS"]);
+    let first = artifacts.join("fixture-mutants-0-of-2");
+    let second = artifacts.join("fixture-mutants-1-of-2");
+    fs::remove_dir_all(&first).unwrap();
+    symlink(second, first).unwrap();
+
+    let result = fixture.run_body("rust-gate mutants-aggregate");
+    refused(&result, &incomplete_reason(1, 1));
+    assert!(String::from_utf8_lossy(&result.stdout).contains("invalid artifact"));
+}
+
+#[test]
+fn aggregate_counts_the_assignment_when_a_failed_listing_underreports() {
+    let fixture = aggregation_fixture(true);
+    let artifacts = Path::new(&fixture.env["MUTATION_ARTIFACTS"]);
+    let shard = artifacts.join("fixture-mutants-0-of-2");
+    let listing = shard.join("mutants/mutants.out/mutants.json");
+    let mut mutants: Value = serde_json::from_slice(&fs::read(&listing).unwrap()).unwrap();
+    mutants.as_array_mut().unwrap().truncate(1);
+    fs::write(&listing, serde_json::to_vec(&mutants).unwrap()).unwrap();
+    let outcomes = shard.join("mutants/mutants.out/outcomes.json");
+    let mut document: Value = serde_json::from_slice(&fs::read(&outcomes).unwrap()).unwrap();
+    document["outcomes"].as_array_mut().unwrap().truncate(1);
+    fs::write(&outcomes, serde_json::to_vec(&document).unwrap()).unwrap();
+
+    let result = fixture.run_body("rust-gate mutants-aggregate");
+    refused(&result, &incomplete_reason(3, 1));
 }
 
 #[test]

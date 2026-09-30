@@ -79,6 +79,15 @@ fn automatic_counts_choose_only_nonempty_complete_shards() {
 }
 
 #[test]
+fn automatic_planning_accepts_exactly_256_target_sized_shards() {
+    let fixture = planning_fixture(12800, 0, 50);
+    succeeds(&fixture.run_body("rust-gate mutants-plan"));
+    assert_eq!(output(&fixture, "mutation-shards"), "256");
+    let matrix: Vec<usize> = serde_json::from_str(&output(&fixture, "mutation-matrix")).unwrap();
+    assert_eq!(matrix, (0..256).collect::<Vec<_>>());
+}
+
+#[test]
 fn automatic_planning_refuses_when_the_matrix_cannot_meet_its_target() {
     let mut fixture = planning_fixture(12801, 0, 50);
     fixture.set("MUTATION_WINDOWS", "[]");

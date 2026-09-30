@@ -97,7 +97,7 @@ committed `deny.toml` applies the same way to every pull request. See [runner se
 | `artifact-key` | string | `ci` | Invocation identity, 1 to 40 alphanumeric/underscore/hyphen characters, starting alphanumeric |
 | `license-policy` | string | `auto` | Kept for the repositories that set it: `auto` and `enforce` both apply the organization's licence and source policy; `off` is refused, since no repository opts out |
 | `mutation-test` | boolean | `true` | Run cargo-mutants and fail on surviving mutants; a pull request mutates its diff, a push or tag its own commit |
-| `mutation-shards` | number | `1` | `1` keeps one inline run without discovery, `0` selects all mutants automatically up to GitHub's 256-job matrix limit, and `2` through `256` request a fixed shard count |
+| `mutation-shards` | number | `1` | `1` keeps one inline run without discovery, `0` selects all mutants automatically up to GitHub's 256-job matrix limit and fails if the target needs more, while `2` through `256` request a fixed shard count |
 | `mutation-mutants-per-shard` | number | `50` | Automatic mode target mutants per shard, an adjustable calibration knob from `1` to `1000`, not a time guarantee |
 | `mutation-windows` | string | `[]` | JSON array of exact files relative to `working-directory` owned by Windows mutation testing |
 | `internal-shard-selftest` | boolean | `false` | Internal to this repository's own CI only: create a behavior-equivalent workspace diff and require its two-shard mutation matrix. Refused for every other repository. |
@@ -1075,8 +1075,10 @@ sends `SIGTERM` at that deadline and allows one minute before it sends
 `SIGKILL`; local runs use the direct cargo-mutants invocation. The always-run
 artifact upload retains the raw `caught.txt`, `missed.txt` and
 `timeout.txt` lists; aggregation identifies incomplete shard indices, and
-incomplete evidence fails `Required Rust CI`. The `mutation-summary` job runs after the matrix even on a failed or
-skipped worker, keeps raw shard directories separate,
+incomplete evidence fails `Required Rust CI`. The `N mutants untested in M shards`
+diagnostic counts only Linux matrix shards; Windows-owned mutation failures remain
+separate fail-closed errors. The `mutation-summary` job runs after the matrix even on
+a failed or skipped worker, keeps raw shard directories separate,
 and cross-checks each receipt, discovery list, completed outcome and counter
 against the complete plan. A missing artifact, incomplete result, failed
 baseline, survivor, timeout, foreign identity or invalid path blocks
