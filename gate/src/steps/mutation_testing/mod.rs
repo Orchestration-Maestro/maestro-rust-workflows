@@ -1,6 +1,7 @@
 //! `rust-gate`'s mutation planning, scoped execution and shard aggregation.
 
 mod aggregate;
+mod engine_plan;
 mod plan;
 mod reports;
 mod scope;

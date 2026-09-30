@@ -32,12 +32,17 @@ pub(super) fn run() -> Outcome {
     let job = Job::current()?;
     let report = job.report("mutants-plan.txt")?;
     if !flag("MUTATION_TEST")? {
+        super::engine_plan::disabled()?;
         tee_line("Mutation plan: disabled", &report, false)?;
         return routing("disabled", Some(0), 0, &[]);
     }
     selftest::prepare(&job)?;
     let requested = mutation_shards()?;
-    if requested == 1 {
+    let engine = scope::has_engine_files()?;
+    if !engine {
+        super::engine_plan::disabled()?;
+    }
+    if requested == 1 && !engine {
         tee_line(
             "Mutation plan: inline (serial default; discovery not run)",
             &report,
@@ -49,7 +54,11 @@ pub(super) fn run() -> Outcome {
     let scope = scope::prepare(&job, &optional("GITHUB_BASE_REF")?)?;
     let listing_path = job.report("mutants-list.json")?;
     let log = job.report("mutants-plan.log")?;
-    listing(&job.project, &scope, &listing_path, &log)?;
+    if engine {
+        super::engine_plan::discover(&job, &scope, &listing_path, &log)?;
+    } else {
+        listing(&job.project, &scope, &listing_path, &log)?;
+    }
     let mutants = listing_count(&listing_path)?;
     let target = mutation_mutants_per_shard()?;
     let (mode, shards, matrix) = selection(mutants, requested, target)?;
@@ -72,7 +81,7 @@ fn listing(project: &Path, scope: &Scope, json: &Path, log: &Path) -> Outcome {
         let diff = diff.to_string_lossy().into_owned();
         command = command.args(["--in-diff", &diff]);
     }
-    command = scope::exclude_windows_files(command, project)?;
+    command = scope::exclude_default_files(command, project)?;
     let result = command.cwd(project).capture_output()?;
     show(&result)?;
     write(log, &result.stderr, false)?;
@@ -93,7 +102,7 @@ fn listing(project: &Path, scope: &Scope, json: &Path, log: &Path) -> Outcome {
 }
 
 /// Print both streams just as the original step did, while retaining the JSON.
-fn show(result: &Output) -> Outcome {
+pub(super) fn show(result: &Output) -> Outcome {
     io::stderr()
         .write_all(&result.stderr)
         .map_err(|error| format!("cannot print cargo-mutants diagnostics: {error}"))?;
@@ -101,7 +110,7 @@ fn show(result: &Output) -> Outcome {
 }
 
 /// Only the pinned tool's known no-work diagnostics justify an empty listing.
-fn recognized_no_work(stderr: &[u8], has_diff: bool) -> bool {
+pub(super) fn recognized_no_work(stderr: &[u8], has_diff: bool) -> bool {
     let text = String::from_utf8_lossy(stderr);
     text.lines().any(|line| {
         line.trim() == "WARN No mutants found under the active filters"
@@ -146,13 +155,13 @@ pub(super) fn validate_listing(listing: &Path) -> Outcome {
 }
 
 /// The number of complete mutant records in a validated listing.
-fn listing_count(listing: &Path) -> Result<usize, Failure> {
+pub(super) fn listing_count(listing: &Path) -> Result<usize, Failure> {
     let count = Cmd::new("jaq -er").arg("length").arg(listing).capture()?;
     parse_count(&count, "cargo-mutants listing has no integral length")
 }
 
 /// Compute every nonempty shard, never sampling the listing.
-fn selection(
+pub(super) fn selection(
     mutants: usize,
     requested: usize,
     target: usize,
@@ -189,7 +198,7 @@ fn selection(
 }
 
 /// Save the full run identity outside job outputs; workers and aggregation verify it.
-fn write_manifest(
+pub(super) fn write_manifest(
     path: &Path,
     project: &Path,
     scope: &Scope,

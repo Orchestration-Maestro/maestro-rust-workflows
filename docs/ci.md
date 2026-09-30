@@ -996,6 +996,8 @@ or failed from complete evidence.
 | `mutants.json`, `mutants.txt` | Inline outcomes or the complete aggregate, including failures; text-only no-work skips never invent outcomes | `mutation-test` |
 | `mutants-plan.txt` | Mutation-plan mode or the explicit disabled/no-work decision | always |
 | `mutants-plan.log`, `mutants-list.json`, `mutation-plan.json` | Full filtered listing, planner log and immutable run identity | `mutation-shards` is not `1` and `mutation-test` is true |
+| `mutation-control-list.json`, `mutation-feature-list.json` | Complete same-source discovery in both modes, reconciled to exact ownership | engine ownership is configured |
+| `mutation-engine-list.json`, `mutation-engine-default-list.json`, `mutation-engine-plan.json`, `mutation-engine-plan.log` | Feature-owned plan and separately named featureless control obligations, bound to policy and package owners | engine ownership is configured |
 | `mutants.diff` | First-parent source diff used to constrain mutation scope | Mutation execution with a first parent |
 | `mutation-shards` | Each raw shard output, outcome, log, diff and `mutants-shard.json` identity receipt, retained separately | sharded mode |
 | `clippy.sarif`, `secrets.sarif` | The same findings as SARIF | `sarif-reports` |

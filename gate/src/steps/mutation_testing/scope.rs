@@ -5,6 +5,7 @@ use crate::checks::checkout_paths::canonical;
 use crate::checks::digests::sha256_hex;
 use crate::checks::quality_config::mutation_windows;
 use crate::runner::{Cmd, Failure, Job, input, optional};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -66,12 +67,90 @@ pub(super) fn prepare(job: &Job, base: &str) -> Result<Scope, Failure> {
     })
 }
 
-/// Exclude every Windows-owned file from the Linux mutation listing or run.
+/// Exclude every Windows-owned file from a Linux mutation listing or run.
 pub(super) fn exclude_windows_files(mut command: Cmd, project: &Path) -> Result<Cmd, Failure> {
     for file in mutation_windows(project, &optional("MUTATION_WINDOWS")?)? {
         command = command.args(["--exclude", &file]);
     }
     Ok(command)
+}
+
+/// Exclude Windows and engine-owned files from the featureless default mutation mode.
+pub(super) fn exclude_default_files(command: Cmd, project: &Path) -> Result<Cmd, Failure> {
+    let mut command = exclude_windows_files(command, project)?;
+    for file in engine_files()? {
+        command = command.args(["--exclude", &file]);
+    }
+    Ok(command)
+}
+
+/// Select only packages that own engine files so package-local features stay local.
+pub(super) fn engine_packages(project: &Path, files: &[String]) -> Result<Vec<String>, Failure> {
+    if files.is_empty() {
+        return Ok(Vec::new());
+    }
+    let metadata = Cmd::new("cargo metadata --format-version 1 --no-deps")
+        .cwd(project)
+        .capture()?;
+    let rows = Cmd::new("jaq -r")
+        .arg(".packages[] | [.name, .manifest_path] | @tsv")
+        .stdin_bytes(metadata.as_bytes())
+        .capture()?;
+    let packages = rows
+        .lines()
+        .filter_map(|row| {
+            let (name, manifest) = row.split_once('\t')?;
+            Some((name, Path::new(manifest).parent()?.to_path_buf()))
+        })
+        .collect::<Vec<_>>();
+    let mut owners = BTreeSet::new();
+    for file in files {
+        let path = project.join(file);
+        let owner = packages
+            .iter()
+            .filter(|(_, root)| path.starts_with(root))
+            .max_by_key(|(_, root)| root.components().count());
+        let Some((name, _)) = owner else {
+            return Err(format!("engine mutation file `{file}` has no Cargo package owner").into());
+        };
+        owners.insert((*name).to_owned());
+    }
+    Ok(owners.into_iter().collect())
+}
+
+/// Decode one output list as strings, allowing an unconfigured empty partition.
+pub(super) fn json_strings(name: &str) -> Result<Vec<String>, Failure> {
+    let value = optional(name)?;
+    let value = if value.is_empty() { "[]" } else { &value };
+    let listed = Cmd::new("jaq -nr")
+        .env("MUTATION_ENGINE_LIST", &value)
+        .arg(concat!(
+            "$ENV.MUTATION_ENGINE_LIST | fromjson | if type == \"array\" ",
+            "and all(.[]; type == \"string\") then .[] ",
+            "else error(\"expected string array\") end"
+        ))
+        .capture()
+        .map_err(|_| format!("{name} must be a JSON array of strings"))?;
+    Ok(listed.lines().map(str::to_owned).collect())
+}
+
+/// Exact paths transferred away from the featureless default mutation partition.
+pub(super) fn transferred_files(project: &Path) -> Result<BTreeSet<String>, Failure> {
+    let mut files: BTreeSet<String> = mutation_windows(project, &optional("MUTATION_WINDOWS")?)?
+        .into_iter()
+        .collect();
+    files.extend(engine_files()?);
+    Ok(files)
+}
+
+/// Whether the current run owns a nonempty engine partition.
+pub(super) fn has_engine_files() -> Result<bool, Failure> {
+    Ok(!engine_files()?.is_empty())
+}
+
+/// The exact engine-owned file list, empty when the feature partition is disabled.
+pub(super) fn engine_files() -> Result<Vec<String>, Failure> {
+    json_strings("MUTATION_ENGINE_FILES")
 }
 
 /// The project path the checks and worker can both independently resolve.
@@ -94,6 +173,7 @@ pub(super) fn configuration_digest(project: &Path) -> Result<String, Failure> {
         "rust-toolchain.toml",
         ".cargo/config.toml",
         ".cargo/mutants.toml",
+        "maestro-quality.toml",
     ] {
         bytes.extend_from_slice(name.as_bytes());
         bytes.push(0);
