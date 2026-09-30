@@ -941,6 +941,13 @@ still scanned, but its fingerprints cannot suppress findings. A consumer
 `.gitleaks.toml`, `GITLEAKS_CONFIG` or `GITLEAKS_CONFIG_TOML` cannot replace the
 gate's explicit configuration.
 
+Approvals apply only in hosted CI (`GITHUB_ACTIONS=true`), using the runner's
+nonempty `GITHUB_REPOSITORY`. A hosted scan with missing or empty repository
+identity fails as a misconfiguration. A local scan, including `ci --local`,
+prints a notice and scans without exceptions or stale-entry warnings, even if a
+repository variable was supplied manually. Identity is never inferred from
+consumer files or Git remotes.
+
 The SHA256 covers the UTF-8 bytes of Gitleaks' entire unredacted `Match`, including
 whitespace, not just `Secret`. This binds surrounding flagged code as well as the
 secret candidate: any change to the flagged text requires a new review, while

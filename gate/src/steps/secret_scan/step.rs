@@ -4,7 +4,7 @@
 use super::archive::relocate_ignore;
 use super::policy::exceptions;
 use super::reports::{findings, reports};
-use crate::runner::{Cmd, Failure, Job, Outcome, Step, flag, input, path};
+use crate::runner::{Cmd, Failure, Job, Outcome, Step, flag, optional, path};
 use std::fs;
 use std::path::Path;
 
@@ -13,7 +13,12 @@ pub(crate) const STEPS: &[Step] = &[Step {
     workflow: "ci",
     id: "secrets",
     summary: "Redacted source secret scan",
-    inputs: &["GITHUB_WORKSPACE", "GITHUB_REPOSITORY", "SARIF_REPORTS"],
+    inputs: &[
+        "GITHUB_WORKSPACE",
+        "GITHUB_ACTIONS",
+        "GITHUB_REPOSITORY",
+        "SARIF_REPORTS",
+    ],
     tools: &["git", "gitleaks", "tar", "jaq"],
     reports: &["secrets.json", "secrets.sarif"],
     run,
@@ -60,10 +65,26 @@ fn scan(source: &Path, config: &Path, ignore: &Path) -> Result<Vec<u8>, Failure>
     Ok(output.stdout)
 }
 
+/// Only hosted runner identity can activate approvals; local scans stay fully strict.
+fn repository(hosted: bool, supplied: &str) -> Result<&str, Failure> {
+    if !hosted {
+        println!(
+            "::notice::Reviewed secret-scan exceptions apply only in hosted CI; \
+                  scanning without exceptions"
+        );
+        return Ok("");
+    }
+    if supplied.is_empty() {
+        return Err("Hosted secret scan requires GITHUB_REPOSITORY".into());
+    }
+    Ok(supplied)
+}
+
 /// Archive this revision, classify every finding, report stale approvals, then fail closed.
 fn run() -> Outcome {
     let job = Job::current()?;
-    let repository = input("GITHUB_REPOSITORY")?;
+    let supplied = optional("GITHUB_REPOSITORY")?;
+    let repository = repository(optional("GITHUB_ACTIONS")? == "true", &supplied)?;
     let source = job.temp.join("secret-source");
     fs::create_dir_all(&source)
         .map_err(|error| format!("cannot create {}: {error}", source.display()))?;
@@ -86,7 +107,7 @@ fn run() -> Outcome {
         .iter()
         .map(|finding| {
             entries.iter().find(|entry| {
-                entry.matches(&repository, &finding.path, &finding.rule, &finding.hash)
+                entry.matches(repository, &finding.path, &finding.rule, &finding.hash)
             })
         })
         .collect();
@@ -111,7 +132,7 @@ fn run() -> Outcome {
     for entry in &entries {
         if entry.repository == repository
             && !findings.iter().any(|finding| {
-                entry.matches(&repository, &finding.path, &finding.rule, &finding.hash)
+                entry.matches(repository, &finding.path, &finding.rule, &finding.hash)
             })
         {
             println!(
@@ -128,8 +149,16 @@ fn run() -> Outcome {
 
 #[cfg(test)]
 mod tests {
-    use super::scan;
+    use super::{repository, scan};
     use std::env;
+
+    #[test]
+    fn only_hosted_nonempty_identity_can_activate_approvals() {
+        assert_eq!(repository(true, "owner/repo").unwrap(), "owner/repo");
+        assert!(repository(true, "").is_err());
+        assert_eq!(repository(false, "owner/repo").unwrap(), "");
+        assert_eq!(repository(false, "").unwrap(), "");
+    }
 
     #[test]
     fn scanner_execution_errors_never_become_clean_reports() {

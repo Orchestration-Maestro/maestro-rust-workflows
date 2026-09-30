@@ -20,6 +20,7 @@ fn finding() -> Value {
 fn scan_fixture(findings: &[Value]) -> Fixture {
     let mut fixture = Fixture::new();
     fixture.set("GITHUB_REPOSITORY", "Orchestration-Maestro/lbug");
+    fixture.set("GITHUB_ACTIONS", "true");
     fixture.set("SARIF_REPORTS", "true");
     fixture.stub("git", "tar -cf - --files-from /dev/null");
     fs::write(
@@ -90,6 +91,7 @@ fn unmatched_current_repository_entries_warn_without_failing() {
 #[test]
 fn consumer_allowlists_cannot_grant_a_secret_exception() {
     let mut fixture = Fixture::new();
+    fixture.set("GITHUB_ACTIONS", "true");
     let project = fixture.root.join("project");
     fixture.set("GITHUB_WORKSPACE", &project.display().to_string());
     let secret = ["aB2cD3eF4gH5", "iJ6kL7mN8pQ9rS0tU"].concat();
@@ -214,6 +216,7 @@ fn an_absent_scanner_report_cannot_pass_as_clean() {
 /// Archive a real consumer revision, with no scanner or Git stand-in.
 fn source_fixture(file: &str, content: &str) -> Fixture {
     let mut fixture = Fixture::new();
+    fixture.set("GITHUB_ACTIONS", "true");
     let project = fixture.root.join("project");
     fixture.set("GITHUB_WORKSPACE", &project.display().to_string());
     fs::write(project.join(file), content).unwrap();
@@ -279,4 +282,63 @@ fn ignored_file_content_is_scanned_under_its_original_path() {
             .unwrap();
     assert_eq!(report[0]["File"], ".gitleaksignore");
     assert_eq!(report[0]["RuleID"], "generic-api-key");
+}
+
+#[test]
+fn a_local_clean_scan_needs_no_repository_identity() {
+    let mut fixture = scan_fixture(&[]);
+    fixture.env.remove("GITHUB_ACTIONS");
+    fixture.env.remove("GITHUB_REPOSITORY");
+    let output = fixture.run("ci", "secrets");
+    succeeds(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("exceptions apply only in hosted CI"));
+    assert!(!stdout.contains("stale secret-scan exception"));
+    assert!(fixture.calls().contains("gitleaks"));
+}
+
+#[test]
+fn a_local_approved_finding_without_identity_still_fails() {
+    let mut fixture = scan_fixture(&[finding()]);
+    fixture.env.remove("GITHUB_ACTIONS");
+    fixture.env.remove("GITHUB_REPOSITORY");
+    let output = fixture.run("ci", "secrets");
+    assert_eq!(output.status.code(), Some(1));
+    let report = fixture.root.join("reports/secrets.json");
+    assert!(
+        report.exists(),
+        "local findings must still be scanned and reported"
+    );
+    let findings: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
+    assert_eq!(findings[0]["Status"], "finding");
+    assert!(findings[0]["Exception"].is_null());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("exceptions apply only in hosted CI"));
+    assert!(!stdout.contains("stale secret-scan exception"));
+}
+
+#[test]
+fn local_repository_variables_cannot_grant_an_exception() {
+    let mut fixture = scan_fixture(&[finding()]);
+    fixture.env.remove("GITHUB_ACTIONS");
+    let output = fixture.run("ci", "secrets");
+    assert_eq!(output.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("exceptions apply only in hosted CI"));
+    assert!(!stdout.contains("stale secret-scan exception"));
+}
+
+#[test]
+fn hosted_scans_require_a_nonempty_runner_repository() {
+    for missing in [true, false] {
+        let mut fixture = scan_fixture(&[]);
+        if missing {
+            fixture.env.remove("GITHUB_REPOSITORY");
+        } else {
+            fixture.set("GITHUB_REPOSITORY", "");
+        }
+        let output = fixture.run("ci", "secrets");
+        refused(&output, "Hosted secret scan requires GITHUB_REPOSITORY");
+        assert!(!fixture.calls().contains("gitleaks"));
+    }
 }
