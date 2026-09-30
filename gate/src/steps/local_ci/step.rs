@@ -202,7 +202,7 @@ impl Run {
         Ok(())
     }
 
-    /// Check the commit out and set what GitHub sets for its run.
+    /// Check the commit out and reproduce CI inputs without hosted identity.
     fn check_out(&mut self, root: &Path, temp: &Path) -> Result<Ended, Failure> {
         let directory = self.state.join("checkout");
         let checkout = check_out(&self.environment, root, &directory)?;
@@ -215,7 +215,8 @@ impl Run {
         };
         let defaults = [
             ("CI", "true"),
-            ("GITHUB_ACTIONS", "true"),
+            // Replay CI checks without claiming hosted runner identity.
+            ("GITHUB_ACTIONS", "false"),
             ("GITHUB_EVENT_NAME", event),
             ("GITHUB_RUN_ID", "1"),
             ("GITHUB_RUN_ATTEMPT", "1"),

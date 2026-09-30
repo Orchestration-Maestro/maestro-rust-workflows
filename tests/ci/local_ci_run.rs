@@ -11,6 +11,7 @@ use std::process::Output;
 
 /// What the stand-in records of each step's environment.
 const RECORDED: &str = "GITHUB_BASE_REF|GITHUB_HEAD_REF|GITHUB_EVENT_NAME|GITHUB_SHA|\
+                        GITHUB_ACTIONS|GITHUB_REPOSITORY|\
                         PULL_REQUEST_TITLE|CALLED|RUSTFLAGS|PROJECT|CI|OUT_[A-Z_]*|[A-Z_]*_APPLIED";
 
 /// A fixture whose project is a git repository on `main` with an `origin`,
@@ -206,7 +207,10 @@ fn every_step_of_the_ci_job_runs_locally_or_says_why_not() {
             "{id}: {line}"
         );
         assert!(
-            line.contains(" CI=true ") && !line.contains("RUSTFLAGS"),
+            line.contains(" CI=true ")
+                && line.contains(" GITHUB_ACTIONS=false ")
+                && !line.contains("GITHUB_REPOSITORY=")
+                && !line.contains("RUSTFLAGS"),
             "{id}: {line}"
         );
         assert!(
