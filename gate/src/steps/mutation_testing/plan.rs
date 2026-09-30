@@ -1,38 +1,17 @@
-//! Decide whether the current mutation run stays inline or needs every shard.
+//! Route the compatible default mode or plan every engine/default obligation.
 
 use super::scope::{self, Scope};
-use super::selftest;
-use crate::checks::digests::sha256_hex;
+use super::{engine_plan, plan_identity, selftest};
 use crate::checks::inputs::{mutation_mutants_per_shard, mutation_shards};
-use crate::runner::{Cmd, Failure, Job, Outcome, flag, input, optional, output, tee_line, write};
-use std::fs;
-use std::io::{self, Write as _};
-use std::path::{Path, PathBuf};
-use std::process::Output;
-
-/// Serialize the complete scope and execution identity into the plan manifest.
-const MANIFEST_QUERY: &str = concat!(
-    "{sha:$sha, first_parent:(if $parent == \"\" then null else $parent end), ",
-    "directory:$directory, toolchain:$toolchain, ",
-    "cargo_mutants_version:$version, run_id:$run, attempt:$attempt, ",
-    "config_sha256:$config, diff_sha256:$diff, mutant_count:$count, shard_count:$shards}"
-);
-/// Require a worker's revision, scope, attempt and tool identity to match the plan.
-const WORKER_IDENTITY_QUERY: &str = concat!(
-    ".sha == $sha and .first_parent == ",
-    "(if $parent == \"\" then null else $parent end) and .directory == $directory ",
-    "and .toolchain == $toolchain and .cargo_mutants_version == $version ",
-    "and .run_id == $run and .attempt == $attempt ",
-    "and .config_sha256 == $config and .diff_sha256 == $diff ",
-    "and .mutant_count == $count and .shard_count == $shards"
-);
+use crate::runner::{Cmd, Failure, Job, Outcome, flag, optional, output, tee_line, write};
+use std::path::Path;
 
 /// Run planning for this job and publish only the small routing values.
 pub(super) fn run() -> Outcome {
     let job = Job::current()?;
     let report = job.report("mutants-plan.txt")?;
     if !flag("MUTATION_TEST")? {
-        super::engine_plan::disabled()?;
+        engine_plan::disabled()?;
         tee_line("Mutation plan: disabled", &report, false)?;
         return routing("disabled", Some(0), 0, &[]);
     }
@@ -40,9 +19,9 @@ pub(super) fn run() -> Outcome {
     let requested = mutation_shards()?;
     let engine = scope::has_engine_files()?;
     if !engine {
-        super::engine_plan::disabled()?;
+        engine_plan::disabled()?;
     }
-    if requested == 1 && !engine {
+    if inline_without_discovery(requested, engine) {
         tee_line(
             "Mutation plan: inline (serial default; discovery not run)",
             &report,
@@ -55,15 +34,15 @@ pub(super) fn run() -> Outcome {
     let listing_path = job.report("mutants-list.json")?;
     let log = job.report("mutants-plan.log")?;
     if engine {
-        super::engine_plan::discover(&job, &scope, &listing_path, &log)?;
+        engine_plan::discover(&job, &scope, &listing_path, &log)?;
     } else {
         listing(&job.project, &scope, &listing_path, &log)?;
     }
-    let mutants = listing_count(&listing_path)?;
+    let mutants = plan_identity::listing_count(&listing_path)?;
     let target = mutation_mutants_per_shard()?;
-    let (mode, shards, matrix) = selection(mutants, requested, target)?;
+    let (mode, shards, matrix) = plan_identity::selection(mutants, requested, target)?;
     let manifest = job.report("mutation-plan.json")?;
-    write_manifest(&manifest, &job.project, &scope, mutants, shards)?;
+    plan_identity::write_manifest(&manifest, &job.project, &scope, mutants, shards)?;
     tee_line(
         &format!("Mutation plan: {mode}; {mutants} mutants; {shards} shard(s)"),
         &report,
@@ -83,14 +62,14 @@ fn listing(project: &Path, scope: &Scope, json: &Path, log: &Path) -> Outcome {
     }
     command = scope::exclude_default_files(command, project)?;
     let result = command.cwd(project).capture_output()?;
-    show(&result)?;
+    plan_identity::show(&result)?;
     write(log, &result.stderr, false)?;
     write(json, &result.stdout, false)?;
     if !result.status.success() {
         return Err(Failure::status(result.status.code().unwrap_or(1)));
     }
     if result.stdout.iter().all(u8::is_ascii_whitespace) {
-        if recognized_no_work(&result.stderr, scope.change.is_some()) {
+        if plan_identity::recognized_no_work(&result.stderr, scope.change.is_some()) {
             write(json, b"[]\n", false)?;
         } else {
             return Err(
@@ -98,368 +77,7 @@ fn listing(project: &Path, scope: &Scope, json: &Path, log: &Path) -> Outcome {
             );
         }
     }
-    validate_listing(json)
-}
-
-/// Print both streams just as the original step did, while retaining the JSON.
-pub(super) fn show(result: &Output) -> Outcome {
-    io::stderr()
-        .write_all(&result.stderr)
-        .map_err(|error| format!("cannot print cargo-mutants diagnostics: {error}"))?;
-    Ok(())
-}
-
-/// Only the pinned tool's known no-work diagnostics justify an empty listing.
-pub(super) fn recognized_no_work(stderr: &[u8], has_diff: bool) -> bool {
-    let text = String::from_utf8_lossy(stderr);
-    text.lines().any(|line| {
-        line.trim() == "WARN No mutants found under the active filters"
-            || (has_diff
-                && matches!(
-                    line.trim(),
-                    "INFO Diff file is empty"
-                        | "INFO Diff changes no Rust source files"
-                        | "INFO No mutants to filter"
-                ))
-    })
-}
-
-/// Compare every planned mutant identity with exactly one executed outcome.
-pub(super) fn validate_execution(listing: &Path, outcomes: &Path) -> Outcome {
-    let planned = Cmd::new("jaq -r")
-        .arg(concat!(
-            "[.[] | ",
-            "[.package,.name,.file,.span.start.line,.span.start.column,.span.end.line,.s",
-            "pan.end.column,.replacement] | @tsv] | .[]",
-        ))
-        .arg(listing)
-        .capture()?;
-    let executed = Cmd::new("jaq -r")
-        .arg(concat!(
-            "[.outcomes[] | select((.scenario | type) == \"object\") | .scenario.Mutant ",
-            "| ",
-            "[.package,.name,.file,.span.start.line,.span.start.column,.span.end.line,.s",
-            "pan.end.column,.replacement] | @tsv] | .[]",
-        ))
-        .arg(outcomes)
-        .capture()?;
-    let mut planned: Vec<&str> = planned.lines().collect();
-    let mut executed: Vec<&str> = executed.lines().collect();
-    planned.sort_unstable();
-    executed.sort_unstable();
-    if planned != executed {
-        return Err("mutation outcomes do not equal their complete mode-aware plan".into());
-    }
-    Ok(())
-}
-
-/// Validate the versioned listing schema and unique, stable mutant identities.
-pub(super) fn validate_listing(listing: &Path) -> Outcome {
-    const SCHEMA: &str = concat!(
-        "type == \"array\" and all(.[]; ",
-        "(.package | type == \"string\" and length > 0) ",
-        "and (.name | type == \"string\" and length > 0) ",
-        "and (.file | type == \"string\" and length > 0) ",
-        "and (.replacement | type == \"string\") ",
-        "and (.span.start.line | type == \"number\" and floor == .) ",
-        "and (.span.start.column | type == \"number\" and floor == .) ",
-        "and (.span.end.line | type == \"number\" and floor == .) ",
-        "and (.span.end.column | type == \"number\" and floor == .))"
-    );
-    const UNIQUE_IDENTITIES: &str = concat!(
-        "([.[] | [.package, .name] | tojson] | length) == ",
-        "([.[] | [.package, .name] | tojson] | unique | length)"
-    );
-    Cmd::new("jaq -e")
-        .arg(SCHEMA)
-        .arg(listing)
-        .capture()
-        .map_err(|_| "cargo-mutants listing is malformed JSON")?;
-    Cmd::new("jaq -e")
-        .arg(UNIQUE_IDENTITIES)
-        .arg(listing)
-        .capture()
-        .map_err(|_| "cargo-mutants listing contains duplicate mutant identities")?;
-    Ok(())
-}
-
-/// The number of complete mutant records in a validated listing.
-pub(super) fn listing_count(listing: &Path) -> Result<usize, Failure> {
-    let count = Cmd::new("jaq -er").arg("length").arg(listing).capture()?;
-    parse_count(&count, "cargo-mutants listing has no integral length")
-}
-
-/// Compute every nonempty shard, never sampling the listing.
-pub(super) fn selection(
-    mutants: usize,
-    requested: usize,
-    target: usize,
-) -> Result<(&'static str, usize, Vec<usize>), Failure> {
-    if mutants == 0 {
-        return Ok(("empty", 0, Vec::new()));
-    }
-    let shards = if requested == 0 {
-        let desired = mutants.div_ceil(target);
-        if desired > 256 {
-            return Err(format!(
-                concat!(
-                    "automatic mutation plan needs {} shards for {} mutants ",
-                    "at target {}; GitHub's matrix limit is 256"
-                ),
-                desired, mutants, target
-            )
-            .into());
-        }
-        desired
-    } else {
-        requested.min(mutants)
-    };
-    let matrix = if shards == 1 {
-        Vec::new()
-    } else {
-        (0..shards).collect()
-    };
-    Ok((
-        if shards == 1 { "inline" } else { "sharded" },
-        shards,
-        matrix,
-    ))
-}
-
-/// Save the full run identity outside job outputs; workers and aggregation verify it.
-pub(super) fn write_manifest(
-    path: &Path,
-    project: &Path,
-    scope: &Scope,
-    mutants: usize,
-    shards: usize,
-) -> Outcome {
-    let tested = input("GITHUB_SHA")?;
-    let run = input("GITHUB_RUN_ID")?;
-    let attempt = input("GITHUB_RUN_ATTEMPT")?;
-    let toolchain = input("RUSTUP_TOOLCHAIN")?;
-    let version = input("CARGO_MUTANTS_VERSION")?;
-    let parent = scope.parent.as_deref().unwrap_or_default();
-    let directory = scope::normalized_directory()?;
-    let config_digest = scope::configuration_digest(project)?;
-    let mut args = Vec::new();
-    for (name, value) in [
-        ("sha", tested.as_str()),
-        ("parent", parent),
-        ("directory", directory.as_str()),
-        ("toolchain", toolchain.as_str()),
-        ("version", version.as_str()),
-        ("run", run.as_str()),
-        ("attempt", attempt.as_str()),
-        ("config", config_digest.as_str()),
-        ("diff", scope.diff_digest.as_str()),
-    ] {
-        args.extend(["--arg".to_owned(), name.to_owned(), value.to_owned()]);
-    }
-    for (name, value) in [("count", mutants), ("shards", shards)] {
-        args.extend(["--argjson".to_owned(), name.to_owned(), value.to_string()]);
-    }
-    let json = Cmd::new("jaq -c -n")
-        .args(args)
-        .arg(MANIFEST_QUERY)
-        .capture()?;
-    write(path, format!("{json}\n").as_bytes(), false)
-}
-
-/// Reuse the planning diff for inline work, or build the original scope once.
-pub(super) fn planned_scope(job: &Job, base: &str) -> Result<Scope, Failure> {
-    let manifest = job.earlier("mutation-plan.json");
-    if !manifest.is_file() {
-        return scope::prepare(job, base);
-    }
-    let parent = Cmd::new("jaq -r")
-        .arg(".first_parent // \"\"")
-        .arg(&manifest)
-        .capture()?
-        .trim()
-        .to_owned();
-    if !base.is_empty() && parent.is_empty() {
-        return Err("pull request checkout must include the base parent".into());
-    }
-    let digest = Cmd::new("jaq -r")
-        .arg(".diff_sha256")
-        .arg(&manifest)
-        .capture()?
-        .trim()
-        .to_owned();
-    let (parent, diff, change) = if parent.is_empty() {
-        if job.earlier("mutants.diff").exists() {
-            return Err("parentless mutation plan unexpectedly contains a diff".into());
-        }
-        if digest != sha256_hex(b"full-workspace;no-first-parent") {
-            return Err("mutation plan has an invalid full-workspace digest".into());
-        }
-        (None, None, None)
-    } else {
-        let diff = job.earlier("mutants.diff");
-        let bytes = fs::read(&diff)
-            .map_err(|error| format!("cannot read planned diff {}: {error}", diff.display()))?;
-        if sha256_hex(&bytes) != digest {
-            return Err("mutation plan diff digest does not match its report".into());
-        }
-        let change = if base.is_empty() {
-            "this commit"
-        } else {
-            "this pull request"
-        };
-        (Some(parent), Some(diff), Some(change.to_owned()))
-    };
-    Ok(Scope {
-        parent,
-        diff,
-        change,
-        diff_digest: digest,
-    })
-}
-
-/// Check a worker's plan, source tree and all run identity before mutation.
-pub(super) fn verify_worker(
-    job: &Job,
-    source_scope: &Scope,
-    manifest: &Path,
-    listing: &Path,
-    shard: (usize, usize),
-) -> Result<usize, Failure> {
-    let (index, shards) = shard;
-    let manifest = safe_plan_file(job, manifest)?;
-    let listing = safe_plan_file(job, listing)?;
-    validate_listing(&listing)?;
-    let mutants = listing_count(&listing)?;
-    if mutants == 0 || manifest_count(&manifest)? != mutants {
-        return Err("mutation plan count does not match its complete listing".into());
-    }
-    if mutation_shards()? != shards {
-        return Err("mutation worker shard count differs from its planned matrix".into());
-    }
-    verify_identity(job, source_scope, &manifest, mutants, shards)?;
-    let expected = if index >= mutants {
-        0
-    } else {
-        (mutants - index).div_ceil(shards)
-    };
-    if expected == 0 {
-        return Err("mutation plan assigns an empty shard".into());
-    }
-    Ok(expected)
-}
-
-/// Bind any partition worker to the same source, scope, tool and run identity.
-pub(super) fn verify_identity(
-    job: &Job,
-    source_scope: &Scope,
-    manifest: &Path,
-    mutants: usize,
-    shards: usize,
-) -> Outcome {
-    let tested = input("GITHUB_SHA")?;
-    let run = input("GITHUB_RUN_ID")?;
-    let attempt = input("GITHUB_RUN_ATTEMPT")?;
-    let toolchain = input("RUSTUP_TOOLCHAIN")?;
-    let version = input("CARGO_MUTANTS_VERSION")?;
-    let directory = scope::normalized_directory()?;
-    let config_digest = scope::configuration_digest(&job.project)?;
-    let parent = source_scope.parent.as_deref().unwrap_or_default();
-    let mut args = Vec::new();
-    for (name, value) in [
-        ("sha", tested.as_str()),
-        ("parent", parent),
-        ("directory", directory.as_str()),
-        ("toolchain", toolchain.as_str()),
-        ("version", version.as_str()),
-        ("run", run.as_str()),
-        ("attempt", attempt.as_str()),
-        ("config", config_digest.as_str()),
-        ("diff", source_scope.diff_digest.as_str()),
-    ] {
-        args.extend(["--arg".to_owned(), name.to_owned(), value.to_owned()]);
-    }
-    for (name, value) in [("count", mutants), ("shards", shards)] {
-        args.extend(["--argjson".to_owned(), name.to_owned(), value.to_string()]);
-    }
-    let identity = Cmd::new("jaq -e")
-        .args(args)
-        .arg(WORKER_IDENTITY_QUERY)
-        .arg(manifest)
-        .capture();
-    identity
-        .map_err(|_| "mutation worker identity or scope differs from its plan; Re-run all jobs")?;
-    Ok(())
-}
-
-/// Write the worker receipt before the long mutation command starts.
-pub(super) fn write_receipt(
-    path: &Path,
-    manifest: &Path,
-    index: usize,
-    shards: usize,
-    expected: usize,
-) -> Outcome {
-    let receipt = Cmd::new("jaq -c")
-        .args(["--argjson", "index", &index.to_string()])
-        .args(["--argjson", "shards", &shards.to_string()])
-        .args(["--argjson", "expected", &expected.to_string()])
-        .arg(". + {shard_index:$index, shard_count:$shards, expected_mutants:$expected}")
-        .arg(manifest)
-        .capture()?;
-    write(path, format!("{receipt}\n").as_bytes(), false)
-}
-
-/// A manifest's checked mutant count.
-pub(super) fn manifest_count(path: &Path) -> Result<usize, Failure> {
-    let count = Cmd::new("jaq -r")
-        .arg(".mutant_count")
-        .arg(path)
-        .capture()?;
-    parse_count(&count, "mutation plan has no integral mutant count")
-}
-
-/// Parse one unsigned integral count from the pinned JSON reader.
-fn parse_count(value: &str, message: &'static str) -> Result<usize, Failure> {
-    value.trim().parse().map_err(|_| message.into())
-}
-
-/// A plan or listing is data only when a regular file inside runner temp.
-pub(super) fn safe_plan_file(job: &Job, path: &Path) -> Result<PathBuf, Failure> {
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|error| format!("cannot inspect mutation plan {}: {error}", path.display()))?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() {
-        return Err(format!(
-            "mutation plan input is not a regular file: {}",
-            path.display()
-        )
-        .into());
-    }
-    let root = fs::canonicalize(&job.temp)
-        .map_err(|error| format!("cannot resolve runner temp: {error}"))?;
-    let path = fs::canonicalize(path)
-        .map_err(|error| format!("cannot resolve mutation plan file: {error}"))?;
-    if !path.starts_with(root) {
-        return Err("mutation plan input escapes runner temp".into());
-    }
-    Ok(path)
-}
-
-/// Parse only a zero-based shard index/count the complete matrix can contain.
-pub(super) fn parse_shard(value: &str) -> Result<(usize, usize), Failure> {
-    let refusal = || "MUTATION_SHARD must be a zero-based K/N with 2 <= N <= 256 and K < N";
-    let Some((index, count)) = value.split_once('/') else {
-        return Err(refusal().into());
-    };
-    if count.contains('/') {
-        return Err(refusal().into());
-    }
-    let (Ok(index), Ok(count)) = (index.parse::<usize>(), count.parse::<usize>()) else {
-        return Err(refusal().into());
-    };
-    if !(2..=256).contains(&count) || index >= count {
-        return Err(refusal().into());
-    }
-    Ok((index, count))
+    plan_identity::validate_listing(json)
 }
 
 /// Publish the only plan data needed in GitHub's job matrix.
@@ -483,87 +101,20 @@ fn routing(mode: &str, mutants: Option<usize>, shards: usize, matrix: &[usize]) 
     )
 }
 
+/// The serial default avoids discovery only when there is no feature-owned partition.
+fn inline_without_discovery(requested: usize, engine: bool) -> bool {
+    requested == 1 && !engine
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{parse_count, parse_shard, safe_plan_file, selection};
-    use crate::runner::Job;
-    use std::env;
-    use std::fs;
-    use std::path::PathBuf;
-    use std::process;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-    fn test_root() -> PathBuf {
-        let root = env::temp_dir().join(format!(
-            "rust-gate-mutation-plan-{}-{}",
-            process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&root).unwrap();
-        root
-    }
+    use super::inline_without_discovery;
 
     #[test]
-    fn selection_and_worker_numbers_are_complete_and_bounded() {
-        assert_eq!(selection(0, 0, 50).unwrap(), ("empty", 0, vec![]));
-        assert_eq!(selection(51, 0, 50).unwrap(), ("sharded", 2, vec![0, 1]));
-        assert_eq!(parse_shard("255/256").unwrap(), (255, 256));
-        for value in ["", "2/2", "0/257", "0/x"] {
-            assert_eq!(
-                parse_shard(value).unwrap_err().message.as_deref(),
-                Some("MUTATION_SHARD must be a zero-based K/N with 2 <= N <= 256 and K < N")
-            );
-        }
-    }
-
-    #[test]
-    fn json_counts_require_unsigned_integral_values() {
-        assert_eq!(parse_count("5", "unused").unwrap(), 5);
-        for (value, message) in [
-            (
-                "not-a-count",
-                "cargo-mutants listing has no integral length",
-            ),
-            ("5.5", "mutation plan has no integral mutant count"),
-        ] {
-            assert_eq!(
-                parse_count(value, message).unwrap_err().message.as_deref(),
-                Some(message)
-            );
-        }
-    }
-
-    #[test]
-    fn worker_plan_inputs_stay_inside_temp_and_are_regular_files() {
-        let root = test_root();
-        let temp = root.join("temp");
-        fs::create_dir_all(&temp).unwrap();
-        let job = Job {
-            project: root.clone(),
-            reports: root.join("reports"),
-            temp,
-        };
-        let outside = root.join("outside.json");
-        fs::write(&outside, "{}").unwrap();
-        assert_eq!(
-            safe_plan_file(&job, &outside)
-                .unwrap_err()
-                .message
-                .as_deref(),
-            Some("mutation plan input escapes runner temp")
-        );
-        let directory = job.temp.join("directory.json");
-        fs::create_dir(&directory).unwrap();
-        assert!(
-            safe_plan_file(&job, &directory)
-                .unwrap_err()
-                .message
-                .as_deref()
-                .unwrap()
-                .contains("mutation plan input is not a regular file:")
-        );
-        fs::remove_dir_all(root).unwrap();
+    fn engine_ownership_always_requires_explicit_default_discovery() {
+        assert!(inline_without_discovery(1, false));
+        assert!(!inline_without_discovery(0, false));
+        assert!(!inline_without_discovery(2, false));
+        assert!(!inline_without_discovery(1, true));
     }
 }

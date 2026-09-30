@@ -21,6 +21,7 @@ fn windows_fixture(touched: &str) -> Fixture {
     fixture.set("PROJECT", &project.display().to_string());
     fixture.set("MUTATION_WINDOWS", "[\"core/src/windows.rs\"]");
     fixture.set("MUTATION_TEST", "true");
+    fixture.set("CARGO_MUTANTS_VERSION", "27.1.0");
     fixture.set("GITHUB_BASE_REF", "main");
     fixture.stub(
         "git",

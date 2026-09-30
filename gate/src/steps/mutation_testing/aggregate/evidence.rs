@@ -125,7 +125,7 @@ pub(super) fn read_shard(
     let expected = assigned_count(plan.mutants, index, plan.shards);
     let planned_rows = assigned_rows(&plan.identities, plan.shards, index);
     validate_receipt(&receipt, plan, index, expected)?;
-    super::super::plan::validate_listing(&discovered)?;
+    super::super::plan_identity::validate_listing(&discovered)?;
     let discovered_rows = identity_rows(&discovered)?;
     same_rows(&planned_rows, &discovered_rows)
         .map_err(|_| Failure::from("shard discovery differs from round-robin assignment"))?;
@@ -345,6 +345,28 @@ fn summary_counts_match(path: &Path, counts: Counts) -> Result<bool, Failure> {
         && actual.timeout == counts.timeout
         && actual.unviable == counts.unviable
         && actual.success == counts.success)
+}
+
+/// Require a mode's full planned identities, successful baseline and exact counters.
+pub(super) fn partition_counts(listing: &Path, outcomes: &Path) -> Result<Counts, Failure> {
+    super::super::plan_identity::validate_listing(listing)?;
+    validate_outcomes(outcomes)?;
+    let planned = identity_rows(listing)?;
+    let executed = outcome_rows(outcomes)?;
+    let counts = read_counts(outcomes)?;
+    if same_rows(&planned, &executed).is_err() || counts.total != planned.len() {
+        return Err(
+            "partition evidence differs from its complete planned mutant identities".into(),
+        );
+    }
+    if !summary_counts_match(outcomes, counts)? || !baseline_succeeded(outcomes)? {
+        return Err("partition baseline failed or its counters disagree with outcomes".into());
+    }
+    if counts.missed > 0 || counts.timeout > 0 || counts.success > 0 {
+        return Err("partition contains a survivor, timeout or untested mutant".into());
+    }
+    validate_result_paths(outcomes.parent().unwrap_or(outcomes), outcomes)?;
+    Ok(counts)
 }
 
 /// Stable identity and source details from one cargo-mutants listing.

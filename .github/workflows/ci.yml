@@ -454,7 +454,7 @@ jobs:
         if: ${{ always() && steps.validate.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: ${{ steps.validate.outputs.artifact-name }}-${{ steps.mutants-plan.outputs.mutation-mode == 'sharded' && 'checks-reports' || 'reports' }}
+          name: ${{ steps.validate.outputs.artifact-name }}-${{ (steps.mutants-plan.outputs.mutation-mode == 'sharded' || steps.mutants-plan.outputs.mutation-engine-count != '0' || steps.mutants-plan.outputs.mutation-engine-default-count != '0') && 'checks-reports' || 'reports' }}
           path: ${{ runner.temp }}/rust-reports/
           if-no-files-found: error
           retention-days: 7
@@ -469,6 +469,15 @@ jobs:
             ${{ runner.temp }}/rust-reports/mutation-engine-default-list.json
           if-no-files-found: error
           retention-days: 7
+      - name: Upload inline mutation outcomes for partition aggregation
+        if: ${{ always() && steps.mutants-plan.outputs.mutation-mode == 'inline' && (steps.mutants-plan.outputs.mutation-engine-count != '0' || steps.mutants-plan.outputs.mutation-engine-default-count != '0') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ steps.validate.outputs.artifact-name }}-default-mutants
+          path: ${{ runner.temp }}/mutants/mutants.out/
+          if-no-files-found: error
+          retention-days: 7
+
   mutations:
     name: Mutation shard ${{ matrix.shard }} of ${{ needs.checks.outputs.mutation-shards }}
     needs:
@@ -883,6 +892,8 @@ jobs:
             ${{ runner.temp }}/mutants/mutants.out/
             ${{ runner.temp }}/rust-reports/mutants.json
             ${{ runner.temp }}/rust-reports/mutants.txt
+            ${{ runner.temp }}/rust-reports/mutation-windows-plan.json
+            ${{ runner.temp }}/rust-reports/mutation-windows-list.json
             ${{ runner.temp }}/rust-reports/mutants.diff
           if-no-files-found: error
           retention-days: 7
@@ -891,7 +902,10 @@ jobs:
     needs:
       - checks
       - mutations
-    if: ${{ always() && needs.checks.outputs.mutation-mode == 'sharded' && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
+      - mutation-engine
+      - mutation-engine-default
+      - mutation-windows
+    if: ${{ always() && (needs.checks.outputs.mutation-mode == 'sharded' || needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0') && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions: {}
@@ -924,17 +938,65 @@ jobs:
           path: ${{ runner.temp }}/checks-reports
       - name: Download every expected shard without flattening
         id: mutation-summary-shards-download
-        if: ${{ always() }}
+        if: ${{ always() && needs.checks.outputs.mutation-mode == 'sharded' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           pattern: ${{ needs.checks.outputs.artifact-name }}-mutants-*
           path: ${{ runner.temp }}/mutation-shards
           merge-multiple: false
+      - name: Download inline default mutation outcomes
+        if: ${{ always() && needs.checks.outputs.mutation-mode == 'inline' && (needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0') }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ${{ needs.checks.outputs.artifact-name }}-default-mutants
+          path: ${{ runner.temp }}/checks-reports/mutants/mutants.out
+      - name: Download immutable engine mutation plan
+        if: ${{ always() && (needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0') }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ${{ needs.checks.outputs.artifact-name }}-engine-plan
+          path: ${{ runner.temp }}/engine-plan
+      - name: Download every engine mutation shard
+        if: ${{ always() && needs.checks.outputs.mutation-engine-count != '0' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: ${{ needs.checks.outputs.artifact-name }}-engine-mutants-*
+          path: ${{ runner.temp }}/engine-mutants
+          merge-multiple: false
+      - name: Download every featureless engine control shard
+        if: ${{ always() && needs.checks.outputs.mutation-engine-default-count != '0' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: ${{ needs.checks.outputs.artifact-name }}-engine-default-mutants-*
+          path: ${{ runner.temp }}/engine-default-mutants
+          merge-multiple: false
+      - name: Download native Windows mutation evidence
+        if: ${{ always() && needs.checks.outputs.mutation-windows != '[]' && (needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0') }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ${{ needs.checks.outputs.artifact-name }}-windows-mutants
+          path: ${{ runner.temp }}/windows-mutants
       - name: Aggregate complete mutation shard evidence
         id: mutation-aggregate
         if: ${{ always() }}
         env:
           CHECKS_RESULT: ${{ needs.checks.result }}
+          ENGINE_MUTATIONS_RESULT: ${{ needs.mutation-engine.result }}
+          ENGINE_DEFAULT_MUTATIONS_RESULT: ${{ needs.mutation-engine-default.result }}
+          MUTATION_ENGINE_COUNT: ${{ needs.checks.outputs.mutation-engine-count }}
+          MUTATION_ENGINE_SHARDS: ${{ needs.checks.outputs.mutation-engine-shards }}
+          MUTATION_ENGINE_MATRIX: ${{ needs.checks.outputs.mutation-engine-matrix }}
+          MUTATION_ENGINE_DEFAULT_COUNT: ${{ needs.checks.outputs.mutation-engine-default-count }}
+          MUTATION_ENGINE_DEFAULT_SHARDS: ${{ needs.checks.outputs.mutation-engine-default-shards }}
+          MUTATION_ENGINE_DEFAULT_MATRIX: ${{ needs.checks.outputs.mutation-engine-default-matrix }}
+          MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
+          MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+          MUTATION_ENGINE_PLAN_DIR: ${{ runner.temp }}/engine-plan
+          MUTATION_ENGINE_ARTIFACTS: ${{ runner.temp }}/engine-mutants
+          MUTATION_ENGINE_DEFAULT_ARTIFACTS: ${{ runner.temp }}/engine-default-mutants
+          MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
+          WINDOWS_MUTATIONS_RESULT: ${{ needs.mutation-windows.result }}
+          MUTATION_WINDOWS_ARTIFACTS: ${{ runner.temp }}/windows-mutants
           MUTATIONS_RESULT: ${{ needs.mutations.result }}
           RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
           MUTATION_MODE: ${{ needs.checks.outputs.mutation-mode }}
@@ -1009,7 +1071,7 @@ jobs:
       - mutation-summary
     # A fork pull request's token cannot write security events; its SARIF
     # stays in the reports artifact.
-    if: ${{ !cancelled() && needs.checks.result == 'success' && (needs.checks.outputs.mutation-mode != 'sharded' || needs.mutation-summary.result == 'success') && (github.event_name != 'merge_group' || needs.portability.result == 'success' || needs.portability.result == 'skipped') && inputs.artifact-key == '' && github.event_name != 'pull_request_target' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.checks.result == 'success' && ((needs.checks.outputs.mutation-mode != 'sharded' && needs.checks.outputs.mutation-engine-count == '0' && needs.checks.outputs.mutation-engine-default-count == '0') || needs.mutation-summary.result == 'success') && (github.event_name != 'merge_group' || needs.portability.result == 'success' || needs.portability.result == 'skipped') && inputs.artifact-key == '' && github.event_name != 'pull_request_target' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -1049,7 +1111,7 @@ jobs:
       - mutation-summary
     # A fork pull request gets no OIDC token; its reports stay in the reports
     # artifact.
-    if: ${{ !cancelled() && needs.checks.result == 'success' && (needs.checks.outputs.mutation-mode != 'sharded' || needs.mutation-summary.result == 'success') && (github.event_name != 'merge_group' || needs.portability.result == 'success' || needs.portability.result == 'skipped') && inputs.artifact-key == '' && github.event_name != 'pull_request_target' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.checks.result == 'success' && ((needs.checks.outputs.mutation-mode != 'sharded' && needs.checks.outputs.mutation-engine-count == '0' && needs.checks.outputs.mutation-engine-default-count == '0') || needs.mutation-summary.result == 'success') && (github.event_name != 'merge_group' || needs.portability.result == 'success' || needs.portability.result == 'skipped') && inputs.artifact-key == '' && github.event_name != 'pull_request_target' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -1109,6 +1171,8 @@ jobs:
       - mutations
       - mutation-summary
       - mutation-windows
+      - mutation-engine
+      - mutation-engine-default
     if: ${{ always() && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -1139,6 +1203,11 @@ jobs:
           MUTATION_MATRIX: ${{ needs.checks.outputs.mutation-matrix }}
           MUTATION_ATTEMPT: ${{ needs.checks.outputs.mutation-attempt }}
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
+          MUTATION_ENGINE_COUNT: ${{ needs.checks.outputs.mutation-engine-count }}
+          MUTATION_ENGINE_DEFAULT_COUNT: ${{ needs.checks.outputs.mutation-engine-default-count }}
+          MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+          ENGINE_MUTATIONS_RESULT: ${{ needs.mutation-engine.result }}
+          ENGINE_DEFAULT_MUTATIONS_RESULT: ${{ needs.mutation-engine-default.result }}
           MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
           MUTATIONS_RESULT: ${{ needs.mutations.result }}
           MUTATION_SUMMARY_RESULT: ${{ needs.mutation-summary.result }}

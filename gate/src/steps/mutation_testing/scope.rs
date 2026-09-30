@@ -3,6 +3,7 @@
 
 use crate::checks::checkout_paths::canonical;
 use crate::checks::digests::sha256_hex;
+use crate::checks::mutation_engine;
 use crate::checks::quality_config::mutation_windows;
 use crate::runner::{Cmd, Failure, Job, input, optional};
 use std::collections::BTreeSet;
@@ -86,8 +87,22 @@ pub(super) fn exclude_default_files(command: Cmd, project: &Path) -> Result<Cmd,
 
 /// Restrict a feature-enabled engine listing or run to its exact owned files.
 pub(super) fn engine_selection(mut command: Cmd, project: &Path) -> Result<Cmd, Failure> {
-    let features = json_strings("MUTATION_ENGINE_FEATURES")?;
-    let files = engine_files()?;
+    let json = Cmd::new("jaq -cn")
+        .args([
+            "--argjson",
+            "features",
+            &optional("MUTATION_ENGINE_FEATURES")?,
+        ])
+        .args(["--argjson", "files", &optional("MUTATION_ENGINE_FILES")?])
+        .arg("{features:$features, files:$files}")
+        .capture()?;
+    let policy = mutation_engine::engine_policy(project, &json, &[], || {
+        Cmd::new("cargo metadata --format-version 1 --no-deps --locked")
+            .cwd(project)
+            .capture()
+    })?;
+    let features = policy.features;
+    let files = policy.files;
     if !features.is_empty() {
         command = command.args(["--features", &features.join(",")]);
     }
@@ -175,7 +190,7 @@ pub(super) fn normalized_directory() -> Result<String, Failure> {
     let project = canonical(Path::new(&input("PROJECT")?))?;
     match project.strip_prefix(&root) {
         Ok(rest) if rest.as_os_str().is_empty() => Ok(".".to_owned()),
-        Ok(rest) => Ok(rest.display().to_string()),
+        Ok(rest) => Ok(rest.display().to_string().replace('\\', "/")),
         Err(_) => Err("working-directory escapes checkout".into()),
     }
 }

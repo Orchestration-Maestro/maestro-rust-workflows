@@ -19,6 +19,8 @@ fn assert_required_gate_wiring(ci: &Value) {
         "mutations",
         "mutation-summary",
         "mutation-windows",
+        "mutation-engine",
+        "mutation-engine-default",
     ] {
         assert!(
             jobs["gate"]["needs"]
@@ -293,6 +295,8 @@ fn cargo_mutants_version_environment_matches_the_installed_pin() {
         "mutations",
         "mutation-summary",
         "mutation-windows",
+        "mutation-engine",
+        "mutation-engine-default",
     ] {
         assert_eq!(
             ci["jobs"][name]["env"]["CARGO_MUTANTS_VERSION"], version,

@@ -1,6 +1,6 @@
 //! Discover both modes and preserve every featureless obligation before routing workers.
 
-use super::{plan, scope};
+use super::{plan_identity, scope};
 use crate::checks::digests::sha256_hex;
 use crate::checks::inputs::{mutation_mutants_per_shard, mutation_shards};
 use crate::runner::{Cmd, Failure, Job, Outcome, input, output, write};
@@ -35,12 +35,12 @@ pub(super) fn discover(job: &Job, source: &scope::Scope, listing: &Path, log: &P
     let transferred = string_array(&transferred.into_iter().collect::<Vec<_>>())?;
     filter_owned(&control, listing, &transferred, false)?;
     require_owned_union(&control, &feature, &files)?;
-    let enabled_count = plan::listing_count(&engine)?;
-    let default_count = plan::listing_count(&default)?;
+    let enabled_count = plan_identity::listing_count(&engine)?;
+    let default_count = plan_identity::listing_count(&default)?;
     let shards = route_mode("mutation-engine", enabled_count)?;
     let default_shards = route_mode("mutation-engine-default", default_count)?;
     let manifest = job.report("mutation-engine-plan.json")?;
-    plan::write_manifest(
+    plan_identity::write_manifest(
         &manifest,
         &job.project,
         source,
@@ -52,7 +52,8 @@ pub(super) fn discover(job: &Job, source: &scope::Scope, listing: &Path, log: &P
 
 /// Apply the existing shard planner independently to one nonempty mode.
 fn route_mode(prefix: &str, count: usize) -> Result<usize, Failure> {
-    let (_, shards, _) = plan::selection(count, mutation_shards()?, mutation_mutants_per_shard()?)?;
+    let (_, shards, _) =
+        plan_identity::selection(count, mutation_shards()?, mutation_mutants_per_shard()?)?;
     output(&format!("{prefix}-count"), &count.to_string())?;
     output(&format!("{prefix}-shards"), &shards.to_string())?;
     let matrix: Vec<_> = (0..shards).map(|index| index.to_string()).collect();
@@ -83,20 +84,20 @@ fn save_discovery(
     source: &scope::Scope,
 ) -> Outcome {
     let result = command.cwd(&job.project).capture_output()?;
-    plan::show(&result)?;
+    plan_identity::show(&result)?;
     write(log, &result.stderr, false)?;
     if !result.status.success() {
         return Err(Failure::status(result.status.code().unwrap_or(1)));
     }
     let bytes = if result.stdout.iter().all(u8::is_ascii_whitespace)
-        && plan::recognized_no_work(&result.stderr, source.change.is_some())
+        && plan_identity::recognized_no_work(&result.stderr, source.change.is_some())
     {
         b"[]\n".as_slice()
     } else {
         &result.stdout
     };
     write(path, bytes, false)?;
-    plan::validate_listing(path)
+    plan_identity::validate_listing(path)
 }
 
 /// Project a discovery into its exact owner without throwing away either mode.
@@ -145,13 +146,13 @@ fn string_array(values: &[String]) -> Result<String, Failure> {
 
 /// Bind exact policy, package/OS owner and both listing digests into worker identity.
 fn bind_modes(manifest: &Path, engine: &Path, default: &Path, packages: &[String]) -> Outcome {
-    let (_, enabled_shards, _) = plan::selection(
-        plan::listing_count(engine)?,
+    let (_, enabled_shards, _) = plan_identity::selection(
+        plan_identity::listing_count(engine)?,
         mutation_shards()?,
         mutation_mutants_per_shard()?,
     )?;
-    let (_, default_shards, _) = plan::selection(
-        plan::listing_count(default)?,
+    let (_, default_shards, _) = plan_identity::selection(
+        plan_identity::listing_count(default)?,
         mutation_shards()?,
         mutation_mutants_per_shard()?,
     )?;
@@ -171,8 +172,8 @@ fn bind_modes(manifest: &Path, engine: &Path, default: &Path, packages: &[String
 
 /// Check each downloaded mode listing and the exact policy used for selection.
 pub(super) fn verify_modes(job: &Job, manifest: &Path, engine: &Path, default: &Path) -> Outcome {
-    plan::validate_listing(engine)?;
-    plan::validate_listing(default)?;
+    plan_identity::validate_listing(engine)?;
+    plan_identity::validate_listing(default)?;
     let packages = scope::engine_packages(&job.project, &scope::engine_files()?)?;
     mode_command(engine, default, &packages)?
         .arg(concat!(
@@ -203,12 +204,12 @@ fn mode_command(engine: &Path, default: &Path, packages: &[String]) -> Result<Cm
         .args([
             "--argjson",
             "engine_count",
-            &plan::listing_count(engine)?.to_string(),
+            &plan_identity::listing_count(engine)?.to_string(),
         ])
         .args([
             "--argjson",
             "default_count",
-            &plan::listing_count(default)?.to_string(),
+            &plan_identity::listing_count(default)?.to_string(),
         ])
         .args(["--arg", "engine_digest", &digest(engine)?])
         .args(["--arg", "default_digest", &digest(default)?]);

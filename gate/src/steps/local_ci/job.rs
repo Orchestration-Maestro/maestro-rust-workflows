@@ -140,6 +140,10 @@ pub(super) const CHECKS: &[(&str, Local)] = &[
         "Upload immutable engine mutation plan",
         Local::NotApplied("only GitHub keeps the immutable engine plan artifact"),
     ),
+    (
+        "Upload inline mutation outcomes for partition aggregation",
+        Local::NotApplied("only GitHub harvests the inline default mutation artifacts"),
+    ),
 ];
 
 /// The step CI runs whatever failed before it, once `validate` passed.

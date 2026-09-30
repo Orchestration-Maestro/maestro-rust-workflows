@@ -1000,6 +1000,8 @@ or failed from complete evidence.
 | `mutation-engine-list.json`, `mutation-engine-default-list.json`, `mutation-engine-plan.json`, `mutation-engine-plan.log` | Feature-owned plan and separately named featureless control obligations, bound to policy and package owners | engine ownership is configured |
 | `mutants-engine-shard.json`, `mutants-engine-default-shard.json` | SHA-bound mode-specific shard receipts | engine workers |
 | `mutants-engine.txt`, `mutants-engine-default.txt` | Bounded worker command logs for each mode | engine workers |
+| `mutation-windows-plan.json`, `mutation-windows-list.json` | Native Windows discovery bound to the same source, policy and run | Windows-owned files |
+| `mutation-partitions` | Preserved engine/control/Windows raw evidence with mode-tagged outcomes | engine partition aggregation |
 | `mutants.diff` | First-parent source diff used to constrain mutation scope | Mutation execution with a first parent |
 | `mutation-shards` | Each raw shard output, outcome, log, diff and `mutants-shard.json` identity receipt, retained separately | sharded mode |
 | `clippy.sarif`, `secrets.sarif` | The same findings as SARIF | `sarif-reports` |
@@ -1058,6 +1060,17 @@ mutants is reported as skipped. A pull request reports a successful no-op when
 it touched none. A full run requires at least one mutant from every listed file.
 Missing files, empty required listings, survivors and timeouts fail the job,
 which the required status holds.
+
+`[ci.mutation-engine]` lists exact Rust files and package-local features. The
+planner retains their featureless mutants as separate control obligations and
+lists owning packages again with those features. Mode-specific mutants outside
+that ownership are refused. Both modes use the existing planner/cap independently,
+with separate required Linux matrices and the same 30-minute command deadline.
+Default and Windows workers never receive feature flags. The aggregate verifies
+both matrices and the Windows job, then joins outcomes with explicit mode labels.
+A shared default-caught mutant becoming unviable fails; an already-unviable shared
+identity is allowed; a newly discovered feature-only unviable fails. Package and
+partition counts are reported so offsets cannot hide regressions.
 
 `mutation-shards: 1` is the compatible default: it runs the existing inline
 mutation command once, with no discovery listing; the worker and summary jobs

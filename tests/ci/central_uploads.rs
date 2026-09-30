@@ -14,7 +14,9 @@ use std::fs;
 /// failed, since its commit then never lands.
 const UPLOADS_RUN: &str = concat!(
     "${{ !cancelled() && needs.checks.result == 'success' && ",
-    "(needs.checks.outputs.mutation-mode != 'sharded' || ",
+    "((needs.checks.outputs.mutation-mode != 'sharded' && ",
+    "needs.checks.outputs.mutation-engine-count == '0' && ",
+    "needs.checks.outputs.mutation-engine-default-count == '0') || ",
     "needs.mutation-summary.result == 'success') && ",
     "(github.event_name != 'merge_group' || needs.portability.result == 'success' || ",
     "needs.portability.result == 'skipped') && inputs.artifact-key == '' && ",

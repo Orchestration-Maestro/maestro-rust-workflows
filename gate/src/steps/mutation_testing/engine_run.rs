@@ -1,6 +1,6 @@
 //! Execute exact shard obligations independently in featureless and engine modes.
 
-use super::{engine_plan, plan, reports, scope};
+use super::{engine_plan, plan_identity, reports, scope};
 use crate::runner::{Cmd, Job, Outcome, flag, input, optional, write};
 use std::path::Path;
 
@@ -20,17 +20,18 @@ fn run_mode(enabled: bool) -> Outcome {
     if !flag("MUTATION_TEST")? {
         return Err("engine mutation evidence cannot be skipped".into());
     }
-    let manifest = plan::safe_plan_file(&job, Path::new(&input("MUTATION_ENGINE_PLAN")?))?;
-    let engine = plan::safe_plan_file(&job, Path::new(&input("MUTATION_ENGINE_LIST")?))?;
-    let default = plan::safe_plan_file(&job, Path::new(&input("MUTATION_ENGINE_DEFAULT_LIST")?))?;
+    let manifest = plan_identity::safe_plan_file(&job, Path::new(&input("MUTATION_ENGINE_PLAN")?))?;
+    let engine = plan_identity::safe_plan_file(&job, Path::new(&input("MUTATION_ENGINE_LIST")?))?;
+    let default =
+        plan_identity::safe_plan_file(&job, Path::new(&input("MUTATION_ENGINE_DEFAULT_LIST")?))?;
     let selected = input("MUTATION_SHARD")?;
     let shard = if selected == "0/1" {
         (0, 1)
     } else {
-        plan::parse_shard(&selected)?
+        plan_identity::parse_shard(&selected)?
     };
     let source = scope::prepare(&job, &optional("GITHUB_BASE_REF")?)?;
-    let total = plan::manifest_count(&manifest)?;
+    let total = plan_identity::manifest_count(&manifest)?;
     let field = if enabled {
         ".engine_shards"
     } else {
@@ -50,19 +51,19 @@ fn run_mode(enabled: bool) -> Outcome {
         .trim()
         .parse()
         .map_err(|_| "engine manifest shard count is invalid")?;
-    plan::verify_identity(&job, &source, &manifest, total, manifest_shards)?;
+    plan_identity::verify_identity(&job, &source, &manifest, total, manifest_shards)?;
     engine_plan::verify_modes(&job, &manifest, &engine, &default)?;
     let receipt = if enabled {
         "mutants-engine-shard.json"
     } else {
         "mutants-engine-default-shard.json"
     };
-    let mode_count = plan::listing_count(if enabled { &engine } else { &default })?;
+    let mode_count = plan_identity::listing_count(if enabled { &engine } else { &default })?;
     if mode_count < shard.1 {
         return Err("engine mode plan assigns an empty shard".into());
     }
     let expected = (mode_count - shard.0).div_ceil(shard.1);
-    plan::write_receipt(&job.report(receipt)?, &manifest, shard.0, shard.1, expected)?;
+    plan_identity::write_receipt(&job.report(receipt)?, &manifest, shard.0, shard.1, expected)?;
     let mode_receipt = Cmd::new("jaq -c")
         .args(["--argjson", "count", &mode_count.to_string()])
         .args(["--arg", "mode", if enabled { "engine" } else { "default" }])
@@ -100,7 +101,7 @@ fn execute_mode(
     };
     let assigned_path = job.temp.join(format!("{name}-assigned.json"));
     write(&assigned_path, assigned.as_bytes(), false)?;
-    let count = plan::listing_count(&assigned_path)?;
+    let count = plan_identity::listing_count(&assigned_path)?;
     if count == 0 {
         return Ok(());
     }
@@ -135,13 +136,13 @@ fn execute_mode(
         );
     verdict?;
     let outcomes = output.join("mutants.out/outcomes.json");
-    plan::validate_execution(&assigned_path, &outcomes)?;
+    plan_identity::validate_execution(&assigned_path, &outcomes)?;
     reports::report_outcomes(job, &outcomes, source.change.as_deref(), Some(count))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::plan;
+    use super::plan_identity;
     use std::{env, fs, process};
 
     #[test]
@@ -152,10 +153,10 @@ mod tests {
         let outcomes = root.join("outcomes.json");
         fs::write(&listing, "[]").unwrap();
         fs::write(&outcomes, "{\"outcomes\":[]}").unwrap();
-        assert!(plan::validate_execution(&listing, &outcomes).is_ok());
+        assert!(plan_identity::validate_execution(&listing, &outcomes).is_ok());
         fs::write(&listing, "[{\"file\":\"src/run.rs\"}]").unwrap();
         assert_eq!(
-            plan::validate_execution(&listing, &outcomes)
+            plan_identity::validate_execution(&listing, &outcomes)
                 .unwrap_err()
                 .message
                 .as_deref(),

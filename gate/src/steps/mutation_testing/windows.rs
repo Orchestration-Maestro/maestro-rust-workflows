@@ -1,8 +1,8 @@
 //! Select and run mutations for Windows-owned files only.
 
-use super::{reports, scope};
+use super::{plan_identity, reports, scope};
 use crate::checks::quality_config::mutation_windows;
-use crate::runner::{Cmd, Failure, Job, Outcome, flag, input, optional, output, tee_line};
+use crate::runner::{Cmd, Failure, Job, Outcome, flag, input, optional, output, tee_line, write};
 use std::fs;
 use std::path::Path;
 
@@ -22,6 +22,7 @@ pub(super) fn run() -> Outcome {
         return output("applied", "false");
     }
     let source_scope = scope::prepare(&job, &optional("GITHUB_BASE_REF")?)?;
+    write(&job.report("mutation-windows-list.json")?, b"[]", false)?;
     let diff_run = source_scope.diff.is_some();
     let touched = if diff_run {
         Cmd::new("git -c core.quotePath=false diff --relative --name-only HEAD^1 HEAD -- .")
@@ -34,6 +35,7 @@ pub(super) fn run() -> Outcome {
     let configured: Vec<_> = configured.iter().map(String::as_str).collect();
     let selected = files_for_run(&configured, &touched, diff_run);
     if selected.is_empty() && diff_run {
+        save_windows_plan(&job, &source_scope)?;
         tee_line("No Windows-owned file changed", &report, false)?;
         return output("applied", "false");
     }
@@ -59,6 +61,7 @@ pub(super) fn run() -> Outcome {
         };
         counts.push(count);
     }
+    save_windows_plan(&job, &source_scope)?;
     let verdict = run_files(&job, &source_scope, &selected, &report);
     let expected = counts.into_iter().sum();
     let outcomes = job.temp.join("mutants/mutants.out/outcomes.json");
@@ -67,6 +70,9 @@ pub(super) fn run() -> Outcome {
             .map_err(|error| format!("cannot copy the outcomes: {error}"))?;
     }
     verdict?;
+    if expected > 0 {
+        plan_identity::validate_execution(&job.report("mutation-windows-list.json")?, &outcomes)?;
+    }
     reports::report_outcomes(
         &job,
         &outcomes,
@@ -90,10 +96,40 @@ fn list_file(job: &Job, scope: &scope::Scope, file: &str, in_diff: bool) -> Resu
     let listed = command.cwd(&job.project).capture()?;
     fs::write(&listing, &listed).map_err(|error| format!("{}: {error}", listing.display()))?;
     if listed.trim().is_empty() {
-        return Ok(0);
+        fs::write(&listing, "[]")
+            .map_err(|error| format!("cannot save empty Windows listing: {error}"))?;
+    }
+    if in_diff || scope.diff.is_none() {
+        let target = job.report("mutation-windows-list.json")?;
+        let mut documents = fs::read(&target)
+            .map_err(|error| format!("cannot read Windows plan listing: {error}"))?;
+        documents.push(b'\n');
+        documents.extend(
+            fs::read(&listing)
+                .map_err(|error| format!("cannot read Windows discovery: {error}"))?,
+        );
+        let json = Cmd::new("jaq -sc")
+            .arg("add")
+            .stdin_bytes(&documents)
+            .capture()?;
+        write(&target, json.as_bytes(), false)?;
     }
     let count = Cmd::new("jaq -er").arg("length").arg(&listing).capture()?;
     parse_listing_count(&count)
+}
+
+/// Preserve a Windows-owned plan even when no owned changed lines need execution.
+fn save_windows_plan(job: &Job, source: &scope::Scope) -> Outcome {
+    let listing = job.report("mutation-windows-list.json")?;
+    let count = plan_identity::listing_count(&listing)?;
+    let manifest = job.report("mutation-windows-plan.json")?;
+    plan_identity::write_manifest(&manifest, &job.project, source, count, 1)?;
+    let json = Cmd::new("jaq -c")
+        .args(["--argjson", "files", &input("MUTATION_WINDOWS")?])
+        .arg(". + {partition:\"windows\", os:\"windows\", files:$files}")
+        .arg(&manifest)
+        .capture()?;
+    write(&manifest, json.as_bytes(), false)
 }
 
 /// Parse the listing count, rejecting invalid output as a tool failure.

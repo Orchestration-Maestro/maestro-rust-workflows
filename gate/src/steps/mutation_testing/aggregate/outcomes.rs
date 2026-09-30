@@ -58,6 +58,27 @@ pub(super) fn aggregate_outcomes(paths: &[PathBuf]) -> Result<String, Failure> {
         .capture()
 }
 
+/// Merge mode-tagged documents whose paths already name their retained report folders.
+pub(super) fn merge_partitions(paths: &[PathBuf]) -> Result<String, Failure> {
+    let mut documents = Vec::new();
+    for path in paths {
+        documents
+            .extend(fs::read(path).map_err(|error| format!("cannot read mode result: {error}"))?);
+        documents.push(b'\n');
+    }
+    Cmd::new("jaq -s -c")
+        .args(["--arg", "version", &input("CARGO_MUTANTS_VERSION")?])
+        .arg(concat!(
+            "{outcomes:[.[] | .outcomes[]], total_mutants:(map(.total_mutants)|add), ",
+            "caught:(map(.caught)|add), missed:(map(.missed)|add), timeout:(map(.timeout)|add), ",
+            "unviable:(map(.unviable)|add), success:(map(.success)|add), ",
+            "start_time:(map(.start_time)|min), end_time:(map(.end_time)|max), ",
+            "cargo_mutants_version:$version}"
+        ))
+        .stdin_bytes(&documents)
+        .capture()
+}
+
 /// Extract one JSON field through the pinned reader.
 pub(super) fn jaq(expression: &str, path: &Path) -> Result<String, Failure> {
     Cmd::new("jaq -r")

@@ -1,7 +1,7 @@
 //! `rust-gate mutants`: cargo-mutants over the checked source scope, failing on
 //! every survivor, timeout, baseline failure or incomplete shard execution.
 
-use super::{aggregate, plan, reports, scope, selftest};
+use super::{aggregate, plan, plan_identity, reports, scope, selftest};
 use crate::runner::{Cmd, Failure, Job, Outcome, Step, flag, optional, output, tee_line};
 use std::fs;
 use std::path::PathBuf;
@@ -144,13 +144,22 @@ pub(crate) const STEPS: &[Step] = &[
             "CARGO_MUTANTS_VERSION",
             "GITHUB_BASE_REF",
             "GITHUB_WORKSPACE",
+            "GITHUB_SHA",
+            "GITHUB_RUN_ID",
+            "GITHUB_RUN_ATTEMPT",
             "MUTATION_TEST",
             "MUTATION_WINDOWS",
             "PROJECT",
             "RUSTUP_TOOLCHAIN",
         ],
         tools: &["cargo mutants", "git", "jaq"],
-        reports: &["mutants.json", "mutants.txt", "mutants.diff"],
+        reports: &[
+            "mutants.json",
+            "mutants.txt",
+            "mutants.diff",
+            "mutation-windows-plan.json",
+            "mutation-windows-list.json",
+        ],
         run: super::windows::run,
     },
     Step {
@@ -160,6 +169,22 @@ pub(crate) const STEPS: &[Step] = &[
         inputs: &[
             "CARGO_MUTANTS_VERSION",
             "CHECKS_RESULT",
+            "MUTATION_WINDOWS",
+            "WINDOWS_MUTATIONS_RESULT",
+            "MUTATION_WINDOWS_ARTIFACTS",
+            "ENGINE_MUTATIONS_RESULT",
+            "ENGINE_DEFAULT_MUTATIONS_RESULT",
+            "MUTATION_ENGINE_COUNT",
+            "MUTATION_ENGINE_SHARDS",
+            "MUTATION_ENGINE_MATRIX",
+            "MUTATION_ENGINE_DEFAULT_COUNT",
+            "MUTATION_ENGINE_DEFAULT_SHARDS",
+            "MUTATION_ENGINE_DEFAULT_MATRIX",
+            "MUTATION_ENGINE_FEATURES",
+            "MUTATION_ENGINE_FILES",
+            "MUTATION_ENGINE_PLAN_DIR",
+            "MUTATION_ENGINE_ARTIFACTS",
+            "MUTATION_ENGINE_DEFAULT_ARTIFACTS",
             "GITHUB_RUN_ATTEMPT",
             "GITHUB_RUN_ID",
             "GITHUB_SHA",
@@ -173,7 +198,12 @@ pub(crate) const STEPS: &[Step] = &[
             "RUSTUP_TOOLCHAIN",
         ],
         tools: &["jaq"],
-        reports: &["mutation-shards", "mutants.json", "mutants.txt"],
+        reports: &[
+            "mutation-shards",
+            "mutation-partitions",
+            "mutants.json",
+            "mutants.txt",
+        ],
         run: aggregate::run,
     },
 ];
@@ -191,7 +221,7 @@ fn run() -> Outcome {
     let shard = if shard_value.is_empty() {
         None
     } else {
-        Some(plan::parse_shard(&shard_value)?)
+        Some(plan_identity::parse_shard(&shard_value)?)
     };
     let base = optional("GITHUB_BASE_REF")?;
     let (scope, expected_mutants) = if let Some((index, count)) = shard {
@@ -199,13 +229,13 @@ fn run() -> Outcome {
         let manifest = required_plan_path("MUTATION_PLAN")?;
         let listing = required_plan_path("MUTATION_LIST")?;
         let expected =
-            plan::verify_worker(&job, &source_scope, &manifest, &listing, (index, count))?;
+            plan_identity::verify_worker(&job, &source_scope, &manifest, &listing, (index, count))?;
         let receipt = job.report("mutants-shard.json")?;
-        plan::write_receipt(&receipt, &manifest, index, count, expected)?;
+        plan_identity::write_receipt(&receipt, &manifest, index, count, expected)?;
         tee_line(
             &format!(
                 "shard {index}/{count}: planned {expected} of {} mutants",
-                plan::manifest_count(&manifest)?
+                plan_identity::manifest_count(&manifest)?
             ),
             &report,
             false,
@@ -214,7 +244,7 @@ fn run() -> Outcome {
         output("planned-mutants", &expected.to_string())?;
         (source_scope, Some(expected))
     } else {
-        (plan::planned_scope(&job, &base)?, None)
+        (plan_identity::planned_scope(&job, &base)?, None)
     };
     if !base.is_empty() && scope.parent.is_some() {
         tee_line(&format!("scope: changes against {base}"), &report, true)?;

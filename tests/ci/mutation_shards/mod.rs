@@ -2,8 +2,11 @@
 
 mod aggregation_evidence;
 mod aggregation_rejections;
+mod engine_aggregation;
 mod engine_execution;
 mod engine_planning;
+mod engine_rejections;
+mod engine_windows;
 mod inline_execution;
 mod pinned_mutants;
 mod shard_execution;

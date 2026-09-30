@@ -6,8 +6,9 @@ use super::artifacts::{
 };
 use super::evidence::{Evidence, Plan, identity_rows, read_shard, untested_mutants};
 use super::merge::finish_aggregate;
-use super::outcomes::jaq;
-use crate::runner::{Cmd, Failure, Job, Outcome, input, output, summary, tee_line};
+use super::outcomes::{jaq, merge_partitions};
+use super::{engine_evidence, evidence, windows_evidence};
+use crate::runner::{Cmd, Failure, Job, Outcome, input, output, summary, tee_line, write};
 use std::fs;
 use std::path::Path;
 
@@ -67,10 +68,71 @@ pub(in super::super) fn run() -> Outcome {
 
 /// Check the run plan, preserve every safe artifact, then aggregate only complete evidence.
 fn aggregate(job: &Job, report: &Path) -> Result<bool, Failure> {
+    let engine =
+        input("MUTATION_ENGINE_COUNT")? != "0" || input("MUTATION_ENGINE_DEFAULT_COUNT")? != "0";
+    if engine {
+        return aggregate_partitions(job, report);
+    }
     let root = safe_directory(job, Path::new(&input("MUTATION_ARTIFACTS")?))?;
     let plan = read_plan(job, report)?;
     let evidence = collect_evidence(job, report, &root, &plan)?;
     finish_aggregate(job, report, &plan, &evidence)
+}
+
+/// Join inline or sharded default evidence with both mode-aware engine obligations.
+fn aggregate_partitions(job: &Job, report: &Path) -> Result<bool, Failure> {
+    if input("CHECKS_RESULT")? != "success" {
+        return Err("default mutation checks failed or were skipped".into());
+    }
+    let mode = input("MUTATION_MODE")?;
+    let passed = if mode == "sharded" {
+        let root = safe_directory(job, Path::new(&input("MUTATION_ARTIFACTS")?))?;
+        let plan = read_plan(job, report)?;
+        let evidence = collect_evidence(job, report, &root, &plan)?;
+        finish_aggregate(job, report, &plan, &evidence)?
+    } else {
+        if !matches!(mode.as_str(), "inline" | "empty") {
+            return Err("engine aggregation requires a valid default plan mode".into());
+        }
+        let directory = safe_directory(job, Path::new(&input("MUTATION_PLAN_DIR")?))?;
+        validate_tree(&directory)?;
+        copy_tree(&directory, &job.reports)?;
+        true
+    };
+    let manifest = safe_file(&job.reports.join("mutation-plan.json"))?;
+    let listing = safe_file(&job.reports.join("mutants-list.json"))?;
+    let count = super::super::plan_identity::listing_count(&listing)?;
+    if super::super::plan_identity::manifest_count(&manifest)? != count {
+        return Err("default partition plan count differs from its complete listing".into());
+    }
+    let mut paths = Vec::new();
+    if count > 0 {
+        let outcomes = safe_file(&job.reports.join(if mode == "sharded" {
+            "mutants.json"
+        } else {
+            "mutants/mutants.out/outcomes.json"
+        }))?;
+        // Sharded totals contain multiple baselines already checked per worker.
+        if mode != "sharded" {
+            evidence::partition_counts(&listing, &outcomes)?;
+        }
+        paths.push(engine_evidence::tagged(
+            job, &outcomes, "default", "default",
+        )?);
+    }
+    paths.extend(engine_evidence::collect(job, report, &manifest)?);
+    paths.extend(windows_evidence::collect(job, report, &manifest)?);
+    write(
+        &job.report("mutants.json")?,
+        merge_partitions(&paths)?.as_bytes(),
+        false,
+    )?;
+    tee_line(
+        "All default and engine mode-aware obligations are complete",
+        report,
+        true,
+    )?;
+    Ok(passed)
 }
 
 /// Read the checks bundle and confirm its exact matrix before examining workers.
@@ -80,9 +142,9 @@ fn read_plan(job: &Job, report: &Path) -> Result<Plan, Failure> {
     copy_tree(&plan_dir, &job.reports)?;
     let manifest = safe_file(&plan_dir.join("mutation-plan.json"))?;
     let listing = safe_file(&plan_dir.join("mutants-list.json"))?;
-    super::super::plan::validate_listing(&listing)?;
+    super::super::plan_identity::validate_listing(&listing)?;
     let identities = identity_rows(&listing)?;
-    let mutants = super::super::plan::manifest_count(&manifest)?;
+    let mutants = super::super::plan_identity::manifest_count(&manifest)?;
     if mutants == 0 || identities.len() != mutants {
         return Err("mutation plan count differs from its filtered listing".into());
     }
