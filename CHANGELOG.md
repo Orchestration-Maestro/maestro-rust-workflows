@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.7.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.6.2...v4.7.0) (2026-09-30)
+
+
+### Features
+
+* **secrets:** bind reviewed exceptions and close scan bypasses ([#97](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/97)) ([55d0733](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/55d07337a116550862b2f99f329212943470295f))
+
 ## [4.6.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.6.1...v4.6.2) (2026-09-30)
 
 
