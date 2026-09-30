@@ -2,7 +2,7 @@
 //! then the resolved project, toolchain and gate selectors exported to the
 //! rest of the job. A run no workflow called, the one an organization ruleset
 //! starts, takes the same values from `maestro-quality.toml` instead: the
-//! base commit's, and the head's for `mutation-windows`.
+//! base commit's, and the head's for mutation ownership.
 
 use crate::checks::checkout_paths::{canonical, committed_file, inside, project_directory};
 use crate::checks::digests::sha256_hex;
@@ -10,6 +10,7 @@ use crate::checks::inputs::{
     LicensePolicy, artifact_key, clippy_level, coverage_threshold, internal_shard_selftest,
     license_policy, mutation_mutants_per_shard, mutation_shards, unsafe_policy,
 };
+use crate::checks::mutation_engine;
 use crate::checks::quality_config::{FILE, QualityConfig, mutation_windows, read_config};
 use crate::checks::rust_versions::{channel_value, is_exact_stable, parse};
 use crate::runner::{Cmd, Failure, Outcome, Step, export, flag, input, optional, output};
@@ -37,6 +38,7 @@ pub(crate) const STEPS: &[Step] = &[Step {
         "INTERNAL_SHARD_SELFTEST",
         "LICENSE_POLICY",
         "MUTATION_MUTANTS_PER_SHARD",
+        "MUTATION_ENGINE_POLICY",
         "MUTATION_SHARDS",
         "MUTATION_TEST",
         "MUTATION_WINDOWS",
@@ -46,7 +48,7 @@ pub(crate) const STEPS: &[Step] = &[Step {
         "UNSAFE_POLICY",
         "UNUSED_DEPENDENCIES",
     ],
-    tools: &["git", "jaq", "rust-gate"],
+    tools: &["cargo metadata", "git", "jaq", "rust-gate"],
     reports: &[],
     run,
 }];
@@ -79,6 +81,15 @@ const SETTINGS: &[(&str, &str, &str)] = &[
     ("platforms", "PLATFORMS", "macos windows"),
     ("api-compatibility", "API_COMPATIBILITY", "true"),
 ];
+
+/// Encode a list for outputs passed through the workflow.
+fn json_strings(values: &[String]) -> Result<String, Failure> {
+    let mut command = Cmd::new("jaq -cn").arg("$ARGS.positional").args(["--args"]);
+    for value in values {
+        command = command.arg(value);
+    }
+    command.capture().map(|value| value.trim().to_owned())
+}
 
 /// Run the step: the checks in the order a consumer sees them fail, then
 /// the resolved values exported to the rest of the job.
@@ -131,6 +142,7 @@ fn run() -> Outcome {
     let runners = platform_runners()?;
     let deny_config = deny_configuration(&project, &root)?;
     let directory = relative_directory(&project, &root)?;
+    export_engine_policy(&project, &mutation_windows)?;
     output(
         "artifact-name",
         &artifact_name(&directory, &artifact_key, &toolchain)?,
@@ -164,22 +176,55 @@ fn run() -> Outcome {
     ])
 }
 
+/// Validate and export the tested head's engine ownership before other settings.
+fn export_engine_policy(project: &Path, windows: &[String]) -> Outcome {
+    let explicit = optional("MUTATION_ENGINE_POLICY")?;
+    let config = read_config(project)?;
+    let value = if explicit.is_empty() {
+        config
+            .settings
+            .iter()
+            .find(|(key, _)| key == "mutation-engine")
+            .map_or("{}", |(_, value)| value.as_str())
+    } else {
+        &explicit
+    };
+    let policy = mutation_engine::engine_policy(project, value, windows, || {
+        Cmd::new("cargo metadata --format-version 1 --no-deps --locked")
+            .cwd(project)
+            .capture()
+    })?;
+    let features = json_strings(&policy.features)?;
+    let files = json_strings(&policy.files)?;
+    output("mutation-engine-features", &features)?;
+    output("mutation-engine-files", &files)?;
+    export(&[
+        ("MUTATION_ENGINE_FEATURES", &features),
+        ("MUTATION_ENGINE_FILES", &files),
+    ])
+}
+
 /// A run no workflow called: this step again, with the `[ci]` table of the
 /// base commit's `maestro-quality.toml` in place of the inputs, so a pull
 /// request cannot loosen its own gate. The checkout holds the merge commit
 /// and its first parent, the base branch or the merge queue's base.
 ///
-/// `mutation-windows` alone comes from the head, the merge commit itself: it
-/// only moves a file's mutants from the Linux shards to the Windows job, where
-/// every one still runs and must be caught, so it can never skip a mutant. A
-/// pull request that adds a Windows-only file lists it in the same change, and
-/// a head that drops one only makes the Linux shards stricter.
+/// Mutation ownership policies come from the head, the merge commit itself;
+/// they only partition mutants into additional required jobs, so they cannot
+/// skip one.
 fn from_settings() -> Outcome {
     let root = canonical(Path::new(&input("GITHUB_WORKSPACE")?))?;
     let settings = Path::new(&input("RUNNER_TEMP")?).join("ci-settings");
     let base = committed_config(&root, "HEAD^1", &settings.join("base"))?;
     let head = committed_config(&root, "HEAD", &settings.join("head"))?;
-    let mut validate = Cmd::new("rust-gate validate").env("CALLED", "true");
+    let engine_policy = head
+        .settings
+        .iter()
+        .find(|(key, _)| key == "mutation-engine")
+        .map_or("{}", |(_, value)| value.as_str());
+    let mut validate = Cmd::new("rust-gate validate")
+        .env("CALLED", "true")
+        .env("MUTATION_ENGINE_POLICY", engine_policy);
     for (key, variable, default) in SETTINGS {
         let config = if *key == "mutation-windows" {
             &head

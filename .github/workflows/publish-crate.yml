@@ -39,6 +39,10 @@ name: Publish Rust crate
           the committed pin
         type: boolean
         default: true
+      mutation-engine:
+        description: JSON object of package-local features and exact engine mutation files
+        type: string
+        default: ''
       mutation-windows:
         description: JSON array of exact relative paths owned by Windows mutation testing
         type: string
@@ -188,6 +192,7 @@ jobs:
       license-policy: ${{ inputs.license-policy }}
       mutation-test: ${{ inputs.mutation-test }}
       mutation-windows: ${{ inputs.mutation-windows }}
+      mutation-engine: ${{ inputs.mutation-engine }}
       mutation-shards: ${{ inputs.mutation-shards }}
       mutation-mutants-per-shard: ${{ inputs.mutation-mutants-per-shard }}
       sarif-reports: ${{ inputs.sarif-reports }}

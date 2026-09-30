@@ -100,6 +100,7 @@ committed `deny.toml` applies the same way to every pull request. See [runner se
 | `mutation-shards` | number | `1` | `1` keeps one inline run without discovery, `0` selects all mutants automatically up to GitHub's 256-job matrix limit and fails if the target needs more, while `2` through `256` request a fixed shard count |
 | `mutation-mutants-per-shard` | number | `50` | Automatic mode target mutants per shard, an adjustable calibration knob from `1` to `1000`, not a time guarantee |
 | `mutation-windows` | string | `[]` | JSON array of exact files relative to `working-directory` owned by Windows mutation testing |
+| `mutation-engine` | string | Empty | JSON object with package-local features and exact relative Rust files; empty reads the tested head's [ci.mutation-engine] policy |
 | `internal-shard-selftest` | boolean | `false` | Internal to this repository's own CI only: create a behavior-equivalent workspace diff and require its two-shard mutation matrix. Refused for every other repository. |
 | `sarif-reports` | boolean | `true` | Also emit Clippy and secret findings as SARIF, which the organization's check uploads to code scanning |
 | `clippy-level` | string | `default` | `pedantic` or `nursery` also deny those Clippy groups |

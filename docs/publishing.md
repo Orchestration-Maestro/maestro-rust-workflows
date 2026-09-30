@@ -21,6 +21,7 @@ all runs. Ordinary CI reports still expire after seven days.
 | `working-directory` | string | `.` | Validated Cargo package/workspace path |
 | `dry-run` | boolean | `true` | Validate/stage only, no authorization API or live publication |
 | `artifact-key` | string | `publish-binaries` / `publish-crate` | Unique CI invocation key for this directory/run |
+| `mutation-engine` | string | Empty | JSON object of package-local features and exact engine mutation files |
 | `mutation-windows` | string | `[]` | JSON array of exact relative paths owned by Windows mutation testing |
 | `coverage-threshold`, `license-policy`, `mutation-test`, `mutation-shards`, `mutation-mutants-per-shard`, `sarif-reports`, `clippy-level`, `dependency-audit`, `unsafe-policy`, `unused-dependencies`, `platforms`, `api-compatibility` | as in [ci.md](ci.md) | as in `ci.yml` | Forwarded unchanged to the CI run, so a release passes the same gates as the project's own CI. `rust-version` is not: a release builds with the committed pin |
 

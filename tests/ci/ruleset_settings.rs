@@ -1,9 +1,9 @@
 //! `ci.yml` as an organization ruleset runs it: no workflow called it, so
 //! `validate` takes its inputs from the `[ci]` table of the base commit, and
-//! `mutation-windows` alone from the pull request's head.
+//! mutation ownership policies from the pull request's head.
 
 use crate::harness::{Fixture, refused, succeeds, workflow};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::fs;
 
 /// A run no workflow called, the one an organization ruleset starts, whose
@@ -31,6 +31,37 @@ fn uncalled(base: &str, head: &str) -> Fixture {
 esac"#,
     );
     fixture
+}
+
+/// Configure the fixture package's declared engine feature and source file.
+fn set_engine_metadata(fixture: &mut Fixture) {
+    fs::write(
+        fixture.root.join("project/Cargo.toml"),
+        concat!(
+            "[package]\nname=\"fixture\"\nversion=\"0.1.0\"\nedition=\"2021\"\n",
+            "[features]\nengine=[]\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        fixture.root.join("project/src/engine.rs"),
+        "pub fn run() {}\n",
+    )
+    .unwrap();
+    fixture.set(
+        "METADATA",
+        &json!({"workspace_members":["fixture"], "packages":[{
+            "id":"fixture", "name":"fixture",
+            "manifest_path":fixture.root.join("project/Cargo.toml"),
+            "features":{"engine":[],"default":[]},
+            "targets":[{"src_path":fixture.root.join("project/src/lib.rs")}]
+        }]})
+        .to_string(),
+    );
+    fixture.stub(
+        "cargo",
+        "[[ $1 == metadata ]] && printf '%s' \"$METADATA\"; exit 0",
+    );
 }
 
 /// The `KEY=value` lines `validate` exported.
@@ -93,6 +124,31 @@ fn the_head_lists_windows_files_the_base_commit_does_not_know() {
     );
     succeeds(&fixture.run("ci", "validate"));
     assert_exported(&fixture, "MUTATION_WINDOWS=[\"src/windows.rs\"]");
+}
+
+#[test]
+fn engine_owned_files_and_features_come_from_the_tested_head() {
+    let base = r#"[ci]
+working-directory = "project"
+"#;
+    let policy = r#"[ci]
+working-directory = "project"
+
+[ci.mutation-engine]
+features = ["engine"]
+files = ["src/engine.rs"]
+"#;
+    let mut fixture = uncalled(base, policy);
+    set_engine_metadata(&mut fixture);
+    succeeds(&fixture.run("ci", "validate"));
+    assert_exported(&fixture, r#"MUTATION_ENGINE_FEATURES=["engine"]"#);
+    assert_exported(&fixture, r#"MUTATION_ENGINE_FILES=["src/engine.rs"]"#);
+
+    let mut fixture = uncalled(policy, base);
+    set_engine_metadata(&mut fixture);
+    succeeds(&fixture.run("ci", "validate"));
+    assert_exported(&fixture, "MUTATION_ENGINE_FEATURES=[]");
+    assert_exported(&fixture, "MUTATION_ENGINE_FILES=[]");
 }
 
 #[test]

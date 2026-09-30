@@ -177,6 +177,7 @@ in place.
 │   │   │   ├── manifests.rs                                     # What Cargo says beyond module trees: packages, the workspace, what members inherit
 │   │   │   ├── mod.rs                                           # The registry of every step, run and describe, the two doors main.rs calls
 │   │   │   ├── module_tree.rs                                   # Every Cargo target's module tree: files, items, named paths and re-exports
+│   │   │   ├── mutation_engine.rs                               # Validate package-local features and exact engine mutation ownership
 │   │   │   ├── mutation_windows.rs                              # Validate the configured Windows-owned mutation paths before use
 │   │   │   ├── organization_config.rs                           # The tools' configuration passed at run time, and the header sync writes
 │   │   │   ├── private_directories.rs                           # Private temporary directories under the runner's own
