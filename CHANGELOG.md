@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.6.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.6.1...v4.6.2) (2026-09-30)
+
+
+### Bug Fixes
+
+* **mutation:** size automatic shards by the target up to GitHub's matrix limit ([#94](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/94)) ([33675c3](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/33675c3dfb0b8d94de80926dfa48a147ba72cfb6))
+
 ## [4.6.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.6.0...v4.6.1) (2026-09-30)
 
 
