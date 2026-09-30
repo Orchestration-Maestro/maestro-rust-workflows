@@ -249,6 +249,7 @@ in place.
 │   │   │   │   │   ├── outcomes.rs                              # Validate cargo-mutants outcome paths and produce one canonical JSON document
 │   │   │   │   │   └── run.rs                                   # Run the aggregate job and validate the full plan before accepting worker evidence
 │   │   │   │   ├── engine_plan.rs                               # Discover both modes and preserve every featureless obligation before routing workers
+│   │   │   │   ├── engine_run.rs                                # Execute exact shard obligations independently in featureless and engine modes
 │   │   │   │   ├── mod.rs                                       # rust-gate's mutation planning, scoped execution and shard aggregation
 │   │   │   │   ├── plan.rs                                      # Decide whether the current mutation run stays inline or needs every shard
 │   │   │   │   ├── reports.rs                                   # Preserve standard mutation summaries and reject incomplete outcomes
@@ -317,6 +318,7 @@ in place.
 │   │   ├── mutation_shards/                                     # ci.yml: mutation selection, full shard matrices and fail-closed planning
 │   │   │   ├── aggregation_evidence.rs                          # Mutation evidence validation and aggregation tests
 │   │   │   ├── aggregation_rejections.rs                        # Mutation aggregation refusal cases for incomplete or inconsistent evidence
+│   │   │   ├── engine_execution.rs                              # Engine worker selection, bound modes and complete execution
 │   │   │   ├── engine_planning.rs                               # Mode-aware engine ownership plans at the executable boundary
 │   │   │   ├── inline_execution.rs                              # The serial mutation run preserves reports and cargo-mutants' exit status
 │   │   │   ├── mod.rs                                           # ci.yml: mutation selection, full shard matrices and fail-closed planning

@@ -136,6 +136,10 @@ pub(super) const CHECKS: &[(&str, Local)] = &[
         "Upload diagnostic reports",
         Local::NotApplied("only a GitHub run keeps an artifact; the reports stay in rust-reports"),
     ),
+    (
+        "Upload immutable engine mutation plan",
+        Local::NotApplied("only GitHub keeps the immutable engine plan artifact"),
+    ),
 ];
 
 /// The step CI runs whatever failed before it, once `validate` passed.
@@ -154,6 +158,14 @@ pub(super) const OTHER_JOBS: &[(&str, &str)] = &[
     (
         "mutation-summary",
         "only a GitHub run aggregates remote mutation shards",
+    ),
+    (
+        "mutation-engine-default",
+        "featureless engine-file controls run in separate GitHub workers",
+    ),
+    (
+        "mutation-engine",
+        "engine-owned mutation modes run in separate GitHub workers",
     ),
     (
         "mutation-windows",

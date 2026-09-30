@@ -84,6 +84,22 @@ pub(super) fn exclude_default_files(command: Cmd, project: &Path) -> Result<Cmd,
     Ok(command)
 }
 
+/// Restrict a feature-enabled engine listing or run to its exact owned files.
+pub(super) fn engine_selection(mut command: Cmd, project: &Path) -> Result<Cmd, Failure> {
+    let features = json_strings("MUTATION_ENGINE_FEATURES")?;
+    let files = engine_files()?;
+    if !features.is_empty() {
+        command = command.args(["--features", &features.join(",")]);
+    }
+    for package in engine_packages(project, &files)? {
+        command = command.args(["--package", &package]);
+    }
+    for file in files {
+        command = command.args(["--file", &file]);
+    }
+    Ok(command)
+}
+
 /// Select only packages that own engine files so package-local features stay local.
 pub(super) fn engine_packages(project: &Path, files: &[String]) -> Result<Vec<String>, Failure> {
     if files.is_empty() {

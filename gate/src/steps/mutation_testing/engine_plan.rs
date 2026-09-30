@@ -37,27 +37,30 @@ pub(super) fn discover(job: &Job, source: &scope::Scope, listing: &Path, log: &P
     require_owned_union(&control, &feature, &files)?;
     let enabled_count = plan::listing_count(&engine)?;
     let default_count = plan::listing_count(&default)?;
-    let (_, shards, _) = plan::selection(
-        enabled_count.max(default_count),
-        mutation_shards()?,
-        mutation_mutants_per_shard()?,
-    )?;
-    let matrix: Vec<_> = (0..shards).map(|index| index.to_string()).collect();
-    output(
-        "mutation-engine-count",
-        &(enabled_count + default_count).to_string(),
-    )?;
-    output("mutation-engine-shards", &shards.to_string())?;
-    output("mutation-engine-matrix", &format!("[{}]", matrix.join(",")))?;
+    let shards = route_mode("mutation-engine", enabled_count)?;
+    let default_shards = route_mode("mutation-engine-default", default_count)?;
     let manifest = job.report("mutation-engine-plan.json")?;
     plan::write_manifest(
         &manifest,
         &job.project,
         source,
         enabled_count + default_count,
-        shards,
+        shards.max(default_shards),
     )?;
     bind_modes(&manifest, &engine, &default, &packages)
+}
+
+/// Apply the existing shard planner independently to one nonempty mode.
+fn route_mode(prefix: &str, count: usize) -> Result<usize, Failure> {
+    let (_, shards, _) = plan::selection(count, mutation_shards()?, mutation_mutants_per_shard()?)?;
+    output(&format!("{prefix}-count"), &count.to_string())?;
+    output(&format!("{prefix}-shards"), &shards.to_string())?;
+    let matrix: Vec<_> = (0..shards).map(|index| index.to_string()).collect();
+    output(
+        &format!("{prefix}-matrix"),
+        &format!("[{}]", matrix.join(",")),
+    )?;
+    Ok(shards)
 }
 
 /// Common listing flags keep discovery order identical to execution.
@@ -142,12 +145,58 @@ fn string_array(values: &[String]) -> Result<String, Failure> {
 
 /// Bind exact policy, package/OS owner and both listing digests into worker identity.
 fn bind_modes(manifest: &Path, engine: &Path, default: &Path, packages: &[String]) -> Outcome {
+    let (_, enabled_shards, _) = plan::selection(
+        plan::listing_count(engine)?,
+        mutation_shards()?,
+        mutation_mutants_per_shard()?,
+    )?;
+    let (_, default_shards, _) = plan::selection(
+        plan::listing_count(default)?,
+        mutation_shards()?,
+        mutation_mutants_per_shard()?,
+    )?;
+    let json = mode_command(engine, default, packages)?
+        .args(["--argjson", "engine_shards", &enabled_shards.to_string()])
+        .args(["--argjson", "default_shards", &default_shards.to_string()])
+        .arg(concat!(
+            ". + {partition: \"engine\", os: \"linux\", features:$features, files:$files, ",
+            "packages:$packages, engine_count:$engine_count, default_count:$default_count, ",
+            "engine_sha256:$engine_digest, default_sha256:$default_digest, ",
+            "engine_shards:$engine_shards, default_shards:$default_shards}"
+        ))
+        .arg(manifest)
+        .capture()?;
+    write(manifest, json.as_bytes(), false)
+}
+
+/// Check each downloaded mode listing and the exact policy used for selection.
+pub(super) fn verify_modes(job: &Job, manifest: &Path, engine: &Path, default: &Path) -> Outcome {
+    plan::validate_listing(engine)?;
+    plan::validate_listing(default)?;
+    let packages = scope::engine_packages(&job.project, &scope::engine_files()?)?;
+    mode_command(engine, default, &packages)?
+        .arg(concat!(
+            ".partition == \"engine\" and .os == \"linux\" and ",
+            ".features == $features and .files == $files and .packages == $packages and ",
+            ".engine_count == $engine_count and .default_count == $default_count and ",
+            ".mutant_count == ($engine_count + $default_count) and ",
+            ".engine_sha256 == $engine_digest and .default_sha256 == $default_digest"
+        ))
+        .arg(manifest)
+        .arg("-e")
+        .capture()
+        .map(|_| ())
+        .map_err(|_| "engine worker policy or mode listings differ from its plan".into())
+}
+
+/// Build the common digest and exact-policy arguments used by planning and workers.
+fn mode_command(engine: &Path, default: &Path, packages: &[String]) -> Result<Cmd, Failure> {
     let digest = |path: &Path| {
         fs::read(path)
             .map(|bytes| sha256_hex(&bytes))
             .map_err(|error| Failure::from(format!("cannot hash mode listing: {error}")))
     };
-    let json = Cmd::new("jaq -c")
+    let command = Cmd::new("jaq -c")
         .args(["--argjson", "features", &input("MUTATION_ENGINE_FEATURES")?])
         .args(["--argjson", "files", &input("MUTATION_ENGINE_FILES")?])
         .args(["--argjson", "packages", &string_array(packages)?])
@@ -162,22 +211,18 @@ fn bind_modes(manifest: &Path, engine: &Path, default: &Path, packages: &[String
             &plan::listing_count(default)?.to_string(),
         ])
         .args(["--arg", "engine_digest", &digest(engine)?])
-        .args(["--arg", "default_digest", &digest(default)?])
-        .arg(concat!(
-            ". + {partition: \"engine\", os: \"linux\", features:$features, files:$files, ",
-            "packages:$packages, engine_count:$engine_count, default_count:$default_count, ",
-            "engine_sha256:$engine_digest, default_sha256:$default_digest}"
-        ))
-        .arg(manifest)
-        .capture()?;
-    write(manifest, json.as_bytes(), false)
+        .args(["--arg", "default_digest", &digest(default)?]);
+    Ok(command)
 }
 
 /// Publish the empty engine routing when policy or mutation testing is disabled.
 pub(super) fn disabled() -> Outcome {
     output("mutation-engine-count", "0")?;
     output("mutation-engine-shards", "0")?;
-    output("mutation-engine-matrix", "[]")
+    output("mutation-engine-matrix", "[]")?;
+    output("mutation-engine-default-count", "0")?;
+    output("mutation-engine-default-shards", "0")?;
+    output("mutation-engine-default-matrix", "[]")
 }
 
 #[cfg(test)]

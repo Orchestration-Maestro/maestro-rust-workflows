@@ -62,6 +62,7 @@ pub(crate) const STEPS: &[Step] = &[
             "MUTATION_SHARDS",
             "MUTATION_TEST",
             "MUTATION_WINDOWS",
+            "MUTATION_ENGINE_FILES",
             "RUSTUP_TOOLCHAIN",
         ],
         tools: &["cargo mutants", "git", "jaq", "timeout"],
@@ -72,6 +73,68 @@ pub(crate) const STEPS: &[Step] = &[
             "mutants.diff",
         ],
         run,
+    },
+    Step {
+        workflow: "ci",
+        id: "mutants-engine",
+        summary: "Execute engine shards and their separate featureless obligations",
+        inputs: &[
+            "CARGO_MUTANTS_VERSION",
+            "GITHUB_BASE_REF",
+            "GITHUB_RUN_ATTEMPT",
+            "GITHUB_RUN_ID",
+            "GITHUB_SHA",
+            "GITHUB_WORKSPACE",
+            "RUSTUP_TOOLCHAIN",
+            "MUTATION_TEST",
+            "MUTATION_SHARDS",
+            "MUTATION_SHARD",
+            "MUTATION_ENGINE_FEATURES",
+            "MUTATION_ENGINE_FILES",
+            "MUTATION_ENGINE_PLAN",
+            "MUTATION_ENGINE_LIST",
+            "MUTATION_ENGINE_DEFAULT_LIST",
+        ],
+        tools: &["cargo mutants", "cargo metadata", "git", "jaq", "timeout"],
+        reports: &[
+            "mutants-engine-shard.json",
+            "mutants-engine.txt",
+            "mutants-engine-default.txt",
+            "mutants.txt",
+            "mutants.diff",
+        ],
+        run: super::engine_run::run,
+    },
+    Step {
+        workflow: "ci",
+        id: "mutants-engine-default",
+        summary: "Execute featureless engine-file control shards",
+        inputs: &[
+            "CARGO_MUTANTS_VERSION",
+            "GITHUB_BASE_REF",
+            "GITHUB_RUN_ATTEMPT",
+            "GITHUB_RUN_ID",
+            "GITHUB_SHA",
+            "GITHUB_WORKSPACE",
+            "RUSTUP_TOOLCHAIN",
+            "MUTATION_TEST",
+            "MUTATION_SHARDS",
+            "MUTATION_SHARD",
+            "MUTATION_ENGINE_FEATURES",
+            "MUTATION_ENGINE_FILES",
+            "MUTATION_ENGINE_PLAN",
+            "MUTATION_ENGINE_LIST",
+            "MUTATION_ENGINE_DEFAULT_LIST",
+        ],
+        tools: &["cargo mutants", "cargo metadata", "git", "jaq", "timeout"],
+        reports: &[
+            "mutants-engine-default-shard.json",
+            "mutants-engine.txt",
+            "mutants-engine-default.txt",
+            "mutants.txt",
+            "mutants.diff",
+        ],
+        run: super::engine_run::run_default,
     },
     Step {
         workflow: "ci",
@@ -175,7 +238,7 @@ fn run() -> Outcome {
         let diff = diff.to_string_lossy().into_owned();
         command = command.args(["--in-diff", &diff]);
     }
-    command = scope::exclude_windows_files(command, &job.project)?;
+    command = scope::exclude_default_files(command, &job.project)?;
     if let Some((index, count)) = shard {
         command = command
             .arg("--shard")

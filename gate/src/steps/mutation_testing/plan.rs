@@ -124,6 +124,35 @@ pub(super) fn recognized_no_work(stderr: &[u8], has_diff: bool) -> bool {
     })
 }
 
+/// Compare every planned mutant identity with exactly one executed outcome.
+pub(super) fn validate_execution(listing: &Path, outcomes: &Path) -> Outcome {
+    let planned = Cmd::new("jaq -r")
+        .arg(concat!(
+            "[.[] | ",
+            "[.package,.name,.file,.span.start.line,.span.start.column,.span.end.line,.s",
+            "pan.end.column,.replacement] | @tsv] | .[]",
+        ))
+        .arg(listing)
+        .capture()?;
+    let executed = Cmd::new("jaq -r")
+        .arg(concat!(
+            "[.outcomes[] | select((.scenario | type) == \"object\") | .scenario.Mutant ",
+            "| ",
+            "[.package,.name,.file,.span.start.line,.span.start.column,.span.end.line,.s",
+            "pan.end.column,.replacement] | @tsv] | .[]",
+        ))
+        .arg(outcomes)
+        .capture()?;
+    let mut planned: Vec<&str> = planned.lines().collect();
+    let mut executed: Vec<&str> = executed.lines().collect();
+    planned.sort_unstable();
+    executed.sort_unstable();
+    if planned != executed {
+        return Err("mutation outcomes do not equal their complete mode-aware plan".into());
+    }
+    Ok(())
+}
+
 /// Validate the versioned listing schema and unique, stable mutant identities.
 pub(super) fn validate_listing(listing: &Path) -> Outcome {
     const SCHEMA: &str = concat!(
@@ -307,6 +336,26 @@ pub(super) fn verify_worker(
     if mutation_shards()? != shards {
         return Err("mutation worker shard count differs from its planned matrix".into());
     }
+    verify_identity(job, source_scope, &manifest, mutants, shards)?;
+    let expected = if index >= mutants {
+        0
+    } else {
+        (mutants - index).div_ceil(shards)
+    };
+    if expected == 0 {
+        return Err("mutation plan assigns an empty shard".into());
+    }
+    Ok(expected)
+}
+
+/// Bind any partition worker to the same source, scope, tool and run identity.
+pub(super) fn verify_identity(
+    job: &Job,
+    source_scope: &Scope,
+    manifest: &Path,
+    mutants: usize,
+    shards: usize,
+) -> Outcome {
     let tested = input("GITHUB_SHA")?;
     let run = input("GITHUB_RUN_ID")?;
     let attempt = input("GITHUB_RUN_ATTEMPT")?;
@@ -335,19 +384,11 @@ pub(super) fn verify_worker(
     let identity = Cmd::new("jaq -e")
         .args(args)
         .arg(WORKER_IDENTITY_QUERY)
-        .arg(&manifest)
+        .arg(manifest)
         .capture();
     identity
         .map_err(|_| "mutation worker identity or scope differs from its plan; Re-run all jobs")?;
-    let expected = if index >= mutants {
-        0
-    } else {
-        (mutants - index).div_ceil(shards)
-    };
-    if expected == 0 {
-        return Err("mutation plan assigns an empty shard".into());
-    }
-    Ok(expected)
+    Ok(())
 }
 
 /// Write the worker receipt before the long mutation command starts.
@@ -383,7 +424,7 @@ fn parse_count(value: &str, message: &'static str) -> Result<usize, Failure> {
 }
 
 /// A plan or listing is data only when a regular file inside runner temp.
-fn safe_plan_file(job: &Job, path: &Path) -> Result<PathBuf, Failure> {
+pub(super) fn safe_plan_file(job: &Job, path: &Path) -> Result<PathBuf, Failure> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("cannot inspect mutation plan {}: {error}", path.display()))?;
     if !metadata.is_file() || metadata.file_type().is_symlink() {

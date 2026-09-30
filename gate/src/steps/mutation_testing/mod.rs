@@ -2,6 +2,7 @@
 
 mod aggregate;
 mod engine_plan;
+mod engine_run;
 mod plan;
 mod reports;
 mod scope;
