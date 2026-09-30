@@ -56,13 +56,13 @@ pub(super) struct Evidence {
 
 /// cargo-mutants' nonnegative integral counters.
 #[derive(Clone, Copy, Default)]
-pub(super) struct Counts {
+pub(in super::super) struct Counts {
     /// Every mutant scenario, excluding the baseline.
     pub(super) total: usize,
     /// Mutants caught by a test failure.
     pub(super) caught: usize,
     /// Mutants that passed the tests.
-    pub(super) missed: usize,
+    pub(in super::super) missed: usize,
     /// Timed-out mutants.
     pub(super) timeout: usize,
     /// Mutants that could not be built or tested.
@@ -348,7 +348,11 @@ fn summary_counts_match(path: &Path, counts: Counts) -> Result<bool, Failure> {
 }
 
 /// Require a mode's full planned identities, successful baseline and exact counters.
-pub(super) fn partition_counts(listing: &Path, outcomes: &Path) -> Result<Counts, Failure> {
+pub(in super::super) fn partition_counts(
+    listing: &Path,
+    outcomes: &Path,
+    control: bool,
+) -> Result<Counts, Failure> {
     super::super::plan_identity::validate_listing(listing)?;
     validate_outcomes(outcomes)?;
     let planned = identity_rows(listing)?;
@@ -362,7 +366,7 @@ pub(super) fn partition_counts(listing: &Path, outcomes: &Path) -> Result<Counts
     if !summary_counts_match(outcomes, counts)? || !baseline_succeeded(outcomes)? {
         return Err("partition baseline failed or its counters disagree with outcomes".into());
     }
-    if counts.missed > 0 || counts.timeout > 0 || counts.success > 0 {
+    if (!control && counts.missed > 0) || counts.timeout > 0 || counts.success > 0 {
         return Err("partition contains a survivor, timeout or untested mutant".into());
     }
     validate_result_paths(outcomes.parent().unwrap_or(outcomes), outcomes)?;

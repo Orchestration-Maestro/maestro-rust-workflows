@@ -50,7 +50,7 @@ pub(super) fn collect(
         return Ok(Vec::new());
     }
     let outcomes = safe_file(&directory.join("mutants/mutants.out/outcomes.json"))?;
-    partition_counts(&listing, &outcomes)?;
+    partition_counts(&listing, &outcomes, false)?;
     Ok(vec![tagged(
         job,
         &copied.join("mutants/mutants.out/outcomes.json"),

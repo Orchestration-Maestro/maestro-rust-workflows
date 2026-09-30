@@ -114,7 +114,7 @@ fn aggregate_partitions(job: &Job, report: &Path) -> Result<bool, Failure> {
         }))?;
         // Sharded totals contain multiple baselines already checked per worker.
         if mode != "sharded" {
-            evidence::partition_counts(&listing, &outcomes)?;
+            evidence::partition_counts(&listing, &outcomes, false)?;
         }
         paths.push(engine_evidence::tagged(
             job, &outcomes, "default", "default",

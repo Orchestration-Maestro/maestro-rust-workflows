@@ -1072,6 +1072,16 @@ A shared default-caught mutant becoming unviable fails; an already-unviable shar
 identity is allowed; a newly discovered feature-only unviable fails. Package and
 partition counts are reported so offsets cannot hide regressions.
 
+The featureless control can report MISSED for a cfg-disabled engine body: its mutation is in
+code that is not compiled without features. Such an outcome is accepted **only** when the
+engine run caught its exact twin (package, file, complete source span, function and mutation
+text). This is evidence of inactivity, not an accepted test gap. A missing, surviving,
+timed-out or unviable engine twin fails. Default-only/cfg-exclusive control survivors still
+fail. Every raw control outcome remains MISSED; it is never relabelled CAUGHT. The aggregate
+adds the separate `inactive_without_features_caught_with_engine` class, counted globally,
+per `engine-default` partition and per package, and tags the accepted pairs in its JSON.
+Default-caught to engine-unviable regressions and feature-only unviable mutants still fail.
+
 `mutation-shards: 1` is the compatible default: it runs the existing inline
 mutation command once, with no discovery listing; the worker and summary jobs
 stay skipped. Opt-in

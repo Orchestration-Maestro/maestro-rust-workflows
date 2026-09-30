@@ -1,7 +1,7 @@
 //! Execute exact shard obligations independently in featureless and engine modes.
 
-use super::{engine_plan, plan_identity, reports, scope};
-use crate::runner::{Cmd, Job, Outcome, flag, input, optional, write};
+use super::{aggregate, engine_plan, plan_identity, reports, scope};
+use crate::runner::{Cmd, Job, Outcome, flag, input, optional, output, tee_line, write};
 use std::path::Path;
 
 /// Verify the dual-mode plan before executing either mode.
@@ -119,12 +119,12 @@ fn execute_mode(
             command = command.args(["--file", &file]);
         }
     }
-    let output = job.temp.join(name);
+    let directory = job.temp.join(name);
     let verdict = command
         .args(["--shard", &format!("{}/{}", shard.0, shard.1)])
         .args(["--sharding", "round-robin"])
         .arg("--output")
-        .arg(&output)
+        .arg(&directory)
         .cwd(&job.project)
         .tee(
             &job.report(if enabled {
@@ -134,10 +134,28 @@ fn execute_mode(
             })?,
             true,
         );
-    verdict?;
-    let outcomes = output.join("mutants.out/outcomes.json");
+    if let Err(failure) = &verdict
+        && (enabled || failure.code != 2)
+    {
+        return verdict;
+    }
+    let outcomes = directory.join("mutants.out/outcomes.json");
     plan_identity::validate_execution(&assigned_path, &outcomes)?;
-    reports::report_outcomes(job, &outcomes, source.change.as_deref(), Some(count))
+    if enabled {
+        reports::report_outcomes(job, &outcomes, source.change.as_deref(), Some(count))
+    } else {
+        // Only the aggregate may pair a control survivor with an exact caught engine twin.
+        let counts = aggregate::evidence::partition_counts(&assigned_path, &outcomes, true)?;
+        if verdict.is_err() && counts.missed == 0 {
+            return verdict;
+        }
+        tee_line(
+            "Featureless control retained; aggregate must validate every survivor's engine twin",
+            &job.report("mutants-engine-default.txt")?,
+            true,
+        )?;
+        output("applied", "true")
+    }
 }
 
 #[cfg(test)]

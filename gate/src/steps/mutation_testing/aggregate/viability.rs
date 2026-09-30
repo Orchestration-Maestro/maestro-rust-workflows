@@ -17,7 +17,20 @@ struct MutantResult {
 pub(super) fn compare(control: &[PathBuf], engine: &[PathBuf], report: &Path) -> Outcome {
     let control = results(control)?;
     let engine = results(engine)?;
+    let inactive = matched_inactive(&control, &engine)?;
     unchanged_viability(&control, &engine)?;
+    tee_line(
+        &format!(
+            concat!(
+                "inactive without features, caught with engine: ",
+                "partition engine-default={}; packages={:?}"
+            ),
+            inactive.values().sum::<usize>(),
+            inactive
+        ),
+        report,
+        true,
+    )?;
     let control_counts = package_counts(&control);
     let engine_counts = package_counts(&engine);
     tee_line(
@@ -73,6 +86,29 @@ fn results(paths: &[PathBuf]) -> Result<BTreeMap<String, MutantResult>, Failure>
     Ok(results)
 }
 
+/// A featureless survivor is evidence of inactivity only with its exact caught engine twin.
+fn matched_inactive(
+    control: &BTreeMap<String, MutantResult>,
+    engine: &BTreeMap<String, MutantResult>,
+) -> Result<BTreeMap<String, usize>, Failure> {
+    let mut packages = BTreeMap::new();
+    for (identity, result) in control {
+        if result.summary != "MissedMutant" {
+            continue;
+        }
+        if engine
+            .get(identity)
+            .is_none_or(|twin| twin.summary != "CaughtMutant")
+        {
+            return Err(
+                "featureless control survivor is not caught by its exact engine twin".into(),
+            );
+        }
+        *packages.entry(result.package.clone()).or_default() += 1;
+    }
+    Ok(packages)
+}
+
 /// Every allowed engine unviable has the identical unviable control, including its package.
 fn unchanged_viability(
     control: &BTreeMap<String, MutantResult>,
@@ -106,7 +142,7 @@ fn package_counts(results: &BTreeMap<String, MutantResult>) -> BTreeMap<String, 
 
 #[cfg(test)]
 mod tests {
-    use super::{MutantResult, package_counts, results, unchanged_viability};
+    use super::{MutantResult, matched_inactive, package_counts, results, unchanged_viability};
     use std::{collections::BTreeMap, env, fs, process};
 
     /// A stable identity with a pinned-tool outcome and explicit package scope.
@@ -146,6 +182,29 @@ mod tests {
             Some("feature-only mutant became unviable in the engine mode")
         );
     }
+    #[test]
+    fn an_inactive_control_requires_a_caught_exact_twin_not_a_fuzzy_or_failed_match() {
+        let control = BTreeMap::from([("identity".into(), result("A", "MissedMutant"))]);
+        let caught = BTreeMap::from([("identity".into(), result("A", "CaughtMutant"))]);
+        assert_eq!(
+            matched_inactive(&control, &caught).unwrap(),
+            BTreeMap::from([("A".into(), 1)])
+        );
+        for summary in ["MissedMutant", "Timeout", "Unviable", "Success"] {
+            let engine = BTreeMap::from([("identity".into(), result("A", summary))]);
+            assert_eq!(
+                matched_inactive(&control, &engine)
+                    .unwrap_err()
+                    .message
+                    .as_deref(),
+                Some("featureless control survivor is not caught by its exact engine twin")
+            );
+        }
+        let different = BTreeMap::from([("identity-other".into(), result("A", "CaughtMutant"))]);
+        assert!(matched_inactive(&control, &different).is_err());
+        assert!(matched_inactive(&control, &BTreeMap::new()).is_err());
+    }
+
     #[test]
     fn duplicate_mode_execution_is_not_collapsed_during_identity_join() {
         let path = env::temp_dir().join(format!("engine-duplicate-{}.json", process::id()));

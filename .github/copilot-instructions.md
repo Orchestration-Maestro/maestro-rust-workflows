@@ -325,6 +325,7 @@ in place.
 │   │   │   ├── engine_aggregation.rs                            # Every engine mode and its featureless control are required mutation evidence
 │   │   │   ├── engine_execution.rs                              # Engine worker selection, bound modes and complete execution
 │   │   │   ├── engine_planning.rs                               # Mode-aware engine ownership plans at the executable boundary
+│   │   │   ├── engine_regression.rs                             # Real, offline three-package regression of the complete required mutation gate
 │   │   │   ├── engine_rejections.rs                             # Plan, artifact and outcome corruption never becomes engine gate success
 │   │   │   ├── engine_windows.rs                                # Windows ownership remains native, featureless and part of engine aggregation
 │   │   │   ├── inline_execution.rs                              # The serial mutation run preserves reports and cargo-mutants' exit status

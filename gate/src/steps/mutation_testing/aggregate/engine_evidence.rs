@@ -177,7 +177,7 @@ fn collect_mode(
         let outcomes = safe_file(&source.join(format!("{mode}/mutants.out/outcomes.json")))?;
         let discovered = safe_file(&source.join(format!("{mode}/mutants.out/mutants.json")))?;
         super::super::plan_identity::validate_execution(&assigned_path, &outcomes)?;
-        let counts = partition_counts(&discovered, &outcomes)?;
+        let counts = partition_counts(&discovered, &outcomes, !enabled)?;
         tee_line(
             &format!(
                 "{prefix} shard {index}/{shards}: total={} unviable={}",
@@ -277,7 +277,9 @@ pub(super) fn tagged(job: &Job, source: &Path, name: &str, mode: &str) -> Result
         .args(["--arg", "mode", mode])
         .args(["--arg", "prefix", &prefix])
         .arg(concat!(
-            ".outcomes |= map(. + {mutation_mode:$mode} | ",
+            ".outcomes |= map(. + {mutation_mode:$mode} + ",
+            "(if $mode == \"engine-default\" and .summary == \"MissedMutant\" then ",
+            "{mutation_class:\"inactive without features, caught with engine\"} else {} end) | ",
             ".log_path = (if (.log_path | type) == \"string\" then ",
             "$prefix + .log_path else .log_path end) | ",
             ".diff_path = (if (.diff_path | type) == \"string\" then ",
