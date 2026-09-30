@@ -4,7 +4,7 @@ use super::artifacts::{
     copy_artifact, copy_tree, has_outcome_files, preserve_foreign_artifacts, preserve_unverified,
     safe_component, safe_directory, safe_file, validate_tree,
 };
-use super::evidence::{Evidence, Plan, identity_rows, read_shard};
+use super::evidence::{Evidence, Plan, identity_rows, read_shard, untested_mutants};
 use super::merge::finish_aggregate;
 use super::outcomes::jaq;
 use crate::runner::{Cmd, Failure, Job, Outcome, input, output, summary, tee_line};
@@ -89,8 +89,8 @@ fn read_plan(job: &Job, report: &Path) -> Result<Plan, Failure> {
     let shards = input("MUTATION_SHARDS")?
         .parse::<usize>()
         .map_err(|_| "MUTATION_SHARDS is not an integer")?;
-    if !(2..=64).contains(&shards) {
-        return Err("sharded aggregation requires 2 through 64 planned shards".into());
+    if !(2..=256).contains(&shards) {
+        return Err("sharded aggregation requires 2 through 256 planned shards".into());
     }
     validate_plan(&manifest, mutants, shards)?;
     let matrix = format!(
@@ -142,11 +142,15 @@ fn collect_evidence(
         .map_err(|error| format!("cannot create {}: {error}", directory.display()))?;
     let mut evidence = Vec::new();
     let mut missing = Vec::new();
+    let mut untested = 0usize;
+    let mut incomplete_shards = 0usize;
     for index in 0..plan.shards {
         let name = format!("{}-mutants-{index}-of-{}", plan.artifact_name, plan.shards);
         let source = artifacts.join(&name);
         let destination = directory.join(index.to_string());
         if !source.exists() {
+            untested += untested_mutants(&source, plan, index);
+            incomplete_shards += 1;
             tee_line(
                 &format!("shard {index}/{}: missing artifact {name}", plan.shards),
                 report,
@@ -156,6 +160,8 @@ fn collect_evidence(
             continue;
         }
         if let Err(error) = copy_artifact(&source, &destination) {
+            untested += untested_mutants(&source, plan, index);
+            incomplete_shards += 1;
             tee_line(
                 &format!(
                     "shard {index}/{}: invalid artifact: {}",
@@ -192,6 +198,8 @@ fn collect_evidence(
                 evidence.push(item);
             }
             Err(error) => {
+                untested += untested_mutants(&source, plan, index);
+                incomplete_shards += 1;
                 tee_line(
                     &format!(
                         "shard {index}/{}: incomplete: {}",
@@ -213,21 +221,43 @@ fn collect_evidence(
         report,
     )?;
     if !missing.is_empty() {
-        tee_line(
-            &format!(
-                "Incomplete shard indices: {}",
-                missing
-                    .iter()
-                    .map(usize::to_string)
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-            report,
-            true,
-        )?;
-        return Err("one or more expected mutation shards are missing or incomplete".into());
+        return fail_incomplete(report, &missing, untested, incomplete_shards);
     }
     Ok(evidence)
+}
+
+/// Report the incomplete shard count in both the summary and failed exit reason.
+fn fail_incomplete(
+    report: &Path,
+    missing: &[usize],
+    untested: usize,
+    incomplete_shards: usize,
+) -> Result<Vec<Evidence>, Failure> {
+    tee_line(
+        &format!("{untested} mutants untested in {incomplete_shards} shards"),
+        report,
+        true,
+    )?;
+    tee_line(
+        &format!(
+            "Incomplete shard indices: {}",
+            missing
+                .iter()
+                .map(usize::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        report,
+        true,
+    )?;
+    Err(format!(
+        concat!(
+            "{} mutants untested in {} shards; ",
+            "one or more expected mutation shards are missing or incomplete"
+        ),
+        untested, incomplete_shards
+    )
+    .into())
 }
 
 /// The plan's immutable run identity must match the current workflow attempt.

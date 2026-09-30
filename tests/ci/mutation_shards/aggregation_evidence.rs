@@ -1,6 +1,8 @@
 //! Mutation evidence validation and aggregation tests.
 
-use crate::harness::{aggregation_fixture, output, refused, shard_outcomes, succeeds};
+use crate::harness::{
+    aggregation_fixture, incomplete_reason, output, refused, shard_outcomes, succeeds,
+};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
@@ -25,7 +27,7 @@ fn aggregation_merges_only_complete_identity_and_outcome_evidence() {
     let incomplete = aggregation_fixture(false);
     refused(
         &incomplete.run_body("rust-gate mutants-aggregate"),
-        "one or more expected mutation shards are missing or incomplete",
+        &incomplete_reason(2, 1),
     );
     assert_eq!(output(&incomplete, "mutation-state"), "failed");
     assert!(!incomplete.root.join("reports/mutants.json").exists());
@@ -33,6 +35,25 @@ fn aggregation_merges_only_complete_identity_and_outcome_evidence() {
         fs::read_to_string(incomplete.root.join("reports/mutants.txt"))
             .unwrap()
             .contains("Aggregate total unavailable; partial shard diagnostics are retained.")
+    );
+}
+
+#[test]
+fn aggregate_reports_mutants_missing_from_an_incomplete_shard() {
+    let fixture = aggregation_fixture(true);
+    let path = shard_outcomes(&fixture, 0);
+    let mut document: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    document["outcomes"].as_array_mut().unwrap().pop();
+    document["end_time"] = serde_json::json!("");
+    fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
+
+    let result = fixture.run_body("rust-gate mutants-aggregate");
+    refused(&result, &incomplete_reason(1, 1));
+    assert_eq!(output(&fixture, "mutation-state"), "failed");
+    assert!(
+        fs::read_to_string(fixture.root.join("reports/mutants.txt"))
+            .unwrap()
+            .contains("1 mutants untested in 1 shards")
     );
 }
 
@@ -59,10 +80,7 @@ fn aggregation_rejects_discovery_outside_its_round_robin_slice() {
     fs::write(&path, serde_json::to_vec(&discovery).unwrap()).unwrap();
 
     let result = fixture.run_body("rust-gate mutants-aggregate");
-    refused(
-        &result,
-        "one or more expected mutation shards are missing or incomplete",
-    );
+    refused(&result, &incomplete_reason(0, 1));
     assert!(
         String::from_utf8_lossy(&result.stdout)
             .contains("shard discovery differs from round-robin assignment")

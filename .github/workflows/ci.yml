@@ -47,7 +47,8 @@ name: Rust CI
       mutation-shards:
         description: >-
           `1` keeps one inline run without discovery, `0` selects all mutants
-          automatically, and `2` through `64` request a fixed shard count
+          automatically up to GitHub's 256-job matrix limit, and `2` through
+          `256` request a fixed shard count
         type: number
         default: 1
       mutation-mutants-per-shard:

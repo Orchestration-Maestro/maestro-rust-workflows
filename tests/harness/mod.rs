@@ -12,7 +12,7 @@ mod workflow_yaml;
 pub(crate) use fixture::{Fixture, SCORECARD_OUTCOMES, checksums, refused, succeeds};
 pub(crate) use gate_declarations::{Described, describe_text, described, described_step, gate_bin};
 pub(crate) use mutation_shards::{
-    aggregation_fixture, copy_tree, output, planning_fixture, shard_outcomes,
+    aggregation_fixture, copy_tree, incomplete_reason, output, planning_fixture, shard_outcomes,
 };
 pub(crate) use repository::{
     capture, command_line, root, rust_files, temp_dir, test_sources, tool, toolbelt_path,

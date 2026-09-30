@@ -9,27 +9,27 @@ fn mutation_shard_numbers_are_validated_before_any_export() {
         (
             "MUTATION_SHARDS",
             "-1",
-            "mutation-shards must be a whole number between 0 and 64",
+            "mutation-shards must be a whole number between 0 and 256",
         ),
         (
             "MUTATION_SHARDS",
             "1.5",
-            "mutation-shards must be a whole number between 0 and 64",
+            "mutation-shards must be a whole number between 0 and 256",
         ),
         (
             "MUTATION_SHARDS",
-            "65",
-            "mutation-shards must be a whole number between 0 and 64",
+            "257",
+            "mutation-shards must be a whole number between 0 and 256",
         ),
         (
             "MUTATION_SHARDS",
             "true",
-            "mutation-shards must be a whole number between 0 and 64",
+            "mutation-shards must be a whole number between 0 and 256",
         ),
         (
             "MUTATION_SHARDS",
             "nan",
-            "mutation-shards must be a whole number between 0 and 64",
+            "mutation-shards must be a whole number between 0 and 256",
         ),
         (
             "MUTATION_MUTANTS_PER_SHARD",
@@ -55,11 +55,15 @@ fn mutation_shard_numbers_are_validated_before_any_export() {
         assert!(!fixture.root.join("output").exists(), "{name}={value}");
     }
     let mut valid = Fixture::new();
-    valid.set("MUTATION_SHARDS", "64");
+    valid.set("MUTATION_SHARDS", "200");
     valid.set("MUTATION_MUTANTS_PER_SHARD", "1000");
     succeeds(&valid.run("ci", "validate"));
     let environment = fs::read_to_string(valid.root.join("environment")).unwrap();
-    assert!(environment.lines().any(|line| line == "MUTATION_SHARDS=64"));
+    assert!(
+        environment
+            .lines()
+            .any(|line| line == "MUTATION_SHARDS=200")
+    );
     assert!(
         environment
             .lines()

@@ -1,6 +1,6 @@
 //! Mutation aggregation refusal cases for incomplete or inconsistent evidence.
 
-use crate::harness::{aggregation_fixture, copy_tree, refused, shard_outcomes};
+use crate::harness::{aggregation_fixture, copy_tree, incomplete_reason, refused, shard_outcomes};
 use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
@@ -14,10 +14,7 @@ fn aggregation_refuses_missing_duplicate_foreign_or_partial_results() {
         document["outcomes"][1]["scenario"]["Mutant"].clone();
     fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
     let result = duplicate.run_body("rust-gate mutants-aggregate");
-    refused(
-        &result,
-        "one or more expected mutation shards are missing or incomplete",
-    );
+    refused(&result, &incomplete_reason(0, 1));
     assert!(
         String::from_utf8_lossy(&result.stdout)
             .contains("completed outcomes omit or duplicate a planned mutant")
@@ -29,10 +26,7 @@ fn aggregation_refuses_missing_duplicate_foreign_or_partial_results() {
     document["caught"] = json!(2);
     fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
     let result = inconsistent.run_body("rust-gate mutants-aggregate");
-    refused(
-        &result,
-        "one or more expected mutation shards are missing or incomplete",
-    );
+    refused(&result, &incomplete_reason(0, 1));
     assert!(
         String::from_utf8_lossy(&result.stdout)
             .contains("outcome counters disagree with completed mutant scenarios")
@@ -44,10 +38,7 @@ fn aggregation_refuses_missing_duplicate_foreign_or_partial_results() {
     document["outcomes"][1]["log_path"] = json!("../../outside.log");
     fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
     let result = escaping.run_body("rust-gate mutants-aggregate");
-    refused(
-        &result,
-        "one or more expected mutation shards are missing or incomplete",
-    );
+    refused(&result, &incomplete_reason(0, 1));
     assert!(
         String::from_utf8_lossy(&result.stdout)
             .contains("outcomes contain an unsafe log or diff path")
@@ -67,10 +58,7 @@ fn aggregation_refuses_missing_duplicate_foreign_or_partial_results() {
     let partial = aggregation_fixture(true);
     fs::remove_file(shard_outcomes(&partial, 1)).unwrap();
     let result = partial.run_body("rust-gate mutants-aggregate");
-    refused(
-        &result,
-        "one or more expected mutation shards are missing or incomplete",
-    );
+    refused(&result, &incomplete_reason(2, 1));
     let output = String::from_utf8_lossy(&result.stdout);
     assert!(output.contains("missing mutation evidence"));
     assert!(output.contains("Incomplete shard indices: 1"));
@@ -85,10 +73,7 @@ fn aggregate_rejects_outcome_summaries_that_disagree_with_phases() {
     document["outcomes"][1]["phase_results"][1]["process_status"] = json!("Success");
     fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
     let result = fixture.run_body("rust-gate mutants-aggregate");
-    refused(
-        &result,
-        "one or more expected mutation shards are missing or incomplete",
-    );
+    refused(&result, &incomplete_reason(0, 1));
     assert!(
         String::from_utf8_lossy(&result.stdout)
             .contains("outcome summary does not match its phase results")
@@ -100,10 +85,7 @@ fn malformed_outcomes_are_rejected_before_path_scanning() {
     let fixture = aggregation_fixture(true);
     fs::write(shard_outcomes(&fixture, 0), b"{").unwrap();
     let result = fixture.run_body("rust-gate mutants-aggregate");
-    refused(
-        &result,
-        "one or more expected mutation shards are missing or incomplete",
-    );
+    refused(&result, &incomplete_reason(3, 1));
     assert!(
         String::from_utf8_lossy(&result.stdout)
             .contains("outcomes JSON is malformed or has invalid counters")
@@ -121,7 +103,7 @@ fn aggregate_refuses_invalid_plan_metadata_before_accepting_shards() {
         (
             "MUTATION_SHARDS",
             "1",
-            "sharded aggregation requires 2 through 64 planned shards",
+            "sharded aggregation requires 2 through 256 planned shards",
         ),
         (
             "MUTATION_MODE",
@@ -187,10 +169,7 @@ fn aggregate_rejects_incomplete_shard_documents_and_receipts() {
         document[field] = value;
         fs::write(path, serde_json::to_vec(&document).unwrap()).unwrap();
         let result = fixture.run_body("rust-gate mutants-aggregate");
-        refused(
-            &result,
-            "one or more expected mutation shards are missing or incomplete",
-        );
+        refused(&result, &incomplete_reason(0, 1));
         assert!(String::from_utf8_lossy(&result.stdout).contains(message));
     }
 
@@ -201,10 +180,7 @@ fn aggregate_rejects_incomplete_shard_documents_and_receipts() {
     identity["shard_index"] = json!(1);
     fs::write(receipt, serde_json::to_vec(&identity).unwrap()).unwrap();
     let result = fixture.run_body("rust-gate mutants-aggregate");
-    refused(
-        &result,
-        "one or more expected mutation shards are missing or incomplete",
-    );
+    refused(&result, &incomplete_reason(0, 1));
     assert!(
         String::from_utf8_lossy(&result.stdout)
             .contains("shard receipt identity or denominator differs")
