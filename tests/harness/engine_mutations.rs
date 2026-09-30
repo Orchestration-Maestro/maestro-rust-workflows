@@ -5,8 +5,17 @@ use super::mutation_shards::{copy_tree, planning_fixture};
 use serde_json::{Value, json};
 use std::{fs, process::Output};
 
+/// Shared policy fixture, optionally advanced through planning for worker contracts.
+pub(crate) fn engine_fixture(planned: bool) -> Fixture {
+    if planned {
+        engine_execution_fixture()
+    } else {
+        engine_planning_fixture()
+    }
+}
+
 /// A feature-owned source with an independent featureless mode obligation.
-pub(crate) fn engine_planning_fixture() -> Fixture {
+fn engine_planning_fixture() -> Fixture {
     let mut fixture = planning_fixture(2, 0, 1);
     fixture.set("MUTATION_ENGINE_FEATURES", "[\"engine\"]");
     fixture.set("MUTATION_ENGINE_FILES", "[\"src/engine.rs\"]");
@@ -37,7 +46,7 @@ else cat "$RUNNER_TEMP/listing.json"; fi"#,
 }
 
 /// A dual-mode worker fixture with independent real-shaped outcome documents.
-pub(crate) fn engine_execution_fixture() -> Fixture {
+fn engine_execution_fixture() -> Fixture {
     let mut fixture = engine_planning_fixture();
     succeeds(&fixture.run_body("rust-gate mutants-plan"));
     for (key, name) in [

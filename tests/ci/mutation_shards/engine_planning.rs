@@ -1,12 +1,12 @@
 //! Mode-aware engine ownership plans at the executable boundary.
 
-use crate::harness::{engine_planning_fixture, output, refused, succeeds};
+use crate::harness::{engine_fixture, output, refused, succeeds};
 use serde_json::{Value, json};
 use std::fs;
 
 #[test]
 fn engine_planning_preserves_default_mode_and_rejects_unowned_feature_mutants() {
-    let mut fixture = engine_planning_fixture();
+    let mut fixture = engine_fixture(false);
     succeeds(&fixture.run_body("rust-gate mutants-plan"));
     assert_eq!(output(&fixture, "mutation-engine-count"), "1");
     assert_eq!(output(&fixture, "mutation-count"), "1");

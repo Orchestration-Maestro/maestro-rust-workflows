@@ -1,12 +1,12 @@
 //! Engine worker selection, bound modes and complete execution.
 
-use crate::harness::{engine_execution_fixture, refused, succeeds};
+use crate::harness::{engine_fixture, refused, succeeds};
 use serde_json::{Value, json};
 use std::fs;
 
 #[test]
 fn engine_workers_keep_default_obligations_and_refuse_stale_policy_or_incomplete_work() {
-    let mut fixture = engine_execution_fixture();
+    let mut fixture = engine_fixture(true);
     succeeds(&fixture.run_body("rust-gate mutants-engine"));
     succeeds(&fixture.run_body("rust-gate mutants-engine-default"));
     let commands = fixture.trace();
