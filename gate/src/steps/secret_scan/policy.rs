@@ -105,6 +105,7 @@ mod tests {
             ("owner/repo", "vendor/file.rs", "rule-id", "hash", true),
             ("other/repo", "vendor/file.rs", "rule-id", "hash", false),
             ("owner/repo", "vendor/other.rs", "rule-id", "hash", false),
+            ("owner/repo", "vendor/File.rs", "rule-id", "hash", false),
             ("owner/repo", "vendor/file.rs", "other-rule", "hash", false),
             (
                 "owner/repo",

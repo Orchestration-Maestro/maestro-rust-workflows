@@ -930,9 +930,11 @@ when built from the workflow's pinned revision. No list, `.gitleaks.toml`,
 an exception. Every approval requires four exact keys: `GITHUB_REPOSITORY` as
 `owner/name`, repository-relative `path`, Gitleaks `rule` (`RuleID`), and `sha256`.
 There are no globs, wildcard rules or line-number keys. Built-in Gitleaks rules
-remain active, plus the gate-owned `gitleaks-allow` rule: every inline suppression
-marker is itself a finding, even on a line containing no secret. Its `Match` is
-the entire line, so approving one marker cannot approve changed surrounding code.
+remain unchanged. A separate scan uses only the gate-owned `gitleaks-allow` rule,
+without inherited rules or global allowlists, and combines its findings with the
+secret scan. Every inline suppression marker is itself a finding, even on a line
+containing no secret or in a path the built-in rules allow. Its `Match` is the
+entire line, so approving one marker cannot approve changed surrounding code.
 
 Gitleaks automatically loads an archived root `.gitleaksignore`, regardless of
 its explicit ignore-path option. The gate moves that file to an unused archive

@@ -28,7 +28,10 @@ fn scan_fixture(findings: &[Value]) -> Fixture {
         serde_json::to_vec(findings).unwrap(),
     )
     .unwrap();
-    fixture.stub("gitleaks", "cat scanner.json");
+    fixture.stub(
+        "gitleaks",
+        "case \"$*\" in *gitleaks-markers.toml*) printf '[]';; *) cat scanner.json;; esac",
+    );
     fixture
 }
 
@@ -75,6 +78,20 @@ fn a_mismatch_in_each_exception_key_still_fails() {
         assert_eq!(report[0]["Status"], "finding", "{key}");
         assert!(report[0]["Exception"].is_null(), "{key}");
     }
+}
+
+#[test]
+fn a_case_only_path_mismatch_stays_unapproved() {
+    let mut changed = finding();
+    changed["File"] = json!("lbug-src/third_party/zstd/include/zstd/common/xxHash.h");
+    let fixture = scan_fixture(&[changed]);
+    let output = fixture.run("ci", "secrets");
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value =
+        serde_json::from_slice(&fs::read(fixture.root.join("reports/secrets.json")).unwrap())
+            .unwrap();
+    assert_eq!(report[0]["Status"], "finding");
+    assert!(report[0]["Exception"].is_null());
 }
 
 #[test]
@@ -219,7 +236,9 @@ fn source_fixture(file: &str, content: &str) -> Fixture {
     fixture.set("GITHUB_ACTIONS", "true");
     let project = fixture.root.join("project");
     fixture.set("GITHUB_WORKSPACE", &project.display().to_string());
-    fs::write(project.join(file), content).unwrap();
+    let path = project.join(file);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, content).unwrap();
     succeeds(&fixture.run_body(
         "cd project && git init -q && git add . && git -c user.name=Fixture \
          -c user.email=fixture@example.invalid -c commit.gpgsign=false \
@@ -249,13 +268,55 @@ fn inline_allow_markers_are_findings_even_without_a_secret() {
     assert!(!String::from_utf8_lossy(&output.stdout).contains(&source));
 }
 
+/// Every marker must survive built-in path and content allowlists.
+fn marker_finding(file: &str, prefix: &str) {
+    let source = [prefix, "gitleaks", ":allow"].concat();
+    let fixture = source_fixture(file, &source);
+    let output = fixture.run_body("cd project && rust-gate secrets");
+    assert_eq!(output.status.code(), Some(1));
+    let report: Value =
+        serde_json::from_slice(&fs::read(fixture.root.join("reports/secrets.json")).unwrap())
+            .unwrap();
+    assert_eq!(report.as_array().unwrap().len(), 1);
+    assert_eq!(report[0]["RuleID"], "gitleaks-allow");
+    assert_eq!(report[0]["File"], file);
+    assert_eq!(report[0]["Status"], "finding");
+    assert!(report[0]["Exception"].is_null());
+}
+
+#[test]
+fn false_content_cannot_suppress_inline_allow_markers() {
+    marker_finding("src/consumer.rs", "// false ");
+}
+
+#[test]
+fn consumer_config_cannot_hide_inline_allow_markers() {
+    marker_finding(".gitleaks.toml", "# ");
+}
+
+#[test]
+fn dependency_paths_cannot_hide_inline_allow_markers() {
+    marker_finding("node_modules/consumer.rs", "// ");
+}
+
 #[test]
 fn consumer_config_environment_cannot_replace_gate_rules() {
     let secret = ["aB2cD3eF4gH5", "iJ6kL7mN8pQ9rS0tU"].concat();
-    let mut fixture = source_fixture("src/consumer.rs", &format!("api_key = \"{secret}\"\n"));
+    let source = [
+        format!("api_key = \"{secret}\"\n// false "),
+        "gitleaks".into(),
+        ":allow".into(),
+    ]
+    .concat();
+    let mut fixture = source_fixture("src/consumer.rs", &source);
     let config = fixture.root.join("project/.gitleaks.toml");
     let config_text = "[allowlist]\npaths = ['.*']\n";
     fs::write(&config, config_text).unwrap();
+    fs::write(
+        fixture.root.join("project/gitleaks-markers.toml"),
+        config_text,
+    )
+    .unwrap();
     succeeds(&fixture.run_body(
         "cd project && git add . && git -c user.name=Fixture \
          -c user.email=fixture@example.invalid -c commit.gpgsign=false \
@@ -268,7 +329,11 @@ fn consumer_config_environment_cannot_replace_gate_rules() {
     let report: Value =
         serde_json::from_slice(&fs::read(fixture.root.join("reports/secrets.json")).unwrap())
             .unwrap();
+    assert_eq!(report.as_array().unwrap().len(), 2);
     assert_eq!(report[0]["RuleID"], "generic-api-key");
+    assert_eq!(report[1]["RuleID"], "gitleaks-allow");
+    assert_eq!(report[1]["Status"], "finding");
+    assert!(report[1]["Exception"].is_null());
 }
 
 #[test]

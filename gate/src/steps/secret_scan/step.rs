@@ -24,9 +24,12 @@ pub(crate) const STEPS: &[Step] = &[Step {
     run,
 }];
 
-/// Built-in rules plus an explicit finding for every inline suppression marker.
-const CONFIG: &str = concat!(
-    "[extend]\nuseDefault = true\n\n[[rules]]\nid = 'gitleaks-allow'\n",
+/// Keep the built-in secret rules and their upstream allowlists unchanged.
+const CONFIG: &str = "[extend]\nuseDefault = true\n";
+
+/// Marker detection must not inherit the built-in path or content allowlists.
+const MARKER_CONFIG: &str = concat!(
+    "[[rules]]\nid = 'gitleaks-allow'\n",
     "description = 'Inline allow marker requires organization review'\n",
     "regex = '(?m)^.*gitleaks",
     ":allow.*$'\n",
@@ -97,11 +100,19 @@ fn run() -> Outcome {
         .stdin_bytes(&archive)
         .run()?;
     let relocated = relocate_ignore(&source)?;
-    let config = job.temp.join("gitleaks.toml");
-    fs::write(&config, CONFIG)
-        .map_err(|error| format!("cannot write {}: {error}", config.display()))?;
-    let raw = scan(&source, &config, &job.temp.join("no-ignore-file"))?;
-    let findings = findings(&raw, &source, relocated.as_deref())?;
+    let mut scanned = Vec::new();
+    for (name, content) in [
+        ("gitleaks.toml", CONFIG),
+        ("gitleaks-markers.toml", MARKER_CONFIG),
+    ] {
+        let config = job.temp.join(name);
+        fs::write(&config, content)
+            .map_err(|error| format!("cannot write {}: {error}", config.display()))?;
+        let raw = scan(&source, &config, &job.temp.join("no-ignore-file"))?;
+        let findings = findings(&raw, &source, relocated.as_deref())?;
+        scanned.extend(findings);
+    }
+    let findings = scanned;
     let entries = exceptions()?;
     let approvals: Vec<_> = findings
         .iter()
