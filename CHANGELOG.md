@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.6.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.6.0...v4.6.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **ci:** read mutation-windows from the pull request's head ([#92](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/92)) ([7dca267](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/7dca267fba7f7de4b44b098df949ecda225d38e4))
+
 ## [4.6.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.5.0...v4.6.0) (2026-09-29)
 
 
