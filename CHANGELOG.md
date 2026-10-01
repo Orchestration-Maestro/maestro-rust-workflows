@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.7.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.7.0...v4.7.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* preserve locked dependencies during feature checks ([#99](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/99)) ([bdb8466](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/bdb8466dc97d1e47f032db96a9d249ba52f96d00))
+
 ## [4.7.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.6.2...v4.7.0) (2026-09-30)
 
 
