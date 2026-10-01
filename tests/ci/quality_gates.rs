@@ -214,13 +214,23 @@ fn every_declared_feature_is_compiled_and_a_broken_one_fails() {
     // A default build proves one combination. The gate builds each declared
     // feature on its own, so a feature nobody selects cannot quietly stop
     // compiling; a workspace declaring none spends no compile saying so.
+    let fixture = Fixture::new();
     let metadata = |features: Value| {
         json!({"workspace_members": ["p"],
-               "packages": [{"id": "p", "name": "fixture", "features": features}]})
+               "workspace_root": fixture.root.join("project"),
+               "packages": [{"id": "p", "name": "fixture", "features": features,
+                             "manifest_path": fixture.root.join("project/Cargo.toml")}]})
         .to_string()
     };
-    let fixture = Fixture::new();
-    fixture.stub("cargo", "exit 0");
+    fs::write(
+        fixture.root.join("project/Cargo.lock"),
+        "version = 4\n[[package]]\nname = 'fixture'\nversion = '0.1.0'\n",
+    )
+    .unwrap();
+    fixture.stub(
+        "cargo",
+        "if [[ \"$1\" == metadata ]]; then cat \"$RUNNER_TEMP/metadata.json\"; fi",
+    );
 
     // No feature: nothing to build, and the run says which it is.
     fs::write(fixture.root.join("metadata.json"), metadata(json!({}))).unwrap();
@@ -256,7 +266,7 @@ fn every_declared_feature_is_compiled_and_a_broken_one_fails() {
     assert!(
         fixture
             .calls()
-            .contains("hack check --workspace --locked --each-feature"),
+            .contains("hack check --workspace --offline --each-feature --remove-dev-deps"),
         "each feature must be built on its own: {}",
         fixture.calls()
     );
@@ -264,7 +274,11 @@ fn every_declared_feature_is_compiled_and_a_broken_one_fails() {
     assert_eq!(report, "default\ntls\nvendored", "the report names them");
 
     // The build is the gate: a combination that does not compile fails here.
-    fixture.stub("cargo", "exit 101");
+    fixture.stub(
+        "cargo",
+        "if [[ \"$1\" == metadata ]]; then cat \"$RUNNER_TEMP/metadata.json\"; \
+         exit 0; fi\nexit 101",
+    );
     assert_eq!(fixture.run("ci", "features").status.code(), Some(101));
 }
 

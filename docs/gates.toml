@@ -67,6 +67,11 @@ standard = "North Star, Quality"
 proofs = [
   "every_declared_feature_is_compiled_and_a_broken_one_fails",
   "real_features_reject_broken_isolated_and_combined_builds",
+  "dev_only_git_dependencies_allow_features_without_changing_lock_bytes",
+  "dev_dependency_feature_unification_cannot_hide_broken_features",
+  "a_new_lock_package_is_refused_and_original_bytes_restored",
+  "cargo_hack_failure_still_restores_original_lock_bytes",
+  "a_midway_manifest_edit_failure_restores_every_snapshotted_file",
 ]
 
 [[gate]]
