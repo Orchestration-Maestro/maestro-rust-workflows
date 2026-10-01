@@ -1462,3 +1462,13 @@ command and gate failure propagation, **not** GitHub's reusable-workflow schedul
 Other boundary tests execute malformed paths, release configuration, scanner
 errors, checksum corruption, revision mismatches and package selection. Real
 Cargo and workflow lint checks complement those stand-ins.
+
+### Native cache transport reports
+
+An opted-in feature-coverage run writes `native-cache-binding.txt` with the
+policy, key-file digests and snapshot key. `native-cache-before.txt` records the
+verified private root and its published-entry inventory before execution.
+Restore failure selects an empty private root and does not save that fallback.
+
+Published selectors are exact root-child names or `*`/`?` globs; hidden names
+are allowed, but `.`, `..`, separators, `**`, brackets, braces and escapes are refused.

@@ -16,6 +16,8 @@ mod internal_shard_selftest;
 mod local_ci_run;
 mod managed_files;
 mod mutation_shards;
+mod native_cache;
+mod native_cache_fixture;
 mod organization_lints;
 mod performance_budget;
 mod platform_portability;

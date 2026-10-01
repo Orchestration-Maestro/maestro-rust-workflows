@@ -1,0 +1,116 @@
+name: Native cache fixture
+
+"on":
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-cache-fixture-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  native-cache:
+    name: Native cache on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+          - runner: macos-15-intel
+          - runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      COVERAGE_FEATURES: '["crate-a/engine"]'
+      COVERAGE: '90'
+    steps:
+      - name: Checkout the gate at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - name: Build the gate
+        uses: ./.github/actions/gate
+      - name: Install fixture tools from pinned release assets
+        run: rust-gate install-tools
+        env:
+          TOOLS: |
+            jaq linux 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-unknown-linux-gnu 5922c7b67d9bd6841d6676d1f954410c6bf04b47203dcb661c4f052dfef7f454 file jaq
+            jaq macos 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-apple-darwin 34b1a9495dbd28df09ad83c832a2ae4be60657d8c24e72f28565cd19b98ed0af file jaq
+            jaq windows 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-pc-windows-msvc.exe 7b2f5153d11118c3ccff01859743e09842cabc42ba08f8876489c1be30d1d08d file jaq.exe
+            cargo-llvm-cov linux taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz b3f68e625481fed9b16444174f3fa5ebcdbde4a1878803a35eabe2dcefcdc41a tar cargo-llvm-cov
+            cargo-llvm-cov macos taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-apple-darwin.tar.gz ddf949b82a63017441ea76aa068bdd7e2dde8055f47cd3ef736fdbbd633bc33e tar cargo-llvm-cov
+            cargo-llvm-cov windows taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-pc-windows-msvc.zip 656590cfa13bb7478595bbfdd3bc6bc075a4f7f3f0df5a439c1856cb03c5a4d2 zip cargo-llvm-cov.exe
+      - name: Prepare the committed optional consumer
+        id: fixture
+        env:
+          HOSTED_NATIVE_PROJECT: ${{ runner.temp }}/native-consumer
+        run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted prepare_the_committed -- --nocapture
+      - name: Install the toolchain
+        run: rust-gate tools
+      - name: Prepare private native cache restore
+        id: native-cache-prepare
+        run: rust-gate native-cache-prepare
+        env:
+          NATIVE_CACHE_MODE: coverage
+          NATIVE_CACHE_OS: ${{ runner.os }}
+          NATIVE_CACHE_ARCH: ${{ runner.arch }}
+      - name: Restore published native entries
+        id: native-cache-restore
+        if: ${{ steps.native-cache-prepare.outputs.enabled == 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.native-cache-prepare.outputs.paths }}
+          key: ${{ steps.native-cache-prepare.outputs.key }}
+          restore-keys: |
+            ${{ steps.native-cache-prepare.outputs.bucket }}-coverage-
+            ${{ steps.native-cache-prepare.outputs.bucket }}-
+          enableCrossOsArchive: false
+      - name: Line coverage gate
+        id: coverage
+        run: rust-gate coverage
+        env:
+          GITHUB_SHA: ${{ steps.fixture.outputs.sha }}
+          NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
+      - name: Verify native fixture build counts and child environment
+        run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted verify_the_executed -- --nocapture
+        env:
+          NATIVE_PREPARED: ${{ steps.native-cache-prepare.outputs.enabled }}
+          NATIVE_RESTORE_HIT: ${{ steps.native-cache-restore.outputs.cache-hit }}
+      - name: Check native cache save inventory
+        id: native-cache-inventory
+        if: ${{ success() && steps.native-cache-prepare.outputs.enabled == 'true' }}
+        run: rust-gate native-cache-inventory
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          JOB_SUCCESS: 'true'
+          NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
+      - name: Upload native fixture evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: native-cache-${{ matrix.runner }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-reports
+          if-no-files-found: error
+          retention-days: 7
+      - name: Save published native entries
+        id: native-cache-save
+        if: ${{ success() && steps.native-cache-inventory.outputs.save == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.native-cache-inventory.outputs.paths }}
+          key: ${{ steps.native-cache-prepare.outputs.key }}
+          enableCrossOsArchive: false

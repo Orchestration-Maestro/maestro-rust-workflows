@@ -26,6 +26,7 @@ mod local_ci;
 mod local_runs;
 mod managed_files;
 mod mutation_testing;
+mod native_cache_transport;
 mod performance;
 mod publish_binaries;
 mod publish_crate;

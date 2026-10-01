@@ -6,6 +6,7 @@
 
 use crate::checks::gate_rules::excepted;
 pub(crate) use crate::checks::mutation_windows::mutation_windows;
+use crate::checks::native_cache::native_cache;
 use crate::runner::{Cmd, Failure};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -14,7 +15,15 @@ use std::path::Path;
 pub(crate) const FILE: &str = "maestro-quality.toml";
 
 /// The tables the file may hold.
-const TABLES: &[&str] = &["ci", "crate", "exception", "limits", "performance", "typos"];
+const TABLES: &[&str] = &[
+    "ci",
+    "crate",
+    "exception",
+    "limits",
+    "performance",
+    "typos",
+    "native-cache",
+];
 
 /// The inputs of the reusable `ci.yml` a repository's caller may pass.
 const CI_INPUTS: &[&str] = &[
@@ -134,7 +143,8 @@ pub(crate) fn read_config(workspace: &Path) -> Result<QualityConfig, Failure> {
             .arg(&file)
             .capture()
     };
-    for table in query(KEYS)?.lines() {
+    let tables = query(KEYS)?;
+    for table in tables.lines() {
         if !TABLES.contains(&table) {
             return Err(format!(
                 "{FILE}: unknown table `{table}`; it takes {}",
@@ -142,6 +152,9 @@ pub(crate) fn read_config(workspace: &Path) -> Result<QualityConfig, Failure> {
             )
             .into());
         }
+    }
+    if tables.lines().any(|table| table == "native-cache") {
+        native_cache(workspace)?;
     }
     let mut limits = Limits::default();
     for line in query(LIMITS)?.lines() {

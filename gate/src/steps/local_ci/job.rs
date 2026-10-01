@@ -87,6 +87,16 @@ pub(super) const CHECKS: &[(&str, Local)] = &[
         "Duplicated functions, pairs reported and three alike refused",
         Local::Gate("duplication"),
     ),
+    (
+        "Prepare private native cache restore",
+        Local::NotApplied(
+            "only GitHub provisions transported native entries; local builds use source",
+        ),
+    ),
+    (
+        "Restore published native entries",
+        Local::NotApplied("only GitHub restores native cache archives"),
+    ),
     ("Line coverage gate", Local::Gate("coverage")),
     (
         "Coverage of the lines a pull request adds",
@@ -143,6 +153,14 @@ pub(super) const CHECKS: &[(&str, Local)] = &[
     (
         "Upload inline mutation outcomes for partition aggregation",
         Local::NotApplied("only GitHub harvests the inline default mutation artifacts"),
+    ),
+    (
+        "Check native cache save inventory",
+        Local::NotApplied("local runs never publish remote native cache snapshots"),
+    ),
+    (
+        "Save published native entries",
+        Local::NotApplied("only a successful default-branch GitHub event saves native entries"),
     ),
 ];
 

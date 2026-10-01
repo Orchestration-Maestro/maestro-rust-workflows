@@ -6,17 +6,26 @@ rust-version = "1.85"
 license = "MIT"
 publish = false
 
+[lib]
+path = "fixture_sources.rs"
+
 [[test]]
 name = "workflows"
 path = "workflows.rs"
 
 [features]
 native-windows = []
+native-cache-hosted = []
 
 [[test]]
 name = "native_windows"
 path = "native_windows.rs"
 required-features = ["native-windows"]
+
+[[test]]
+name = "native_cache_hosted"
+path = "hosted_cache/main.rs"
+required-features = ["native-cache-hosted"]
 
 [dev-dependencies]
 serde_json = "=1.0.151"

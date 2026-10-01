@@ -2,8 +2,12 @@
 
 use crate::checks::coverage_features::coverage_features;
 use crate::checks::inputs::coverage_threshold;
+use crate::checks::native_cache::{cache_platform, native_cache};
+use crate::checks::native_cache_inventory::published_inventory;
+use crate::checks::native_cache_roots::{fallback_root, normalize_restore};
 use crate::runner::{Cmd, Failure, Job, Outcome, Step, input, non_empty, optional, summary, write};
-use std::path::Path;
+use std::env::consts::OS;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// What this step declares: its inputs, its tools and its reports.
@@ -11,9 +15,18 @@ pub(crate) const STEPS: &[Step] = &[Step {
     workflow: "ci",
     id: "coverage",
     summary: "Line coverage gate",
-    inputs: &["COVERAGE", "COVERAGE_FEATURES", "GITHUB_SHA"],
+    inputs: &[
+        "COVERAGE",
+        "COVERAGE_FEATURES",
+        "GITHUB_SHA",
+        "NATIVE_CACHE_ROOT",
+    ],
     tools: &["cargo llvm-cov", "cargo metadata", "git", "jaq"],
-    reports: &["coverage.lcov", "coverage-binding.txt"],
+    reports: &[
+        "coverage.lcov",
+        "coverage-binding.txt",
+        "native-cache-before.txt",
+    ],
     run,
 }];
 
@@ -61,10 +74,10 @@ fn merged_coverage(job: &Job, lcov: &Path, features: &[String]) -> Outcome {
     Cmd::new(default).cwd(&job.project).run()?;
     let default_seconds = started.elapsed().as_secs_f64();
     let started = Instant::now();
-    Cmd::new("cargo llvm-cov --workspace --locked --no-report --features")
+    let command = Cmd::new("cargo llvm-cov --workspace --locked --no-report --features")
         .arg(&features)
-        .cwd(&job.project)
-        .run()?;
+        .cwd(&job.project);
+    native_command(job, command)?.run()?;
     let feature_seconds = started.elapsed().as_secs_f64();
     bound_checkout(job, &sha)?;
     Cmd::new("cargo llvm-cov report --lcov --output-path")
@@ -100,4 +113,42 @@ fn bound_checkout(job: &Job, sha: &str) -> Outcome {
         ));
     }
     Ok(())
+}
+
+/// Only feature execution receives the consumer variable, after restored bytes are checked.
+fn native_command(job: &Job, command: Cmd) -> Result<Cmd, Failure> {
+    let requested = optional("NATIVE_CACHE_ROOT")?;
+    if requested.is_empty() {
+        return Ok(command);
+    }
+    let Some(policy) = native_cache(&job.project)? else {
+        return Ok(command);
+    };
+    if !cache_platform(OS, &policy.platforms) {
+        return Ok(command);
+    }
+    let root = {
+        let root = PathBuf::from(requested);
+        match normalize_restore(&root, &job.temp) {
+            Ok(()) => Ok(root),
+            Err(error) => {
+                eprintln!("Native cache fallback: {error}");
+                fallback_root(&job.temp)
+            }
+        }
+    };
+    let root = match root {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("Native cache disabled: {error}");
+            return Ok(command);
+        }
+    };
+    let before = published_inventory(&root, &policy.published)?;
+    write(
+        &job.report("native-cache-before.txt")?,
+        format!("{}\n{before}", root.display()).as_bytes(),
+        false,
+    )?;
+    Ok(command.env(&policy.environment, &root))
 }
