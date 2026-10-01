@@ -170,8 +170,11 @@ fn dev_dependency_feature_unification_cannot_hide_broken_features() {
         "#[cfg(feature = \"alpha\")]\npub fn needs_dev_feature() { shared::dev_enabled(); }\n",
     )
     .unwrap();
-    // The dev-dependency really makes the ordinary all-feature check compile.
-    succeeds(&fixture.run_body("cd \"$PROJECT\"; cargo check --all-features --tests --locked"));
+    // Resolver 1 unifies dev features even for the plain check cargo-hack runs.
+    let manifest = fixture.root.join("project/Cargo.toml");
+    let text = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, text.replace("resolver = '3'", "resolver = '1'")).unwrap();
+    succeeds(&fixture.run_body("cd \"$PROJECT\"; cargo check --all-features --offline --locked"));
     let original = original_project_files(&fixture);
     refused(
         &fixture.run("ci", "features"),
@@ -276,6 +279,127 @@ fn a_midway_manifest_edit_failure_restores_every_snapshotted_file() {
         assert_project_files(&original);
         assert!(!fixture.root.join("output").exists());
     }
+}
+
+#[test]
+fn a_member_project_restores_the_workspace_root_lock_bytes() {
+    let mut fixture = git_dev_dependency_workspace();
+    let project = fixture.root.join("project");
+    let member_lock = project.join("member/Cargo.lock");
+    fs::copy(project.join("Cargo.lock"), &member_lock).unwrap();
+    fixture.set("PROJECT", &project.join("member").display().to_string());
+    let original = original_project_files(&fixture);
+    let member_bytes = fs::read(&member_lock).unwrap();
+    let result = fixture.run("ci", "features");
+    succeeds(&result);
+    assert_project_files(&original);
+    assert_eq!(fs::read(&member_lock).unwrap(), member_bytes);
+}
+
+#[test]
+fn missing_locks_fail_clearly_except_for_featureless_workspaces() {
+    for has_feature in [false, true] {
+        let fixture = dev_dependency_workspace();
+        let project = fixture.root.join("project");
+        if !has_feature {
+            let root = project.join("Cargo.toml");
+            let text = fs::read_to_string(&root).unwrap();
+            fs::write(root, text.replace("[features]\nalpha = []\n", "")).unwrap();
+            succeeds(&fixture.run_body(
+                "cd \"$PROJECT\"; cargo metadata --format-version 1 --offline \
+                 > \"$RUNNER_TEMP/metadata.json\"",
+            ));
+        }
+        let original: Vec<_> = ["Cargo.toml", "member/Cargo.toml"]
+            .iter()
+            .map(|name| {
+                let path = project.join(name);
+                let bytes = fs::read(&path).unwrap();
+                (path, bytes)
+            })
+            .collect();
+        fs::remove_file(project.join("Cargo.lock")).unwrap();
+        let result = fixture.run("ci", "features");
+        if has_feature {
+            refused(&result, "cannot read ");
+            assert!(String::from_utf8_lossy(&result.stderr).contains("Cargo.lock"));
+        } else {
+            succeeds(&result);
+            assert!(
+                fs::read_to_string(fixture.root.join("output"))
+                    .unwrap()
+                    .contains("applied=false")
+            );
+        }
+        assert!(!project.join("Cargo.lock").exists());
+        assert_project_files(&original);
+    }
+}
+
+#[test]
+fn lock_formats_and_present_identity_fields_are_validated() {
+    let fixture = dev_dependency_workspace();
+    let project = fixture.root.join("project");
+    let path = project.join("Cargo.lock");
+    for (before, after, should_pass) in [
+        (
+            "name = 'shared'\nversion = '0.1.0'",
+            "name = 'shared'\nversion = '0.1.0'",
+            true,
+        ),
+        (
+            "name = 'shared'\nversion = '0.1.0'\n\
+             source = 'git+file:///fixture#1111111111111111111111111111111111111111'",
+            "name = 'shared'\nversion = '0.1.0'\n\
+             source = 'git+file:///fixture#2222222222222222222222222222222222222222'",
+            false,
+        ),
+        (
+            "name = 'shared'\nversion = '0.1.0'\nchecksum = 'one'",
+            "name = 'shared'\nversion = '0.1.0'\nchecksum = 'two'",
+            false,
+        ),
+        (
+            "name = 'shared'\nversion = '0.1.0'",
+            "name = 'shared'\nversion = '0.1.0'\nchecksum = ''",
+            false,
+        ),
+    ] {
+        fs::write(
+            &path,
+            format!("# original format\nversion = 3\n[[package]]\n{before}\n"),
+        )
+        .unwrap();
+        let original = original_project_files(&fixture);
+        stub_cargo_hack(
+            &fixture,
+            &format!("printf '%s\\n' \"version = 4\n[[package]]\n{after}\" > Cargo.lock"),
+        );
+        let result = fixture.run("ci", "features");
+        if should_pass {
+            succeeds(&result);
+        } else {
+            refused(&result, "feature check changed locked package: shared");
+        }
+        assert_project_files(&original);
+        let output = fixture.root.join("output");
+        if output.exists() {
+            fs::remove_file(output).unwrap();
+        }
+    }
+}
+
+#[test]
+fn restore_errors_still_attempt_all_remaining_workspace_files() {
+    let fixture = dev_dependency_workspace();
+    let original = original_project_files(&fixture);
+    stub_cargo_hack(
+        &fixture,
+        "chmod a-w Cargo.toml; printf '%s\\n' '# Modified member' > member/Cargo.toml; \
+         printf '%s\\n' 'version = 4' 'package = []' > Cargo.lock; exit 73",
+    );
+    refused(&fixture.run("ci", "features"), "cannot restore ");
+    assert_project_files(&original);
 }
 
 #[test]

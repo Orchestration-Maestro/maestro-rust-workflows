@@ -911,7 +911,9 @@ A workspace declaring no feature is `not-applicable`, not an active control.
 
 Feature checks remove dev-dependencies so their feature unification cannot hide
 an otherwise broken feature. The gate snapshots the workspace manifests and
-`Cargo.lock`, then uses `cargo hack --remove-dev-deps` with `--offline`.
+`Cargo.lock` at fresh Cargo metadata's `workspace_root`, even when `PROJECT`
+names a member. A member-local lock is untouched. It then uses
+`cargo hack --remove-dev-deps` with `--offline`.
 This is `--no-dev-deps` without cargo-hack's own restoration, which would hide
 lockfile changes before validation. Every remaining package must keep its locked
 name, version, source and checksum; the lock may only lose packages. The gate

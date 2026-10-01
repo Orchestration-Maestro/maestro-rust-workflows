@@ -60,6 +60,8 @@ struct Snapshot {
     lock: PathBuf,
     /// Original lock bytes, including comments and formatting.
     original_lock: Vec<u8>,
+    /// Successful explicit restoration disarms the Drop fallback.
+    restored: bool,
 }
 
 impl Snapshot {
@@ -85,19 +87,24 @@ impl Snapshot {
                 .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
             manifests.push((path, bytes));
         }
-        let lock = job.project.join("Cargo.lock");
+        let workspace_root = Cmd::new("jaq -r")
+            .arg(".workspace_root")
+            .stdin_bytes(metadata.as_bytes())
+            .capture()?;
+        let lock = PathBuf::from(workspace_root.trim()).join("Cargo.lock");
         let original_lock =
             fs::read(&lock).map_err(|error| format!("cannot read {}: {error}", lock.display()))?;
         Ok(Self {
             manifests,
             lock,
             original_lock,
+            restored: false,
         })
     }
 
     /// Try every restoration even when one file cannot be written. The first
     /// error fails the step rather than accepting incompletely restored files.
-    fn restore(&self) -> Outcome {
+    fn restore(&mut self) -> Outcome {
         let mut result = Ok(());
         for (path, bytes) in self
             .manifests
@@ -112,13 +119,16 @@ impl Snapshot {
                 result = restored;
             }
         }
+        self.restored = result.is_ok();
         result
     }
 }
 
 impl Drop for Snapshot {
     fn drop(&mut self) {
-        if let Err(error) = self.restore() {
+        if !self.restored
+            && let Err(error) = self.restore()
+        {
             eprintln!("{error:?}");
         }
     }
@@ -149,7 +159,7 @@ fn run() -> Outcome {
     // front end, and a consumer pays for one type check per feature instead of
     // one link. `--each-feature` is linear in the number of features, where a
     // powerset is exponential and would price this gate out of every run.
-    let snapshot = Snapshot::read(&job)?;
+    let mut snapshot = Snapshot::read(&job)?;
     let locked = Cmd::new("jaq -r --from toml")
         .arg(LOCKED_PACKAGES)
         .stdin_bytes(&snapshot.original_lock)
@@ -174,4 +184,39 @@ fn run() -> Outcome {
     validated?;
     checked?;
     output("applied", "true")
+}
+
+/// Snapshot restoration must not write files again after explicit success.
+#[cfg(test)]
+mod snapshot_restoration {
+    use super::Snapshot;
+    use std::{env, fs, process};
+
+    #[test]
+    fn successful_explicit_restoration_disarms_the_drop_write() {
+        let root = env::temp_dir().join(format!("feature-restore-{}", process::id()));
+        fs::create_dir(&root).unwrap();
+        let lock = root.join("Cargo.lock");
+        let manifest = root.join("Cargo.toml");
+        fs::write(&lock, b"modified lock").unwrap();
+        fs::write(&manifest, b"modified manifest").unwrap();
+        let mut snapshot = Snapshot {
+            manifests: vec![(manifest.clone(), b"original manifest".to_vec())],
+            lock: lock.clone(),
+            original_lock: b"original lock".to_vec(),
+            restored: false,
+        };
+        snapshot.restore().unwrap();
+        assert_eq!(fs::read(&lock).unwrap(), b"original lock");
+        assert_eq!(fs::read(&manifest).unwrap(), b"original manifest");
+        // A second restore would overwrite these markers when Drop runs.
+        fs::write(&lock, b"after explicit restore").unwrap();
+        fs::write(&manifest, b"after explicit restore").unwrap();
+        drop(snapshot);
+        let lock_bytes = fs::read(&lock).unwrap();
+        let manifest_bytes = fs::read(&manifest).unwrap();
+        fs::remove_dir_all(root).unwrap();
+        assert_eq!(lock_bytes, b"after explicit restore");
+        assert_eq!(manifest_bytes, b"after explicit restore");
+    }
 }
