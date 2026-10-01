@@ -908,6 +908,16 @@ its own, the default set, none of them and all of them: linear in the number of
 features, where a full powerset would be exponential and price the gate out of
 every run. This is not a powerset or every optional feature added to defaults.
 A workspace declaring no feature is `not-applicable`, not an active control.
+
+Feature checks remove dev-dependencies so their feature unification cannot hide
+an otherwise broken feature. The gate snapshots the workspace manifests and
+`Cargo.lock`, then uses `cargo hack --remove-dev-deps` with `--offline`.
+This is `--no-dev-deps` without cargo-hack's own restoration, which would hide
+lockfile changes before validation. Every remaining package must keep its locked
+name, version, source and checksum; the lock may only lose packages. The gate
+restores every snapshotted file byte for byte, including after a failed check or
+lockfile refusal. Earlier locked steps populate the fresh CI Cargo home; an
+uncached dependency fails offline rather than being fetched.
 The names it found are published as `features.txt`. The example replay includes
 the step; a separate real multi-feature fixture rejects both an invalid isolated
 feature and an invalid all-features combination.
