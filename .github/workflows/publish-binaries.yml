@@ -39,6 +39,12 @@ name: Publish Rust binaries
           the committed pin
         type: boolean
         default: true
+      coverage-features:
+        description: >-
+          JSON array of package/feature strings for merged default and feature coverage;
+          empty reads the tested head's [ci] coverage-features policy
+        type: string
+        default: ''
       mutation-engine:
         description: JSON object of package-local features and exact engine mutation files
         type: string
@@ -175,6 +181,7 @@ jobs:
       mutation-test: ${{ inputs.mutation-test }}
       mutation-windows: ${{ inputs.mutation-windows }}
       mutation-engine: ${{ inputs.mutation-engine }}
+      coverage-features: ${{ inputs.coverage-features }}
       mutation-shards: ${{ inputs.mutation-shards }}
       mutation-mutants-per-shard: ${{ inputs.mutation-mutants-per-shard }}
       sarif-reports: ${{ inputs.sarif-reports }}

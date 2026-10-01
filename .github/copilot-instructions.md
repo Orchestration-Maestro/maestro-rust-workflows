@@ -168,6 +168,7 @@ in place.
 │   │   ├── checks/                                              # What the steps share, built on the runner and never on a step
 │   │   │   ├── cargo_metadata.rs                                # The jaq programs several steps read over Cargo's records
 │   │   │   ├── checkout_paths.rs                                # Canonical forms, containment in the checkout, symlinks, Rust sources
+│   │   │   ├── coverage_features.rs                             # Qualified workspace coverage features validated through Cargo metadata
 │   │   │   ├── digests.rs                                       # SHA-256, for mise's own download on every platform, where sha256sum is Linux's alone
 │   │   │   ├── findings.rs                                      # A rule's finding as one report line, and the exceptions that excuse some
 │   │   │   ├── gate_rules.rs                                    # The gate's one list of rules, and the exceptions it allows
@@ -351,6 +352,7 @@ in place.
 │   │   ├── commit_hooks.rs                                      # hooks, the local runs a hook makes, and hygiene.yml's first step
 │   │   ├── complexity_report.rs                                 # ci.yml: function and file sizes, reported and never held against the run
 │   │   ├── copilot_guide.rs                                     # guide and guide --check: written, kept, refused when a file makes it stale
+│   │   ├── coverage_features.rs                                 # Default compatibility, input transport and real merged coverage regression
 │   │   ├── duplication_report.rs                                # ci.yml: pairs reported, three functions of one shape refused unless excused
 │   │   ├── feature_combinations.rs                              # ci.yml: real per-feature and combined compilation, plus replay coverage
 │   │   ├── input_validation.rs                                  # unsafe-audit.yml and fuzz.yml: every malformed input refused before a toolchain is touched

@@ -62,6 +62,12 @@ name: Rust CI
           JSON array of exact files relative to `working-directory` owned by Windows mutation testing
         type: string
         default: '[]'
+      coverage-features:
+        description: >-
+          JSON array of package/feature strings for merged default and feature coverage;
+          empty reads the tested head's [ci] coverage-features policy
+        type: string
+        default: ''
       mutation-engine:
         description: >-
           JSON object with package-local features and exact relative Rust files;
@@ -218,6 +224,7 @@ jobs:
           MUTATION_SHARDS: ${{ inputs.mutation-shards }}
           MUTATION_MUTANTS_PER_SHARD: ${{ inputs.mutation-mutants-per-shard }}
           MUTATION_ENGINE_POLICY: ${{ inputs.mutation-engine }}
+          COVERAGE_FEATURES: ${{ inputs.coverage-features }}
           MUTATION_WINDOWS: ${{ inputs.mutation-windows }}
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           API_COMPATIBILITY: ${{ inputs.api-compatibility }}

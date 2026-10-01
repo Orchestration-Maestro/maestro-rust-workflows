@@ -21,6 +21,7 @@ const CI_INPUTS: &[&str] = &[
     "working-directory",
     "rust-version",
     "coverage-threshold",
+    "coverage-features",
     "artifact-key",
     "license-policy",
     "mutation-test",
@@ -244,11 +245,18 @@ fn check_ci_input(line: &str) -> Result<(), Failure> {
     if key == "mutation-windows" && kind != "array" {
         return Err(format!("{FILE}: [ci] {key} must be an array of file paths").into());
     }
+    if key == "coverage-features" && kind != "array" {
+        return Err(
+            format!("{FILE}: [ci] {key} must be an array of package/feature strings").into(),
+        );
+    }
     if key == "mutation-engine" && kind != "object" {
         return Err(format!("{FILE}: [ci] {key} must be a table").into());
     }
-    if !matches!(key, "mutation-windows" | "mutation-engine")
-        && !matches!(kind, "string" | "number" | "boolean")
+    if !matches!(
+        key,
+        "mutation-windows" | "mutation-engine" | "coverage-features"
+    ) && !matches!(kind, "string" | "number" | "boolean")
     {
         return Err(format!("{FILE}: [ci] {key} must be a string, a number or a boolean").into());
     }

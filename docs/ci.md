@@ -100,6 +100,7 @@ committed `deny.toml` applies the same way to every pull request. See [runner se
 | `mutation-shards` | number | `1` | `1` keeps one inline run without discovery, `0` selects all mutants automatically up to GitHub's 256-job matrix limit and fails if the target needs more, while `2` through `256` request a fixed shard count |
 | `mutation-mutants-per-shard` | number | `50` | Automatic mode target mutants per shard, an adjustable calibration knob from `1` to `1000`, not a time guarantee |
 | `mutation-windows` | string | `[]` | JSON array of exact files relative to `working-directory` owned by Windows mutation testing |
+| `coverage-features` | string | Empty | JSON array of package/feature strings for merged default and feature coverage; empty reads the tested head's [ci] coverage-features policy |
 | `mutation-engine` | string | Empty | JSON object with package-local features and exact relative Rust files; empty reads the tested head's [ci.mutation-engine] policy |
 | `internal-shard-selftest` | boolean | `false` | Internal to this repository's own CI only: create a behavior-equivalent workspace diff and require its two-shard mutation matrix. Refused for every other repository. |
 | `sarif-reports` | boolean | `true` | Also emit Clippy and secret findings as SARIF, which the organization's check uploads to code scanning |
@@ -1042,7 +1043,8 @@ or failed from complete evidence.
 | `pull-request.txt` | The changed lines counted, and the PRL-001 to PRL-004 findings | pull requests |
 | `performance.txt` | Each declared benchmark's counts, the base's then the pull request's, and the excused ones | `[performance] benches`, pull requests |
 | `architecture.txt` | Every source-rule finding with its rule, file and line, each finding an exception excuses with its reason, then the files over 300 lines | always |
-| `coverage.lcov` | Line coverage in LCOV format | always |
+| `coverage.lcov` | Line coverage in LCOV format, merged when features are selected | always |
+| `coverage-binding.txt` | Same-job revision, feature list, default and feature invocations, report command and wall times | `coverage-features` is selected |
 | `audit.json` | RustSec advisory results | always |
 | `secrets.json` | Redacted secret-scan findings | always |
 | `licenses.txt` | Selected dependency policy and whether a licence list applied | always |
@@ -1100,6 +1102,26 @@ and unmaintained crates; the two gates are deliberately separate.
 ```text
 license-policy=off is refused: the organization's licence policy always applies, and no repository opts out
 ```
+
+### Feature coverage
+
+`coverage-features` is a JSON array of qualified `package/feature` strings.
+A nonempty workflow input overrides `[ci] coverage-features` in the tested
+head's `maestro-quality.toml`, exactly as `mutation-engine` does. An absent
+input and absent policy keep the original coverage command and thresholds.
+An explicit empty array, malformed entry, duplicate, nonmember package or
+undeclared feature is refused using Cargo metadata.
+
+For a selection, the checks job cleans coverage profiles, runs the default
+workspace tests with `--no-report`, then workspace tests with `--no-report
+--features <list>`, and generates one `cargo llvm-cov report --lcov` report.
+The line floor is evaluated once on that union; the changed-line gate reads
+that same LCOV. Default-only branches remain in the report. No downloaded
+coverage artifact participates in either verdict. The job checks its clean
+checkout against its source SHA before and after execution and reporting,
+and records both invocations, features, revision and elapsed seconds in
+`coverage-binding.txt` and its summary. Both publishers forward the input.
+Mutation flags and `cargo hack --each-feature` remain unchanged.
 
 ### Mutation testing
 
@@ -1258,7 +1280,7 @@ Outputs are strings, available through the final successful gate:
 
 <!-- end generated -->
 
-There are no required secrets. No feature, arbitrary shell-command, target or
+There are no required secrets. No general feature, arbitrary shell-command, target or
 `ci-passed` inputs exist. CI sets `CARGO_BUILD_TARGET` to the supported native
 triple, overriding any consumer cross-target default. Prefer Cargo manifests/configuration and the exact
 stable toolchain pin (`1.MINOR.PATCH`) in `rust-toolchain.toml`. Path traversal,

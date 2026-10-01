@@ -5,6 +5,7 @@
 //! base commit's, and the head's for mutation ownership.
 
 use crate::checks::checkout_paths::{canonical, committed_file, inside, project_directory};
+use crate::checks::coverage_features::coverage_features;
 use crate::checks::digests::sha256_hex;
 use crate::checks::inputs::{
     LicensePolicy, artifact_key, clippy_level, coverage_threshold, internal_shard_selftest,
@@ -28,6 +29,7 @@ pub(crate) const STEPS: &[Step] = &[Step {
         "CALLED",
         "CLIPPY_LEVEL",
         "COVERAGE",
+        "COVERAGE_FEATURES",
         "DEPENDENCY_AUDIT",
         "DIRECTORY",
         "GITHUB_RUN_ATTEMPT",
@@ -143,6 +145,7 @@ fn run() -> Outcome {
     let deny_config = deny_configuration(&project, &root)?;
     let directory = relative_directory(&project, &root)?;
     export_engine_policy(&project, &mutation_windows)?;
+    export_coverage_features(&project)?;
     output(
         "artifact-name",
         &artifact_name(&directory, &artifact_key, &toolchain)?,
@@ -174,6 +177,33 @@ fn run() -> Outcome {
         ("CLIPPY_LEVEL", clippy_level.as_str()),
         ("UNUSED_DEPENDENCIES", &unused_dependencies),
     ])
+}
+
+/// Resolve coverage selection with the same explicit-input/head-policy precedence as engine policy.
+fn export_coverage_features(project: &Path) -> Outcome {
+    let explicit = optional("COVERAGE_FEATURES")?;
+    let config = read_config(project)?;
+    let value = if explicit.is_empty() {
+        config
+            .settings
+            .iter()
+            .find(|(key, _)| key == "coverage-features")
+            .map_or("", |(_, value)| value.as_str())
+    } else {
+        &explicit
+    };
+    let features = coverage_features(value, || {
+        Cmd::new("cargo metadata --format-version 1 --no-deps --locked")
+            .cwd(project)
+            .capture()
+    })?;
+    let resolved = if features.is_empty() {
+        String::new()
+    } else {
+        json_strings(&features)?
+    };
+    output("coverage-features", &resolved)?;
+    export(&[("COVERAGE_FEATURES", &resolved)])
 }
 
 /// Validate and export the tested head's engine ownership before other settings.
@@ -228,9 +258,15 @@ fn from_settings() -> Outcome {
         .iter()
         .find(|(key, _)| key == "mutation-engine")
         .map_or("{}", |(_, value)| value.as_str());
+    let coverage = head
+        .settings
+        .iter()
+        .find(|(key, _)| key == "coverage-features")
+        .map_or("", |(_, value)| value.as_str());
     let mut validate = Cmd::new("rust-gate validate")
         .env("CALLED", "true")
-        .env("MUTATION_ENGINE_POLICY", engine_policy);
+        .env("MUTATION_ENGINE_POLICY", engine_policy)
+        .env("COVERAGE_FEATURES", coverage);
     for (key, variable, default) in SETTINGS {
         let config = if *key == "mutation-windows" {
             &head
