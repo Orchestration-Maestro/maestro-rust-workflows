@@ -2,7 +2,7 @@
 //! then the resolved project, toolchain and gate selectors exported to the
 //! rest of the job. A run no workflow called, the one an organization ruleset
 //! starts, takes the same values from `maestro-quality.toml` instead: the
-//! base commit's, and the head's for mutation ownership.
+//! base commit's, and the head's for mutation ownership and coverage selection.
 
 use crate::checks::checkout_paths::{canonical, committed_file, inside, project_directory};
 use crate::checks::coverage_features::coverage_features;
@@ -242,12 +242,13 @@ fn export_engine_policy(project: &Path, windows: &[String]) -> Outcome {
 
 /// A run no workflow called: this step again, with the `[ci]` table of the
 /// base commit's `maestro-quality.toml` in place of the inputs, so a pull
-/// request cannot loosen its own gate. The checkout holds the merge commit
-/// and its first parent, the base branch or the merge queue's base.
+/// request cannot loosen base-controlled settings. The checkout holds the merge
+/// commit and its first parent, the base branch or the merge queue's base.
 ///
-/// Mutation ownership policies come from the head, the merge commit itself;
-/// they only partition mutants into additional required jobs, so they cannot
-/// skip one.
+/// Mutation ownership and coverage selection come from the tested head.
+/// Ownership only partitions mutants into additional required jobs, never
+/// skipping one. Coverage selection can change or remove base selections;
+/// cfg-gated bodies disabled in all runs are absent from changed-line coverage.
 fn from_settings() -> Outcome {
     let root = canonical(Path::new(&input("GITHUB_WORKSPACE")?))?;
     let settings = Path::new(&input("RUNNER_TEMP")?).join("ci-settings");

@@ -28,14 +28,20 @@ A repository therefore holds no `ci.yml` caller. It keeps
 workflow called takes its inputs from the `[ci]` table of `maestro-quality.toml`
 at the base commit, the tested commit's first parent: a pull request's base
 branch, or on a merge group the commit the entry lands on. A pull request
-therefore cannot loosen its own gate;
-an input the table leaves out takes its default below, and `platforms` takes
-`macos windows`. `mutation-windows` alone comes from the head, the tested
-commit itself: it only moves a file's mutants from the Linux shards to the
-Windows job, where every one still runs and must be caught, so it can never
-skip a mutant. A pull request that adds a Windows-only file lists it in the
-same change, and a head that drops one only makes the Linux shards stricter.
-The head's list is validated as a caller's is. The same run uploads the Clippy and secret-scan SARIF to code
+cannot loosen these base-controlled settings; an input the table leaves out
+takes its default below, and `platforms` takes `macos windows`.
+`mutation-windows`, `mutation-engine` and `coverage-features` are exceptions:
+they come from the head, the tested commit itself. Mutation ownership only
+moves mutants to additional required jobs, where every one still runs and
+must be caught, so it can never skip a mutant. A pull request that adds a
+Windows-only file lists it in the same change, and a head that drops one only
+makes the Linux shards stricter. Coverage selection is head-controlled so the
+same change can add a package feature and select it for coverage. It does not
+preserve base-required coverage selections: a head can change or remove them.
+All three head policies are validated as a caller's are. Changed-line coverage
+only measures lines present in LCOV; cfg-gated bodies disabled in both the
+default run and the resolved feature run are absent from its denominator, not
+reported as uncovered. The same run uploads the Clippy and secret-scan SARIF to code
 scanning and the coverage to Codecov; see
 [uploads](#uploads-to-code-scanning-and-codecov). Inside this repository, only a
 caller runs `ci.yml` and nothing runs `hygiene.yml`.

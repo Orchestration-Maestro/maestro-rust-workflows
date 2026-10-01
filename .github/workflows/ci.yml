@@ -177,6 +177,7 @@ jobs:
       mutation-mutants-per-shard: ${{ steps.validate.outputs.mutation-mutants-per-shard }}
       mutation-attempt: ${{ github.run_attempt }}
       mutation-windows: ${{ steps.validate.outputs.mutation-windows }}
+      coverage-features: ${{ steps.validate.outputs.coverage-features }}
       mutation-engine-policy: ${{ steps.validate.outputs.mutation-engine-policy }}
       mutation-engine-features: ${{ steps.validate.outputs.mutation-engine-features }}
       mutation-engine-files: ${{ steps.validate.outputs.mutation-engine-files }}
@@ -542,6 +543,7 @@ jobs:
           DIRECTORY: ${{ needs.checks.outputs.directory }}
           REQUESTED_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
           COVERAGE: '90'
+          COVERAGE_FEATURES: ${{ needs.checks.outputs.coverage-features }}
           ARTIFACT_KEY: mutation-worker
           LICENSE_POLICY: auto
           MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
@@ -659,6 +661,7 @@ jobs:
           DIRECTORY: ${{ needs.checks.outputs.directory }}
           REQUESTED_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
           COVERAGE: '90'
+          COVERAGE_FEATURES: ${{ needs.checks.outputs.coverage-features }}
           ARTIFACT_KEY: engine-mutation
           LICENSE_POLICY: auto
           MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
@@ -774,6 +777,7 @@ jobs:
           DIRECTORY: ${{ needs.checks.outputs.directory }}
           REQUESTED_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
           COVERAGE: '90'
+          COVERAGE_FEATURES: ${{ needs.checks.outputs.coverage-features }}
           ARTIFACT_KEY: engine-default-mutation
           LICENSE_POLICY: auto
           MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}

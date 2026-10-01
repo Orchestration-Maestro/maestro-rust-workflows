@@ -239,6 +239,9 @@ fn every_coverage_caller_transports_the_validated_selection() {
     );
     // Coverage shares validate's job and receives its GITHUB_ENV export, not
     // the caller's raw value. Both publication workflows must forward the input.
+    let coverage = steps.iter().find(|step| step["id"] == "coverage").unwrap();
+    assert_eq!(coverage["run"], "rust-gate coverage");
+    assert!(coverage["env"]["COVERAGE_FEATURES"].is_null());
     for name in ["publish-binaries", "publish-crate"] {
         let publisher = workflow(name);
         assert_eq!(
@@ -246,6 +249,50 @@ fn every_coverage_caller_transports_the_validated_selection() {
             "${{ inputs.coverage-features }}"
         );
     }
+}
+
+#[test]
+fn explicit_coverage_override_survives_every_mutation_worker_validation() {
+    let mut checks = selection_fixture();
+    let policy = "[ci]\ncoverage-features=['fixture/missing']\n";
+    fs::write(checks.root.join("project/maestro-quality.toml"), policy).unwrap();
+    checks.set("COVERAGE_FEATURES", "[\"fixture/engine\"]");
+    succeeds(&checks.run("ci", "validate"));
+    let resolved = output(&checks, "coverage-features");
+    assert_eq!(resolved, "[\"fixture/engine\"]");
+
+    let ci = workflow("ci");
+    for name in ["mutations", "mutation-engine", "mutation-engine-default"] {
+        let job = &ci["jobs"][name];
+        let validate = job["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["run"] == "rust-gate validate")
+            .unwrap();
+        let selection = validate["env"]
+            .get("COVERAGE_FEATURES")
+            .unwrap_or(&job["env"]["COVERAGE_FEATURES"]);
+        let mut worker = selection_fixture();
+        fs::write(worker.root.join("project/maestro-quality.toml"), policy).unwrap();
+        worker.set(
+            "COVERAGE_FEATURES",
+            if selection == "${{ needs.checks.outputs.coverage-features }}" {
+                &resolved
+            } else {
+                ""
+            },
+        );
+        let validated = worker.run_body(validate["run"].as_str().unwrap());
+        println!("{name} validation: {}", validated.status);
+        succeeds(&validated);
+        assert_eq!(output(&worker, "coverage-features"), resolved);
+        assert_eq!(selection, "${{ needs.checks.outputs.coverage-features }}");
+    }
+    assert_eq!(
+        ci["jobs"]["checks"]["outputs"]["coverage-features"],
+        "${{ steps.validate.outputs.coverage-features }}"
+    );
 }
 
 #[test]
