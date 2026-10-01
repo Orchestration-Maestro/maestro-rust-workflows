@@ -1,10 +1,11 @@
 //! Guarded restore preparation and successful-job publication inventory.
 
+use crate::checks::checkout_paths::{canonical, strictly_inside};
 use crate::checks::digests::sha256_hex;
 use crate::checks::native_cache::{cache_platform, native_cache};
 use crate::checks::native_cache_inventory::published_inventory;
 use crate::checks::native_cache_roots::{normalize_restore, prepare_root};
-use crate::runner::{Job, Outcome, Step, input, optional, output, path, write};
+use crate::runner::{Failure, Job, Outcome, Step, input, optional, output, path, write};
 use std::env::consts::OS;
 use std::fs;
 use std::path::Path;
@@ -54,6 +55,7 @@ fn prepare() -> Outcome {
     let Some(policy) = native_cache(&job.project)? else {
         return output("enabled", "false");
     };
+    let files_digest = key_files_digest(&job.project, &policy.key_files)?;
     let os = input("NATIVE_CACHE_OS")?.to_lowercase();
     if os != OS
         || !cache_platform(OS, &policy.platforms)
@@ -86,7 +88,7 @@ fn prepare() -> Outcome {
         input("NATIVE_CACHE_ARCH")?,
         input("RUSTUP_TOOLCHAIN")?,
         sha256_hex(identity.as_bytes()),
-        policy.files_digest
+        files_digest
     );
     let mode = input("NATIVE_CACHE_MODE")?;
     let key = format!(
@@ -103,11 +105,30 @@ fn prepare() -> Outcome {
         &job.report("native-cache-binding.txt")?,
         format!(
             "Key: {key}\nPolicy: {}\nFiles: {}\n",
-            policy.policy_digest, policy.files_digest
+            policy.policy_digest, files_digest
         )
         .as_bytes(),
         false,
     )
+}
+
+/// Bind key files to the tested checkout, never a policy-only snapshot.
+fn key_files_digest(project: &Path, files: &[String]) -> Result<String, Failure> {
+    let project = canonical(project)?;
+    let mut bytes = Vec::new();
+    for name in files {
+        let real = canonical(&project.join(name))
+            .map_err(|_| "[native-cache] key file must exist inside the project")?;
+        if !strictly_inside(&real, &project) || !real.is_file() {
+            return Err("[native-cache] key file must exist inside the project".into());
+        }
+        bytes.extend_from_slice(name.as_bytes());
+        bytes.push(0);
+        let content = fs::read(real).map_err(|error| format!("native cache key file: {error}"))?;
+        bytes.extend_from_slice(&(content.len() as u64).to_be_bytes());
+        bytes.extend(content);
+    }
+    Ok(sha256_hex(&bytes))
 }
 
 /// Paths have no line breaks and the static delimiter cannot occur in selectors.

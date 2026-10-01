@@ -1,9 +1,7 @@
 //! Strict policy-file-only native cache contract, independent of engine ownership.
 
-use crate::checks::checkout_paths::{canonical, strictly_inside};
 use crate::checks::digests::sha256_hex;
 use crate::runner::{Cmd, Failure};
-use std::fs;
 use std::path::{Component, Path};
 
 /// Validated transport settings. Absence disables transport.
@@ -16,18 +14,18 @@ pub(crate) struct NativeCache {
     pub(crate) published: Vec<String>,
     /// Digest of policy data, not unrelated source.
     pub(crate) policy_digest: String,
-    /// Digest of key file names and bytes, including Cargo.lock.
-    pub(crate) files_digest: String,
+    /// Project-relative key files, resolved only during transport preparation.
+    pub(crate) key_files: Vec<String>,
 }
 
-/// Read and validate the policy from the consumer project.
+/// Validate policy shape without resolving files in policy-only ruleset snapshots.
 pub(crate) fn native_cache(project: &Path) -> Result<Option<NativeCache>, Failure> {
     let file = project.join("maestro-quality.toml");
     if !file.is_file() {
         return Ok(None);
     }
     let value = Cmd::new("jaq --from toml -c")
-        .arg(".[\"native-cache\"] // null")
+        .arg("if has(\"native-cache\") then .[\"native-cache\"] else null end")
         .arg(&file)
         .capture()?;
     if value.trim() == "null" {
@@ -35,10 +33,15 @@ pub(crate) fn native_cache(project: &Path) -> Result<Option<NativeCache>, Failur
     }
     let query = |program: &str| {
         Cmd::new("jaq -nr")
-            .env("NATIVE_POLICY", value.trim())
-            .arg(format!("$ENV.NATIVE_POLICY | fromjson | {program}"))
+            .env("RUST_GATE_NATIVE_POLICY", value.trim())
+            .arg(format!(
+                "$ENV.RUST_GATE_NATIVE_POLICY | fromjson | {program}"
+            ))
             .capture()
     };
+    if query("type")?.trim() != "object" {
+        return Err("[native-cache] must be a table".into());
+    }
     if query(concat!(
         "keys | sort | if . == [\"environment\",\"key-files\",\"platforms\",\"published\"] ",
         "then true else error(\"shape\") end"
@@ -86,8 +89,7 @@ pub(crate) fn native_cache(project: &Path) -> Result<Option<NativeCache>, Failur
     }
     files.sort();
     files.dedup();
-    let mut bytes = Vec::new();
-    for name in files {
+    for name in &files {
         let path = Path::new(&name);
         if path
             .components()
@@ -95,23 +97,13 @@ pub(crate) fn native_cache(project: &Path) -> Result<Option<NativeCache>, Failur
         {
             return Err("[native-cache] key file must exist inside the project".into());
         }
-        let real = canonical(&project.join(path))
-            .map_err(|_| "[native-cache] key file must exist inside the project")?;
-        if !strictly_inside(&real, &canonical(project)?) || !real.is_file() {
-            return Err("[native-cache] key file must exist inside the project".into());
-        }
-        bytes.extend_from_slice(name.as_bytes());
-        bytes.push(0);
-        let content = fs::read(real).map_err(|error| format!("native cache key file: {error}"))?;
-        bytes.extend_from_slice(&(content.len() as u64).to_be_bytes());
-        bytes.extend(content);
     }
     Ok(Some(NativeCache {
         environment,
         platforms,
         published,
         policy_digest: sha256_hex(value.trim().as_bytes()),
-        files_digest: sha256_hex(&bytes),
+        key_files: files,
     }))
 }
 

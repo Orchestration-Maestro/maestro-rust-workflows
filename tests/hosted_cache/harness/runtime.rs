@@ -94,18 +94,20 @@ pub(crate) fn verify_hosted_fixture() {
         .lines()
         .count();
     assert!(builds <= 1, "optional consumer rebuilt {builds} times");
-    if env::var("NATIVE_RESTORE_HIT").unwrap_or_default() != "true" {
+    let matched_key = env::var("NATIVE_RESTORE_MATCHED_KEY").unwrap_or_default();
+    if matched_key.is_empty() {
         assert_eq!(builds, 1);
     }
     let proof = format!(
         concat!(
             "OS: {}\nNative source builds: {}\nVariable injections: {}\n",
-            "Restore hit: {}\nScope: {}\n"
+            "Restore hit: {}\nRestore matched key: {}\nScope: {}\n"
         ),
         env::consts::OS,
         builds,
         injected.len(),
         env::var("NATIVE_RESTORE_HIT").unwrap_or_default(),
+        matched_key,
         env::var("GITHUB_REF").unwrap()
     );
     println!("{proof}");

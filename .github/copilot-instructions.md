@@ -368,6 +368,7 @@ in place.
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
 │   │   ├── native_cache.rs                                      # Native cache policy, private restore transport and coverage-only injection
 │   │   ├── native_cache_fixture.rs                              # Real fresh-target builds prove optional consumer cache reuse, not a command stub
+│   │   ├── native_cache_policy.rs                               # Native policy parser isolation and coverage child environment regressions
 │   │   ├── organization_lints.rs                                # LNT-001: written, refused when missing or looser, and read by real Clippy through the gate
 │   │   ├── performance_budget.rs                                # PRF-001: a rise past 5 % refused unless excused, and when nothing is measured
 │   │   ├── platform_portability.rs                              # ci.yml: named platforms become pinned runners that the required status holds
@@ -403,6 +404,7 @@ in place.
 │   │   ├── gate_declarations.rs                                 # The gate built once per test process, and what rust-gate describe declares about its steps
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
 │   │   ├── mutation_shards.rs                                   # Shared test fixtures for mutation planning and evidence aggregation
+│   │   ├── native_cache.rs                                      # Shared opted-in native cache and observed coverage child fixtures
 │   │   ├── repository.rs                                        # The repository root, the toolbelt, commands run to completion, temporary directories, stand-in executables, every test file
 │   │   └── workflow_yaml.rs                                     # Readers of workflow and action YAML: whole documents, one step's body, tool rows, jaq queries
 │   ├── hosted_cache/                                            # Hosted cache

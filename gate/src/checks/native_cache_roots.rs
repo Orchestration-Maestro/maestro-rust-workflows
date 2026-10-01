@@ -30,7 +30,12 @@ pub(crate) fn prepare_root(temp: &Path) -> Result<(PathBuf, bool), String> {
 
 /// Empty safe root for source builds; no rejected bytes are moved into it.
 pub(crate) fn fallback_root(temp: &Path) -> Result<PathBuf, String> {
-    private_directory(&temp.display().to_string(), "native-fallback")
+    let root = private_directory(&temp.display().to_string(), "native-fallback")?;
+    let probe = private_directory(&temp.display().to_string(), "native-owner")?;
+    let checked = private_parent(&root, &probe);
+    fs::remove_dir(&probe).map_err(|error| format!("native cache owner probe: {error}"))?;
+    checked?;
+    Ok(root)
 }
 
 /// Verify the fresh parent independently of umask and of any restored child.

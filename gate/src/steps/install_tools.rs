@@ -283,6 +283,32 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn native_fixture_tool_rows_all_pass_the_installer_parser() {
+        let workflow = include_str!("../../../.github/workflows/native-cache-fixture.yml");
+        let mut lines = workflow.lines();
+        let header = lines
+            .find(|line| line.trim() == "TOOLS: |")
+            .expect("native fixture must declare its TOOLS block");
+        let indent = header.len() - header.trim_start().len();
+        let rows: Vec<_> = lines
+            .take_while(|line| {
+                line.trim().is_empty() || line.len() - line.trim_start().len() > indent
+            })
+            .filter(|line| !line.trim().is_empty())
+            .collect();
+        assert_eq!(rows.len(), 6, "native fixture must name all six tool rows");
+        for row in rows {
+            let platform = row.split_whitespace().nth(1).unwrap();
+            assert!(
+                parse_tool(row, platform)
+                    .unwrap_or_else(|error| panic!("{row}: {error}"))
+                    .is_some(),
+                "installer skipped its declared platform: {row}"
+            );
+        }
+    }
+
+    #[test]
     fn runner_os_names_the_supported_asset_platforms() {
         assert_eq!(runner_os("Windows"), Ok("windows"));
         assert_eq!(

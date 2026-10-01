@@ -18,6 +18,7 @@ mod managed_files;
 mod mutation_shards;
 mod native_cache;
 mod native_cache_fixture;
+mod native_cache_policy;
 mod organization_lints;
 mod performance_budget;
 mod platform_portability;

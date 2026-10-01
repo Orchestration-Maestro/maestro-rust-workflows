@@ -1,27 +1,11 @@
 //! Native cache policy, private restore transport and coverage-only injection.
 
-use crate::harness::{Fixture, output, refused, succeeds, workflow};
+use crate::harness::{
+    Fixture, cache_fixture, coverage_child_fixture, output, refused, succeeds, workflow,
+};
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::Path;
-
-/// Opted-in policy with stable key inputs.
-fn cache_fixture() -> Fixture {
-    let mut fixture = Fixture::new();
-    fs::write(
-        fixture.root.join("project/maestro-quality.toml"),
-        concat!(
-            "[native-cache]\nenvironment='FIXTURE_NATIVE_CACHE_DIR'\n",
-            "platforms=['linux','macos']\nkey-files=['Cargo.lock']\npublished=['entry-*']\n"
-        ),
-    )
-    .unwrap();
-    fixture.set("COVERAGE_FEATURES", "[\"fixture/engine\"]");
-    fixture.set("NATIVE_CACHE_MODE", "coverage");
-    fixture.set("NATIVE_CACHE_OS", "linux");
-    fixture.set("NATIVE_CACHE_ARCH", "X64");
-    fixture
-}
 
 #[test]
 fn native_policy_refuses_unknown_fields_and_unsafe_values() {
@@ -166,54 +150,6 @@ fn coverage_cache_actions_are_pinned_and_save_is_success_guarded() {
     assert_eq!(steps.last().unwrap()["id"], "native-cache-save");
 }
 
-/// Stub Cargo output while keeping selection, root checks and child environments real.
-fn coverage_child_fixture() -> Fixture {
-    let fixture = cache_fixture();
-    fixture.stub(
-        "git",
-        "[[ $1 != rev-parse ]] || printf '%s' \"$GITHUB_SHA\"; exit 0",
-    );
-    fixture.stub(
-        "cargo",
-        concat!(
-            "if [[ $1 == metadata ]]; then printf '%s' '",
-            "{\"workspace_members\":[\"a\"],\"packages\":[",
-            "{\"id\":\"a\",\"name\":\"fixture\",\"features\":{\"engine\":[]}}]}'; fi\n",
-            "if [[ $* == *--no-report* ]]; then printf '%s %s\\n' \"$*\" ",
-            "\"${FIXTURE_NATIVE_CACHE_DIR:-unset}\" >> \"$RUNNER_TEMP/child-env\"; fi\n",
-            "while [[ $# -gt 0 ]]; do ",
-            "if [[ $1 == --output-path ]]; then echo LCOV > \"$2\"; fi; shift; done"
-        ),
-    );
-    fixture
-}
-
-#[test]
-fn only_feature_coverage_receives_the_private_native_variable() {
-    let mut fixture = coverage_child_fixture();
-    succeeds(&fixture.run_body("rust-gate native-cache-prepare"));
-    let root = output(&fixture, "root");
-    fixture.set("NATIVE_CACHE_ROOT", &root);
-    succeeds(&fixture.run("ci", "coverage"));
-    let child = fs::read_to_string(fixture.root.join("child-env")).unwrap();
-    assert_eq!(
-        child.lines().collect::<Vec<_>>(),
-        [
-            "llvm-cov --workspace --locked --no-report unset".to_owned(),
-            format!("llvm-cov --workspace --locked --no-report --features fixture/engine {root}")
-        ]
-    );
-    assert_eq!(
-        fixture.trace().matches("FIXTURE_NATIVE_CACHE_DIR=").count(),
-        1
-    );
-    assert!(
-        !fs::read_to_string(fixture.root.join("environment"))
-            .unwrap_or_default()
-            .contains("FIXTURE_NATIVE_CACHE_DIR=")
-    );
-}
-
 #[test]
 fn only_changed_nonempty_published_inventory_can_be_saved() {
     for state in [
@@ -336,6 +272,22 @@ fn hosted_native_fixture_exercises_unix_transport_and_windows_source_fallback() 
         .unwrap();
     assert!(save["if"].as_str().unwrap().contains("success()"));
     assert_eq!(data["on"]["push"]["branches"][0], "main");
+    let verify = steps
+        .iter()
+        .find(|step| {
+            step["run"]
+                .as_str()
+                .is_some_and(|run| run.contains("verify_the_executed"))
+        })
+        .unwrap();
+    assert_eq!(
+        verify["env"]["NATIVE_RESTORE_MATCHED_KEY"],
+        "${{ steps.native-cache-restore.outputs.cache-matched-key }}"
+    );
+    assert_eq!(
+        verify["env"]["NATIVE_RESTORE_HIT"],
+        "${{ steps.native-cache-restore.outputs.cache-hit }}"
+    );
 }
 
 #[test]
@@ -434,28 +386,4 @@ fn preexisting_parent_disables_transport_and_selects_a_private_source_root() {
         fs::metadata(root).unwrap().permissions().mode() & 0o777,
         0o700
     );
-}
-
-#[test]
-fn failed_private_allocation_leaves_the_child_variable_unset() {
-    let mut fixture = coverage_child_fixture();
-    let script = fs::read_to_string(fixture.root.join("bin/cargo"))
-        .unwrap()
-        .replace("$RUNNER_TEMP/child-env", "$REPORTS/child-env");
-    fixture.stub("cargo", &script);
-    fixture.set(
-        "RUNNER_TEMP",
-        &fixture.root.join("missing").display().to_string(),
-    );
-    fixture.set("NATIVE_CACHE_ROOT", "rejected-root");
-    succeeds(&fixture.run("ci", "coverage"));
-    assert!(!fixture.trace().contains("FIXTURE_NATIVE_CACHE_DIR="));
-    assert!(
-        !fixture
-            .root
-            .join("reports/native-cache-before.txt")
-            .exists()
-    );
-    succeeds(&fixture.run_body("rust-gate native-cache-prepare"));
-    assert_eq!(output(&fixture, "enabled"), "false");
 }

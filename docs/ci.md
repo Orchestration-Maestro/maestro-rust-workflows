@@ -1469,6 +1469,19 @@ An opted-in feature-coverage run writes `native-cache-binding.txt` with the
 policy, key-file digests and snapshot key. `native-cache-before.txt` records the
 verified private root and its published-entry inventory before execution.
 Restore failure selects an empty private root and does not save that fallback.
+Every selected root, including a random fallback, must be an owned directory
+with exactly mode 0700. If allocation or verification fails, the variable stays unset.
+
+An absent `[native-cache]` key disables the policy; a present non-table value
+is refused. Ruleset settings snapshots validate only policy shape. Transport
+preparation resolves key files and their digests against the tested project.
+With a policy present, coverage removes the configured variable from each Cargo
+child's inherited environment, then sets it only on the verified feature child.
+Without a policy, child environments and the job environment stay unchanged.
+
+The hosted fixture records `cache-hit` separately from `cache-matched-key`.
+A nonempty matched key identifies a restore, including a prefix restore;
+verified compatible entries can therefore require zero native source builds.
 
 Published selectors are exact root-child names or `*`/`?` globs; hidden names
 are allowed, but `.`, `..`, separators, `**`, brackets, braces and escapes are refused.
