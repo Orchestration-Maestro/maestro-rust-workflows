@@ -29,6 +29,7 @@ mod quality_gates;
 mod quality_reports;
 mod release_payload;
 mod release_payload_refusals;
+mod release_rebuild;
 mod repository_hygiene;
 mod required_status;
 mod rule_map;
