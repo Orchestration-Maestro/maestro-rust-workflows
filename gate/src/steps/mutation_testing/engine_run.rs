@@ -1,6 +1,7 @@
 //! Execute exact shard obligations independently in featureless and engine modes.
 
 use super::{aggregate, engine_plan, plan_identity, reports, scope};
+use crate::checks::native_cache::{native_cache, native_cache_command, native_command};
 use crate::runner::{Cmd, Job, Outcome, flag, input, optional, output, tee_line, write};
 use std::path::Path;
 
@@ -105,15 +106,20 @@ fn execute_mode(
     if count == 0 {
         return Ok(());
     }
-    let mut command = Cmd::new(concat!(
-        "timeout --kill-after=1m 30m cargo mutants ",
-        "--no-shuffle --cargo-arg=--locked --colors=never --level=info"
-    ));
+    let policy = native_cache(&job.project)?;
+    let mut command = native_cache_command(
+        policy.as_ref(),
+        concat!(
+            "timeout --kill-after=1m 30m cargo mutants ",
+            "--no-shuffle --cargo-arg=--locked --colors=never --level=info"
+        ),
+    );
     if let Some(diff) = &source.diff {
         command = command.args(["--in-diff", &diff.to_string_lossy()]);
     }
     if enabled {
         command = scope::engine_selection(command, &job.project)?;
+        command = native_command(job, command, policy.as_ref())?;
     } else {
         for file in scope::engine_files()? {
             command = command.args(["--file", &file]);

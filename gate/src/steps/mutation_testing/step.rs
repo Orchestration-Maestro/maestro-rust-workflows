@@ -2,7 +2,8 @@
 //! every survivor, timeout, baseline failure or incomplete shard execution.
 
 use super::{aggregate, plan, plan_identity, reports, scope, selftest};
-use crate::runner::{Cmd, Failure, Job, Outcome, Step, flag, optional, output, tee_line};
+use crate::checks::native_cache::{native_cache, native_cache_command};
+use crate::runner::{Failure, Job, Outcome, Step, flag, optional, output, tee_line};
 use std::fs;
 use std::path::PathBuf;
 
@@ -86,6 +87,7 @@ pub(crate) const STEPS: &[Step] = &[
             "GITHUB_SHA",
             "GITHUB_WORKSPACE",
             "RUSTUP_TOOLCHAIN",
+            "NATIVE_CACHE_ROOT",
             "MUTATION_TEST",
             "MUTATION_SHARDS",
             "MUTATION_SHARD",
@@ -97,6 +99,7 @@ pub(crate) const STEPS: &[Step] = &[
         ],
         tools: &["cargo mutants", "cargo metadata", "git", "jaq", "timeout"],
         reports: &[
+            "native-cache-before.txt",
             "mutants-engine-shard.json",
             "mutants-engine.txt",
             "mutants-engine-default.txt",
@@ -263,7 +266,8 @@ fn run() -> Outcome {
     } else {
         "cargo mutants --no-shuffle --cargo-arg=--locked --colors=never --level=info"
     };
-    let mut command = Cmd::new(command_line);
+    let policy = native_cache(&job.project)?;
+    let mut command = native_cache_command(policy.as_ref(), command_line);
     if let Some(diff) = &scope.diff {
         let diff = diff.to_string_lossy().into_owned();
         command = command.args(["--in-diff", &diff]);

@@ -83,7 +83,7 @@ jobs:
         env:
           NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
       - name: Verify native fixture build counts and child environment
-        run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted verify_the_executed -- --nocapture
+        run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted verify_the_executed_native_coverage_fixture -- --exact --nocapture
         env:
           NATIVE_PREPARED: ${{ steps.native-cache-prepare.outputs.enabled }}
           NATIVE_RESTORE_HIT: ${{ steps.native-cache-restore.outputs.cache-hit }}
@@ -110,6 +110,197 @@ jobs:
       - name: Save published native entries
         id: native-cache-save
         if: ${{ success() && steps.native-cache-inventory.outputs.save == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.native-cache-inventory.outputs.paths }}
+          key: ${{ steps.native-cache-prepare.outputs.key }}
+          enableCrossOsArchive: false
+  checks:
+    name: Native mutation plan
+    # PR coverage proves restoration. Mutation needs the existing parentless full listing:
+    # push, queue and dispatch have no PR base; the shallow checkout has no first parent.
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      CARGO_MUTANTS_VERSION: '27.1.0'
+      MUTATION_TEST: 'true'
+      MUTATION_SHARDS: '2'
+      MUTATION_MUTANTS_PER_SHARD: '1'
+      MUTATION_ENGINE_FEATURES: '["engine"]'
+      MUTATION_ENGINE_FILES: '["crates/a/src/engine.rs"]'
+      MUTATION_WINDOWS: '[]'
+    outputs:
+      directory: tests/fixtures/native-consumer-project
+      toolchain: '1.98.1'
+      mutation-engine-features: ${{ steps.native-engine-plan.outputs.mutation-engine-features }}
+      mutation-engine-files: ${{ steps.native-engine-plan.outputs.mutation-engine-files }}
+      mutation-test: 'true'
+      mutation-engine-shards: ${{ steps.mutants-plan.outputs.mutation-engine-shards }}
+      mutation-engine-matrix: ${{ steps.mutants-plan.outputs.mutation-engine-matrix }}
+    steps:
+      - name: Checkout the gate at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - name: Build the gate
+        uses: ./.github/actions/gate
+      - name: Install the pinned settings reader
+        run: rust-gate install-tools
+        env:
+          TOOLS: jaq 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-unknown-linux-gnu 5922c7b67d9bd6841d6676d1f954410c6bf04b47203dcb661c4f052dfef7f454
+      - name: Install pinned engine mutation tools
+        run: rust-gate install-tools
+        env:
+          TOOLS: |
+            cargo-mutants sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e cargo-mutants
+            cargo-nextest nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-musl.tar.gz b64617e8640624e8f9ba99819e37d7971154e97836d7ae4774fed4715501a6aa cargo-nextest
+      - name: Prepare the committed optional consumer
+        env:
+          HOSTED_NATIVE_PROJECT: ${{ github.workspace }}/tests/fixtures/native-consumer-project
+        run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted prepare_the_mutation -- --nocapture
+      - name: Install the toolchain
+        run: rust-gate tools
+      - name: Plan mutation shard routing
+        id: mutants-plan
+        run: rust-gate mutants-plan
+      - name: Assert the full engine plan has two nonempty shards
+        id: native-engine-plan
+        run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted assert_the_engine_plan -- --nocapture
+      - name: Upload the bound engine plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: native-engine-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rust-reports
+          if-no-files-found: error
+          retention-days: 7
+  mutation-engine:
+    name: Native engine shard ${{ matrix.shard }}
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.checks.outputs.mutation-engine-matrix) }}
+    # PR coverage proves restoration. Mutation needs the existing parentless full listing:
+    # push, queue and dispatch have no PR base; the shallow checkout has no first parent.
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      CARGO_MUTANTS_VERSION: '27.1.0'
+      MUTATION_TEST: 'true'
+      MUTATION_SHARDS: '2'
+      MUTATION_MUTANTS_PER_SHARD: '1'
+      MUTATION_WINDOWS: '[]'
+    steps:
+      - name: Checkout the gate at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - name: Build the gate
+        uses: ./.github/actions/gate
+      - name: Install the pinned settings reader
+        run: rust-gate install-tools
+        env:
+          TOOLS: jaq 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-unknown-linux-gnu 5922c7b67d9bd6841d6676d1f954410c6bf04b47203dcb661c4f052dfef7f454
+      - name: Install pinned engine mutation tools
+        run: rust-gate install-tools
+        env:
+          TOOLS: |
+            cargo-mutants sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e cargo-mutants
+            cargo-nextest nextest-rs/nextest/releases/download/cargo-nextest-0.9.146/cargo-nextest-0.9.146-x86_64-unknown-linux-musl.tar.gz b64617e8640624e8f9ba99819e37d7971154e97836d7ae4774fed4715501a6aa cargo-nextest
+      - name: Prepare the committed optional consumer
+        env:
+          HOSTED_NATIVE_PROJECT: ${{ github.workspace }}/tests/fixtures/native-consumer-project
+        run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted prepare_the_mutation -- --nocapture
+      - name: Install the toolchain
+        run: rust-gate tools
+      - name: Download the bound engine plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: native-engine-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mutation-plan
+      - name: Prepare private native cache restore
+        id: native-cache-prepare
+        run: rust-gate native-cache-prepare
+        env:
+          NATIVE_CACHE_MODE: mutation
+          NATIVE_CACHE_OS: ${{ runner.os }}
+          NATIVE_CACHE_ARCH: ${{ runner.arch }}
+          MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
+          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          REPORTS: ${{ runner.temp }}/rust-reports
+          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+      - name: Restore published native entries
+        id: native-cache-restore
+        if: ${{ steps.native-cache-prepare.outputs.enabled == 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.native-cache-prepare.outputs.paths }}
+          key: ${{ steps.native-cache-prepare.outputs.key }}
+          restore-keys: |
+            ${{ steps.native-cache-prepare.outputs.bucket }}-mutation-
+            ${{ steps.native-cache-prepare.outputs.bucket }}-
+          enableCrossOsArchive: false
+      - name: Execute engine shards and their separate featureless obligations
+        id: engine-mutation-run
+        timeout-minutes: 35
+        run: rust-gate mutants-engine
+        env:
+          NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
+          CARGO_MUTANTS_VERSION: '27.1.0'
+          MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
+          MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+          MUTATION_ENGINE_PLAN: ${{ runner.temp }}/mutation-plan/mutation-engine-plan.json
+          MUTATION_ENGINE_LIST: ${{ runner.temp }}/mutation-plan/mutation-engine-list.json
+          MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-engine-shards }}
+          MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.checks.outputs.mutation-engine-shards }}
+          MUTATION_ENGINE_DEFAULT_LIST: ${{ runner.temp }}/mutation-plan/mutation-engine-default-list.json
+          MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
+          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          REPORTS: ${{ runner.temp }}/rust-reports
+          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+      - name: Verify mutation child environment and native build counts
+        run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted verify_the_executed_native_mutation_fixture -- --exact --nocapture
+        env:
+          NATIVE_PREPARED: ${{ steps.native-cache-prepare.outputs.enabled }}
+          NATIVE_RESTORE_MATCHED_KEY: ${{ steps.native-cache-restore.outputs.cache-matched-key }}
+      - name: Upload mutation native evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: native-mutation-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/rust-reports
+            ${{ runner.temp }}/mutants-engine/mutants.out
+          if-no-files-found: error
+          retention-days: 7
+      - name: Check native cache save inventory
+        id: native-cache-inventory
+        if: ${{ success() && matrix.shard == 0 && steps.native-cache-prepare.outputs.enabled == 'true' }}
+        run: rust-gate native-cache-inventory
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          JOB_SUCCESS: 'true'
+          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          REPORTS: ${{ runner.temp }}/rust-reports
+          NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
+      - name: Save published native entries
+        id: native-cache-save
+        if: ${{ success() && matrix.shard == 0 && steps.native-cache-inventory.outputs.save == 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ${{ steps.native-cache-inventory.outputs.paths }}

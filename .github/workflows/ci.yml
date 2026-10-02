@@ -736,11 +736,34 @@ jobs:
         with:
           name: ${{ needs.checks.outputs.artifact-name }}-engine-plan
           path: ${{ runner.temp }}/mutation-plan
+      - name: Prepare private native cache restore
+        id: native-cache-prepare
+        run: rust-gate native-cache-prepare
+        env:
+          NATIVE_CACHE_MODE: mutation
+          NATIVE_CACHE_OS: ${{ runner.os }}
+          NATIVE_CACHE_ARCH: ${{ runner.arch }}
+          MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
+          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          REPORTS: ${{ runner.temp }}/rust-reports
+          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+      - name: Restore published native entries
+        id: native-cache-restore
+        if: ${{ steps.native-cache-prepare.outputs.enabled == 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.native-cache-prepare.outputs.paths }}
+          key: ${{ steps.native-cache-prepare.outputs.key }}
+          restore-keys: |
+            ${{ steps.native-cache-prepare.outputs.bucket }}-mutation-
+            ${{ steps.native-cache-prepare.outputs.bucket }}-
+          enableCrossOsArchive: false
       - name: Execute engine shards and their separate featureless obligations
         id: engine-mutation-run
         timeout-minutes: 35
         run: rust-gate mutants-engine
         env:
+          NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
           CARGO_MUTANTS_VERSION: '27.1.0'
           MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
           MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
@@ -765,6 +788,28 @@ jobs:
             ${{ runner.temp }}/rust-reports/mutants.txt
           if-no-files-found: error
           retention-days: 7
+      - name: Check native cache save inventory
+        id: native-cache-inventory
+        if: ${{ success() && matrix.shard == 0 && steps.native-cache-prepare.outputs.enabled == 'true' }}
+        run: rust-gate native-cache-inventory
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          JOB_SUCCESS: 'true'
+          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          REPORTS: ${{ runner.temp }}/rust-reports
+          NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
+      - name: Save published native entries
+        id: native-cache-save
+        if: ${{ success() && matrix.shard == 0 && steps.native-cache-inventory.outputs.save == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.native-cache-inventory.outputs.paths }}
+          key: ${{ steps.native-cache-prepare.outputs.key }}
+          enableCrossOsArchive: false
+
   mutation-engine-default:
     name: Engine featureless control shard ${{ matrix.shard }} of ${{ needs.checks.outputs.mutation-engine-default-shards }}
     needs:

@@ -1,6 +1,7 @@
 //! Select and run mutations for Windows-owned files only.
 
 use super::{plan_identity, reports, scope};
+use crate::checks::native_cache::{native_cache, native_cache_command};
 use crate::checks::quality_config::mutation_windows;
 use crate::runner::{Cmd, Failure, Job, Outcome, flag, input, optional, output, tee_line, write};
 use std::fs;
@@ -142,8 +143,11 @@ fn parse_listing_count(count: &str) -> Result<usize, Failure> {
 
 /// Run the whole selected set once into the standard mutation artifact layout.
 fn run_files(job: &Job, scope: &scope::Scope, files: &[&str], report: &Path) -> Outcome {
-    let mut command =
-        Cmd::new("cargo mutants --no-shuffle --cargo-arg=--locked --colors=never --level=info");
+    let policy = native_cache(&job.project)?;
+    let mut command = native_cache_command(
+        policy.as_ref(),
+        "cargo mutants --no-shuffle --cargo-arg=--locked --colors=never --level=info",
+    );
     for file in files {
         command = command.args(["--file", file]);
     }

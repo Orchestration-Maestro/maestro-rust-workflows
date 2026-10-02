@@ -368,6 +368,8 @@ in place.
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
 │   │   ├── native_cache.rs                                      # Native cache policy, private restore transport and coverage-only injection
 │   │   ├── native_cache_fixture.rs                              # Real fresh-target builds prove optional consumer cache reuse, not a command stub
+│   │   ├── native_cache_hosted_mutation.rs                      # Hosted mutation proof shares production transport rather than a copied contract
+│   │   ├── native_cache_mutation.rs                             # Native mutation transport routing, child-only injection and legacy compatibility
 │   │   ├── native_cache_policy.rs                               # Native policy parser isolation and coverage child environment regressions
 │   │   ├── organization_lints.rs                                # LNT-001: written, refused when missing or looser, and read by real Clippy through the gate
 │   │   ├── performance_budget.rs                                # PRF-001: a rise past 5 % refused unless excused, and when nothing is measured
@@ -393,29 +395,29 @@ in place.
 │   │   ├── native-consumer/                                     # Native consumer
 │   │   │   └── build.rs.in                                      # Build-script template for private, verified, atomic native entry publication
 │   │   └── native-consumer-project/                             # Committed hosted consumer, byte-checked against its generator
-│   │       ├── crates/                                         # Three feature-partition workspace members
-│   │       │   ├── a/                                          # Optional native consumer
-│   │       │   │   ├── src/                                    # Default and engine-only sources
+│   │       ├── crates/                                          # Three feature-partition workspace members
+│   │       │   ├── a/                                           # Optional native consumer
+│   │       │   │   ├── src/                                     # Default and engine-only sources
 │   │       │   │   │   ├── engine.rs                            # Engine-only coverage assertion
 │   │       │   │   │   └── lib.rs                               # Default workspace coverage assertion
 │   │       │   │   └── Cargo.toml                               # Optional native dependency and engine feature
-│   │       │   ├── b/                                          # Forwarded engine feature
-│   │       │   │   ├── src/                                    # Forwarding member source
+│   │       │   ├── b/                                           # Forwarded engine feature
+│   │       │   │   ├── src/                                     # Forwarding member source
 │   │       │   │   │   └── lib.rs                               # Default workspace coverage assertion
 │   │       │   │   └── Cargo.toml                               # Forwards crate-a's engine feature
-│   │       │   └── c/                                          # Featureless member
-│   │       │       ├── src/                                    # Featureless member source
+│   │       │   └── c/                                           # Featureless member
+│   │       │       ├── src/                                     # Featureless member source
 │   │       │       │   └── lib.rs                               # Default workspace coverage assertion
 │   │       │       └── Cargo.toml                               # Unrelated workspace member
-│   │       ├── native/                                         # Verified native publication fixture
-│   │       │   ├── src/                                        # Generated native payload consumer
+│   │       ├── native/                                          # Verified native publication fixture
+│   │       │   ├── src/                                         # Generated native payload consumer
 │   │       │   │   └── lib.rs                                   # Includes the build-script payload
 │   │       │   ├── Cargo.toml                                   # Excluded optional native dependency
 │   │       │   └── build.rs                                     # Generated copy of the native publication template
-│   │       ├── .gitignore                                      # Keeps consumer build output out of the tested commit
-│   │       ├── Cargo.lock                                      # Offline, pinned consumer dependency graph
-│   │       ├── Cargo.toml                                      # Three-package hosted fixture workspace
-│   │       └── maestro-quality.toml                            # Optional engine and Unix native cache policy
+│   │       ├── .gitignore                                       # Keeps consumer build output out of the tested commit
+│   │       ├── Cargo.lock                                       # Offline, pinned consumer dependency graph
+│   │       ├── Cargo.toml                                       # Three-package hosted fixture workspace
+│   │       └── maestro-quality.toml                             # Optional engine and Unix native cache policy
 │   ├── gate/                                                    # The gate and the tests as structures: layers, no import cycle, the step registry, what holds every step and refusal
 │   │   ├── layer_boundaries.rs                                  # This crate's own step shape, the checks door, seam unit tests and no whole-harness import
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
@@ -434,6 +436,7 @@ in place.
 │   ├── hosted_cache/                                            # Hosted cache
 │   │   ├── harness/                                             # Native, cross-platform fixture preparation and observed coverage evidence
 │   │   │   ├── mod.rs                                           # Native, cross-platform fixture preparation and observed coverage evidence
+│   │   │   ├── mutations.rs                                     # Real engine execution evidence from the production planner and worker commands
 │   │   │   └── runtime.rs                                       # Real hosted fixture setup and evidence, without Bash or command stand-ins
 │   │   └── main.rs                                              # Hosted native cache transport: real consumer preparation and coverage execution evidence
 │   ├── nightly/                                                 # The nightly workflows, unsafe-audit.yml and fuzz.yml, outside the stable policy

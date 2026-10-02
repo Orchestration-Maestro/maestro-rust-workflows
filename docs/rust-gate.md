@@ -101,6 +101,14 @@ outcomes and counters, and writes the merged canonical reports only after every
 planned worker is complete. Local CI skips planning and still runs the full
 mutation command unsharded.
 
+Coverage and mutation share the policy-aware child-command seam in
+`checks/native_cache.rs`. Engine workers verify their plan before root verification
+and cargo-mutants injection. Featureless, default and Windows execution remove
+an inherited configured variable; without policy, commands and environments stay
+unchanged. Pre-validation metadata is unchanged. Every engine shard restores;
+only shard zero inventories and saves after success. See the
+[consumer native-cache contract](ci.md#optional-native-cache).
+
 The compiler keeps the layers apart: a step is private to `gate/src/steps/`, so
 neither the checks nor the runner can reach it. ARC-004, declared in
 `maestro-quality.toml`, keeps the imports one way, and

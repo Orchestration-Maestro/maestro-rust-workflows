@@ -4,6 +4,7 @@
 use crate::checks::checkout_paths::canonical;
 use crate::checks::digests::sha256_hex;
 use crate::checks::mutation_engine;
+use crate::checks::native_cache::{NativeCache, native_cache, native_cache_command};
 use crate::checks::quality_config::mutation_windows;
 use crate::runner::{Cmd, Failure, Job, input, optional};
 use std::collections::BTreeSet;
@@ -96,17 +97,21 @@ pub(super) fn engine_selection(mut command: Cmd, project: &Path) -> Result<Cmd, 
         .args(["--argjson", "files", &optional("MUTATION_ENGINE_FILES")?])
         .arg("{features:$features, files:$files}")
         .capture()?;
+    let cache = native_cache(project)?;
     let policy = mutation_engine::engine_policy(project, &json, &[], || {
-        Cmd::new("cargo metadata --format-version 1 --no-deps --locked")
-            .cwd(project)
-            .capture()
+        native_cache_command(
+            cache.as_ref(),
+            "cargo metadata --format-version 1 --no-deps --locked",
+        )
+        .cwd(project)
+        .capture()
     })?;
     let features = policy.features;
     let files = policy.files;
     if !features.is_empty() {
         command = command.args(["--features", &features.join(",")]);
     }
-    for package in engine_packages(project, &files)? {
+    for package in selected_packages(project, &files, cache.as_ref())? {
         command = command.args(["--package", &package]);
     }
     for file in files {
@@ -117,10 +122,19 @@ pub(super) fn engine_selection(mut command: Cmd, project: &Path) -> Result<Cmd, 
 
 /// Select only packages that own engine files so package-local features stay local.
 pub(super) fn engine_packages(project: &Path, files: &[String]) -> Result<Vec<String>, Failure> {
+    selected_packages(project, files, None)
+}
+
+/// Execution metadata is isolated; pre-validation metadata preserves its environment.
+fn selected_packages(
+    project: &Path,
+    files: &[String],
+    cache: Option<&NativeCache>,
+) -> Result<Vec<String>, Failure> {
     if files.is_empty() {
         return Ok(Vec::new());
     }
-    let metadata = Cmd::new("cargo metadata --format-version 1 --no-deps")
+    let metadata = native_cache_command(cache, "cargo metadata --format-version 1 --no-deps")
         .cwd(project)
         .capture()?;
     let rows = Cmd::new("jaq -r")
