@@ -191,7 +191,9 @@ in place.
 │   │   │   ├── quality_config.rs                                # maestro-quality.toml read through jaq: declared layers and reasoned exceptions
 │   │   │   ├── release_boundary.rs                              # What both publishers ask of a release before anything is published
 │   │   │   ├── rust_code.rs                                     # Rust source with comments and literals blanked, and its top-level items
+│   │   │   ├── rust_code_cases.rs                               # Edge cases for Rust source scanning and function boundaries
 │   │   │   ├── rust_paths.rs                                    # Every path a Rust file names: use trees expanded, a::b chains, visibilities left out
+│   │   │   ├── rust_test_cases.rs                               # Edge cases for Rust source scanning and function boundaries
 │   │   │   ├── rust_tests.rs                                    # The tests inside Rust source: test functions, test-only code, waits on time
 │   │   │   ├── rust_versions.rs                                 # Rust version strings compared the way sort -V compared them
 │   │   │   ├── simple_names.rs                                  # One validator for every simple-name rule, and hex strings
