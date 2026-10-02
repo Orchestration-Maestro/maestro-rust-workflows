@@ -1463,9 +1463,75 @@ Other boundary tests execute malformed paths, release configuration, scanner
 errors, checksum corruption, revision mismatches and package selection. Real
 Cargo and workflow lint checks complement those stand-ins.
 
+### Optional native cache
+
+A consumer can add this table to its committed `maestro-quality.toml`. It is
+policy data, not another workflow input, and does not select engine features.
+
+```toml
+[native-cache]
+environment = "FIXTURE_NATIVE_CACHE_DIR"
+platforms = ["linux", "macos"]
+key-files = ["Cargo.lock"]
+published = ["entry-*"]
+```
+
+| Field | Contract |
+| --- | --- |
+| `environment` | Consumer build variable. Process, Cargo, Rust, gate and runner control names are refused. |
+| `platforms` | Selected Unix platforms: `linux` and/or `macos`. Windows is always disabled. |
+| `key-files` | Existing project-relative regular files contained in the checkout. `Cargo.lock` is always included. |
+| `published` | Completed immutable root-child entries to archive, never staging, Cargo targets or coverage profiles. |
+
+The consumer must atomically publish completed entries and verify their native
+source, compiler, target, profile, flags and feature compatibility before reuse.
+An outer restore is not proof of compatibility or producer authenticity.
+Cross-mode reuse requires matching consumer entry keys, including the flags that
+change native output, as E03's native consumer binds them.
+
+Feature coverage and every engine mutation shard restore. Only the coverage
+feature child and engine cargo-mutants descendants receive the verified private
+root variable. Default coverage and featureless, default and Windows mutation
+execution remove an inherited configured variable but receive no cache root.
+Pre-validation mutation metadata retains its existing environment and runs no
+build scripts. No variable is added to the job environment.
+
+Feature coverage and engine shard zero are the only writers. They save last,
+after job success, only when the published-entry inventory is nonempty and has
+changed. Saving requires either a push to the repository's exact default branch
+or a merge group whose base is that branch. Pull requests and manual dispatches
+never save. A push caller must opt in on its default branch to warm other PRs;
+merge-group archives stay in their queue ref scope and are not promoted to main.
+PRs can restore default/base caches but cannot write them through this workflow.
+Cache no secrets; other trusted producers sharing the namespace are a trust
+boundary, and entry hashes are not signatures.
+
+Keys bind OS, architecture, exact toolchain, repository/project identity, policy
+and key-file bytes. Immutable snapshots append the coverage/mutation mode, run
+ID and attempt. Restore tries the current mode's prefix, then the shared bucket
+prefix. Feature spelling selects the routed mode but is not part of the outer
+bucket key. Cross-OS archives are disabled.
+
+The fixture coverage selection is workspace-qualified `crate-a/engine`; mutation
+uses the package-local `engine` validated by its planner. Both share an outer
+bucket. Their inner entries bind the instrumentation flags the native build
+actually receives: coverage and mutation compile separate compatible entries.
+Each mode pays one cold native build for a missing inner key and reuses its own
+compatible entry on a warm run. An outer hit alone cannot require zero builds.
+
+Restores live under a fresh owner-only parent outside the checkout. Safe owned
+objects are normalized to owner-only permissions and rechecked. Symlinks,
+hardlinks, special files, foreign ownership or failed checks discard the restore
+and select an empty private source-build root. If safe allocation also fails,
+the variable stays unset. Windows skips preparation, restore and save and builds
+from source even with engine features selected.
+
+To opt out, remove the entire `[native-cache]` table. Without a policy, mutation
+and coverage child commands and inherited environments remain unchanged.
+
 ### Native cache transport reports
 
-An opted-in feature-coverage run writes `native-cache-binding.txt` with the
+An opted-in feature-coverage or engine mutation run writes `native-cache-binding.txt` with the
 policy, key-file digests and snapshot key. `native-cache-before.txt` records the
 verified private root and its published-entry inventory before execution.
 Restore failure selects an empty private root and does not save that fallback.
@@ -1477,6 +1543,8 @@ is refused. Ruleset settings snapshots validate only policy shape. Transport
 preparation resolves key files and their digests against the tested project.
 With a policy present, coverage removes the configured variable from each Cargo
 child's inherited environment, then sets it only on the verified feature child.
+Mutation removes it at the shared cargo-mutants execution seam and sets it only
+for a verified engine worker after plan validation.
 Without a policy, child environments and the job environment stay unchanged.
 
 The hosted fixture uses the committed consumer at
@@ -1485,6 +1553,15 @@ Coverage binds to the job's own commit, with no override of GitHub's default
 variables. A separate assertion prints the empty checkout status immediately
 before coverage; build output, reports and cache entries stay outside the checkout.
 All workflow, job and step `env` keys refuse the reserved `GITHUB_*` and `RUNNER_*` prefixes.
+
+The hosted fixture runs coverage on pull requests, push, merge group and manual
+dispatch. Its separate Linux mutation planner and two engine shards run on push,
+merge group and dispatch only. The shallow checkout follows the existing full
+listing path; PR mutation jobs skip because their base requires a first parent.
+A non-default dispatch demonstrates mutation restore without save. Fixture cache
+steps and the engine command are equality-checked against `ci.yml`; mutation
+artifacts retain child traces, before-inventory, native build counts and outcomes.
+These optional proof jobs do not extend the required repository quality job.
 
 The hosted fixture records `cache-hit` separately from `cache-matched-key`.
 A nonempty matched key identifies a restore, including a prefix restore;

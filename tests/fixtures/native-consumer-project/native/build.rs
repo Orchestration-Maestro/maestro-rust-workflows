@@ -1,21 +1,36 @@
 //! Tiny native publication contract. No engine, downloads or external compiler.
 
+use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fs::{self, OpenOptions};
+use std::hash::Hasher;
 use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process;
 
-/// Bind the fixture entry to its native target and profile and verify its exact bytes.
+/// Bind the native target, profile and received flags, then verify exact manifest bytes.
 fn main() -> io::Result<()> {
     println!("cargo:rerun-if-env-changed=FIXTURE_NATIVE_CACHE_DIR");
     println!("cargo:rerun-if-env-changed=FIXTURE_NATIVE_BUILD_LOG");
+    println!("cargo:rerun-if-env-changed=CARGO_ENCODED_RUSTFLAGS");
+    println!("cargo:rerun-if-env-changed=FIXTURE_NATIVE_ENTRY_LOG");
+    let flags = env::var("CARGO_ENCODED_RUSTFLAGS").unwrap_or_default();
+    let mut hasher = DefaultHasher::new();
+    hasher.write(flags.as_bytes());
     let target = env::var("TARGET").map_err(io::Error::other)?;
     let profile = env::var("PROFILE").map_err(io::Error::other)?;
-    let key = format!("entry-v1-{target}-{profile}");
-    let manifest = format!("native-fixture-v1\ntarget={target}\nprofile={profile}\npayload=9\n");
+    let key = format!("entry-v1-{target}-{profile}-{:016x}", hasher.finish());
+    if let Some(log) = env::var_os("FIXTURE_NATIVE_ENTRY_LOG") {
+        writeln!(
+            OpenOptions::new().create(true).append(true).open(log)?,
+            "{key}"
+        )?;
+    }
+    let manifest = format!(
+        "native-fixture-v1\ntarget={target}\nprofile={profile}\npayload=9\nflags={flags}\n"
+    );
     let root = cache_root();
     let entry = root.as_ref().map(|root| root.join(&key));
     let reusable = entry

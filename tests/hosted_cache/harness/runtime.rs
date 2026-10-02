@@ -19,10 +19,20 @@ fn checked(program: &str, args: &[&str], project: &Path) -> String {
 
 /// Use the job's committed consumer; execution profiles and evidence stay outside the checkout.
 pub(crate) fn prepare_hosted_fixture() {
+    prepare_fixture("native-reports");
+}
+
+/// Mutation reports use the same directory as the production engine job.
+pub(crate) fn prepare_hosted_mutation_fixture() {
+    prepare_fixture("rust-reports");
+}
+
+/// Keep the committed source and external build paths identical in both fixture modes.
+fn prepare_fixture(report_directory: &str) {
     let project = PathBuf::from(env::var("HOSTED_NATIVE_PROJECT").unwrap());
     assert!(project.join("Cargo.lock").is_file());
     let temp = PathBuf::from(env::var("RUNNER_TEMP").unwrap());
-    let reports = temp.join("native-reports");
+    let reports = temp.join(report_directory);
     fs::create_dir(&reports).unwrap();
     let mut exports = OpenOptions::new()
         .append(true)
@@ -33,6 +43,7 @@ pub(crate) fn prepare_hosted_fixture() {
         ("REPORTS", reports.clone()),
         ("CARGO_TARGET_DIR", temp.join("native-target")),
         ("FIXTURE_NATIVE_BUILD_LOG", reports.join("build-count")),
+        ("FIXTURE_NATIVE_ENTRY_LOG", reports.join("native-entries")),
         ("RUST_GATE_TRACE", reports.join("trace")),
     ] {
         writeln!(exports, "{key}={}", value.display()).unwrap();

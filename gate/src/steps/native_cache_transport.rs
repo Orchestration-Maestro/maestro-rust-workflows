@@ -18,6 +18,7 @@ pub(crate) const STEPS: &[Step] = &[
         summary: "Prepare private native cache restore",
         inputs: &[
             "COVERAGE_FEATURES",
+            "MUTATION_ENGINE_FEATURES",
             "GITHUB_WORKSPACE",
             "NATIVE_CACHE_MODE",
             "NATIVE_CACHE_OS",
@@ -57,9 +58,16 @@ fn prepare() -> Outcome {
     };
     let files_digest = key_files_digest(&job.project, &policy.key_files)?;
     let os = input("NATIVE_CACHE_OS")?.to_lowercase();
+    let mode = input("NATIVE_CACHE_MODE")?;
+    let selection = if mode == "mutation" {
+        optional("MUTATION_ENGINE_FEATURES")?
+    } else {
+        optional("COVERAGE_FEATURES")?
+    };
     if os != OS
         || !cache_platform(OS, &policy.platforms)
-        || optional("COVERAGE_FEATURES")?.is_empty()
+        || selection.is_empty()
+        || (mode == "mutation" && selection == "[]")
     {
         return output("enabled", "false");
     }
@@ -90,7 +98,6 @@ fn prepare() -> Outcome {
         sha256_hex(identity.as_bytes()),
         files_digest
     );
-    let mode = input("NATIVE_CACHE_MODE")?;
     let key = format!(
         "{bucket}-{mode}-{}-{}",
         input("GITHUB_RUN_ID")?,

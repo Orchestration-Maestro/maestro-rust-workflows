@@ -1,8 +1,11 @@
 //! Strict policy-file-only native cache contract, independent of engine ownership.
 
 use crate::checks::digests::sha256_hex;
-use crate::runner::{Cmd, Failure};
-use std::path::{Component, Path};
+use crate::checks::native_cache_inventory::published_inventory;
+use crate::checks::native_cache_roots::{fallback_root, normalize_restore};
+use crate::runner::{Cmd, Failure, Job, optional, write};
+use std::env::consts::OS;
+use std::path::{Component, Path, PathBuf};
 
 /// Validated transport settings. Absence disables transport.
 pub(crate) struct NativeCache {
@@ -174,6 +177,57 @@ fn selector(name: &str) -> bool {
         && name
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || "_-.*?".contains(ch))
+}
+
+/// One child-command seam isolates every Cargo invocation only when policy is present.
+pub(crate) fn native_cache_command(policy: Option<&NativeCache>, words: &str) -> Cmd {
+    let command = Cmd::new(words);
+    if let Some(policy) = policy {
+        return command.env_remove(&policy.environment);
+    }
+    command
+}
+
+/// Only feature execution receives the consumer variable, after restored bytes are checked.
+pub(crate) fn native_command(
+    job: &Job,
+    command: Cmd,
+    policy: Option<&NativeCache>,
+) -> Result<Cmd, Failure> {
+    let requested = optional("NATIVE_CACHE_ROOT")?;
+    if requested.is_empty() {
+        return Ok(command);
+    }
+    let Some(policy) = policy else {
+        return Ok(command);
+    };
+    if !cache_platform(OS, &policy.platforms) {
+        return Ok(command);
+    }
+    let root = {
+        let root = PathBuf::from(requested);
+        match normalize_restore(&root, &job.temp) {
+            Ok(()) => Ok(root),
+            Err(error) => {
+                eprintln!("Native cache fallback: {error}");
+                fallback_root(&job.temp)
+            }
+        }
+    };
+    let root = match root {
+        Ok(root) => root,
+        Err(error) => {
+            eprintln!("Native cache disabled: {error}");
+            return Ok(command);
+        }
+    };
+    let before = published_inventory(&root, &policy.published)?;
+    write(
+        &job.report("native-cache-before.txt")?,
+        format!("{}\n{before}", root.display()).as_bytes(),
+        false,
+    )?;
+    Ok(command.env(&policy.environment, &root))
 }
 
 #[cfg(test)]
