@@ -118,7 +118,7 @@ fn execute_mode(
         command = command.args(["--in-diff", &diff.to_string_lossy()]);
     }
     if enabled {
-        command = scope::engine_selection(command, &job.project)?;
+        command = scope::engine_selection(command, &job.project, policy.as_ref())?;
         command = native_command(job, command, policy.as_ref())?;
     } else {
         for file in scope::engine_files()? {

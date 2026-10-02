@@ -89,20 +89,38 @@ fn every_engine_worker_receives_only_a_verified_private_child_variable() {
         assert_eq!(output(&fixture, "enabled"), "true");
         let root = output(&fixture, "root");
         fixture.set("NATIVE_CACHE_ROOT", &root);
+        fs::write(fixture.root.join("reports/child-env"), "").unwrap();
+        let trace_start = fixture.trace().len();
         succeeds(&fixture.run_body("rust-gate mutants-engine"));
+        let trace = fixture.trace();
+        assert_eq!(
+            trace[trace_start..]
+                .matches("if has(\"native-cache\") then")
+                .count(),
+            1,
+            "worker must parse the native policy once: {}",
+            &trace[trace_start..]
+        );
         let children = fs::read_to_string(fixture.root.join("reports/child-env")).unwrap();
-        for child in children.lines() {
-            if child.starts_with("mutants ") {
-                assert!(child.ends_with(&root), "{child}");
-                assert!(child.contains("--features engine"), "{child}");
-            } else {
-                assert!(
-                    child.ends_with(" unset") || child.ends_with(" /inherited-untrusted"),
-                    "{child}"
-                );
-            }
-        }
-        assert!(children.lines().any(|child| child.starts_with("mutants ")));
+        let metadata: Vec<_> = children
+            .lines()
+            .filter(|child| child.starts_with("metadata "))
+            .collect();
+        assert_eq!(
+            metadata,
+            [
+                "metadata --format-version 1 --no-deps /inherited-untrusted",
+                "metadata --format-version 1 --no-deps --locked unset",
+                "metadata --format-version 1 --no-deps unset",
+            ]
+        );
+        let workers: Vec<_> = children
+            .lines()
+            .filter(|child| child.starts_with("mutants "))
+            .collect();
+        assert_eq!(workers.len(), 1, "{children}");
+        assert!(workers[0].ends_with(&root), "{}", workers[0]);
+        assert!(workers[0].contains("--features engine"), "{}", workers[0]);
         assert_eq!(
             fixture.env["FIXTURE_NATIVE_CACHE_DIR"],
             "/inherited-untrusted"

@@ -4,7 +4,7 @@
 use crate::checks::checkout_paths::canonical;
 use crate::checks::digests::sha256_hex;
 use crate::checks::mutation_engine;
-use crate::checks::native_cache::{NativeCache, native_cache, native_cache_command};
+use crate::checks::native_cache::{NativeCache, native_cache_command};
 use crate::checks::quality_config::mutation_windows;
 use crate::runner::{Cmd, Failure, Job, input, optional};
 use std::collections::BTreeSet;
@@ -87,7 +87,11 @@ pub(super) fn exclude_default_files(command: Cmd, project: &Path) -> Result<Cmd,
 }
 
 /// Restrict a feature-enabled engine listing or run to its exact owned files.
-pub(super) fn engine_selection(mut command: Cmd, project: &Path) -> Result<Cmd, Failure> {
+pub(super) fn engine_selection(
+    mut command: Cmd,
+    project: &Path,
+    cache: Option<&NativeCache>,
+) -> Result<Cmd, Failure> {
     let json = Cmd::new("jaq -cn")
         .args([
             "--argjson",
@@ -97,10 +101,9 @@ pub(super) fn engine_selection(mut command: Cmd, project: &Path) -> Result<Cmd, 
         .args(["--argjson", "files", &optional("MUTATION_ENGINE_FILES")?])
         .arg("{features:$features, files:$files}")
         .capture()?;
-    let cache = native_cache(project)?;
     let policy = mutation_engine::engine_policy(project, &json, &[], || {
         native_cache_command(
-            cache.as_ref(),
+            cache,
             "cargo metadata --format-version 1 --no-deps --locked",
         )
         .cwd(project)
@@ -111,7 +114,7 @@ pub(super) fn engine_selection(mut command: Cmd, project: &Path) -> Result<Cmd, 
     if !features.is_empty() {
         command = command.args(["--features", &features.join(",")]);
     }
-    for package in selected_packages(project, &files, cache.as_ref())? {
+    for package in selected_packages(project, &files, cache)? {
         command = command.args(["--package", &package]);
     }
     for file in files {
