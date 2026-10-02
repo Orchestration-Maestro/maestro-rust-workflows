@@ -10,4 +10,7 @@ mod step;
 mod text;
 mod tree;
 
+#[cfg(test)]
+mod tree_cases;
+
 pub(super) use step::STEPS;
