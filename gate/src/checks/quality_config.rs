@@ -483,6 +483,8 @@ mod tests {
     fn limits_tighten_the_organization_floors_and_never_loosen_them() {
         let mut limits = Limits::default();
         assert_eq!((limits.file_lines, limits.line_columns), (500, 100));
+        parse_limit(&mut limits, "file-lines\t500").unwrap();
+        parse_limit(&mut limits, "line-columns\t100").unwrap();
         parse_limit(&mut limits, "file-lines\t400").unwrap();
         parse_limit(&mut limits, "line-columns\t90").unwrap();
         assert_eq!((limits.file_lines, limits.line_columns), (400, 90));

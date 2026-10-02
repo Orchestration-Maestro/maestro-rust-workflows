@@ -115,7 +115,7 @@ fn compress(state: &mut [u32; 8], block: &[u8]) {
         .iter()
         .map(|chunk| u32::from_be_bytes(*chunk))
         .collect();
-    while schedule.len() < 64 {
+    for _ in schedule.len()..ROUNDS.len() {
         let back = |distance: usize| {
             schedule
                 .get(schedule.len() - distance)
@@ -135,14 +135,14 @@ fn compress(state: &mut [u32; 8], block: &[u8]) {
     for (round, word) in ROUNDS.iter().zip(schedule) {
         let [wa, wb, wc, wd, we, wf, wg, wh] = work;
         let big1 = we.rotate_right(6) ^ we.rotate_right(11) ^ we.rotate_right(25);
-        let choice = (we & wf) ^ (!we & wg);
+        let choice = wg ^ (we & (wf ^ wg));
         let first = wh
             .wrapping_add(big1)
             .wrapping_add(choice)
             .wrapping_add(*round)
             .wrapping_add(word);
         let big0 = wa.rotate_right(2) ^ wa.rotate_right(13) ^ wa.rotate_right(22);
-        let majority = (wa & wb) ^ (wa & wc) ^ (wb & wc);
+        let majority = (wa | wb) & (wc | (wa & wb));
         let second = big0.wrapping_add(majority);
         work = [
             first.wrapping_add(second),

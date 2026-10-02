@@ -25,6 +25,8 @@ pub(crate) mod organization_config;
 pub(crate) mod private_directories;
 pub(crate) mod pull_request;
 pub(crate) mod quality_config;
+#[cfg(test)]
+mod quality_config_cases;
 pub(crate) mod release_boundary;
 pub(crate) mod rust_code;
 #[cfg(test)]

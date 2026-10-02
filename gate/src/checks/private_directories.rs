@@ -1,7 +1,7 @@
 //! Private temporary directories under the runner's own.
 
 #[cfg(windows)]
-use crate::runner::Cmd;
+use crate::runner::{Cmd, Failure};
 #[cfg(unix)]
 use std::fs::DirBuilder;
 use std::io;
@@ -32,15 +32,21 @@ pub(crate) fn create_private(path: &Path) -> io::Result<()> {
         ])
         .env("RUST_GATE_PRIVATE_DIRECTORY", path)
         .run()
-        .map_err(|error| {
-            if error.code == 183 || error.code == 80 {
-                io::Error::from(ErrorKind::AlreadyExists)
-            } else {
-                io::Error::other(error.message.unwrap_or_else(|| {
-                    format!("Windows private directory creation exited {}", error.code)
-                }))
-            }
-        })
+        .map_err(private_creation_error)
+}
+
+/// Preserve both Windows collision statuses, and relay every other failure.
+#[cfg(windows)]
+fn private_creation_error(error: Failure) -> io::Error {
+    if error.code == 183 || error.code == 80 {
+        io::Error::from(ErrorKind::AlreadyExists)
+    } else {
+        io::Error::other(
+            error.message.unwrap_or_else(|| {
+                format!("Windows private directory creation exited {}", error.code)
+            }),
+        )
+    }
 }
 
 /// .NET's directory creation accepts existing directories, so the minimal
@@ -142,6 +148,11 @@ pub(crate) fn private_directory(parent: &str, prefix: &str) -> Result<PathBuf, S
         .duration_since(time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_nanos())
         .unwrap_or_default();
+    private_directory_at(parent, prefix, nanos)
+}
+
+/// Retry collisions from a fixed nonce; other filesystem failures stop immediately.
+fn private_directory_at(parent: &str, prefix: &str, nanos: u128) -> Result<PathBuf, String> {
     let mut last = None;
     for attempt in 0u32..100 {
         let path = PathBuf::from(parent).join(format!(
@@ -170,14 +181,67 @@ pub(crate) fn private_directory(parent: &str, prefix: &str) -> Result<PathBuf, S
 
 #[cfg(test)]
 mod tests {
-    use super::{create_private, private_directory};
+    use super::{create_private, private_directory, private_directory_at};
     use std::env;
     use std::fs;
     use std::io::ErrorKind;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_dir;
     use std::process;
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_creation_failures_preserve_both_collision_statuses() {
+        use super::private_creation_error;
+        use crate::runner::Failure;
+        for code in [80, 183] {
+            assert_eq!(
+                private_creation_error(Failure {
+                    code,
+                    message: None
+                })
+                .kind(),
+                ErrorKind::AlreadyExists
+            );
+        }
+        let failure = private_creation_error(Failure {
+            code: 5,
+            message: None,
+        });
+        assert_eq!(failure.kind(), ErrorKind::Other);
+        assert_eq!(
+            failure.to_string(),
+            "Windows private directory creation exited 5"
+        );
+        assert_eq!(
+            private_creation_error(Failure {
+                code: 3,
+                message: Some("denied".into())
+            })
+            .to_string(),
+            "denied"
+        );
+    }
+
+    #[test]
+    fn a_collision_retries_without_reusing_the_existing_directory() {
+        let parent = env::temp_dir().join(format!("private-retry-{}", process::id()));
+        fs::create_dir(&parent).unwrap();
+        let occupied = parent.join(format!("gate.{}42", process::id()));
+        create_private(&occupied).unwrap();
+        fs::write(occupied.join("sentinel"), "untouched").unwrap();
+        let created = private_directory_at(&parent.display().to_string(), "gate", 42).unwrap();
+        assert_eq!(created, parent.join(format!("gate.{}43", process::id())));
+        assert_eq!(
+            fs::read_to_string(occupied.join("sentinel")).unwrap(),
+            "untouched"
+        );
+        fs::remove_dir_all(parent).unwrap();
+    }
 
     #[test]
     fn a_private_directory_is_fresh_and_readable_by_its_owner_only() {
@@ -193,8 +257,8 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            std::fs::write(first.join("child"), "private").unwrap();
-            let output = std::process::Command::new("powershell.exe")
+            fs::write(first.join("child"), "private").unwrap();
+            let output = process::Command::new("powershell.exe")
                 .args([
                     "-NoProfile",
                     "-NonInteractive",
@@ -237,7 +301,7 @@ if (!(Get-Acl -LiteralPath $env:ACL_PATH).AreAccessRulesProtected) { exit 2 }
         #[cfg(unix)]
         symlink(&root, root.join("link")).unwrap();
         #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(&root, root.join("link")).unwrap();
+        symlink_dir(&root, root.join("link")).unwrap();
         assert_eq!(
             create_private(&root.join("link")).unwrap_err().kind(),
             ErrorKind::AlreadyExists

@@ -304,14 +304,20 @@ fn unpacked_mise(downloads: &Path, platform: &Platform) -> Result<PathBuf, Failu
         .arg("-C")
         .arg(downloads)
         .arg(platform.member);
-    if platform.os == "windows" {
-        unpack = unpack.env(
-            "PATH",
-            &Path::new(&optional("SystemRoot")?).join("System32"),
-        );
+    if let Some(path) = native_tar_path(platform.os)? {
+        unpack = unpack.env("PATH", &path);
     }
     unpack.run()?;
     Ok(downloads.join(platform.member))
+}
+
+/// Windows' native tar directory, excluding a Git tar that cannot read ZIP archives.
+fn native_tar_path(os: &str) -> Result<Option<PathBuf>, String> {
+    if os == "windows" {
+        Ok(Some(Path::new(&optional("SystemRoot")?).join("System32")))
+    } else {
+        Ok(None)
+    }
 }
 
 /// `mise` run in `store` on the gate's configuration alone: its own data,
@@ -398,6 +404,41 @@ mod tests {
     use std::path::Path;
     #[cfg(unix)]
     use std::{env, fs, os::unix::fs::PermissionsExt, process};
+
+    #[test]
+    fn windows_archives_select_only_the_native_tar_directory() {
+        use std::env;
+        let system = env::var("SystemRoot").unwrap_or_default();
+        assert_eq!(
+            super::native_tar_path("windows").unwrap(),
+            Some(Path::new(&system).join("System32"))
+        );
+        assert_eq!(super::native_tar_path("linux").unwrap(), None);
+        assert_eq!(super::native_tar_path("macos").unwrap(), None);
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_tool_links_filter_extensions_and_preserve_file_bytes() {
+        use super::{is_tool, link_tool};
+        use std::{env, fs, process};
+        let root = env::temp_dir().join(format!("windows-tool-links-{}", process::id()));
+        fs::create_dir(&root).unwrap();
+        let target = root.join("tool.EXE");
+        fs::write(&target, "tool bytes").unwrap();
+        fs::write(root.join("readme"), "not executable").unwrap();
+        fs::create_dir(root.join("directory.exe")).unwrap();
+        assert!(is_tool(&target));
+        assert!(!is_tool(&root.join("readme")));
+        assert!(!is_tool(&root.join("directory.exe")));
+        assert!(!is_tool(&root.join("missing.exe")));
+        let linked = root.join("linked.exe");
+        link_tool(&target, &linked).unwrap();
+        assert_eq!(fs::read(&linked).unwrap(), b"tool bytes");
+        fs::write(&target, "updated bytes").unwrap();
+        assert_eq!(fs::read(&linked).unwrap(), b"updated bytes");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn five_platforms_are_pinned_and_the_refusal_names_them() {

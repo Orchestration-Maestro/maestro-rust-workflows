@@ -200,6 +200,30 @@ fn release_upload_refuses_missing_files_and_propagates_network_failure() {
 }
 
 #[test]
+fn release_upload_refuses_empty_assets_and_directories_before_remote_calls() {
+    for directory in [false, true] {
+        let mut fixture = Fixture::new();
+        fixture.trusted();
+        let release = fixture.root.join("rust-release");
+        fs::create_dir(&release).unwrap();
+        for name in ["provenance.json", "SHA256SUMS"] {
+            fs::write(release.join(name), "verified earlier").unwrap();
+        }
+        let asset = release.join("payload.tar.gz");
+        if directory {
+            fs::create_dir(&asset).unwrap();
+        } else {
+            fs::write(&asset, "").unwrap();
+        }
+        refused(
+            &fixture.run("publish-binaries", "publish"),
+            "Release asset is missing or unsafe",
+        );
+        assert!(fixture.calls().is_empty());
+    }
+}
+
+#[test]
 fn crate_publication_rechecks_approval_before_exposing_the_token_to_cargo() {
     let mut fixture = Fixture::new();
     fixture.trusted();

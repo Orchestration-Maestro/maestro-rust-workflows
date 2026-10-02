@@ -97,7 +97,7 @@ pub(crate) fn normalize_restore(root: &Path, temp: &Path) -> Result<(), String> 
         let mode = if metadata.is_dir() {
             0o700
         } else {
-            0o600 | (metadata.mode() & 0o100)
+            0o600 + (metadata.mode() & 0o100)
         };
         objects.push((path, mode));
     }

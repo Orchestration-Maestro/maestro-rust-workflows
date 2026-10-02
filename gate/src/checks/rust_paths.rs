@@ -46,7 +46,7 @@ fn blank_visibilities(code: &mut [u8]) {
         let close = code
             .get(open..)
             .and_then(|rest| rest.iter().position(|&byte| byte == b')'))
-            .map_or(code.len(), |length| open + length + 1);
+            .map_or(code.len(), |length| open + length);
         blank(code.get_mut(open..close).unwrap_or_default());
         index = close;
     }
@@ -63,16 +63,13 @@ pub(crate) fn use_leaves(declaration: &str) -> Vec<Vec<String>> {
     expand(&[], &normalize(tree.trim_end().trim_end_matches(';')))
 }
 
-/// Where each `use` declaration of `code` starts and ends, its `;` included.
+/// Where each `use` declaration starts and ends, before its trailing semicolon.
 fn use_declarations(code: &str) -> Vec<(usize, usize)> {
     word_offsets(code, "use")
         .into_iter()
         .map(|start| {
             let tail = code.get(start..).unwrap_or_default();
-            (
-                start,
-                start + tail.find(';').map_or(tail.len(), |offset| offset + 1),
-            )
+            (start, start + tail.find(';').unwrap_or(tail.len()))
         })
         .collect()
 }
@@ -182,7 +179,7 @@ fn chains(code: &str) -> Vec<NamedPath> {
                 segments,
             });
         }
-        index = end.max(index + 1);
+        index = end;
     }
     found
 }
@@ -238,6 +235,62 @@ mod tests {
             .iter()
             .map(|path| path.iter().map(|segment| (*segment).to_owned()).collect())
             .collect()
+    }
+
+    #[test]
+    fn nested_imports_after_visibility_keep_all_following_dependencies() {
+        assert_eq!(
+            paths("pub(crate) use crate::{a::{B, C}, D}; crate::after::Name;")
+                .iter()
+                .map(|path| path.segments.join("::"))
+                .collect::<Vec<_>>(),
+            [
+                "crate::a::B",
+                "crate::a::C",
+                "crate::D",
+                "crate::after::Name"
+            ]
+        );
+    }
+
+    #[test]
+    fn adjacent_nested_groups_keep_every_following_leaf() {
+        assert_eq!(
+            use_leaves("use crate::{a::{B, C}, d::{E, F}, G};"),
+            owned(&[
+                &["crate", "a", "B"],
+                &["crate", "a", "C"],
+                &["crate", "d", "E"],
+                &["crate", "d", "F"],
+                &["crate", "G"],
+            ])
+        );
+    }
+
+    #[test]
+    fn identifier_boundaries_refuse_partial_words_and_colon_suffixes() {
+        assert!(use_leaves("abuse crate::Wrong;").is_empty());
+        assert!(use_leaves("useful crate::Wrong;").is_empty());
+        assert_eq!(
+            paths("9bad::Name; ::root::Name; _local::Name; aé::Name;")
+                .iter()
+                .map(|path| path.segments.join("::"))
+                .collect::<Vec<_>>(),
+            ["_local::Name", "aé::Name"]
+        );
+    }
+
+    #[test]
+    fn repeated_visibility_groups_do_not_expose_module_dependencies() {
+        assert!(paths("pub(in crate::a) fn f() {} pub(in crate::b) fn g() {}").is_empty());
+        assert!(paths("pub(in crate::a").is_empty());
+        assert_eq!(
+            paths("pub(in crate::aé) fn f() { crate::real::Name; }")
+                .iter()
+                .map(|path| path.segments.join("::"))
+                .collect::<Vec<_>>(),
+            ["crate::real::Name"]
+        );
     }
 
     #[test]

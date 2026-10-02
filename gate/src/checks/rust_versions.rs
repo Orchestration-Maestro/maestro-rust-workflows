@@ -69,6 +69,8 @@ mod tests {
             "2.0.0",
             "1.98.1.2",
             "1.a.0",
+            "1.+98.1",
+            "+1.98.1",
         ] {
             assert!(!is_exact_stable(not_a_pin), "{not_a_pin}");
         }
