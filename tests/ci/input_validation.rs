@@ -47,6 +47,18 @@ fn ci_accepts_any_exact_stable_from_the_msrv_and_keeps_matrix_artifacts_distinct
 }
 
 #[test]
+fn artifact_keys_accept_the_limit_and_refuse_longer_names() {
+    let mut fixture = Fixture::new();
+    fixture.set("ARTIFACT_KEY", &"a".repeat(40));
+    succeeds(&fixture.run("ci", "validate"));
+    fixture.set("ARTIFACT_KEY", &"a".repeat(41));
+    refused(
+        &fixture.run("ci", "validate"),
+        "artifact-key must be 1-40 safe characters",
+    );
+}
+
+#[test]
 fn matrix_versions_have_distinct_concurrency_groups() {
     let ci = workflow("ci");
     let caller = workflow("ci-internal");

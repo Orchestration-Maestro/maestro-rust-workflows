@@ -24,7 +24,15 @@ pub(crate) fn is_hex(value: &str, length: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::simple;
+    use super::{is_hex, simple};
+
+    #[test]
+    fn hexadecimal_values_refuse_uppercase_and_nonhexadecimal_bytes() {
+        assert!(is_hex("0123456789abcdef", 16));
+        assert!(!is_hex("ABCDEF", 6));
+        assert!(!is_hex("ghijkl", 6));
+        assert!(!is_hex("abcdef", 5));
+    }
 
     #[test]
     fn a_simple_name_is_bounded_by_its_two_character_sets() {

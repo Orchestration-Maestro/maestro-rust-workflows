@@ -99,7 +99,10 @@ mod tests {
     use super::{canonical, inside, is_symlink, rust_sources, strictly_inside};
     use std::env;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    #[cfg(windows)]
+    use std::os::windows::fs::symlink_file;
     use std::path::{Path, PathBuf};
     use std::process;
 
@@ -116,7 +119,7 @@ mod tests {
         #[cfg(unix)]
         symlink("src/a.rs", root.join("link")).unwrap();
         #[cfg(windows)]
-        std::os::windows::fs::symlink_file("src/a.rs", root.join("link")).unwrap();
+        symlink_file("src/a.rs", root.join("link")).unwrap();
         root
     }
 

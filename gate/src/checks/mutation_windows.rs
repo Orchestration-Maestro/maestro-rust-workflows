@@ -21,11 +21,9 @@ pub(crate) fn mutation_windows(project: &Path, value: &str) -> Result<Vec<String
     let mut files = BTreeSet::new();
     for name in listed.lines() {
         let path = Path::new(name);
-        if name.is_empty()
-            || path.is_absolute()
-            || path
-                .components()
-                .any(|part| !matches!(part, Component::Normal(_)))
+        if path
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_)))
             || !name.contains('/')
             || !matches!(
                 path.extension().and_then(|extension| extension.to_str()),

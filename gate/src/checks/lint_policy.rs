@@ -303,6 +303,11 @@ mod tests {
             with_lint_block(&stale, false).unwrap(),
             format!("{written}clippy.own = \"deny\"\n")
         );
+        assert_eq!(with_lint_block("", false).unwrap(), lint_block(false));
+        assert_eq!(
+            with_lint_block("\n\n", false).unwrap(),
+            format!("\n\n{}", lint_block(false))
+        );
         assert!(with_lint_block(&format!("{BEGIN}\n"), false).is_err());
         let refused = with_lint_block("[lints.clippy]\npanic = \"deny\"\n", false).unwrap_err();
         assert!(refused.starts_with("the manifest already sets lints in `[lints.clippy]`"));

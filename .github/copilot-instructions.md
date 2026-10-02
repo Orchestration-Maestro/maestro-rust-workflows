@@ -189,6 +189,7 @@ in place.
 │   │   │   ├── private_directories.rs                           # Private temporary directories under the runner's own
 │   │   │   ├── pull_request.rs                                  # A pull request against its base: added and touched lines, the title's type
 │   │   │   ├── quality_config.rs                                # maestro-quality.toml read through jaq: declared layers and reasoned exceptions
+│   │   │   ├── quality_config_cases.rs                          # Quality configuration cases kept beside the check to preserve its size limit
 │   │   │   ├── release_boundary.rs                              # What both publishers ask of a release before anything is published
 │   │   │   ├── rust_code.rs                                     # Rust source with comments and literals blanked, and its top-level items
 │   │   │   ├── rust_code_cases.rs                               # Edge cases for Rust source scanning and function boundaries

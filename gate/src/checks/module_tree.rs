@@ -259,6 +259,7 @@ mod tests {
             absolute(&from, &["crate", "x", "Y"]),
             Some(owned(&["x", "Y"]))
         );
+        assert_eq!(absolute(&from, &["self", "f"]), Some(owned(&["a", "f"])));
         assert_eq!(absolute(&from, &["b", "f"]), Some(owned(&["a", "b", "f"])));
         assert_eq!(
             absolute(&owned(&["a", "b"]), &["super", "super", "g"]),
@@ -277,7 +278,8 @@ mod tests {
             PathBuf::from("/w/runner/mod.rs"),
             concat!(
                 "mod commands;\npub(crate) use commands::{Cmd, write};\n",
-                "pub(super) use commands::Job;\n#[cfg(test)]\nmod tests;\n",
+                "pub(super) use commands::Job;\nuse private::Secret;\n",
+                "pub(crate) fn not_an_export() {}\n#[cfg(test)]\nmod tests;\n",
             ),
         );
         let exports: Vec<(String, bool)> = door

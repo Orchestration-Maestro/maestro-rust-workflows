@@ -237,6 +237,7 @@ mod tests {
     #[test]
     fn environment_names_cannot_override_process_or_gate_controls() {
         assert!(environment_name("FIXTURE_NATIVE_CACHE_DIR"));
+        assert!(environment_name("_NATIVE_CACHE_DIR"));
         for name in [
             "",
             "bad-name",
