@@ -589,7 +589,8 @@ The manual `mutants-per-shard` input adjusts automatic planning, initially 50,
 without sampling. Raw shard evidence, the immutable plan and the aggregated
 report are retained for 14 days, including failed and incomplete runs.
 
-The repository-owned ignored test in `tests/repository/gate_mutation_replay.rs` preserves
+The repository-owned ignored test in
+`tests/repository/gate_mutation_replay/replay_worker.rs` preserves
 every recorded diff hunk, applies it with Git and restores the source with
 `git checkout` before recording an outcome. The replay plan binds round-robin
 ownership to the stage-one revision, placing timeouts first so each shard owns
@@ -607,7 +608,9 @@ kills, survivors, build refusals or continuing timeouts. Each replay command
 retains the 30-minute shard cap and uploads its progress receipt even when
 incomplete. Build phases are uncapped. Test phases and the clean baseline inherit a
 2 GiB private-writable-data limit through Bash `ulimit -d`; unlike a virtual
-address limit, it permits Gitleaks' reserved address space. Test threads are
+address limit, it permits Gitleaks' reserved address space. The wrapper refuses
+failed setup or a mismatched effective limit before launching the child. Receipts
+record the verified effective limit, not merely the requested value. Test threads are
 one, with at most two capped test processes (the harness and its sequential
 child), and their combined limits must stay below 75% of the runner's recorded
 MemTotal. Each receipt records tool setup plus baseline time (at most 300

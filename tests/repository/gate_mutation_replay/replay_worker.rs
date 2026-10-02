@@ -1,19 +1,14 @@
 //! Hosted replay of exact stage-one diffs against gate units and the contract harness.
 
-use crate::harness::{fixture_git as git, root, temp_dir};
+use super::execution::{binding, cargo_phase, memory_evidence};
+use crate::harness::{fixture_git as git, root, temp_dir, verified_memory_cap};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
-use std::env;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-
-/// Read one required workflow binding.
-fn binding(name: &str) -> String {
-    env::var(name).unwrap_or_else(|_| panic!("missing replay binding: {name}"))
-}
 
 /// Read a JSON evidence file without accepting a missing or partial receipt.
 fn read_json(path: &Path) -> Value {
@@ -156,7 +151,7 @@ fn plan(root: &Path, output: &Path) {
             .append(true)
             .open(binding("GITHUB_OUTPUT"))
             .unwrap(),
-        "shards={shards}\nmatrix={}",
+        "matrix={}",
         serde_json::to_string(&matrix).unwrap()
     )
     .unwrap();
@@ -164,34 +159,6 @@ fn plan(root: &Path, output: &Path) {
         "stage 2 planned={} shards={shards}",
         plan["mutants"].as_array().unwrap().len()
     );
-}
-
-/// Run one Cargo phase under a process-group timeout, preserving its full log.
-fn cargo_phase(root: &Path, arguments: &[&str], seconds: u64, log: &Path, limit: bool) -> i32 {
-    let file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log)
-        .unwrap();
-    writeln!(&file, "cargo {} (timeout {seconds}s)", arguments.join(" ")).unwrap();
-    let mut command = Command::new("timeout");
-    if limit {
-        command = Command::new("bash");
-        command
-            .args(["-c", "ulimit -d \"$1\"; shift; exec \"$@\"", "replay-cap"])
-            .arg(binding("REPLAY_TEST_MEMORY_KIB"))
-            .arg("timeout");
-    }
-    command
-        .args(["--kill-after=10s", &format!("{seconds}s"), "cargo"])
-        .args(arguments)
-        .current_dir(root)
-        .stdout(file.try_clone().unwrap())
-        .stderr(file)
-        .status()
-        .unwrap()
-        .code()
-        .unwrap_or(137)
 }
 
 /// Prebuild actual gate profiles and workflow contracts without a memory cap.
@@ -223,6 +190,12 @@ fn disposition(root: &Path, seconds: u64, log: &Path) -> (String, String, Durati
                 return ("Timeout".to_owned(), arguments.join(" "), Duration::ZERO);
             }
             let status = cargo_phase(root, &arguments, remaining, log, failure == "CaughtMutant");
+            assert_ne!(
+                status,
+                125,
+                "replay memory cap setup failed; see {}",
+                log.display()
+            );
             if status == 124 || status == 137 {
                 return ("Timeout".to_owned(), arguments.join(" "), Duration::ZERO);
             }
@@ -243,15 +216,6 @@ fn disposition(root: &Path, seconds: u64, log: &Path) -> (String, String, Durati
         "all suites passed".to_owned(),
         test_duration,
     )
-}
-
-/// Preserve allocation-abort evidence separately from assertions or build refusals.
-fn memory_evidence(log: &Path) -> Option<String> {
-    fs::read_to_string(log)
-        .unwrap()
-        .lines()
-        .find(|line| line.contains("memory allocation of ") && line.contains(" failed"))
-        .map(str::to_owned)
 }
 
 /// Assigned identities, retained even when a shard cap leaves evidence incomplete.
@@ -285,7 +249,10 @@ fn replay(root: &Path, output: &Path) {
     assert_eq!(binding("RUST_TEST_THREADS"), "1");
     // One harness plus its sequential tested-gate child: two capped test processes.
     assert!(cap_kib > 0 && cap_kib * 2 * 4 <= total_kib * 3);
-    println!("test data cap={cap_kib} KiB, test processes<=2, MemTotal={total_kib} KiB");
+    let verified_cap_kib = verified_memory_cap(cap_kib);
+    println!(
+        "verified test data cap={verified_cap_kib} KiB, test processes<=2, MemTotal={total_kib} KiB"
+    );
     assert_eq!(plan["sha"], git(root, &["rev-parse", "HEAD"]).trim());
     assert!(
         git(root, &["diff", "--name-only", "HEAD"])
@@ -317,7 +284,7 @@ fn replay(root: &Path, output: &Path) {
     let cap = Duration::from_secs(binding("REPLAY_SHARD_SECONDS").parse().unwrap());
     let started = Instant::now();
     let mut receipt = json!({"sha": plan["sha"], "shard": shard, "planned": owned,
-        "baseline": "Success", "test_memory_kib": cap_kib, "max_test_processes": 2,
+        "baseline": "Success", "test_memory_kib": verified_cap_kib, "max_test_processes": 2,
         "runner_mem_total_kib": total_kib, "setup_baseline_seconds": setup_baseline,
         "baseline_test_seconds": baseline.2.as_secs_f64(), "outcomes": []});
     let receipt_path = output.join(format!("replay-shard-{shard}.json"));

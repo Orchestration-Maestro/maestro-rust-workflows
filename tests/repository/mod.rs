@@ -14,6 +14,7 @@ mod metadata_and_inventory;
 mod north_star;
 mod pinned_tool_usage;
 mod rendered_hooks_live;
+mod replay_memory;
 mod secret_and_advisory_scans;
 mod tool_updates;
 mod toolbelt_and_shellcheck;

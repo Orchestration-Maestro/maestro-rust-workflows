@@ -9,6 +9,7 @@ mod fixture;
 mod gate_declarations;
 mod mutation_shards;
 mod native_cache;
+mod replay_processes;
 mod repository;
 mod workflow_yaml;
 
@@ -29,3 +30,5 @@ pub(crate) use workflow_yaml::{
 pub(crate) use engine_mutations::{engine_aggregation_fixture, engine_fixture, summarize_engine};
 
 pub(crate) use engine_workspace::{engine_workspace, fixture_git};
+
+pub(crate) use replay_processes::{MEMORY_CAP_WRAPPER, verified_memory_cap};

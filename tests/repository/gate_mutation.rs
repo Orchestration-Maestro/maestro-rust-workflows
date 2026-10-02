@@ -62,7 +62,11 @@ fn gate_mutation_workers_preserve_every_planned_shard() {
         assert_eq!(job["runs-on"], "ubuntu-24.04");
         assert!(job["timeout-minutes"].is_number());
         let steps = job["steps"].as_array().unwrap();
-        assert!(steps.iter().any(|step| step["run"] == command));
+        assert!(
+            steps
+                .iter()
+                .any(|step| step["run"] == format!("{command}\n"))
+        );
         assert!(steps.iter().any(|step| {
             step["if"] == "${{ always() }}"
                 && step["uses"]
