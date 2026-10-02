@@ -227,7 +227,8 @@ in place.
 │   │   │   │   ├── render.rs                                    # The guide: where to start, the tree, how to change and verify
 │   │   │   │   ├── step.rs                                      # rust-gate guide and guide --check: written, or refused when stale
 │   │   │   │   ├── text.rs                                      # Sentences, textwrap's wrapping, blocks, comments and key lines
-│   │   │   │   └── tree.rs                                      # The annotated tree: kept, README-table and image explanations
+│   │   │   │   ├── tree.rs                                      # The annotated tree: kept, README-table and image explanations
+│   │   │   │   └── tree_cases.rs                                # Tree width, directory defaults and README annotations at parser boundaries
 │   │   │   ├── hygiene/                                         # rust-gate hygiene: the step and one module per group of rules over tracked files
 │   │   │   │   ├── comments.rs                                  # HYG-001: work left for later names its issue
 │   │   │   │   ├── files.rs                                     # HYG-002 to HYG-005: snapshots, large files, modes, case, symlinks, required files

@@ -5,7 +5,7 @@
 //! modules, every seam with a function has unit tests, and no test module
 //! imports the whole harness.
 
-use crate::harness::{root, test_sources};
+use crate::harness::{Fixture, root, test_sources};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -99,6 +99,57 @@ fn no_test_module_imports_the_whole_harness() {
     );
 }
 
+/// Whether a seam has inline tests or a declared, test-only cases sibling.
+fn has_unit_tests(path: &Path, text: &str) -> bool {
+    if text
+        .split_once("#[cfg(test)]")
+        .is_some_and(|(_, tests)| tests.contains("#[test]"))
+    {
+        return true;
+    }
+    let stem = path.file_stem().unwrap().to_str().unwrap();
+    let cases = if stem.ends_with("_cases") {
+        stem.to_owned()
+    } else {
+        format!("{stem}_cases")
+    };
+    let directory = path.parent().unwrap();
+    let door = fs::read_to_string(directory.join("mod.rs")).unwrap_or_default();
+    let tokens: Vec<&str> = door.split_whitespace().collect();
+    let declaration = format!("{cases};");
+    let declared = tokens
+        .windows(3)
+        .any(|parts| parts == ["#[cfg(test)]", "mod", &declaration]);
+    declared
+        && fs::read_to_string(directory.join(format!("{cases}.rs")))
+            .is_ok_and(|tests| tests.contains("#[test]"))
+}
+
+#[test]
+fn siblings_require_a_test_declaration_and_real_test_items() {
+    let fixture = Fixture::new();
+    let seam = fixture.root.join("seam.rs");
+    let cases = fixture.root.join("seam_cases.rs");
+    let door = fixture.root.join("mod.rs");
+    let source = "fn untested() {}\n";
+    fs::write(&seam, source).unwrap();
+    fs::write(&door, "mod seam;\n").unwrap();
+    assert!(!has_unit_tests(&seam, source));
+    fs::write(&cases, "#[test]\nfn a_real_test_is_present() {}\n").unwrap();
+    assert!(!has_unit_tests(&seam, source));
+    fs::write(&door, "mod seam;\nmod seam_cases;\n").unwrap();
+    assert!(!has_unit_tests(&seam, source));
+    fs::write(&door, "mod seam;\n#[cfg(test)]\nmod seam_cases;\n").unwrap();
+    assert!(has_unit_tests(&seam, source));
+    assert!(has_unit_tests(&cases, &fs::read_to_string(&cases).unwrap()));
+    fs::write(&cases, "fn no_tests_are_present() {}\n").unwrap();
+    assert!(!has_unit_tests(&seam, source));
+    assert!(!has_unit_tests(
+        &cases,
+        &fs::read_to_string(&cases).unwrap()
+    ));
+}
+
 #[test]
 fn every_check_and_step_seam_with_a_function_has_unit_tests() {
     // A check is a rule several steps trust; a rule without a unit test is
@@ -115,12 +166,12 @@ fn every_check_and_step_seam_with_a_function_has_unit_tests() {
             continue;
         }
         let text = fs::read_to_string(&path).unwrap();
-        let (body, tests) = text.split_once("#[cfg(test)]").unwrap_or((&text, ""));
+        let body = text.split("#[cfg(test)]").next().unwrap_or_default();
         if !body.contains("fn ") {
             continue;
         }
         assert!(
-            tests.contains("#[test]"),
+            has_unit_tests(&path, &text),
             "{name} defines functions and has no unit test"
         );
         checked += 1;

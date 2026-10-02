@@ -279,7 +279,7 @@ fn relinked(text: &str) -> String {
         if is_absolute(from) {
             continue;
         }
-        let (target, after) = from.split_at_checked(end + 1).unwrap_or((from, ""));
+        let (target, after) = from.split_at_checked(end).unwrap_or((from, ""));
         out.push_str("../");
         out.push_str(target);
         rest = after;
@@ -355,6 +355,10 @@ mod tests {
         );
         assert_eq!(relinked(text), expected);
         assert!(is_absolute("mailto:x") && is_absolute("git+ssh:x") && !is_absolute("a.md"));
+        assert_eq!(
+            relinked(concat!("[nested]", "(ab](c)) [empty]", "() [next]", "(d)")),
+            concat!("[nested]", "(../ab](c)) [empty]", "() [next]", "(../d)")
+        );
     }
 
     #[test]
@@ -368,5 +372,100 @@ mod tests {
             "maestro-core"
         );
         assert_eq!(repository_name(root, "https://h/o/.github/"), ".github");
+    }
+    use super::render;
+    use crate::checks::private_directories::private_directory;
+
+    #[test]
+    fn standards_are_linked_only_when_present_in_order() {
+        let root = private_directory(env::temp_dir().to_str().unwrap(), "guide-rules").unwrap();
+        fs::create_dir_all(root.join("docs/standards")).unwrap();
+        assert!(!render(&root, &[], "example").contains("repository's map"));
+        for name in ["northstar.md", "engineering.md", "security.md"] {
+            fs::write(root.join("docs/standards").join(name), "Rules.").unwrap();
+            let guide = render(&root, &[], "example");
+            assert!(
+                guide.contains(&format!("[{name}](../docs/standards/{name})")),
+                "{guide}"
+            );
+            assert!(guide.contains("repository's map"));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn community_links_choose_the_first_existing_location() {
+        let root = private_directory(env::temp_dir().to_str().unwrap(), "guide-community").unwrap();
+        assert!(render(&root, &[], "example").contains(".github/blob/main/CONTRIBUTING.md)"));
+        for place in ["docs", ".github", ""] {
+            fs::create_dir_all(root.join(place)).unwrap();
+            fs::write(root.join(place).join("CONTRIBUTING.md"), "Contribute.").unwrap();
+            let prefix = if place.is_empty() {
+                String::new()
+            } else {
+                format!("{place}/")
+            };
+            assert!(
+                render(&root, &[], "example")
+                    .contains(&format!("[CONTRIBUTING.md](../{prefix}CONTRIBUTING.md)"))
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn check_recipe_names_require_a_word_boundary() {
+        let root = private_directory(env::temp_dir().to_str().unwrap(), "guide-check").unwrap();
+        for (recipe, command) in [
+            ("check:\n", "Run `just check`,"),
+            ("check-all:\n", "Run `just check`,"),
+            ("checks:\n", "Run `prek run --all-files`,"),
+            ("check_more:\n", "Run `prek run --all-files`,"),
+            ("other:\n", "Run `prek run --all-files`,"),
+        ] {
+            fs::write(root.join("justfile"), recipe).unwrap();
+            let guide = render(&root, &[], "example");
+            assert!(guide.contains(command), "recipe {recipe}: {guide}");
+        }
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(root.join("scripts/bootstrap.sh"), "setup").unwrap();
+        fs::write(root.join("justfile"), "check:\n").unwrap();
+        assert!(
+            render(&root, &[], "example")
+                .contains("Run `scripts/bootstrap.sh` once, then `just check`,")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn fenced_titles_and_empty_targets_do_not_change_prose() {
+        let root = private_directory(env::temp_dir().to_str().unwrap(), "guide-markdown").unwrap();
+        for readme in [
+            "```\n# Hidden\n```\n# Visible\n\nPurpose.",
+            "Intro\n```\n# Hidden\n```\n# Visible\n\nPurpose.",
+        ] {
+            fs::write(root.join("README.md"), readme).unwrap();
+            assert!(
+                render(&root, &[], "example").starts_with("# Copilot instructions for Visible\n")
+            );
+        }
+        let prose = concat!(
+            "# Visible\n\n[empty]",
+            "() [one]",
+            "(a) [two]",
+            "(ab) tail."
+        );
+        fs::write(root.join("README.md"), prose).unwrap();
+        let guide = render(&root, &[], "example");
+        assert!(
+            guide.contains(concat!(
+                "[empty]",
+                "() [one]",
+                "(../a) [two]",
+                "(../ab) tail."
+            )),
+            "{guide}"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 }
