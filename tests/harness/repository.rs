@@ -105,7 +105,12 @@ pub(crate) fn write_executable(path: &Path, contents: &str) {
 /// Every Rust file of the contract tests, the harness included, so a scan of
 /// what the tests define sees all of it.
 pub(crate) fn test_sources() -> Vec<PathBuf> {
+    let consumer = root().join("tests/fixtures/native-consumer-project");
+    // The committed consumer runs under Cargo, not in the contract-test process.
     rust_files(&root().join("tests"))
+        .into_iter()
+        .filter(|path| !path.starts_with(&consumer))
+        .collect()
 }
 
 /// Every Rust file under `directory`, build output left out, sorted.

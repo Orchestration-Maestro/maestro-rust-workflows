@@ -1,0 +1,8 @@
+[ci.mutation-engine]
+features = ['engine']
+files = ['crates/a/src/engine.rs']
+[native-cache]
+environment = 'FIXTURE_NATIVE_CACHE_DIR'
+platforms = ['linux', 'macos']
+key-files = ['Cargo.lock']
+published = ['entry-*']

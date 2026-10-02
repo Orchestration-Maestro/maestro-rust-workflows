@@ -260,8 +260,32 @@ fn hosted_native_fixture_exercises_unix_transport_and_windows_source_fallback() 
     assert!(runners.iter().any(|row| row["runner"] == "macos-15-intel"));
     assert!(runners.iter().any(|row| row["runner"] == "windows-2025"));
     let steps = job["steps"].as_array().unwrap();
-    let coverage = steps.iter().find(|step| step["id"] == "coverage").unwrap();
+    let prepare = steps
+        .iter()
+        .find(|step| {
+            step["run"]
+                .as_str()
+                .is_some_and(|run| run.contains("prepare_the_committed"))
+        })
+        .unwrap();
+    assert_eq!(
+        prepare["env"]["HOSTED_NATIVE_PROJECT"],
+        "${{ github.workspace }}/tests/fixtures/native-consumer-project"
+    );
+    assert!(prepare.get("id").is_none());
+    let coverage_position = steps
+        .iter()
+        .position(|step| step["id"] == "coverage")
+        .unwrap();
+    let coverage = &steps[coverage_position];
     assert_eq!(coverage["run"], "rust-gate coverage");
+    assert_eq!(
+        steps[coverage_position - 1]["run"],
+        concat!(
+            "cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted ",
+            "--test native_cache_hosted assert_the_checkout -- --nocapture"
+        )
+    );
     assert_eq!(
         coverage["env"]["NATIVE_CACHE_ROOT"],
         "${{ steps.native-cache-prepare.outputs.root }}"

@@ -2,4 +2,4 @@
 
 mod runtime;
 
-pub(crate) use runtime::{prepare_hosted_fixture, verify_hosted_fixture};
+pub(crate) use runtime::{assert_clean_checkout, prepare_hosted_fixture, verify_hosted_fixture};

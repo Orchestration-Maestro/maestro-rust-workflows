@@ -5,7 +5,6 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use workflow_contract_tests::engine_workspace;
 
 /// Run a native process and keep its stdout, stderr and exit status visible.
 fn checked(program: &str, args: &[&str], project: &Path) -> String {
@@ -18,33 +17,10 @@ fn checked(program: &str, args: &[&str], project: &Path) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-/// Create and commit the consumer revision; execution profiles and evidence stay outside it.
+/// Use the job's committed consumer; execution profiles and evidence stay outside the checkout.
 pub(crate) fn prepare_hosted_fixture() {
     let project = PathBuf::from(env::var("HOSTED_NATIVE_PROJECT").unwrap());
-    fs::create_dir(&project).unwrap();
-    engine_workspace(&project, true).unwrap();
-    fs::write(project.join(".gitignore"), "target/\n").unwrap();
-    checked("cargo", &["generate-lockfile", "--offline"], &project);
-    checked("git", &["init", "--quiet"], &project);
-    checked("git", &["config", "user.name", "Fixture"], &project);
-    checked(
-        "git",
-        &["config", "user.email", "fixture@example.invalid"],
-        &project,
-    );
-    checked("git", &["add", "."], &project);
-    checked(
-        "git",
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "-qm",
-            "feat: native cache fixture",
-        ],
-        &project,
-    );
-    let sha = checked("git", &["rev-parse", "HEAD"], &project);
+    assert!(project.join("Cargo.lock").is_file());
     let temp = PathBuf::from(env::var("RUNNER_TEMP").unwrap());
     let reports = temp.join("native-reports");
     fs::create_dir(&reports).unwrap();
@@ -61,11 +37,21 @@ pub(crate) fn prepare_hosted_fixture() {
     ] {
         writeln!(exports, "{key}={}", value.display()).unwrap();
     }
-    let mut outputs = OpenOptions::new()
-        .append(true)
-        .open(env::var("GITHUB_OUTPUT").unwrap())
-        .unwrap();
-    writeln!(outputs, "sha={sha}").unwrap();
+}
+
+/// Refuse tracked or untracked checkout changes immediately before coverage binds provenance.
+pub(crate) fn assert_clean_checkout() {
+    let project = PathBuf::from(env::var("PROJECT").unwrap());
+    let status = checked(
+        "git",
+        &["status", "--porcelain", "--untracked-files=all"],
+        &project,
+    );
+    assert!(
+        status.is_empty(),
+        "checkout is dirty before coverage: {status}"
+    );
+    println!("Before coverage: git status --porcelain --untracked-files=all is empty");
 }
 
 /// Assert the executed feature child received the variable only on Unix; retain build counts.

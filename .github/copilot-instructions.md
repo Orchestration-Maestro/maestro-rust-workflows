@@ -390,8 +390,32 @@ in place.
 │   │   ├── workspace_boundary.rs                                # ci.yml: a workspace whose manifests or sources reach outside the checkout is refused before any lint
 │   │   └── workspace_packaging.rs                               # ci.yml: the build packages only members that may be published, earlier archives removed
 │   ├── fixtures/                                                # Test fixtures
-│   │   └── native-consumer/                                     # Native consumer
-│   │       └── build.rs.in                                      # Build-script template for private, verified, atomic native entry publication
+│   │   ├── native-consumer/                                     # Native consumer
+│   │   │   └── build.rs.in                                      # Build-script template for private, verified, atomic native entry publication
+│   │   └── native-consumer-project/                             # Committed hosted consumer, byte-checked against its generator
+│   │       ├── crates/                                         # Three feature-partition workspace members
+│   │       │   ├── a/                                          # Optional native consumer
+│   │       │   │   ├── src/                                    # Default and engine-only sources
+│   │       │   │   │   ├── engine.rs                            # Engine-only coverage assertion
+│   │       │   │   │   └── lib.rs                               # Default workspace coverage assertion
+│   │       │   │   └── Cargo.toml                               # Optional native dependency and engine feature
+│   │       │   ├── b/                                          # Forwarded engine feature
+│   │       │   │   ├── src/                                    # Forwarding member source
+│   │       │   │   │   └── lib.rs                               # Default workspace coverage assertion
+│   │       │   │   └── Cargo.toml                               # Forwards crate-a's engine feature
+│   │       │   └── c/                                          # Featureless member
+│   │       │       ├── src/                                    # Featureless member source
+│   │       │       │   └── lib.rs                               # Default workspace coverage assertion
+│   │       │       └── Cargo.toml                               # Unrelated workspace member
+│   │       ├── native/                                         # Verified native publication fixture
+│   │       │   ├── src/                                        # Generated native payload consumer
+│   │       │   │   └── lib.rs                                   # Includes the build-script payload
+│   │       │   ├── Cargo.toml                                   # Excluded optional native dependency
+│   │       │   └── build.rs                                     # Generated copy of the native publication template
+│   │       ├── .gitignore                                      # Keeps consumer build output out of the tested commit
+│   │       ├── Cargo.lock                                      # Offline, pinned consumer dependency graph
+│   │       ├── Cargo.toml                                      # Three-package hosted fixture workspace
+│   │       └── maestro-quality.toml                            # Optional engine and Unix native cache policy
 │   ├── gate/                                                    # The gate and the tests as structures: layers, no import cycle, the step registry, what holds every step and refusal
 │   │   ├── layer_boundaries.rs                                  # This crate's own step shape, the checks door, seam unit tests and no whole-harness import
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
@@ -444,6 +468,7 @@ in place.
 │   │   ├── toolbelt_and_shellcheck.rs                           # Toolbelt links to the locked builds; ShellCheck over every Bash line left
 │   │   ├── toolbelt_platforms.rs                                # Every pin locked with a checksum on every platform, or its declared gap
 │   │   ├── version_pins.rs                                      # Tool versions, the toolchain pin and the speed target, one copy each
+│   │   ├── workflow_environment.rs                              # Refuses reserved GitHub and runner environment keys at every workflow scope
 │   │   └── workflow_policy.rs                                   # Permissions, timeouts, runners, trust boundaries, shell policy and the local calls
 │   ├── Cargo.lock                                               # Locked resolution for the test crate
 │   ├── Cargo.toml                                               # Isolated workflow-contract test target

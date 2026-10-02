@@ -52,9 +52,8 @@ jobs:
             cargo-llvm-cov macos taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-apple-darwin.tar.gz ddf949b82a63017441ea76aa068bdd7e2dde8055f47cd3ef736fdbbd633bc33e tar.gz cargo-llvm-cov
             cargo-llvm-cov windows taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-pc-windows-msvc.zip 656590cfa13bb7478595bbfdd3bc6bc075a4f7f3f0df5a439c1856cb03c5a4d2 zip cargo-llvm-cov.exe
       - name: Prepare the committed optional consumer
-        id: fixture
         env:
-          HOSTED_NATIVE_PROJECT: ${{ runner.temp }}/native-consumer
+          HOSTED_NATIVE_PROJECT: ${{ github.workspace }}/tests/fixtures/native-consumer-project
         run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted prepare_the_committed -- --nocapture
       - name: Install the toolchain
         run: rust-gate tools
@@ -76,11 +75,12 @@ jobs:
             ${{ steps.native-cache-prepare.outputs.bucket }}-coverage-
             ${{ steps.native-cache-prepare.outputs.bucket }}-
           enableCrossOsArchive: false
+      - name: Assert the checkout is clean before coverage
+        run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted assert_the_checkout -- --nocapture
       - name: Line coverage gate
         id: coverage
         run: rust-gate coverage
         env:
-          GITHUB_SHA: ${{ steps.fixture.outputs.sha }}
           NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
       - name: Verify native fixture build counts and child environment
         run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted verify_the_executed -- --nocapture

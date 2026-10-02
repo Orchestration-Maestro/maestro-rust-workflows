@@ -742,11 +742,6 @@ jobs:
         run: rust-gate mutants-engine
         env:
           CARGO_MUTANTS_VERSION: '27.1.0'
-          GITHUB_BASE_REF: ${{ github.base_ref }}
-          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_WORKSPACE: ${{ github.workspace }}
           MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
           MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
           MUTATION_ENGINE_PLAN: ${{ runner.temp }}/mutation-plan/mutation-engine-plan.json
@@ -858,11 +853,6 @@ jobs:
         run: rust-gate mutants-engine-default
         env:
           CARGO_MUTANTS_VERSION: '27.1.0'
-          GITHUB_BASE_REF: ${{ github.base_ref }}
-          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_WORKSPACE: ${{ github.workspace }}
           MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
           MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
           MUTATION_ENGINE_PLAN: ${{ runner.temp }}/mutation-plan/mutation-engine-plan.json
@@ -939,8 +929,6 @@ jobs:
         id: windows-mutation-run
         run: rust-gate mutants-windows
         env:
-          GITHUB_BASE_REF: ${{ github.base_ref }}
-          GITHUB_WORKSPACE: ${{ github.workspace }}
           MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
           MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
           PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}

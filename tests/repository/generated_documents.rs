@@ -2,7 +2,9 @@
 //! diagram's control count, is what `just docs` writes from its source, so a
 //! reader never has to keep one in step with the other by hand.
 
-use crate::harness::{query, root, succeeds, temp_dir, tool, workflow, write_executable};
+use crate::harness::{
+    engine_workspace, query, root, succeeds, temp_dir, tool, workflow, write_executable,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -79,6 +81,61 @@ fn every_generated_table_is_what_its_source_says() {
             file.display()
         );
     }
+}
+
+/// Byte equality and identical file sets keep the hosted consumer tied to its generator.
+fn assert_same_tree(generated: &Path, committed: &Path) {
+    let names = |directory: &Path| {
+        let mut names: Vec<_> = fs::read_dir(directory)
+            .unwrap_or_else(|error| panic!("{}: {error}", directory.display()))
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name != "target")
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        names(generated),
+        names(committed),
+        "{}",
+        committed.display()
+    );
+    for entry in fs::read_dir(generated).unwrap() {
+        let path = entry.unwrap().path();
+        if path.file_name().unwrap() == "target" {
+            continue;
+        }
+        let counterpart = committed.join(path.file_name().unwrap());
+        if path.is_dir() {
+            assert_same_tree(&path, &counterpart);
+        } else {
+            assert_eq!(
+                fs::read(&path).unwrap(),
+                fs::read(&counterpart).unwrap(),
+                "{} is stale: regenerate the native consumer",
+                counterpart.display()
+            );
+        }
+    }
+}
+
+#[test]
+fn committed_native_consumer_matches_its_generated_source() {
+    let generated = temp_dir("native-consumer-drift");
+    engine_workspace(&generated, true);
+    fs::write(generated.join(".gitignore"), "target/\n").unwrap();
+    succeeds(
+        &tool("cargo")
+            .args(["generate-lockfile", "--offline"])
+            .current_dir(&generated)
+            .output()
+            .unwrap(),
+    );
+    assert_same_tree(
+        &generated,
+        &root().join("tests/fixtures/native-consumer-project"),
+    );
+    fs::remove_dir_all(generated).unwrap();
 }
 
 #[test]

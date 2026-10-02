@@ -1479,6 +1479,13 @@ With a policy present, coverage removes the configured variable from each Cargo
 child's inherited environment, then sets it only on the verified feature child.
 Without a policy, child environments and the job environment stay unchanged.
 
+The hosted fixture uses the committed consumer at
+`tests/fixtures/native-consumer-project/`, byte-checked against its generator.
+Coverage binds to the job's own commit, with no override of GitHub's default
+variables. A separate assertion prints the empty checkout status immediately
+before coverage; build output, reports and cache entries stay outside the checkout.
+All workflow, job and step `env` keys refuse the reserved `GITHUB_*` and `RUNNER_*` prefixes.
+
 The hosted fixture records `cache-hit` separately from `cache-matched-key`.
 A nonempty matched key identifies a restore, including a prefix restore;
 verified compatible entries can therefore require zero native source builds.
