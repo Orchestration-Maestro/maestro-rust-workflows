@@ -1,0 +1,367 @@
+name: Gate mutation (report-only)
+
+# Measure gate units, then replay misses and timeouts against the full harness.
+# This workflow
+# is report-only: no ruleset or required repository check depends on it.
+"on":
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      replay-per-shard:
+        description: Replay target per shard (1 to 6), all misses and timeouts are retained
+        type: number
+        default: 6
+      mutants-per-shard:
+        description: Target mutants per shard (1 to 1000), not a time guarantee
+        type: number
+        default: 50
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-mutation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan gate mutations (report-only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      mutation-mode: ${{ steps.plan.outputs.mutation-mode }}
+      mutation-count: ${{ steps.plan.outputs.mutation-count }}
+      mutation-shards: ${{ steps.plan.outputs.mutation-shards }}
+      mutation-matrix: ${{ steps.plan.outputs.mutation-matrix }}
+    env:
+      PROJECT: ${{ github.workspace }}/gate
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      CARGO_MUTANTS_VERSION: '27.1.0'
+      MUTATION_TEST: 'true'
+      MUTATION_FULL_SCOPE: 'true'
+      MUTATION_SHARDS: '0'
+      MUTATION_MUTANTS_PER_SHARD: ${{ inputs.mutants-per-shard || 50 }}
+      MUTATION_WINDOWS: '[]'
+      MUTATION_ENGINE_FILES: '[]'
+    steps:
+      - name: Checkout the gate at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - name: Build the gate
+        uses: ./.github/actions/gate
+      - name: Checkout tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Install pinned mutation tools
+        run: |
+          rust-gate install-tools
+        env:
+          TOOLS: |
+            jaq 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-unknown-linux-gnu 5922c7b67d9bd6841d6676d1f954410c6bf04b47203dcb661c4f052dfef7f454
+            cargo-mutants sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e cargo-mutants
+      - name: Plan mutation shard routing
+        id: plan
+        run: |
+          rust-gate mutants-plan
+        env:
+          REPORTS: ${{ runner.temp }}/rust-reports
+      - name: Upload immutable plan
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gate-mutation-plan
+          path: ${{ runner.temp }}/rust-reports/
+          if-no-files-found: error
+          retention-days: 14
+  mutations:
+    name: Gate shard ${{ matrix.shard }} (report-only)
+    needs: plan
+    if: ${{ needs.plan.result == 'success' && needs.plan.outputs.mutation-mode == 'sharded' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 32
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.mutation-matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      PROJECT: ${{ github.workspace }}/gate
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      CARGO_MUTANTS_VERSION: '27.1.0'
+      MUTATION_TEST: 'true'
+      MUTATION_FULL_SCOPE: 'true'
+      # Each worker owns an ephemeral checkout. Copy mode omits root include_str! data.
+      MUTATION_IN_PLACE: 'true'
+      MUTATION_SHARDS: ${{ needs.plan.outputs.mutation-shards }}
+      MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.plan.outputs.mutation-shards }}
+      MUTATION_WINDOWS: '[]'
+      MUTATION_ENGINE_FILES: '[]'
+    steps:
+      - name: Checkout the gate at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - name: Build the gate
+        uses: ./.github/actions/gate
+      - name: Checkout tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Install pinned mutation tools
+        run: |
+          rust-gate install-tools
+        env:
+          TOOLS: |
+            jaq 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-unknown-linux-gnu 5922c7b67d9bd6841d6676d1f954410c6bf04b47203dcb661c4f052dfef7f454
+            cargo-mutants sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e cargo-mutants
+            gitleaks gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb gitleaks
+      - name: Download immutable plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: gate-mutation-plan
+          path: ${{ runner.temp }}/mutation-plan
+      - name: Mutation testing
+        timeout-minutes: 35
+        run: |
+          rust-gate mutants
+        env:
+          REPORTS: ${{ runner.temp }}/rust-reports
+          MUTATION_PLAN: ${{ runner.temp }}/mutation-plan/mutation-plan.json
+          MUTATION_LIST: ${{ runner.temp }}/mutation-plan/mutants-list.json
+      - name: Upload raw shard evidence even on misses
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gate-mutation-mutants-${{ matrix.shard }}-of-${{ needs.plan.outputs.mutation-shards }}
+          path: |
+            ${{ runner.temp }}/mutants/mutants.out/
+            ${{ runner.temp }}/rust-reports/mutants.json
+            ${{ runner.temp }}/rust-reports/mutants.txt
+            ${{ runner.temp }}/rust-reports/mutants-shard.json
+          if-no-files-found: error
+          retention-days: 14
+
+  summary:
+    name: Aggregate gate evidence (report-only)
+    needs: [plan, mutations]
+    if: ${{ always() && needs.plan.outputs.mutation-mode == 'sharded' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      PROJECT: ${{ github.workspace }}/gate
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      CARGO_MUTANTS_VERSION: '27.1.0'
+      CHECKS_RESULT: ${{ needs.plan.result }}
+      MUTATIONS_RESULT: ${{ needs.mutations.result }}
+      MUTATION_MODE: ${{ needs.plan.outputs.mutation-mode }}
+      MUTATION_SHARDS: ${{ needs.plan.outputs.mutation-shards }}
+      MUTATION_MATRIX: ${{ needs.plan.outputs.mutation-matrix }}
+      MUTATION_ARTIFACT_NAME: gate-mutation
+      MUTATION_ENGINE_COUNT: '0'
+      MUTATION_ENGINE_DEFAULT_COUNT: '0'
+    steps:
+      - name: Checkout the gate at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - name: Build the gate
+        uses: ./.github/actions/gate
+      - name: Install pinned aggregation reader
+        run: |
+          rust-gate install-tools
+        env:
+          TOOLS: jaq 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-unknown-linux-gnu 5922c7b67d9bd6841d6676d1f954410c6bf04b47203dcb661c4f052dfef7f454
+      - name: Download immutable plan
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: gate-mutation-plan
+          path: ${{ runner.temp }}/mutation-plan
+      - name: Download every planned shard
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: gate-mutation-mutants-*
+          path: ${{ runner.temp }}/mutation-shards
+          merge-multiple: false
+      - name: Aggregate complete mutation shard evidence
+        run: |
+          rust-gate mutants-aggregate
+        env:
+          REPORTS: ${{ runner.temp }}/rust-reports
+          MUTATION_PLAN_DIR: ${{ runner.temp }}/mutation-plan
+          MUTATION_ARTIFACTS: ${{ runner.temp }}/mutation-shards
+      - name: Upload complete or diagnostic report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gate-mutation-report
+          path: ${{ runner.temp }}/rust-reports/
+          if-no-files-found: error
+          retention-days: 14
+
+  replay-plan:
+    name: Plan full-suite replay (report-only)
+    needs: [summary]
+    if: ${{ always() && needs.summary.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Download this run's complete stage-one evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: gate-mutation-report
+          path: ${{ runner.temp }}/stage1
+      - name: Plan exact replay ownership
+        id: plan
+        run: |
+          cargo test --manifest-path tests/Cargo.toml --locked --test workflows replay_stage_one_misses_exactly -- --ignored --nocapture
+        env:
+          REPLAY_MODE: plan
+          REPLAY_STAGE1: ${{ runner.temp }}/stage1
+          REPLAY_OUTPUT: ${{ runner.temp }}/replay-plan
+          REPLAY_PER_SHARD: ${{ inputs.replay-per-shard || 6 }}
+      - name: Upload immutable replay plan
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gate-replay-plan
+          path: ${{ runner.temp }}/replay-plan/
+          if-no-files-found: error
+          retention-days: 14
+
+  replay:
+    name: Full-suite replay ${{ matrix.shard }} (report-only)
+    needs: [replay-plan]
+    if: ${{ always() && needs.replay-plan.result == 'success' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 32
+      matrix:
+        shard: ${{ fromJSON(needs.replay-plan.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      REPLAY_MODE: replay
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      REPLAY_SHARD: ${{ matrix.shard }}
+      REPLAY_MISSED_TIMEOUT: '180'
+      REPLAY_TIMEOUT_TIMEOUT: '300'
+      REPLAY_SHARD_SECONDS: '1800'
+      REPLAY_TEST_MEMORY_KIB: '2097152'
+      # One harness and at most one tested-gate/test-binary child at once.
+      RUST_TEST_THREADS: '1'
+      NEXTEST_TEST_THREADS: '1'
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+      # The harness still builds its real release binary, without optimizer cost.
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: '0'
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install verified mise and the pinned toolbelt
+        id: bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The same one-command provisioning a contributor runs on a fresh clone.
+          ./scripts/bootstrap.sh
+          echo "$PWD/.tools/bin" >> "$GITHUB_PATH"
+          echo "setup-started-at=$(( $(date +%s) - SECONDS ))" >> "$GITHUB_OUTPUT"
+      - name: Download immutable replay ownership
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: gate-replay-plan
+          path: ${{ runner.temp }}/replay-plan
+      - name: Replay exact diffs and restore each source
+        timeout-minutes: 30
+        run: |
+          cargo test --manifest-path tests/Cargo.toml --locked --test workflows replay_stage_one_misses_exactly -- --ignored --nocapture
+        env:
+          REPLAY_PLAN: ${{ runner.temp }}/replay-plan/replay-plan.json
+          REPLAY_OUTPUT: ${{ runner.temp }}/replay-results
+          REPLAY_SETUP_STARTED_AT: ${{ steps.bootstrap.outputs.setup-started-at }}
+      - name: Upload replay receipts and logs even on incomplete execution
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gate-replay-${{ matrix.shard }}
+          path: ${{ runner.temp }}/replay-results/
+          if-no-files-found: error
+          retention-days: 14
+
+  replay-summary:
+    name: Final full-suite survivor evidence (report-only)
+    needs: [replay-plan, replay]
+    if: ${{ always() && needs.replay-plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download immutable replay ownership
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: gate-replay-plan
+          path: ${{ runner.temp }}/replay-plan
+      - name: Download every replay shard
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: gate-replay-*
+          path: ${{ runner.temp }}/replay-shards
+          merge-multiple: false
+      - name: Refuse incomplete evidence and publish final survivors
+        run: |
+          cargo test --manifest-path tests/Cargo.toml --locked --test workflows replay_stage_one_misses_exactly -- --ignored --nocapture
+        env:
+          REPLAY_MODE: aggregate
+          REPLAY_PLAN: ${{ runner.temp }}/replay-plan/replay-plan.json
+          REPLAY_ARTIFACTS: ${{ runner.temp }}/replay-shards
+          REPLAY_OUTPUT: ${{ runner.temp }}/replay-report
+      - name: Upload complete final survivor report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gate-replay-report
+          path: ${{ runner.temp }}/replay-report/
+          if-no-files-found: error
+          retention-days: 14

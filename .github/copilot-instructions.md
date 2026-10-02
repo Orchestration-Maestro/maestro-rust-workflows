@@ -61,6 +61,7 @@ in place.
 │   │   ├── dependabot-auto-merge.yml                            # Queues Dependabot patch and minor updates to merge on the organization's bot token
 │   │   ├── docs-sync.yml                                        # On a pull request from this repository, the bot commits the tables just docs regenerated
 │   │   ├── fuzz.yml                                             # Bounded fuzz regression on a nightly toolchain
+│   │   ├── gate-mutation.yml                                    # Manual and weekly gate mutation shards, full-suite replay and complete evidence
 │   │   ├── hygiene.yml                                          # The reusable CI of a repository without Rust: secrets, hygiene, managed files, hooks
 │   │   ├── native-cache-fixture.yml                             # Native cache fixture
 │   │   ├── publish-binaries.yml                                 # Protected binary release, dry-run by default
@@ -431,6 +432,7 @@ in place.
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
 │   │   ├── mutation_shards.rs                                   # Shared test fixtures for mutation planning and evidence aggregation
 │   │   ├── native_cache.rs                                      # Shared opted-in native cache and observed coverage child fixtures
+│   │   ├── replay_processes.rs                                  # Memory-limited replay processes and their preserved evidence
 │   │   ├── repository.rs                                        # The repository root, the toolbelt, commands run to completion, temporary directories, stand-in executables, every test file
 │   │   └── workflow_yaml.rs                                     # Readers of workflow and action YAML: whole documents, one step's body, tool rows, jaq queries
 │   ├── hosted_cache/                                            # Hosted cache
@@ -454,11 +456,16 @@ in place.
 │   │   ├── payload_verification.rs                              # The shared payload verification: revision, checksum manifest and provenance, every flaw refused by name
 │   │   └── recorded_attestation.rs                              # attest-binaries.yml: the recorded attestation verified through gh, refused unless it covers the digest
 │   ├── repository/                                              # The repository itself: files, documents, pins, sizes, policies, hooks, scans and the names of its tests
+│   │   ├── gate_mutation_replay/                                # Exact hosted mutation replay and its bounded child processes
+│   │   │   ├── execution.rs                                     # Child command execution and allocation evidence for this replay only
+│   │   │   ├── mod.rs                                           # Exact hosted mutation replay and its bounded child processes
+│   │   │   └── replay_worker.rs                                 # Hosted replay of exact stage-one diffs against gate units and the contract harness
 │   │   ├── commit_message_hooks.rs                              # The commit-msg hooks: a conventional header first, 80 columns, refused by prek in a fresh repository
 │   │   ├── documentation_coverage.rs                            # Every report, input and secret documented; links resolve; cited tests exist
 │   │   ├── evidence_receipt.rs                                  # The evidence receipt: produced only when every upstream result succeeded
 │   │   ├── executable_stubs.rs                                  # Stand-in executables written outside the test process, so none is refused as Text file busy
 │   │   ├── gate_action.rs                                       # The gate action: built from the workflow's own commit in every job
+│   │   ├── gate_mutation.rs                                     # Report-only gate mutation workflow and full-scope execution contracts
 │   │   ├── gate_rules.rs                                        # Every rule the gate names is listed, and has its row in docs/ci.md
 │   │   ├── generated_documents.rs                               # Every generated table and the diagram's count are what just docs writes
 │   │   ├── metadata_and_inventory.rs                            # Repository files, hook, editor and release policies, the Copilot inventory
@@ -466,6 +473,7 @@ in place.
 │   │   ├── north_star.rs                                        # Promised controls run, every gate names its proof, no lint silenced
 │   │   ├── pinned_tool_usage.rs                                 # Every job installs every pinned tool it invokes before a step reads it
 │   │   ├── rendered_hooks_live.rs                               # CHECK_NETWORK=1: the rendered hooks in a fresh clone on the toolbelt setup installs
+│   │   ├── replay_memory.rs                                     # The replay cap refuses setup failure and records its effective value
 │   │   ├── secret_and_advisory_scans.rs                         # Gitleaks over the tree; RustSec audits under CHECK_NETWORK=1
 │   │   ├── tool_updates.rs                                      # Every install row is what mise locked; update-tools moves a pin everywhere at once
 │   │   ├── toolbelt_and_shellcheck.rs                           # Toolbelt links to the locked builds; ShellCheck over every Bash line left

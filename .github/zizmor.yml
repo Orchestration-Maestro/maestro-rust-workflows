@@ -21,6 +21,7 @@ rules:
       - ci-internal.yml
       - ci.yml
       - fuzz.yml
+      - gate-mutation.yml
       - hygiene.yml
       - native-cache-fixture.yml
       - publish-binaries.yml

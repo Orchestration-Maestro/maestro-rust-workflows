@@ -212,7 +212,17 @@ pub(super) fn planned_scope(job: &Job, base: &str) -> Result<Scope, Failure> {
         .capture()?
         .trim()
         .to_owned();
-    let (parent, diff, change) = if parent.is_empty() {
+    let full = scope::full_scope()?;
+    if !full && digest == sha256_hex(scope::FULL_SCOPE) {
+        return Err("mutation plan full scope differs from its execution scope".into());
+    }
+    let (parent, diff, change) = if full {
+        let source = scope::prepare(job, base)?;
+        if source.diff_digest != digest || source.parent.as_deref().unwrap_or_default() != parent {
+            return Err("mutation plan full scope differs from its execution scope".into());
+        }
+        return Ok(source);
+    } else if parent.is_empty() {
         if job.earlier("mutants.diff").exists() {
             return Err("parentless mutation plan unexpectedly contains a diff".into());
         }
