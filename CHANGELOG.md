@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.0...v4.8.1) (2026-10-02)
+
+
+### Bug Fixes
+
+* **gate:** verify release builds cleanly at the same target path ([#109](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/109)) ([d5fdfaa](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/d5fdfaa573410016d8bc0619cdc18d076fe968b5))
+
 ## [4.8.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.7.1...v4.8.0) (2026-10-02)
 
 
