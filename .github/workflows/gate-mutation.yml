@@ -1,17 +1,17 @@
 name: Gate mutation (report-only)
 
-# Measure the gate unit suite, not the separate contract harness. This workflow
+# Measure gate units, then replay misses and timeouts against the full harness.
+# This workflow
 # is report-only: no ruleset or required repository check depends on it.
 "on":
-  pull_request:
-    paths:
-      - gate/**
-      - .github/workflows/gate-mutation.yml
-      - tests/repository/gate_mutation.rs
-  push:
-    branches: [main]
+  schedule:
+    - cron: '23 3 * * 1'
   workflow_dispatch:
     inputs:
+      replay-per-shard:
+        description: Replay target per shard (1 to 6), all misses and timeouts are retained
+        type: number
+        default: 6
       mutants-per-shard:
         description: Target mutants per shard (1 to 1000), not a time guarantee
         type: number
@@ -22,7 +22,7 @@ permissions:
 
 concurrency:
   group: gate-mutation-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: false
 
 jobs:
   plan:
@@ -208,5 +208,152 @@ jobs:
         with:
           name: gate-mutation-report
           path: ${{ runner.temp }}/rust-reports/
+          if-no-files-found: error
+          retention-days: 14
+
+  replay-plan:
+    name: Plan full-suite replay (report-only)
+    needs: [summary]
+    if: ${{ always() && needs.summary.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Checkout tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Download this run's complete stage-one evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: gate-mutation-report
+          path: ${{ runner.temp }}/stage1
+      - name: Plan exact replay ownership
+        id: plan
+        run: cargo test --manifest-path tests/Cargo.toml --locked --test workflows replay_stage_one_misses_exactly -- --ignored --nocapture
+        env:
+          REPLAY_MODE: plan
+          REPLAY_STAGE1: ${{ runner.temp }}/stage1
+          REPLAY_OUTPUT: ${{ runner.temp }}/replay-plan
+          REPLAY_PER_SHARD: ${{ inputs.replay-per-shard || 6 }}
+      - name: Upload immutable replay plan
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gate-replay-plan
+          path: ${{ runner.temp }}/replay-plan/
+          if-no-files-found: error
+          retention-days: 14
+
+  replay:
+    name: Full-suite replay ${{ matrix.shard }} (report-only)
+    needs: [replay-plan]
+    if: ${{ always() && needs.replay-plan.result == 'success' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 32
+      matrix:
+        shard: ${{ fromJSON(needs.replay-plan.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      REPLAY_MODE: replay
+      RUSTUP_TOOLCHAIN: '1.98.1'
+      REPLAY_SHARD: ${{ matrix.shard }}
+      REPLAY_MISSED_TIMEOUT: '180'
+      REPLAY_TIMEOUT_TIMEOUT: '300'
+      REPLAY_SHARD_SECONDS: '1800'
+      REPLAY_TEST_MEMORY_KIB: '2097152'
+      # One harness and at most one tested-gate/test-binary child at once.
+      RUST_TEST_THREADS: '1'
+      NEXTEST_TEST_THREADS: '1'
+      CARGO_BUILD_JOBS: '3'
+      CARGO_INCREMENTAL: '0'
+      # The harness still builds its real release binary, without optimizer cost.
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: '0'
+      MISE_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install verified mise and the pinned toolbelt
+        id: bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The same one-command provisioning a contributor runs on a fresh clone.
+          ./scripts/bootstrap.sh
+          echo "$PWD/.tools/bin" >> "$GITHUB_PATH"
+          echo "setup-started-at=$(( $(date +%s) - SECONDS ))" >> "$GITHUB_OUTPUT"
+      - name: Download immutable replay ownership
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: gate-replay-plan
+          path: ${{ runner.temp }}/replay-plan
+      - name: Replay exact diffs and restore each source
+        timeout-minutes: 30
+        run: cargo test --manifest-path tests/Cargo.toml --locked --test workflows replay_stage_one_misses_exactly -- --ignored --nocapture
+        env:
+          REPLAY_PLAN: ${{ runner.temp }}/replay-plan/replay-plan.json
+          REPLAY_OUTPUT: ${{ runner.temp }}/replay-results
+          REPLAY_SETUP_STARTED_AT: ${{ steps.bootstrap.outputs.setup-started-at }}
+      - name: Upload replay receipts and logs even on incomplete execution
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gate-replay-${{ matrix.shard }}
+          path: ${{ runner.temp }}/replay-results/
+          if-no-files-found: error
+          retention-days: 14
+
+  replay-summary:
+    name: Final full-suite survivor evidence (report-only)
+    needs: [replay-plan, replay]
+    if: ${{ always() && needs.replay-plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tested source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Download immutable replay ownership
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: gate-replay-plan
+          path: ${{ runner.temp }}/replay-plan
+      - name: Download every replay shard
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: gate-replay-*
+          path: ${{ runner.temp }}/replay-shards
+          merge-multiple: false
+      - name: Refuse incomplete evidence and publish final survivors
+        run: cargo test --manifest-path tests/Cargo.toml --locked --test workflows replay_stage_one_misses_exactly -- --ignored --nocapture
+        env:
+          REPLAY_MODE: aggregate
+          REPLAY_PLAN: ${{ runner.temp }}/replay-plan/replay-plan.json
+          REPLAY_ARTIFACTS: ${{ runner.temp }}/replay-shards
+          REPLAY_OUTPUT: ${{ runner.temp }}/replay-report
+      - name: Upload complete final survivor report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gate-replay-report
+          path: ${{ runner.temp }}/replay-report/
           if-no-files-found: error
           retention-days: 14

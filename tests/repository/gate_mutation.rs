@@ -43,14 +43,10 @@ fn gate_mutation_is_report_only_with_complete_shard_evidence() {
         "true"
     );
     assert!(data["name"].as_str().unwrap().contains("report-only"));
-    assert_eq!(data["on"]["push"]["branches"], json!(["main"]));
-    assert!(data["on"].get("workflow_dispatch").is_some());
-    assert!(
-        data["on"]["pull_request"]["paths"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("gate/**"))
-    );
+    let triggers = data["on"].as_object().unwrap();
+    assert_eq!(triggers.len(), 2);
+    assert!(triggers.contains_key("workflow_dispatch"));
+    assert_eq!(data["on"]["schedule"][0]["cron"], "23 3 * * 1");
 }
 
 #[test]
@@ -162,6 +158,81 @@ fn malformed_in_place_execution_is_refused_before_running_mutants() {
         "mutation-in-place must be true or false",
     );
     assert!(!fixture.calls().contains("mutants --no-shuffle"));
+}
+
+#[test]
+fn replay_consumes_fresh_evidence_and_keeps_failures_visible() {
+    let data = workflow("gate-mutation");
+    for id in ["replay-plan", "replay", "replay-summary"] {
+        let job = &data["jobs"][id];
+        assert!(job["if"].as_str().unwrap().contains("always()"));
+        assert!(job["steps"].as_array().unwrap().iter().any(|step| {
+            step["run"].as_str().is_some_and(|body| {
+                body.contains("--test workflows replay_stage_one_misses_exactly")
+                    && body.contains("--ignored")
+            })
+        }));
+    }
+    assert_eq!(data["jobs"]["replay-plan"]["needs"], json!(["summary"]));
+    assert_eq!(data["jobs"]["replay"]["strategy"]["fail-fast"], false);
+    assert_eq!(data["jobs"]["replay"]["env"]["REPLAY_MODE"], "replay");
+    assert_eq!(
+        data["jobs"]["replay"]["env"]["REPLAY_MISSED_TIMEOUT"],
+        "180"
+    );
+    assert_eq!(
+        data["jobs"]["replay"]["env"]["REPLAY_TIMEOUT_TIMEOUT"],
+        "300"
+    );
+    assert_eq!(
+        data["jobs"]["replay"]["env"]["REPLAY_SHARD_SECONDS"],
+        "1800"
+    );
+    let steps = data["jobs"]["replay"]["steps"].as_array().unwrap();
+    let component = steps
+        .iter()
+        .position(|step| {
+            step["run"]
+                .as_str()
+                .is_some_and(|body| body.contains("./scripts/bootstrap.sh"))
+        })
+        .unwrap();
+    let normal = workflow("ci-internal");
+    let bootstrap = normal["jobs"]["check"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| {
+            step["run"]
+                .as_str()
+                .is_some_and(|body| body.contains("./scripts/bootstrap.sh"))
+        })
+        .unwrap();
+    assert!(
+        steps[component]["run"]
+            .as_str()
+            .unwrap()
+            .starts_with(bootstrap["run"].as_str().unwrap()),
+        "reuse normal CI provisioning before recording its timing"
+    );
+    let baseline = steps
+        .iter()
+        .position(|step| {
+            step["run"]
+                .as_str()
+                .is_some_and(|body| body.contains("replay_stage_one_misses_exactly"))
+        })
+        .unwrap();
+    assert!(
+        component < baseline,
+        "ignored examples must not race to install LLVM"
+    );
+    assert_eq!(data["jobs"]["replay"]["env"]["RUSTUP_TOOLCHAIN"], "1.98.1");
+    assert_eq!(
+        data["jobs"]["replay"]["env"]["REPLAY_TEST_MEMORY_KIB"],
+        "2097152"
+    );
+    assert_eq!(data["jobs"]["replay"]["env"]["RUST_TEST_THREADS"], "1");
 }
 
 #[test]

@@ -566,12 +566,13 @@ own; its pre-push hook runs `just check`.
 ### Report-only gate mutation measurement
 
 [gate-mutation.yml](../.github/workflows/gate-mutation.yml) measures all of
-`gate/src` against the gate unit suite on pull requests touching the gate, pushes
-to main and manual runs. It is report-only: no ruleset or required repository
-check depends on it. Misses fail its jobs so the result stays visible, without
-blocking existing required checks. The separate contract harness is not run
-against these mutants, so these misses are provisional, not the final list for
-follow-up tests.
+`gate/src` on manual dispatch and a weekly Monday schedule. It is report-only:
+no ruleset or required repository check depends on it. Misses fail its jobs so
+the result stays visible, without blocking existing required checks. Stage one
+runs the gate unit suite. Stage two consumes that same run's complete evidence
+and replays every recorded miss and timeout against the gate unit suite, the
+normal workflow contracts and the two ignored example contracts. No survivor
+is fixed by this workflow.
 
 The workflow uses the same `mutants-plan`, round-robin `mutants` shards and
 `mutants-aggregate` validation as consumers. `MUTATION_FULL_SCOPE=true` selects
@@ -587,6 +588,39 @@ reused.
 The manual `mutants-per-shard` input adjusts automatic planning, initially 50,
 without sampling. Raw shard evidence, the immutable plan and the aggregated
 report are retained for 14 days, including failed and incomplete runs.
+
+The repository-owned ignored test in `tests/repository/gate_mutation_replay.rs` preserves
+every recorded diff hunk, applies it with Git and restores the source with
+`git checkout` before recording an outcome. The replay plan binds round-robin
+ownership to the stage-one revision, placing timeouts first so each shard owns
+at most one; aggregation requires every assigned
+identity exactly once, including unviable and timed-out mutants. Missing,
+duplicate or incomplete shard evidence cannot produce a final survivor report.
+Each worker reuses normal CI's `scripts/bootstrap.sh` to provision rustfmt,
+Clippy, LLVM tools and the locked toolbelt once before its clean full-suite
+baseline. Parallel example contracts never race to install a component. The release binary uses optimization level zero to avoid optimizer rebuild
+cost, but retains release assertion semantics.
+
+Stage-one misses have a 180-second total build-and-test budget. Stage-one
+timeouts are replayed once with 300 seconds, and reported separately as slow
+kills, survivors, build refusals or continuing timeouts. Each replay command
+retains the 30-minute shard cap and uploads its progress receipt even when
+incomplete. Build phases are uncapped. Test phases and the clean baseline inherit a
+2 GiB private-writable-data limit through Bash `ulimit -d`; unlike a virtual
+address limit, it permits Gitleaks' reserved address space. Test threads are
+one, with at most two capped test processes (the harness and its sequential
+child), and their combined limits must stay below 75% of the runner's recorded
+MemTotal. Each receipt records tool setup plus baseline time (at most 300
+seconds) and baseline test time excluding cold builds (at most 120 seconds).
+A slower clean baseline refuses before applying any mutant. Six mutants,
+with at most one prior timeout, fit the enforced 25-minute budget:
+300 + 5 times 180 + 300 seconds, below the 30-minute command cap.
+Allocation aborts have their own `caught_by_memory_cap` category and
+exact log evidence, separate from assertion kills and continuing timeouts.
+The manual `replay-per-shard` target defaults to 6 without
+sampling. Dispatch from the tested revision so the immutable source binding
+remains exact. Weekly runs measure their own current revision, not a fixed
+artifact that will expire.
 
 ### Pull request rules
 
