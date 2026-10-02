@@ -7,6 +7,7 @@ mod central_uploads;
 mod commit_hooks;
 mod complexity_report;
 mod copilot_guide;
+mod coverage_features;
 mod duplication_report;
 mod feature_combinations;
 mod input_validation;

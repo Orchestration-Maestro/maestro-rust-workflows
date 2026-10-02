@@ -175,6 +175,9 @@ skip is visible as `attested=false`; require `attested == 'true'`, not just a gr
 job. Set `on-unavailable: fail` when provenance is required. This runtime policy
 cannot bypass GitHub's permission validation before a job starts.
 
+Opt-in [`coverage-features`](docs/ci.md#feature-coverage) merges default and
+qualified feature workspace test coverage in the same job.
+
 The coverage floor is the `coverage-threshold` input, `90` by default and valid
 from 90, the organization's floor (COV-001), through 100. Every other knob is listed under [gates](#-gates).
 

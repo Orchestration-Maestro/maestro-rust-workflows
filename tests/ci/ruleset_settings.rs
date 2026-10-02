@@ -228,3 +228,18 @@ fn a_ci_table_that_drops_macos_or_windows_is_refused_with_the_fix() {
     );
     assert!(!fixture.root.join("output").exists());
 }
+
+#[test]
+fn coverage_selection_comes_from_head_even_when_the_base_differs() {
+    let base = "[ci]\nworking-directory='project'\ncoverage-features=['fixture/default']\n";
+    let head = "[ci]\nworking-directory='project'\ncoverage-features=['fixture/engine']\n";
+    let mut fixture = uncalled(base, head);
+    set_engine_metadata(&mut fixture);
+    succeeds(&fixture.run("ci", "validate"));
+    assert_exported(&fixture, "COVERAGE_FEATURES=[\"fixture/engine\"]");
+    // The identical head-removal behavior is deliberate, matching E04a.
+    let mut fixture = uncalled(head, "[ci]\nworking-directory='project'\n");
+    set_engine_metadata(&mut fixture);
+    succeeds(&fixture.run("ci", "validate"));
+    assert_exported(&fixture, "COVERAGE_FEATURES=");
+}
