@@ -57,14 +57,14 @@ impl Item {
 pub(crate) fn blanked(source: &str) -> String {
     let bytes = source.as_bytes();
     let mut out = bytes.to_vec();
-    let mut index = 0;
-    while index < bytes.len() {
-        match literal_end(bytes, index) {
-            Some(end) => {
-                blank(out.get_mut(index..end).unwrap_or_default());
-                index = end;
-            }
-            None => index += 1,
+    let mut consumed = 0;
+    for index in 0..bytes.len() {
+        if index < consumed {
+            continue;
+        }
+        if let Some(end) = literal_end(bytes, index) {
+            blank(out.get_mut(index..end).unwrap_or_default());
+            consumed = end;
         }
     }
     String::from_utf8(out).unwrap_or_default()
@@ -75,17 +75,17 @@ pub(crate) fn blanked(source: &str) -> String {
 pub(crate) fn comments(source: &str) -> Vec<(usize, &str)> {
     let bytes = source.as_bytes();
     let mut found = Vec::new();
-    let mut index = 0;
-    while index < bytes.len() {
-        match literal_end(bytes, index) {
-            Some(end) => {
-                let text = source.get(index..end).unwrap_or_default();
-                if text.starts_with("//") || text.starts_with("/*") {
-                    found.push((line_at(source, index), text));
-                }
-                index = end;
+    let mut consumed = 0;
+    for index in 0..bytes.len() {
+        if index < consumed {
+            continue;
+        }
+        if let Some(end) = literal_end(bytes, index) {
+            let text = source.get(index..end).unwrap_or_default();
+            if text.starts_with("//") || text.starts_with("/*") {
+                found.push((line_at(source, index), text));
             }
-            None => index += 1,
+            consumed = end;
         }
     }
     found
@@ -100,7 +100,7 @@ pub(crate) fn blank(bytes: &mut [u8]) {
 
 /// Where the comment or literal starting at `start` ends, or `None` when
 /// none starts there.
-fn literal_end(bytes: &[u8], start: usize) -> Option<usize> {
+pub(super) fn literal_end(bytes: &[u8], start: usize) -> Option<usize> {
     let rest = bytes.get(start..)?;
     if rest.starts_with(b"//") {
         let length = rest.iter().position(|&byte| byte == b'\n');
@@ -157,7 +157,7 @@ fn block_comment_end(bytes: &[u8], start: usize) -> usize {
 
 /// The end of the raw string whose hashes or quote start at `at`, or `None`
 /// when `at` starts a raw identifier such as `r#type`.
-fn raw_string_end(bytes: &[u8], at: usize) -> Option<usize> {
+pub(super) fn raw_string_end(bytes: &[u8], at: usize) -> Option<usize> {
     let tail = bytes.get(at..)?;
     let hashes = tail.iter().take_while(|&&byte| byte == b'#').count();
     if tail.get(hashes) != Some(&b'"') {
@@ -275,7 +275,7 @@ fn next_word(code: &str, from: usize) -> Option<usize> {
 
 /// Where the attributes starting at `start` end: past every `#[...]` and
 /// `#![...]`, and the whitespace after each.
-fn attributes_end(code: &str, start: usize) -> usize {
+pub(super) fn attributes_end(code: &str, start: usize) -> usize {
     let bytes = code.as_bytes();
     let mut index = start;
     loop {
@@ -293,7 +293,7 @@ fn attributes_end(code: &str, start: usize) -> usize {
 }
 
 /// The byte after the `]` that closes the attribute whose `[` is at `cursor`.
-fn attribute_end(bytes: &[u8], mut cursor: usize) -> usize {
+pub(super) fn attribute_end(bytes: &[u8], mut cursor: usize) -> usize {
     let mut depth = 0usize;
     while let Some(&byte) = bytes.get(cursor) {
         cursor += 1;
@@ -308,7 +308,7 @@ fn attribute_end(bytes: &[u8], mut cursor: usize) -> usize {
 }
 
 /// The visibility, kind and name an item's text opens with.
-fn head(text: &str) -> (String, String, String) {
+pub(super) fn head(text: &str) -> (String, String, String) {
     let (visibility, rest) = visibility_of(text);
     let mut words = rest
         .split(|character: char| {
@@ -343,7 +343,7 @@ fn head(text: &str) -> (String, String, String) {
 
 /// The visibility an item's text opens with, whitespace collapsed, and
 /// the text after it.
-fn visibility_of(text: &str) -> (String, &str) {
+pub(super) fn visibility_of(text: &str) -> (String, &str) {
     let Some(after) = text.strip_prefix("pub") else {
         return (String::new(), text);
     };

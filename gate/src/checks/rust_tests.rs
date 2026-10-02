@@ -86,7 +86,7 @@ pub(crate) fn waits(code: &str) -> Vec<Wait> {
 }
 
 /// The innermost function whose body holds byte `offset`, by name.
-fn enclosing_function(code: &str, offset: usize) -> Option<String> {
+pub(super) fn enclosing_function(code: &str, offset: usize) -> Option<String> {
     let bytes = code.as_bytes();
     let mut found = None;
     for (start, _) in code.match_indices("fn ") {
@@ -94,7 +94,7 @@ fn enclosing_function(code: &str, offset: usize) -> Option<String> {
             .checked_sub(1)
             .and_then(|previous| bytes.get(previous))
             .is_none_or(|&byte| !is_identifier_byte(byte));
-        if !whole || start > offset {
+        if !whole {
             continue;
         }
         let Some((_, name)) = function_after(code, start) else {
@@ -108,7 +108,7 @@ fn enclosing_function(code: &str, offset: usize) -> Option<String> {
 }
 
 /// Where the attribute opening at `start` ends: past its matching `]`.
-fn attribute_end(code: &str, start: usize) -> usize {
+pub(super) fn attribute_end(code: &str, start: usize) -> usize {
     let mut depth = 0usize;
     for (offset, byte) in code.bytes().enumerate().skip(start) {
         match byte {
@@ -127,7 +127,7 @@ fn attribute_end(code: &str, start: usize) -> usize {
 
 /// The function a declaration starting at `from` names, past attributes and
 /// qualifiers: the offset of its name and the name.
-fn function_after(code: &str, from: usize) -> Option<(usize, String)> {
+pub(super) fn function_after(code: &str, from: usize) -> Option<(usize, String)> {
     let mut index = from;
     loop {
         let rest = code.get(index..)?;
@@ -166,7 +166,7 @@ fn function_after(code: &str, from: usize) -> Option<(usize, String)> {
 
 /// The braces of the body of the function declared at `start`, or `None`
 /// for a declaration that ends in `;`.
-fn body(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
+pub(super) fn body(bytes: &[u8], start: usize) -> Option<(usize, usize)> {
     let mut depth = 0usize;
     let mut open = None;
     for (offset, &byte) in bytes.iter().enumerate().skip(start) {

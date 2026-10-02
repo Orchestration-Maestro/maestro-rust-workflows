@@ -27,7 +27,11 @@ pub(crate) mod pull_request;
 pub(crate) mod quality_config;
 pub(crate) mod release_boundary;
 pub(crate) mod rust_code;
+#[cfg(test)]
+mod rust_code_cases;
 mod rust_paths;
+#[cfg(test)]
+mod rust_test_cases;
 pub(crate) mod rust_tests;
 pub(crate) mod rust_versions;
 pub(crate) mod simple_names;
