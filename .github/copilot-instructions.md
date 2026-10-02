@@ -382,6 +382,7 @@ in place.
 │   │   ├── quality_reports.rs                                   # ci.yml: diagnostics survive failing tools without changing their verdict
 │   │   ├── release_payload.rs                                   # ci.yml: release build, payload, bills of materials, and the example gate
 │   │   ├── release_payload_refusals.rs                          # The release payload's refusals: lockfile drift, unhardened or irreproducible binaries, malformed staging
+│   │   ├── release_rebuild.rs                                   # Clean same-path release rebuilds preserve generated code, flags and cached objects
 │   │   ├── repository_hygiene.rs                                # ci.yml: HYG-001 to HYG-005 and shell width, each refused by name
 │   │   ├── required_status.rs                                   # Contract tests for the sole branch-protection status
 │   │   ├── rule_map.rs                                          # rules and rules --check: written, kept, refused when stale or unmapped

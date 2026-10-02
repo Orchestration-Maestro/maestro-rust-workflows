@@ -1,9 +1,10 @@
-//! `rust-gate hardening`: every release binary rebuilt into a second target
-//! directory must have the same digest, be position independent, carry full
+//! `rust-gate hardening`: every release binary rebuilt cleanly at the same target
+//! path must have the same digest, be position independent, carry full
 //! RELRO and a non-executable stack, and embed its dependency list.
 
 use crate::checks::cargo_metadata::EXECUTABLES;
-use crate::runner::{Cmd, Failure, Job, Outcome, Step, input, write};
+use crate::checks::private_directories::private_directory;
+use crate::runner::{Cmd, Failure, Job, Outcome, Step, path, write};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -22,31 +23,42 @@ pub(crate) const STEPS: &[Step] = &[Step {
 /// Run the step.
 fn run() -> Outcome {
     let job = Job::current()?;
-    let project = &job.project;
-    let temp = &job.temp;
-    let verify = temp.join("rust-target-verify");
-    // Build a second time into a different target directory and compare the
-    // digests. A difference means the release bytes depend on something other
-    // than the source, which defeats the point of signing them.
+    let target = path("CARGO_TARGET_DIR")?;
+    // A sibling keeps rename atomic even when RUNNER_TEMP is on another volume.
+    let parent = target.parent().unwrap_or(Path::new("."));
+    let saved = private_directory(&parent.display().to_string(), "release-original")?;
+    let original = saved.join("target");
+    fs::rename(&target, &original)
+        .map_err(|error| format!("cannot save {}: {error}", target.display()))?;
+    // OUT_DIR locations and registry paths may be embedded by rustc. Keep
+    // build paths fixed, but move every cached object aside for a fresh build.
+    let checked = rebuild_and_check(&job, &target, &original);
+    restore_target(&target, &original)?;
+    fs::remove_dir(&saved)
+        .map_err(|error| format!("cannot remove {}: {error}", saved.display()))?;
+    checked
+}
+
+/// Rebuild without cached objects and compare to the saved shipped binaries.
+fn rebuild_and_check(job: &Job, target: &Path, original: &Path) -> Outcome {
     Cmd::new("cargo auditable build --workspace --release --locked")
-        .env("CARGO_TARGET_DIR", &verify.display().to_string())
-        .cwd(project)
+        .cwd(&job.project)
         .run()?;
     let executables = Cmd::new("jaq -sr")
         .arg(EXECUTABLES)
-        .arg(temp.join("build.jsonl"))
+        .arg(job.temp.join("build.jsonl"))
         .capture()?;
     let report = job.report("hardening.txt")?;
     write(&report, b"", false)?;
-    let target_prefix = format!("{}/", input("CARGO_TARGET_DIR")?);
+    let target_prefix = format!("{}/", target.display());
     for line in executables.lines() {
         let (name, first) = line.split_once('\t').unwrap_or((line, ""));
         let relative = first.strip_prefix(&target_prefix).unwrap_or(first);
-        let second = verify.join(relative);
-        if !second.is_file() {
+        let saved_binary = original.join(relative);
+        if !Path::new(first).is_file() {
             return Err(format!("Rebuilt binary missing for {name}").into());
         }
-        if digest(Path::new(first))? != digest(&second)? {
+        if digest(&saved_binary)? != digest(Path::new(first))? {
             return Err(format!(
                 "Release binary {name} is not reproducible across build directories"
             )
@@ -98,12 +110,18 @@ fn run() -> Outcome {
             true,
         )?;
     }
-    if let Err(error) = fs::remove_dir_all(&verify)
+    Ok(())
+}
+
+/// Restore the shipped build and its cache, even after a failed rebuild or check.
+fn restore_target(target: &Path, original: &Path) -> Outcome {
+    if let Err(error) = fs::remove_dir_all(target)
         && error.kind() != ErrorKind::NotFound
     {
-        return Err(format!("cannot remove {}: {error}", verify.display()).into());
+        return Err(format!("cannot remove {}: {error}", target.display()).into());
     }
-    Ok(())
+    fs::rename(original, target)
+        .map_err(|error| format!("cannot restore {}: {error}", target.display()).into())
 }
 
 /// One readelf query over a binary, captured for the checks that read it.

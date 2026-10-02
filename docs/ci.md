@@ -943,11 +943,14 @@ exemptions stay the repository's own reviewed state. `cargo vet init`, the six
 
 ### Reproducible builds and binary hardening
 
-The release build runs a second time into a different target directory and the
-digests must match. A difference means the released bytes depend on something
-other than the source, which would make signing them meaningless. Each executable
-is then checked for position independence, full RELRO and a non-executable stack;
-the result ships as `hardening.txt`. Rust does not emit C stack canaries, so
+Hardening moves the shipped target directory aside, rebuilds from clean at the
+same path and requires matching binary digests, then restores the shipped build
+and its cache even if the check fails. The guarantee is identical bytes for the
+same source, toolchain and build paths. Path independence is out of scope: rustc
+can embed absolute `OUT_DIR` panic locations and registry paths under `CARGO_HOME`.
+Consumer rustflags and compiler wrappers are unchanged. Each executable is also
+checked for position independence, full RELRO and a non-executable stack; the
+result ships as `hardening.txt`. Rust does not emit C stack canaries, so
 `__stack_chk` is deliberately not required.
 
 ### Declared minimum supported Rust version
@@ -1450,8 +1453,8 @@ and target directory, keyed on the lockfile and compiler as described above.
 The gate binary is rebuilt in a fresh directory and is never cached. GitHub's
 cache scoping includes default-branch fallback; that scope does not authenticate
 cached bytes or replace the separation of privileged jobs.
-The hardening step rebuilds every binary in a fresh directory under the
-runner's temporary directory and requires the same digest, so a cached object
+The hardening step sets cached objects aside and rebuilds every binary from clean
+at its original target path, requiring the same digest, so a cached object
 that no longer matches the source fails the run. Job-local Cargo state can be
 rebuilt and never holds credentials.
 

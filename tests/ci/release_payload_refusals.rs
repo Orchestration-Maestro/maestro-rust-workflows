@@ -63,8 +63,8 @@ fn a_lockfile_that_drifts_during_sbom_generation_fails_the_build() {
 
 #[test]
 fn every_hardening_flaw_and_a_missing_rebuild_are_refused_by_name() {
-    let rebuilt = r#"mkdir -p "$RUNNER_TEMP/rust-target-verify/release"
-printf 'first' > "$RUNNER_TEMP/rust-target-verify/release/app""#;
+    let rebuilt = r#"mkdir -p "$CARGO_TARGET_DIR/release"
+printf 'first' > "$CARGO_TARGET_DIR/release/app""#;
     for (flaw, message) in [
         ("pie", "is not position independent"),
         ("bind-now", "lacks full RELRO"),

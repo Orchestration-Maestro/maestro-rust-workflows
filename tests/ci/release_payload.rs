@@ -158,8 +158,8 @@ fn the_release_build_must_be_reproducible_and_auditable_or_fail() {
     differs.set("CARGO_TARGET_DIR", &target.display().to_string());
     differs.stub(
         "cargo",
-        r#"mkdir -p "$RUNNER_TEMP/rust-target-verify/release"
-printf 'second' > "$RUNNER_TEMP/rust-target-verify/release/app""#,
+        r#"mkdir -p "$CARGO_TARGET_DIR/release"
+printf 'second' > "$CARGO_TARGET_DIR/release/app""#,
     );
     refused(
         &differs.run("ci", "hardening"),
@@ -173,8 +173,8 @@ printf 'second' > "$RUNNER_TEMP/rust-target-verify/release/app""#,
     plain.set("CARGO_TARGET_DIR", &target.display().to_string());
     plain.stub(
         "cargo",
-        r#"mkdir -p "$RUNNER_TEMP/rust-target-verify/release"
-printf 'first' > "$RUNNER_TEMP/rust-target-verify/release/app""#,
+        r#"mkdir -p "$CARGO_TARGET_DIR/release"
+printf 'first' > "$CARGO_TARGET_DIR/release/app""#,
     );
     plain.stub(
         "readelf",
