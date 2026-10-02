@@ -51,6 +51,7 @@ fn permissions_timeouts_and_shell_policy_hold_in_every_workflow() {
         "publish-binaries",
         "publish-crate",
         "ci-internal",
+        "gate-mutation",
         "dependabot-auto-merge",
         "scorecard",
     ] {
@@ -106,6 +107,7 @@ fn all_jobs_use_github_runners_without_caller_overrides() {
         "publish-binaries",
         "publish-crate",
         "ci-internal",
+        "gate-mutation",
         "attest-binaries",
         "publish-evidence",
         "unsafe-audit",

@@ -1,4 +1,4 @@
-//! The existing first-parent scope, named relative to the checkout and hashed
+//! The first-parent or explicit full-project scope, named relative to the checkout and hashed
 //! with the files that affect mutation selection or execution.
 
 use crate::checks::checkout_paths::canonical;
@@ -24,8 +24,21 @@ pub(super) struct Scope {
     pub(super) diff_digest: String,
 }
 
+/// Marker binding an explicitly requested full-project run to its workers.
+pub(super) const FULL_SCOPE: &[u8] = b"full-workspace;explicit";
+
+/// Read the optional full-project selection without changing the reusable CI default.
+pub(super) fn full_scope() -> Result<bool, Failure> {
+    match optional("MUTATION_FULL_SCOPE")?.as_str() {
+        "" | "false" => Ok(false),
+        "true" => Ok(true),
+        _ => Err("mutation-full-scope must be true or false".into()),
+    }
+}
+
 /// Recreate the current scope and preserve its diff in both runner temp and reports.
 pub(super) fn prepare(job: &Job, base: &str) -> Result<Scope, Failure> {
+    let full = full_scope()?;
     let parent = match Cmd::new("git rev-parse --verify -q HEAD^1")
         .cwd(&job.project)
         .capture()
@@ -43,7 +56,9 @@ pub(super) fn prepare(job: &Job, base: &str) -> Result<Scope, Failure> {
     if !base.is_empty() && parent.is_none() {
         return Err("pull request checkout must include the base parent".into());
     }
-    let (diff, change, diff_digest) = if parent.is_some() {
+    let (diff, change, diff_digest) = if full {
+        (None, None, sha256_hex(FULL_SCOPE))
+    } else if parent.is_some() {
         let diff = job.temp.join("mutants.diff");
         Cmd::new("git diff --relative HEAD^1 HEAD -- .")
             .cwd(&job.project)

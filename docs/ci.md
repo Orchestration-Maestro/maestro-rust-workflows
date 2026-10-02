@@ -563,6 +563,31 @@ last run left is never taken for this run's sources.
 maestro-rust-workflows has no Cargo package at its root and no `ci.yml` run of its
 own; its pre-push hook runs `just check`.
 
+### Report-only gate mutation measurement
+
+[gate-mutation.yml](../.github/workflows/gate-mutation.yml) measures all of
+`gate/src` against the gate unit suite on pull requests touching the gate, pushes
+to main and manual runs. It is report-only: no ruleset or required repository
+check depends on it. Misses fail its jobs so the result stays visible, without
+blocking existing required checks. The separate contract harness is not run
+against these mutants, so these misses are provisional, not the final list for
+follow-up tests.
+
+The workflow uses the same `mutants-plan`, round-robin `mutants` shards and
+`mutants-aggregate` validation as consumers. `MUTATION_FULL_SCOPE=true` selects
+the whole project instead of its first-parent diff and binds that scope in the
+immutable plan. This optional step environment setting is not a reusable
+workflow input; existing consumers keep their diff selection. Each worker has
+the existing 30-minute command limit and must finish every planned mutant.
+Each isolated worker sets `MUTATION_IN_PLACE=true`: the gate embeds files outside
+its crate, which cargo-mutants copy mode would omit. This optional execution
+setting is also not a reusable input and defaults to copy mode. After execution
+only mutation evidence is uploaded; no executable or mutated source tree is
+reused.
+The manual `mutants-per-shard` input adjusts automatic planning, initially 50,
+without sampling. Raw shard evidence, the immutable plan and the aggregated
+report are retained for 14 days, including failed and incomplete runs.
+
 ### Pull request rules
 
 Measured on a pull request only, against its base branch, the merge commit's first parent:

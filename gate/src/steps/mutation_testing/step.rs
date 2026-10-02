@@ -3,7 +3,7 @@
 
 use super::{aggregate, plan, plan_identity, reports, scope, selftest};
 use crate::checks::native_cache::{native_cache, native_cache_command};
-use crate::runner::{Failure, Job, Outcome, Step, flag, optional, output, tee_line};
+use crate::runner::{Cmd, Failure, Job, Outcome, Step, flag, optional, output, tee_line};
 use std::fs;
 use std::path::PathBuf;
 
@@ -16,6 +16,7 @@ pub(crate) const STEPS: &[Step] = &[
         inputs: &[
             "CARGO_MUTANTS_VERSION",
             "GITHUB_BASE_REF",
+            "MUTATION_FULL_SCOPE",
             "GITHUB_RUN_ATTEMPT",
             "GITHUB_RUN_ID",
             "GITHUB_SHA",
@@ -52,12 +53,14 @@ pub(crate) const STEPS: &[Step] = &[
         inputs: &[
             "CARGO_MUTANTS_VERSION",
             "GITHUB_BASE_REF",
+            "MUTATION_FULL_SCOPE",
             "GITHUB_RUN_ATTEMPT",
             "GITHUB_RUN_ID",
             "GITHUB_SHA",
             "GITHUB_WORKSPACE",
             "INTERNAL_SHARD_SELFTEST",
             "MUTATION_LIST",
+            "MUTATION_IN_PLACE",
             "MUTATION_PLAN",
             "MUTATION_SHARD",
             "MUTATION_SHARDS",
@@ -82,6 +85,7 @@ pub(crate) const STEPS: &[Step] = &[
         inputs: &[
             "CARGO_MUTANTS_VERSION",
             "GITHUB_BASE_REF",
+            "MUTATION_FULL_SCOPE",
             "GITHUB_RUN_ATTEMPT",
             "GITHUB_RUN_ID",
             "GITHUB_SHA",
@@ -115,6 +119,7 @@ pub(crate) const STEPS: &[Step] = &[
         inputs: &[
             "CARGO_MUTANTS_VERSION",
             "GITHUB_BASE_REF",
+            "MUTATION_FULL_SCOPE",
             "GITHUB_RUN_ATTEMPT",
             "GITHUB_RUN_ID",
             "GITHUB_SHA",
@@ -146,6 +151,7 @@ pub(crate) const STEPS: &[Step] = &[
         inputs: &[
             "CARGO_MUTANTS_VERSION",
             "GITHUB_BASE_REF",
+            "MUTATION_FULL_SCOPE",
             "GITHUB_WORKSPACE",
             "GITHUB_SHA",
             "GITHUB_RUN_ID",
@@ -214,6 +220,8 @@ pub(crate) const STEPS: &[Step] = &[
 /// Execute the current unsharded path, or one checked worker shard.
 fn run() -> Outcome {
     let job = Job::current()?;
+    fs::create_dir_all(&job.reports)
+        .map_err(|error| format!("cannot create mutation reports: {error}"))?;
     let report = job.report("mutants.txt")?;
     if !flag("MUTATION_TEST")? {
         tee_line("SKIPPED: mutation-test=false", &report, false)?;
@@ -249,7 +257,9 @@ fn run() -> Outcome {
     } else {
         (plan_identity::planned_scope(&job, &base)?, None)
     };
-    if !base.is_empty() && scope.parent.is_some() {
+    if scope.diff.is_none() && scope.parent.is_some() {
+        tee_line("scope: full workspace", &report, true)?;
+    } else if !base.is_empty() && scope.parent.is_some() {
         tee_line(&format!("scope: changes against {base}"), &report, true)?;
     } else if scope.parent.is_some() {
         tee_line("scope: changes in the last commit", &report, true)?;
@@ -267,7 +277,7 @@ fn run() -> Outcome {
         "cargo mutants --no-shuffle --cargo-arg=--locked --colors=never --level=info"
     };
     let policy = native_cache(&job.project)?;
-    let mut command = native_cache_command(policy.as_ref(), command_line);
+    let mut command = in_place_execution(native_cache_command(policy.as_ref(), command_line))?;
     if let Some(diff) = &scope.diff {
         let diff = diff.to_string_lossy().into_owned();
         command = command.args(["--in-diff", &diff]);
@@ -295,6 +305,15 @@ fn run() -> Outcome {
     verdict?;
     saved?;
     reports::report_outcomes(&job, &outcomes, scope.change.as_deref(), expected_mutants)
+}
+
+/// Optionally run in an isolated checkout when sources embed files outside their crate.
+fn in_place_execution(command: Cmd) -> Result<Cmd, Failure> {
+    match optional("MUTATION_IN_PLACE")?.as_str() {
+        "" | "false" => Ok(command),
+        "true" => Ok(command.arg("--in-place")),
+        _ => Err("mutation-in-place must be true or false".into()),
+    }
 }
 
 /// Resolve a worker's plan input without accepting a missing path.

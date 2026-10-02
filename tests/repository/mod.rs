@@ -6,6 +6,7 @@ mod documentation_coverage;
 mod evidence_receipt;
 mod executable_stubs;
 mod gate_action;
+mod gate_mutation;
 mod gate_rules;
 mod generated_documents;
 mod metadata_and_inventory;

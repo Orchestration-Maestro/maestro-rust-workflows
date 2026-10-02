@@ -61,6 +61,7 @@ in place.
 │   │   ├── dependabot-auto-merge.yml                            # Queues Dependabot patch and minor updates to merge on the organization's bot token
 │   │   ├── docs-sync.yml                                        # On a pull request from this repository, the bot commits the tables just docs regenerated
 │   │   ├── fuzz.yml                                             # Bounded fuzz regression on a nightly toolchain
+│   │   ├── gate-mutation.yml                                   # Report-only full gate unit-suite mutation shards and complete aggregation
 │   │   ├── hygiene.yml                                          # The reusable CI of a repository without Rust: secrets, hygiene, managed files, hooks
 │   │   ├── native-cache-fixture.yml                             # Native cache fixture
 │   │   ├── publish-binaries.yml                                 # Protected binary release, dry-run by default
@@ -459,6 +460,7 @@ in place.
 │   │   ├── evidence_receipt.rs                                  # The evidence receipt: produced only when every upstream result succeeded
 │   │   ├── executable_stubs.rs                                  # Stand-in executables written outside the test process, so none is refused as Text file busy
 │   │   ├── gate_action.rs                                       # The gate action: built from the workflow's own commit in every job
+│   │   ├── gate_mutation.rs                                    # Report-only gate mutation workflow and full-scope execution contracts
 │   │   ├── gate_rules.rs                                        # Every rule the gate names is listed, and has its row in docs/ci.md
 │   │   ├── generated_documents.rs                               # Every generated table and the diagram's count are what just docs writes
 │   │   ├── metadata_and_inventory.rs                            # Repository files, hook, editor and release policies, the Copilot inventory

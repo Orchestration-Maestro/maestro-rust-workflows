@@ -4,11 +4,14 @@ use super::scope::{self, Scope};
 use super::{engine_plan, plan_identity, selftest};
 use crate::checks::inputs::{mutation_mutants_per_shard, mutation_shards};
 use crate::runner::{Cmd, Failure, Job, Outcome, flag, optional, output, tee_line, write};
+use std::fs;
 use std::path::Path;
 
 /// Run planning for this job and publish only the small routing values.
 pub(super) fn run() -> Outcome {
     let job = Job::current()?;
+    fs::create_dir_all(&job.reports)
+        .map_err(|error| format!("cannot create mutation reports: {error}"))?;
     let report = job.report("mutants-plan.txt")?;
     if !flag("MUTATION_TEST")? {
         engine_plan::disabled()?;
