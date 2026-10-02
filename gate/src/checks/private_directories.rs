@@ -15,14 +15,14 @@ use std::time::SystemTime;
 
 /// Unix creation applies the owner-only mode in the mkdir system call.
 #[cfg(unix)]
-fn create_private(path: &Path) -> io::Result<()> {
+pub(crate) fn create_private(path: &Path) -> io::Result<()> {
     DirBuilder::new().mode(0o700).create(path)
 }
 
 /// Windows creation supplies a protected inheritable DACL atomically and
 /// preserves `ERROR_ALREADY_EXISTS`. The fixed adapter passes paths as data.
 #[cfg(windows)]
-fn create_private(path: &Path) -> io::Result<()> {
+pub(crate) fn create_private(path: &Path) -> io::Result<()> {
     Cmd::new("powershell.exe")
         .args([
             "-NoProfile",

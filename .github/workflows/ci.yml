@@ -348,9 +348,30 @@ jobs:
       - name: Duplicated functions, pairs reported and three alike refused
         id: duplication
         run: rust-gate duplication
+      - name: Prepare private native cache restore
+        id: native-cache-prepare
+        if: ${{ env.COVERAGE_FEATURES != '' }}
+        run: rust-gate native-cache-prepare
+        env:
+          NATIVE_CACHE_MODE: coverage
+          NATIVE_CACHE_OS: ${{ runner.os }}
+          NATIVE_CACHE_ARCH: ${{ runner.arch }}
+      - name: Restore published native entries
+        id: native-cache-restore
+        if: ${{ steps.native-cache-prepare.outputs.enabled == 'true' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.native-cache-prepare.outputs.paths }}
+          key: ${{ steps.native-cache-prepare.outputs.key }}
+          restore-keys: |
+            ${{ steps.native-cache-prepare.outputs.bucket }}-coverage-
+            ${{ steps.native-cache-prepare.outputs.bucket }}-
+          enableCrossOsArchive: false
       - name: Line coverage gate
         id: coverage
         run: rust-gate coverage
+        env:
+          NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
       - name: Coverage of the lines a pull request adds
         id: changed-coverage
         env:
@@ -486,6 +507,25 @@ jobs:
           path: ${{ runner.temp }}/mutants/mutants.out/
           if-no-files-found: error
           retention-days: 7
+      - name: Check native cache save inventory
+        id: native-cache-inventory
+        if: ${{ success() && steps.native-cache-prepare.outputs.enabled == 'true' }}
+        run: rust-gate native-cache-inventory
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
+          JOB_SUCCESS: 'true'
+          NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
+      - name: Save published native entries
+        id: native-cache-save
+        if: ${{ success() && steps.native-cache-inventory.outputs.save == 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ steps.native-cache-inventory.outputs.paths }}
+          key: ${{ steps.native-cache-prepare.outputs.key }}
+          enableCrossOsArchive: false
 
   mutations:
     name: Mutation shard ${{ matrix.shard }} of ${{ needs.checks.outputs.mutation-shards }}
@@ -702,11 +742,6 @@ jobs:
         run: rust-gate mutants-engine
         env:
           CARGO_MUTANTS_VERSION: '27.1.0'
-          GITHUB_BASE_REF: ${{ github.base_ref }}
-          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_WORKSPACE: ${{ github.workspace }}
           MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
           MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
           MUTATION_ENGINE_PLAN: ${{ runner.temp }}/mutation-plan/mutation-engine-plan.json
@@ -818,11 +853,6 @@ jobs:
         run: rust-gate mutants-engine-default
         env:
           CARGO_MUTANTS_VERSION: '27.1.0'
-          GITHUB_BASE_REF: ${{ github.base_ref }}
-          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_WORKSPACE: ${{ github.workspace }}
           MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
           MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
           MUTATION_ENGINE_PLAN: ${{ runner.temp }}/mutation-plan/mutation-engine-plan.json
@@ -899,8 +929,6 @@ jobs:
         id: windows-mutation-run
         run: rust-gate mutants-windows
         env:
-          GITHUB_BASE_REF: ${{ github.base_ref }}
-          GITHUB_WORKSPACE: ${{ github.workspace }}
           MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
           MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
           PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}

@@ -22,6 +22,7 @@ rules:
       - ci.yml
       - fuzz.yml
       - hygiene.yml
+      - native-cache-fixture.yml
       - publish-binaries.yml
       - publish-crate.yml
       - publish-evidence.yml

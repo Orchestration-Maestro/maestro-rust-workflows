@@ -17,4 +17,5 @@ mod tool_updates;
 mod toolbelt_and_shellcheck;
 mod toolbelt_platforms;
 mod version_pins;
+mod workflow_environment;
 mod workflow_policy;

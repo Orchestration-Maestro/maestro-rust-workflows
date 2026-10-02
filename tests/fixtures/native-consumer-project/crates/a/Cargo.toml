@@ -1,0 +1,8 @@
+[package]
+name = 'crate-a'
+version = '0.1.0'
+edition = '2024'
+[features]
+engine = ['dep:fixture-native']
+[dependencies]
+fixture-native = { path = '../../native', optional = true }

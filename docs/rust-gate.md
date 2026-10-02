@@ -114,8 +114,8 @@ the file `RUST_GATE_TRACE` names, one line per command, the environment the
 gate set first, written just before each command starts. Environment values
 are redacted by default; only the reviewed compiler, documentation, Miri and
 build-directory settings remain visible. The child still receives the original
-values. The fixture asks for a trace on every run; hosted workflows do not enable
-it. Arguments are not a secret channel and must never carry credentials.
+values. The fixture asks for a trace on every run; the hosted native cache
+fixture also enables it to prove child environment isolation. Arguments are not a secret channel and must never carry credentials.
 A proof that the upload never passes `--clobber`, or that the release tests
 run before the auditable build, is read from that trace, never from a
 function body.

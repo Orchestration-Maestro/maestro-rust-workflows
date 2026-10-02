@@ -70,6 +70,12 @@ impl Cmd {
         self
     }
 
+    /// Remove an inherited variable from this invocation only, not the job.
+    pub(crate) fn env_remove(mut self, name: &str) -> Self {
+        self.command.env_remove(name);
+        self
+    }
+
     /// Start from an empty environment, as a fresh runner does: only the
     /// variables set afterwards reach the tool.
     pub(crate) fn env_clear(mut self) -> Self {
@@ -127,6 +133,10 @@ impl Cmd {
         };
         let mut line = String::new();
         for (name, value) in self.command.get_envs() {
+            if value.is_none() {
+                let _ = write!(line, "env -u {} ", quoted(name));
+                continue;
+            }
             let value = match name.to_str() {
                 Some(
                     "RUSTUP_TOOLCHAIN" | "RUSTDOCFLAGS" | "MIRIFLAGS" | "CARGO_TARGET_DIR"

@@ -32,7 +32,7 @@ jobs:
         env:
           # mise and gh read releases through the API; a token lifts the
           # anonymous rate limit.
-          GITHUB_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail

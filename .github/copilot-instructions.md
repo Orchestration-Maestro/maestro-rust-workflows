@@ -62,6 +62,7 @@ in place.
 │   │   ├── docs-sync.yml                                        # On a pull request from this repository, the bot commits the tables just docs regenerated
 │   │   ├── fuzz.yml                                             # Bounded fuzz regression on a nightly toolchain
 │   │   ├── hygiene.yml                                          # The reusable CI of a repository without Rust: secrets, hygiene, managed files, hooks
+│   │   ├── native-cache-fixture.yml                             # Native cache fixture
 │   │   ├── publish-binaries.yml                                 # Protected binary release, dry-run by default
 │   │   ├── publish-crate.yml                                    # Protected crate publication explicitly to public crates.io
 │   │   ├── publish-evidence.yml                                 # Verifies release reports, dry-run first, then uploads GitHub Release assets
@@ -180,6 +181,9 @@ in place.
 │   │   │   ├── module_tree.rs                                   # Every Cargo target's module tree: files, items, named paths and re-exports
 │   │   │   ├── mutation_engine.rs                               # Validate package-local features and exact engine mutation ownership
 │   │   │   ├── mutation_windows.rs                              # Validate the configured Windows-owned mutation paths before use
+│   │   │   ├── native_cache.rs                                  # Strict policy-file-only native cache contract, independent of engine ownership
+│   │   │   ├── native_cache_inventory.rs                        # Published root-child inventories exclude publication staging and build targets
+│   │   │   ├── native_cache_roots.rs                            # Owner-only restore roots
 │   │   │   ├── organization_config.rs                           # The tools' configuration passed at run time, and the header sync writes
 │   │   │   ├── private_directories.rs                           # Private temporary directories under the runner's own
 │   │   │   ├── pull_request.rs                                  # A pull request against its base: added and touched lines, the title's type
@@ -296,6 +300,7 @@ in place.
 │   │   │   ├── line_coverage.rs                                 # rust-gate coverage: LCOV line coverage, failing below the threshold
 │   │   │   ├── local_runs.rs                                    # rust-gate architecture, hygiene and clippy --local: a step as a hook or a developer runs it
 │   │   │   ├── mod.rs                                           # One module per step, the registry among them; run and describe are its doors
+│   │   │   ├── native_cache_transport.rs                        # Guarded restore preparation and successful-job publication inventory
 │   │   │   ├── performance.rs                                   # rust-gate performance: PRF-001, declared benchmarks base against head under gungraun
 │   │   │   ├── publish_binaries.rs                              # rust-gate publish-binaries: the publication boundary of the binary publisher
 │   │   │   ├── publish_crate.rs                                 # rust-gate publish-crate: boundary, toolchain, package, semver, publish
@@ -361,6 +366,9 @@ in place.
 │   │   ├── local_ci_run.rs                                      # rust-gate ci --local: every ci.yml step run or said not applied, a branch as its pull request
 │   │   ├── managed_files.rs                                     # init, sync, sync --check and managed-files: written, refused by name, written back
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
+│   │   ├── native_cache.rs                                      # Native cache policy, private restore transport and coverage-only injection
+│   │   ├── native_cache_fixture.rs                              # Real fresh-target builds prove optional consumer cache reuse, not a command stub
+│   │   ├── native_cache_policy.rs                               # Native policy parser isolation and coverage child environment regressions
 │   │   ├── organization_lints.rs                                # LNT-001: written, refused when missing or looser, and read by real Clippy through the gate
 │   │   ├── performance_budget.rs                                # PRF-001: a rise past 5 % refused unless excused, and when nothing is measured
 │   │   ├── platform_portability.rs                              # ci.yml: named platforms become pinned runners that the required status holds
@@ -381,6 +389,33 @@ in place.
 │   │   ├── toolbelt_setup.rs                                    # rust-gate setup: the locked toolbelt linked and its PATH printed, a bad mise digest refused
 │   │   ├── workspace_boundary.rs                                # ci.yml: a workspace whose manifests or sources reach outside the checkout is refused before any lint
 │   │   └── workspace_packaging.rs                               # ci.yml: the build packages only members that may be published, earlier archives removed
+│   ├── fixtures/                                                # Test fixtures
+│   │   ├── native-consumer/                                     # Native consumer
+│   │   │   └── build.rs.in                                      # Build-script template for private, verified, atomic native entry publication
+│   │   └── native-consumer-project/                             # Committed hosted consumer, byte-checked against its generator
+│   │       ├── crates/                                         # Three feature-partition workspace members
+│   │       │   ├── a/                                          # Optional native consumer
+│   │       │   │   ├── src/                                    # Default and engine-only sources
+│   │       │   │   │   ├── engine.rs                            # Engine-only coverage assertion
+│   │       │   │   │   └── lib.rs                               # Default workspace coverage assertion
+│   │       │   │   └── Cargo.toml                               # Optional native dependency and engine feature
+│   │       │   ├── b/                                          # Forwarded engine feature
+│   │       │   │   ├── src/                                    # Forwarding member source
+│   │       │   │   │   └── lib.rs                               # Default workspace coverage assertion
+│   │       │   │   └── Cargo.toml                               # Forwards crate-a's engine feature
+│   │       │   └── c/                                          # Featureless member
+│   │       │       ├── src/                                    # Featureless member source
+│   │       │       │   └── lib.rs                               # Default workspace coverage assertion
+│   │       │       └── Cargo.toml                               # Unrelated workspace member
+│   │       ├── native/                                         # Verified native publication fixture
+│   │       │   ├── src/                                        # Generated native payload consumer
+│   │       │   │   └── lib.rs                                   # Includes the build-script payload
+│   │       │   ├── Cargo.toml                                   # Excluded optional native dependency
+│   │       │   └── build.rs                                     # Generated copy of the native publication template
+│   │       ├── .gitignore                                      # Keeps consumer build output out of the tested commit
+│   │       ├── Cargo.lock                                      # Offline, pinned consumer dependency graph
+│   │       ├── Cargo.toml                                      # Three-package hosted fixture workspace
+│   │       └── maestro-quality.toml                            # Optional engine and Unix native cache policy
 │   ├── gate/                                                    # The gate and the tests as structures: layers, no import cycle, the step registry, what holds every step and refusal
 │   │   ├── layer_boundaries.rs                                  # This crate's own step shape, the checks door, seam unit tests and no whole-harness import
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
@@ -388,13 +423,19 @@ in place.
 │   │   └── step_registry.rs                                     # The step registry: declarations, the generated document, every body registered
 │   ├── harness/                                                 # The one door of the tests: the repository, YAML readers, gate declarations and the fixture
 │   │   ├── engine_mutations.rs                                  # Shared mode-aware engine planner, worker and aggregate fixtures
-│   │   ├── engine_workspace.rs                                  # Shared real A/B/C source and Git setup for mode and input-only ownership regressions
+│   │   ├── engine_workspace.rs                                  # Real Git setup for mode and input-only ownership regressions
 │   │   ├── fixture.rs                                           # One temporary checkout, one environment table, a step run against stand-ins, every command traced
 │   │   ├── gate_declarations.rs                                 # The gate built once per test process, and what rust-gate describe declares about its steps
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
 │   │   ├── mutation_shards.rs                                   # Shared test fixtures for mutation planning and evidence aggregation
+│   │   ├── native_cache.rs                                      # Shared opted-in native cache and observed coverage child fixtures
 │   │   ├── repository.rs                                        # The repository root, the toolbelt, commands run to completion, temporary directories, stand-in executables, every test file
 │   │   └── workflow_yaml.rs                                     # Readers of workflow and action YAML: whole documents, one step's body, tool rows, jaq queries
+│   ├── hosted_cache/                                            # Hosted cache
+│   │   ├── harness/                                             # Native, cross-platform fixture preparation and observed coverage evidence
+│   │   │   ├── mod.rs                                           # Native, cross-platform fixture preparation and observed coverage evidence
+│   │   │   └── runtime.rs                                       # Real hosted fixture setup and evidence, without Bash or command stand-ins
+│   │   └── main.rs                                              # Hosted native cache transport: real consumer preparation and coverage execution evidence
 │   ├── nightly/                                                 # The nightly workflows, unsafe-audit.yml and fuzz.yml, outside the stable policy
 │   │   ├── fuzz_regression.rs                                   # fuzz.yml: the nightly with rust-src and cargo-fuzz, every committed target replayed with the corpus first
 │   │   ├── input_validation.rs                                  # unsafe-audit.yml and fuzz.yml: every malformed input refused before a toolchain is touched
@@ -427,10 +468,12 @@ in place.
 │   │   ├── toolbelt_and_shellcheck.rs                           # Toolbelt links to the locked builds; ShellCheck over every Bash line left
 │   │   ├── toolbelt_platforms.rs                                # Every pin locked with a checksum on every platform, or its declared gap
 │   │   ├── version_pins.rs                                      # Tool versions, the toolchain pin and the speed target, one copy each
+│   │   ├── workflow_environment.rs                              # Refuses reserved GitHub and runner environment keys at every workflow scope
 │   │   └── workflow_policy.rs                                   # Permissions, timeouts, runners, trust boundaries, shell policy and the local calls
 │   ├── Cargo.lock                                               # Locked resolution for the test crate
 │   ├── Cargo.toml                                               # Isolated workflow-contract test target
 │   ├── LICENSE                                                  # MIT notice included in the Cargo package
+│   ├── fixture_sources.rs                                       # Shared three-package workspace with an optional native publication consumer
 │   ├── native_runtime.rs                                        # Real native Windows processes, registry boundary and temporary trees, the native suite's one door
 │   ├── native_windows.rs                                        # Native gate units, ACLs and real Cargo examples, not Linux ELF replay
 │   └── workflows.rs                                             # Test crate root: one directory per what the tests prove, and the harness they share
