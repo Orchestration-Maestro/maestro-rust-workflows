@@ -1,5 +1,15 @@
 # Changelog
 
+## [4.8.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.7.1...v4.8.0) (2026-10-02)
+
+
+### Features
+
+* coverage-features gate input (stacked on [#96](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/96)) ([#101](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/101)) ([fb52715](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/fb527155b3574e9dc0bc89a32a15708b398bd93c))
+* native-cache mutation wiring and hosted proof ([#104](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/104)) ([4711f33](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/4711f335574f43c0d8718d8d8cc19dc636944dcc))
+* native-cache policy and coverage wiring (stacked on [#101](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/101)) ([#102](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/102)) ([fd26eac](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/fd26eac751e66c249b7fda0f5d008aa120345930))
+* validate package-local engine mutation ownership ([#96](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/96)) ([d075faf](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/d075faf17cd4bf60b991624225c2cf4531182963))
+
 ## [4.7.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.7.0...v4.7.1) (2026-10-01)
 
 
