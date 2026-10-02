@@ -62,7 +62,9 @@ fn publication_defaults_and_required_dependencies() {
             "portability",
             "mutations",
             "mutation-summary",
-            "mutation-windows"
+            "mutation-windows",
+            "mutation-engine",
+            "mutation-engine-default"
         ])
     );
     assert!(

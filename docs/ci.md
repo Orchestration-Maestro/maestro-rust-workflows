@@ -100,6 +100,7 @@ committed `deny.toml` applies the same way to every pull request. See [runner se
 | `mutation-shards` | number | `1` | `1` keeps one inline run without discovery, `0` selects all mutants automatically up to GitHub's 256-job matrix limit and fails if the target needs more, while `2` through `256` request a fixed shard count |
 | `mutation-mutants-per-shard` | number | `50` | Automatic mode target mutants per shard, an adjustable calibration knob from `1` to `1000`, not a time guarantee |
 | `mutation-windows` | string | `[]` | JSON array of exact files relative to `working-directory` owned by Windows mutation testing |
+| `mutation-engine` | string | Empty | JSON object with package-local features and exact relative Rust files; empty reads the tested head's [ci.mutation-engine] policy |
 | `internal-shard-selftest` | boolean | `false` | Internal to this repository's own CI only: create a behavior-equivalent workspace diff and require its two-shard mutation matrix. Refused for every other repository. |
 | `sarif-reports` | boolean | `true` | Also emit Clippy and secret findings as SARIF, which the organization's check uploads to code scanning |
 | `clippy-level` | string | `default` | `pedantic` or `nursery` also deny those Clippy groups |
@@ -1054,6 +1055,12 @@ or failed from complete evidence.
 | `mutants.json`, `mutants.txt` | Inline outcomes or the complete aggregate, including failures; text-only no-work skips never invent outcomes | `mutation-test` |
 | `mutants-plan.txt` | Mutation-plan mode or the explicit disabled/no-work decision | always |
 | `mutants-plan.log`, `mutants-list.json`, `mutation-plan.json` | Full filtered listing, planner log and immutable run identity | `mutation-shards` is not `1` and `mutation-test` is true |
+| `mutation-control-list.json`, `mutation-feature-list.json` | Complete same-source discovery in both modes, reconciled to exact ownership | engine ownership is configured |
+| `mutation-engine-list.json`, `mutation-engine-default-list.json`, `mutation-engine-plan.json`, `mutation-engine-plan.log` | Feature-owned plan and separately named featureless control obligations, bound to policy and package owners | engine ownership is configured |
+| `mutants-engine-shard.json`, `mutants-engine-default-shard.json` | SHA-bound mode-specific shard receipts | engine workers |
+| `mutants-engine.txt`, `mutants-engine-default.txt` | Bounded worker command logs for each mode | engine workers |
+| `mutation-windows-plan.json`, `mutation-windows-list.json` | Native Windows discovery bound to the same source, policy and run | Windows-owned files |
+| `mutation-partitions` | Preserved engine/control/Windows raw evidence with mode-tagged outcomes | engine partition aggregation |
 | `mutants.diff` | First-parent source diff used to constrain mutation scope | Mutation execution with a first parent |
 | `mutation-shards` | Each raw shard output, outcome, log, diff and `mutants-shard.json` identity receipt, retained separately | sharded mode |
 | `clippy.sarif`, `secrets.sarif` | The same findings as SARIF | `sarif-reports` |
@@ -1112,6 +1119,33 @@ mutants is reported as skipped. A pull request reports a successful no-op when
 it touched none. A full run requires at least one mutant from every listed file.
 Missing files, empty required listings, survivors and timeouts fail the job,
 which the required status holds.
+
+`[ci.mutation-engine]` lists exact Rust files and package-local features. The
+planner retains their featureless mutants as separate control obligations and
+lists owning packages again with those features. Mode-specific mutants outside
+that ownership are refused. Both modes use the existing planner/cap independently,
+with separate required Linux matrices and the same 30-minute command deadline.
+Default and Windows workers never receive feature flags. The aggregate verifies
+both matrices and the Windows job, then joins outcomes with explicit mode labels.
+A shared default-caught mutant becoming unviable fails; an already-unviable shared
+identity is allowed; a newly discovered feature-only unviable fails. Package and
+partition counts are reported so offsets cannot hide regressions.
+
+The checks job exports its resolved policy, features and files as immutable job outputs.
+Every mutation worker validates that resolved policy, including input-only ownership when
+no repository policy exists; workers never reselect ownership from the caller or checkout.
+Without an engine policy, existing `.cargo/mutants.toml` settings remain unchanged. Global
+feature/workspace-test restrictions apply only when engine ownership is configured.
+
+The featureless control can report MISSED for a cfg-disabled engine body: its mutation is in
+code that is not compiled without features. Such an outcome is accepted **only** when the
+engine run caught its exact twin (package, file, complete source span, function and mutation
+text). This is evidence of inactivity, not an accepted test gap. A missing, surviving,
+timed-out or unviable engine twin fails. Default-only/cfg-exclusive control survivors still
+fail. Every raw control outcome remains MISSED; it is never relabelled CAUGHT. The aggregate
+adds the separate `inactive_without_features_caught_with_engine` class, counted globally,
+per `engine-default` partition and per package, and tags the accepted pairs in its JSON.
+Default-caught to engine-unviable regressions and feature-only unviable mutants still fail.
 
 `mutation-shards: 1` is the compatible default: it runs the existing inline
 mutation command once, with no discovery listing; the worker and summary jobs

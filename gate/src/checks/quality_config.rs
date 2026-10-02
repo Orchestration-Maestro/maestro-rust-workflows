@@ -27,6 +27,7 @@ const CI_INPUTS: &[&str] = &[
     "mutation-shards",
     "mutation-mutants-per-shard",
     "mutation-windows",
+    "mutation-engine",
     "sarif-reports",
     "clippy-level",
     "dependency-audit",
@@ -243,7 +244,12 @@ fn check_ci_input(line: &str) -> Result<(), Failure> {
     if key == "mutation-windows" && kind != "array" {
         return Err(format!("{FILE}: [ci] {key} must be an array of file paths").into());
     }
-    if key != "mutation-windows" && !matches!(kind, "string" | "number" | "boolean") {
+    if key == "mutation-engine" && kind != "object" {
+        return Err(format!("{FILE}: [ci] {key} must be a table").into());
+    }
+    if !matches!(key, "mutation-windows" | "mutation-engine")
+        && !matches!(kind, "string" | "number" | "boolean")
+    {
         return Err(format!("{FILE}: [ci] {key} must be a string, a number or a boolean").into());
     }
     Ok(())
@@ -336,6 +342,7 @@ mod tests {
         for line in [
             "platforms\tstring\tmacos windows",
             "mutation-windows\tarray\t[\"src/windows.rs\"]",
+            "mutation-engine\tobject\t{\"features\":[\"engine\"],\"files\":[\"src/engine.rs\"]}",
             "coverage-threshold\tnumber\t95",
             "mutation-test\tboolean\tfalse",
             "mutation-shards\tnumber\t0",
@@ -347,6 +354,13 @@ mod tests {
         // v2.0.0 runs every rule on every call; the switch that held them
         // back is gone.
         assert!(check_ci_input("quality-preview\tboolean\ttrue").is_err());
+        assert_eq!(
+            check_ci_input("mutation-engine\tstring\t{}")
+                .unwrap_err()
+                .message
+                .as_deref(),
+            Some("maestro-quality.toml: [ci] mutation-engine must be a table")
+        );
         assert_eq!(
             check_ci_input("mutation-windows\tstring\tsrc/windows.rs")
                 .unwrap_err()
@@ -375,6 +389,28 @@ mod tests {
              boolean"
         );
         assert!(check_ci_input("platforms\tarray\t[]").is_err());
+    }
+
+    #[test]
+    fn engine_policy_table_is_retained_as_json_settings() {
+        use std::{env, fs, process};
+        let directory = env::temp_dir().join(format!("quality-engine-{}", process::id()));
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join(super::FILE),
+            "[ci.mutation-engine]\nfeatures = [\"engine\"]\nfiles = [\"src/engine.rs\"]\n",
+        )
+        .unwrap();
+        let config = super::read_config(&directory).unwrap();
+        assert_eq!(
+            config
+                .settings
+                .iter()
+                .find(|(key, _)| key == "mutation-engine")
+                .map(|(_, value)| value.as_str()),
+            Some(r#"{"features":["engine"],"files":["src/engine.rs"]}"#)
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

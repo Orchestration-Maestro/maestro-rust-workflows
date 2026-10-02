@@ -106,3 +106,55 @@ fn the_required_status_fails_unless_every_result_succeeded() {
     fixture.set("GITHUB_RUN_ATTEMPT", "2");
     assert!(!fixture.run("ci", "required").status.success());
 }
+
+#[test]
+fn engine_control_and_feature_jobs_require_complete_aggregation_and_intentional_skips() {
+    let mut fixture = Fixture::new();
+    for (key, value) in [
+        ("RESULT", "success"),
+        ("RUNNERS", ""),
+        ("MUTATION_TEST", "true"),
+        ("MUTATION_MODE", "inline"),
+        ("MUTATION_COUNT", "1"),
+        ("MUTATION_SHARDS", "1"),
+        ("MUTATION_MATRIX", "[]"),
+        ("MUTATIONS_RESULT", "skipped"),
+        ("MUTATION_ENGINE_FILES", "[\"src/engine.rs\"]"),
+        ("MUTATION_ENGINE_COUNT", "1"),
+        ("MUTATION_ENGINE_DEFAULT_COUNT", "1"),
+        ("ENGINE_MUTATIONS_RESULT", "success"),
+        ("ENGINE_DEFAULT_MUTATIONS_RESULT", "success"),
+        ("MUTATION_SUMMARY_RESULT", "success"),
+    ] {
+        fixture.set(key, value);
+    }
+    succeeds(&fixture.run("ci", "required"));
+    for variable in ["ENGINE_MUTATIONS_RESULT", "ENGINE_DEFAULT_MUTATIONS_RESULT"] {
+        for state in ["failure", "cancelled", "skipped"] {
+            fixture.set(variable, state);
+            refused(
+                &fixture.run("ci", "required"),
+                "Engine-owned mutation job failed or was skipped",
+            );
+        }
+        fixture.set(variable, "success");
+    }
+    fixture.set("MUTATION_SUMMARY_RESULT", "skipped");
+    refused(
+        &fixture.run("ci", "required"),
+        "Mutation partition aggregation failed or was skipped",
+    );
+    fixture.set("MUTATION_SUMMARY_RESULT", "success");
+    fixture.set("MUTATION_ENGINE_COUNT", "not-a-number");
+    refused(
+        &fixture.run("ci", "required"),
+        "Engine mutation count is invalid",
+    );
+    fixture.set("MUTATION_ENGINE_COUNT", "0");
+    refused(
+        &fixture.run("ci", "required"),
+        "Engine-owned mutation job ran without planned mutants",
+    );
+    fixture.set("ENGINE_MUTATIONS_RESULT", "skipped");
+    succeeds(&fixture.run("ci", "required"));
+}

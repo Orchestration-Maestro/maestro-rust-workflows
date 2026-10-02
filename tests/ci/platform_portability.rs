@@ -146,7 +146,9 @@ fn checks_hand_the_runners_to_portability_and_the_result_to_the_required_status(
             "portability",
             "mutations",
             "mutation-summary",
-            "mutation-windows"
+            "mutation-windows",
+            "mutation-engine",
+            "mutation-engine-default"
         ])
     );
     let required = gate["steps"]

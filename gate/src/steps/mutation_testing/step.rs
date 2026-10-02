@@ -1,7 +1,7 @@
 //! `rust-gate mutants`: cargo-mutants over the checked source scope, failing on
 //! every survivor, timeout, baseline failure or incomplete shard execution.
 
-use super::{aggregate, plan, reports, scope, selftest};
+use super::{aggregate, plan, plan_identity, reports, scope, selftest};
 use crate::runner::{Cmd, Failure, Job, Outcome, Step, flag, optional, output, tee_line};
 use std::fs;
 use std::path::PathBuf;
@@ -21,17 +21,25 @@ pub(crate) const STEPS: &[Step] = &[
             "GITHUB_WORKSPACE",
             "INTERNAL_SHARD_SELFTEST",
             "MUTATION_MUTANTS_PER_SHARD",
+            "MUTATION_ENGINE_FEATURES",
+            "MUTATION_ENGINE_FILES",
             "MUTATION_SHARDS",
             "MUTATION_TEST",
             "MUTATION_WINDOWS",
             "RUSTUP_TOOLCHAIN",
         ],
-        tools: &["cargo mutants", "git", "jaq"],
+        tools: &["cargo mutants", "cargo metadata", "git", "jaq"],
         reports: &[
             "mutants-plan.txt",
             "mutants-plan.log",
             "mutants-list.json",
             "mutation-plan.json",
+            "mutation-engine-list.json",
+            "mutation-engine-default-list.json",
+            "mutation-engine-plan.json",
+            "mutation-engine-plan.log",
+            "mutation-control-list.json",
+            "mutation-feature-list.json",
             "mutants.diff",
         ],
         run: plan::run,
@@ -54,6 +62,7 @@ pub(crate) const STEPS: &[Step] = &[
             "MUTATION_SHARDS",
             "MUTATION_TEST",
             "MUTATION_WINDOWS",
+            "MUTATION_ENGINE_FILES",
             "RUSTUP_TOOLCHAIN",
         ],
         tools: &["cargo mutants", "git", "jaq", "timeout"],
@@ -67,19 +76,90 @@ pub(crate) const STEPS: &[Step] = &[
     },
     Step {
         workflow: "ci",
+        id: "mutants-engine",
+        summary: "Execute engine shards and their separate featureless obligations",
+        inputs: &[
+            "CARGO_MUTANTS_VERSION",
+            "GITHUB_BASE_REF",
+            "GITHUB_RUN_ATTEMPT",
+            "GITHUB_RUN_ID",
+            "GITHUB_SHA",
+            "GITHUB_WORKSPACE",
+            "RUSTUP_TOOLCHAIN",
+            "MUTATION_TEST",
+            "MUTATION_SHARDS",
+            "MUTATION_SHARD",
+            "MUTATION_ENGINE_FEATURES",
+            "MUTATION_ENGINE_FILES",
+            "MUTATION_ENGINE_PLAN",
+            "MUTATION_ENGINE_LIST",
+            "MUTATION_ENGINE_DEFAULT_LIST",
+        ],
+        tools: &["cargo mutants", "cargo metadata", "git", "jaq", "timeout"],
+        reports: &[
+            "mutants-engine-shard.json",
+            "mutants-engine.txt",
+            "mutants-engine-default.txt",
+            "mutants.txt",
+            "mutants.diff",
+        ],
+        run: super::engine_run::run,
+    },
+    Step {
+        workflow: "ci",
+        id: "mutants-engine-default",
+        summary: "Execute featureless engine-file control shards",
+        inputs: &[
+            "CARGO_MUTANTS_VERSION",
+            "GITHUB_BASE_REF",
+            "GITHUB_RUN_ATTEMPT",
+            "GITHUB_RUN_ID",
+            "GITHUB_SHA",
+            "GITHUB_WORKSPACE",
+            "RUSTUP_TOOLCHAIN",
+            "MUTATION_TEST",
+            "MUTATION_SHARDS",
+            "MUTATION_SHARD",
+            "MUTATION_ENGINE_FEATURES",
+            "MUTATION_ENGINE_FILES",
+            "MUTATION_ENGINE_PLAN",
+            "MUTATION_ENGINE_LIST",
+            "MUTATION_ENGINE_DEFAULT_LIST",
+        ],
+        tools: &["cargo mutants", "cargo metadata", "git", "jaq", "timeout"],
+        reports: &[
+            "mutants-engine-default-shard.json",
+            "mutants-engine.txt",
+            "mutants-engine-default.txt",
+            "mutants.txt",
+            "mutants.diff",
+        ],
+        run: super::engine_run::run_default,
+    },
+    Step {
+        workflow: "ci",
         id: "mutants-windows",
         summary: "Windows mutation testing",
         inputs: &[
             "CARGO_MUTANTS_VERSION",
             "GITHUB_BASE_REF",
             "GITHUB_WORKSPACE",
+            "GITHUB_SHA",
+            "GITHUB_RUN_ID",
+            "GITHUB_RUN_ATTEMPT",
             "MUTATION_TEST",
             "MUTATION_WINDOWS",
             "PROJECT",
             "RUSTUP_TOOLCHAIN",
         ],
         tools: &["cargo mutants", "git", "jaq"],
-        reports: &["mutants.json", "mutants.txt", "mutants.diff"],
+        reports: &[
+            "mutants.json",
+            "mutants.txt",
+            "mutants.diff",
+            "mutation-windows-plan.json",
+            "mutation-windows-list.json",
+        ],
         run: super::windows::run,
     },
     Step {
@@ -89,6 +169,22 @@ pub(crate) const STEPS: &[Step] = &[
         inputs: &[
             "CARGO_MUTANTS_VERSION",
             "CHECKS_RESULT",
+            "MUTATION_WINDOWS",
+            "WINDOWS_MUTATIONS_RESULT",
+            "MUTATION_WINDOWS_ARTIFACTS",
+            "ENGINE_MUTATIONS_RESULT",
+            "ENGINE_DEFAULT_MUTATIONS_RESULT",
+            "MUTATION_ENGINE_COUNT",
+            "MUTATION_ENGINE_SHARDS",
+            "MUTATION_ENGINE_MATRIX",
+            "MUTATION_ENGINE_DEFAULT_COUNT",
+            "MUTATION_ENGINE_DEFAULT_SHARDS",
+            "MUTATION_ENGINE_DEFAULT_MATRIX",
+            "MUTATION_ENGINE_FEATURES",
+            "MUTATION_ENGINE_FILES",
+            "MUTATION_ENGINE_PLAN_DIR",
+            "MUTATION_ENGINE_ARTIFACTS",
+            "MUTATION_ENGINE_DEFAULT_ARTIFACTS",
             "GITHUB_RUN_ATTEMPT",
             "GITHUB_RUN_ID",
             "GITHUB_SHA",
@@ -102,7 +198,12 @@ pub(crate) const STEPS: &[Step] = &[
             "RUSTUP_TOOLCHAIN",
         ],
         tools: &["jaq"],
-        reports: &["mutation-shards", "mutants.json", "mutants.txt"],
+        reports: &[
+            "mutation-shards",
+            "mutation-partitions",
+            "mutants.json",
+            "mutants.txt",
+        ],
         run: aggregate::run,
     },
 ];
@@ -120,7 +221,7 @@ fn run() -> Outcome {
     let shard = if shard_value.is_empty() {
         None
     } else {
-        Some(plan::parse_shard(&shard_value)?)
+        Some(plan_identity::parse_shard(&shard_value)?)
     };
     let base = optional("GITHUB_BASE_REF")?;
     let (scope, expected_mutants) = if let Some((index, count)) = shard {
@@ -128,13 +229,13 @@ fn run() -> Outcome {
         let manifest = required_plan_path("MUTATION_PLAN")?;
         let listing = required_plan_path("MUTATION_LIST")?;
         let expected =
-            plan::verify_worker(&job, &source_scope, &manifest, &listing, (index, count))?;
+            plan_identity::verify_worker(&job, &source_scope, &manifest, &listing, (index, count))?;
         let receipt = job.report("mutants-shard.json")?;
-        plan::write_receipt(&receipt, &manifest, index, count, expected)?;
+        plan_identity::write_receipt(&receipt, &manifest, index, count, expected)?;
         tee_line(
             &format!(
                 "shard {index}/{count}: planned {expected} of {} mutants",
-                plan::manifest_count(&manifest)?
+                plan_identity::manifest_count(&manifest)?
             ),
             &report,
             false,
@@ -143,7 +244,7 @@ fn run() -> Outcome {
         output("planned-mutants", &expected.to_string())?;
         (source_scope, Some(expected))
     } else {
-        (plan::planned_scope(&job, &base)?, None)
+        (plan_identity::planned_scope(&job, &base)?, None)
     };
     if !base.is_empty() && scope.parent.is_some() {
         tee_line(&format!("scope: changes against {base}"), &report, true)?;
@@ -167,7 +268,7 @@ fn run() -> Outcome {
         let diff = diff.to_string_lossy().into_owned();
         command = command.args(["--in-diff", &diff]);
     }
-    command = scope::exclude_windows_files(command, &job.project)?;
+    command = scope::exclude_default_files(command, &job.project)?;
     if let Some((index, count)) = shard {
         command = command
             .arg("--shard")

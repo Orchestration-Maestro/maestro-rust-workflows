@@ -177,6 +177,7 @@ in place.
 │   │   │   ├── manifests.rs                                     # What Cargo says beyond module trees: packages, the workspace, what members inherit
 │   │   │   ├── mod.rs                                           # The registry of every step, run and describe, the two doors main.rs calls
 │   │   │   ├── module_tree.rs                                   # Every Cargo target's module tree: files, items, named paths and re-exports
+│   │   │   ├── mutation_engine.rs                               # Validate package-local features and exact engine mutation ownership
 │   │   │   ├── mutation_windows.rs                              # Validate the configured Windows-owned mutation paths before use
 │   │   │   ├── organization_config.rs                           # The tools' configuration passed at run time, and the header sync writes
 │   │   │   ├── private_directories.rs                           # Private temporary directories under the runner's own
@@ -242,13 +243,19 @@ in place.
 │   │   │   ├── mutation_testing/                                # rust-gate's mutation planning, scoped execution and shard aggregation
 │   │   │   │   ├── aggregate/                                   # Validate every worker receipt and raw result before merging its counters
 │   │   │   │   │   ├── artifacts.rs                             # Keep downloaded mutation evidence inside the runner's temporary directory
+│   │   │   │   │   ├── engine_evidence.rs                       # Harvest both required engine modes, preserving exact policy and shard identity
 │   │   │   │   │   ├── evidence.rs                              # Cross-check one shard's receipt, identity assignment and raw outcomes
 │   │   │   │   │   ├── merge.rs                                 # Merge validated outcomes and derive the final mutation verdict
 │   │   │   │   │   ├── mod.rs                                   # Validate every worker receipt and raw result before merging its counters
 │   │   │   │   │   ├── outcomes.rs                              # Validate cargo-mutants outcome paths and produce one canonical JSON document
-│   │   │   │   │   └── run.rs                                   # Run the aggregate job and validate the full plan before accepting worker evidence
+│   │   │   │   │   ├── run.rs                                   # Run the aggregate job and validate the full plan before accepting worker evidence
+│   │   │   │   │   ├── viability.rs                             # Compare mode-aware identities against their same-source featureless control
+│   │   │   │   │   └── windows_evidence.rs                      # Join the native Windows owner without ever applying engine features to it
+│   │   │   │   ├── engine_plan.rs                               # Discover both modes and preserve every featureless obligation before routing workers
+│   │   │   │   ├── engine_run.rs                                # Execute exact shard obligations independently in featureless and engine modes
 │   │   │   │   ├── mod.rs                                       # rust-gate's mutation planning, scoped execution and shard aggregation
 │   │   │   │   ├── plan.rs                                      # Decide whether the current mutation run stays inline or needs every shard
+│   │   │   │   ├── plan_identity.rs                             # Validate immutable mutation discovery, worker identity and mode-independent shard bounds
 │   │   │   │   ├── reports.rs                                   # Preserve standard mutation summaries and reject incomplete outcomes
 │   │   │   │   ├── scope.rs                                     # The existing first-parent scope, named relative to the checkout and hashed
 │   │   │   │   ├── selftest.rs                                  # Prepare the repository-owned mutation-shard fixture before planning or execution
@@ -322,6 +329,13 @@ in place.
 │   │   ├── mutation_shards/                                     # ci.yml: mutation selection, full shard matrices and fail-closed planning
 │   │   │   ├── aggregation_evidence.rs                          # Mutation evidence validation and aggregation tests
 │   │   │   ├── aggregation_rejections.rs                        # Mutation aggregation refusal cases for incomplete or inconsistent evidence
+│   │   │   ├── engine_aggregation.rs                            # Every engine mode and its featureless control are required mutation evidence
+│   │   │   ├── engine_execution.rs                              # Engine worker selection, bound modes and complete execution
+│   │   │   ├── engine_input_ownership.rs                        # Input-only ownership follows immutable checks outputs through every mutation worker
+│   │   │   ├── engine_planning.rs                               # Mode-aware engine ownership plans at the executable boundary
+│   │   │   ├── engine_regression.rs                             # Real, offline three-package regression of the complete required mutation gate
+│   │   │   ├── engine_rejections.rs                             # Plan, artifact and outcome corruption never becomes engine gate success
+│   │   │   ├── engine_windows.rs                                # Windows ownership remains native, featureless and part of engine aggregation
 │   │   │   ├── inline_execution.rs                              # The serial mutation run preserves reports and cargo-mutants' exit status
 │   │   │   ├── mod.rs                                           # ci.yml: mutation selection, full shard matrices and fail-closed planning
 │   │   │   ├── pinned_mutants.rs                                # Real pinned cargo-mutants listing and two-worker execution tests
@@ -371,6 +385,8 @@ in place.
 │   │   ├── step_and_refusal_coverage.rs                         # Every declared step is run by a contract test; every refusal the binary composes is asserted by a test
 │   │   └── step_registry.rs                                     # The step registry: declarations, the generated document, every body registered
 │   ├── harness/                                                 # The one door of the tests: the repository, YAML readers, gate declarations and the fixture
+│   │   ├── engine_mutations.rs                                  # Shared mode-aware engine planner, worker and aggregate fixtures
+│   │   ├── engine_workspace.rs                                  # Shared real A/B/C source and Git setup for mode and input-only ownership regressions
 │   │   ├── fixture.rs                                           # One temporary checkout, one environment table, a step run against stand-ins, every command traced
 │   │   ├── gate_declarations.rs                                 # The gate built once per test process, and what rust-gate describe declares about its steps
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else

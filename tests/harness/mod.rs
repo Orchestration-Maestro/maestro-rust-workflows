@@ -3,6 +3,8 @@
 //! fixture that runs a step against stand-ins. Each part names what it takes
 //! from its siblings; nothing here names a test module.
 
+mod engine_mutations;
+mod engine_workspace;
 mod fixture;
 mod gate_declarations;
 mod mutation_shards;
@@ -21,3 +23,7 @@ pub(crate) use repository::{
 pub(crate) use workflow_yaml::{
     GATE_STEPS, action, query, step, tool_rows, workflow, workflow_steps,
 };
+
+pub(crate) use engine_mutations::{engine_aggregation_fixture, engine_fixture, summarize_engine};
+
+pub(crate) use engine_workspace::{engine_workspace, fixture_git};
