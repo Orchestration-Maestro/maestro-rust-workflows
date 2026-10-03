@@ -7,8 +7,10 @@ use super::artifacts::{
 use super::evidence::{Evidence, Plan, identity_rows, read_shard, untested_mutants};
 use super::merge::finish_aggregate;
 use super::outcomes::{jaq, merge_partitions};
-use super::{engine_evidence, evidence, windows_evidence};
-use crate::runner::{Cmd, Failure, Job, Outcome, input, output, summary, tee_line, write};
+use super::{engine_evidence, evidence, host_evidence, windows_evidence};
+use crate::runner::{
+    Cmd, Failure, Job, Outcome, input, optional, output, summary, tee_line, write,
+};
 use std::fs;
 use std::path::Path;
 
@@ -40,6 +42,12 @@ pub(in super::super) fn run() -> Outcome {
             }
         }
         Err(error) => {
+            if optional("MUTATION_HOST_COUNT")?
+                .parse::<usize>()
+                .is_ok_and(|count| count > 0)
+            {
+                output("changed-coverage-state", "not-run")?;
+            }
             preserve_unverified(&job, &report)?;
             let present = has_outcome_files(&job);
             tee_line(
@@ -68,10 +76,15 @@ pub(in super::super) fn run() -> Outcome {
 
 /// Check the run plan, preserve every safe artifact, then aggregate only complete evidence.
 fn aggregate(job: &Job, report: &Path) -> Result<bool, Failure> {
+    let host = host_evidence::required()?;
     let engine =
         input("MUTATION_ENGINE_COUNT")? != "0" || input("MUTATION_ENGINE_DEFAULT_COUNT")? != "0";
-    if engine {
-        return aggregate_partitions(job, report);
+    if engine || host {
+        let passed = aggregate_partitions(job, report, engine)?;
+        if host {
+            host_evidence::join(job, report)?;
+        }
+        return Ok(passed);
     }
     let root = safe_directory(job, Path::new(&input("MUTATION_ARTIFACTS")?))?;
     let plan = read_plan(job, report)?;
@@ -80,7 +93,7 @@ fn aggregate(job: &Job, report: &Path) -> Result<bool, Failure> {
 }
 
 /// Join inline or sharded default evidence with both mode-aware engine obligations.
-fn aggregate_partitions(job: &Job, report: &Path) -> Result<bool, Failure> {
+fn aggregate_partitions(job: &Job, report: &Path, engine: bool) -> Result<bool, Failure> {
     if input("CHECKS_RESULT")? != "success" {
         return Err("default mutation checks failed or were skipped".into());
     }
@@ -120,7 +133,9 @@ fn aggregate_partitions(job: &Job, report: &Path) -> Result<bool, Failure> {
             job, &outcomes, "default", "default",
         )?);
     }
-    paths.extend(engine_evidence::collect(job, report, &manifest)?);
+    if engine {
+        paths.extend(engine_evidence::collect(job, report, &manifest)?);
+    }
     paths.extend(windows_evidence::collect(job, report, &manifest)?);
     write(
         &job.report("mutants.json")?,

@@ -99,6 +99,12 @@ pub(super) const CHECKS: &[(&str, Local)] = &[
     ),
     ("Line coverage gate", Local::Gate("coverage")),
     (
+        "Download immutable mutation planning reports",
+        Local::NotApplied(
+            "local CI always runs the full mutation suite inline; remote plans are not consumed",
+        ),
+    ),
+    (
         "Coverage of the lines a pull request adds",
         Local::Gate("changed-coverage"),
     ),
@@ -106,12 +112,6 @@ pub(super) const CHECKS: &[(&str, Local)] = &[
     (
         "Licence, dependency-ban and source policy",
         Local::Gate("licenses"),
-    ),
-    (
-        "Download immutable mutation planning reports",
-        Local::NotApplied(
-            "local CI always runs the full mutation suite inline; remote plans are not consumed",
-        ),
     ),
     ("Mutation testing", Local::Gate("mutants")),
     (

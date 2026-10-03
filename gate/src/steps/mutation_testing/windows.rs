@@ -32,7 +32,11 @@ pub(super) fn run() -> Outcome {
     } else {
         String::new()
     };
-    let touched: Vec<_> = touched.lines().collect();
+    let returned = scope::returned_host_files(&job)?;
+    let touched: Vec<_> = touched
+        .lines()
+        .chain(returned.iter().map(String::as_str))
+        .collect();
     let configured: Vec<_> = configured.iter().map(String::as_str).collect();
     let selected = files_for_run(&configured, &touched, diff_run);
     if selected.is_empty() && diff_run {

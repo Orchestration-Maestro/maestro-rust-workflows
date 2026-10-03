@@ -38,3 +38,8 @@ pub(crate) use engine_compile::{compile_aggregate_fixture, compile_fixture};
 pub(crate) use engine_workspace::{engine_workspace, fixture_git};
 
 pub(crate) use replay_processes::{MEMORY_CAP_WRAPPER, verified_memory_cap};
+
+mod host_fixture;
+pub(crate) use host_fixture::{
+    host_coverage_fixture, host_evidence_digest, host_evidence_fixture, host_fixture,
+};

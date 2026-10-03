@@ -6,7 +6,9 @@
 //! three-line change is not failed by one: `max(1, floor((100 - target) % of
 //! n))`. A push has no base to compare with, and nothing is measured.
 
+use super::pending;
 use crate::checks::findings::relative;
+use crate::checks::mutation_host;
 use crate::checks::pull_request::{added_lines, pull_request_diff, title_type};
 use crate::runner::{Failure, Job, Outcome, Step, input, optional, output, summary, write};
 use std::collections::BTreeMap;
@@ -19,9 +21,16 @@ pub(crate) const STEPS: &[Step] = &[Step {
     workflow: "ci",
     id: "changed-coverage",
     summary: "Coverage of the lines a pull request adds",
-    inputs: &["GITHUB_BASE_REF", "GITHUB_WORKSPACE", "PULL_REQUEST_TITLE"],
-    tools: &["git"],
-    reports: &["changed-coverage.txt"],
+    inputs: &[
+        "GITHUB_BASE_REF",
+        "GITHUB_WORKSPACE",
+        "PULL_REQUEST_TITLE",
+        "GITHUB_SHA",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+    ],
+    tools: &["git", "jaq", "cargo metadata"],
+    reports: &["changed-coverage.txt", "changed-coverage-pending.json"],
     run,
 }];
 
@@ -42,7 +51,9 @@ struct Judgement {
 fn run() -> Outcome {
     let job = Job::current()?;
     let report = job.report("changed-coverage.txt")?;
-    if optional("GITHUB_BASE_REF")?.is_empty() {
+    let host = mutation_host::host_policy(&job.project)?;
+    let base = optional("GITHUB_BASE_REF")?;
+    if base.is_empty() && host.is_none() {
         write(
             &report,
             b"NOT APPLICABLE: a push has no base to compare with\n",
@@ -60,8 +71,37 @@ fn run() -> Outcome {
     } else {
         90
     };
-    let added = added_lines(&pull_request_diff(&workspace)?);
-    let judgement = judge(target, &added, &executed_lines(&lcov, &workspace));
+    let mut added = if base.is_empty() {
+        BTreeMap::new()
+    } else {
+        added_lines(&pull_request_diff(&workspace)?)
+    };
+    let coverage_root = if host.is_some() {
+        if let Ok(prefix) = job.project.strip_prefix(&workspace)
+            && !prefix.as_os_str().is_empty()
+        {
+            let prefix = format!("{}/", prefix.display());
+            added = added
+                .into_iter()
+                .filter_map(|(file, lines)| {
+                    file.strip_prefix(&prefix)
+                        .map(|file| (file.to_owned(), lines))
+                })
+                .collect();
+        }
+        &job.project
+    } else {
+        &workspace
+    };
+    let executed = executed_lines(&lcov, coverage_root);
+    if let Some(host) = &host {
+        pending::pending_coverage(&job, host, target, &added, &executed)?;
+        output("applied", "pending-host")?;
+        let text = pending::ordinary_verdict(&job)?;
+        write(&report, text.as_bytes(), false)?;
+        return summary(&text);
+    }
+    let judgement = judge(target, &added, &executed);
     let mut text = format!(
         "{} coverable new lines, {} uncovered, {} allowed at {target} %\n",
         judgement.coverable,

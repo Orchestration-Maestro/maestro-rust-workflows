@@ -83,7 +83,9 @@ fn save_discovery(
     log: &Path,
     source: &scope::Scope,
 ) -> Outcome {
-    let result = command.cwd(&job.project).capture_output()?;
+    let result = scope::exclude_host_files(command, &job.project)?
+        .cwd(&job.project)
+        .capture_output()?;
     plan_identity::show(&result)?;
     write(log, &result.stderr, false)?;
     if !result.status.success() {

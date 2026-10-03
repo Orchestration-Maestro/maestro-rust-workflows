@@ -26,6 +26,7 @@ pub(crate) const STEPS: &[Step] = &[
             "LICENSE_POLICY",
             "MUTANTS_APPLIED",
             "MUTATION_TEST",
+            "MUTATION_HOST_COUNT",
             "OUT_API",
             "OUT_ARCHITECTURE",
             "OUT_AUDIT",
@@ -61,7 +62,11 @@ pub(crate) const STEPS: &[Step] = &[
         workflow: "ci",
         id: "scorecard-finalize",
         summary: "Finalize mutation scorecard",
-        inputs: &["MUTATION_STATE"],
+        inputs: &[
+            "MUTATION_STATE",
+            "MUTATION_HOST_COUNT",
+            "CHANGED_COVERAGE_STATE",
+        ],
         tools: &["jaq"],
         reports: &["scorecard.json", "scorecard.md", "scorecard.svg"],
         run: finalize,
@@ -145,6 +150,15 @@ fn finalize() -> Outcome {
             }
             mutation_seen = true;
             state = mutation_state;
+        }
+        if name == "changed-line coverage"
+            && optional("MUTATION_HOST_COUNT")?
+                .parse::<usize>()
+                .is_ok_and(|count| count > 0)
+        {
+            state = State::parse(&optional("CHANGED_COVERAGE_STATE")?)
+                .filter(|state| matches!(state, State::Passed | State::Failed | State::NotRun))
+                .unwrap_or(State::NotRun);
         }
         controls.push((name.to_owned(), kind.to_owned(), state));
     }
@@ -254,7 +268,14 @@ fn controls() -> Result<Vec<Control>, Failure> {
             state(
                 "OUT_MUTANTS",
                 flag("MUTATION_TEST")?,
-                &optional("MUTANTS_APPLIED")?,
+                &if optional("MUTATION_HOST_COUNT")?
+                    .parse::<usize>()
+                    .is_ok_and(|count| count > 0)
+                {
+                    "pending-host".to_owned()
+                } else {
+                    optional("MUTANTS_APPLIED")?
+                },
             )?,
         ),
         (

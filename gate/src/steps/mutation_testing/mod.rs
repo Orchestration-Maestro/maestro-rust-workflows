@@ -4,6 +4,7 @@ mod aggregate;
 mod engine_control;
 mod engine_plan;
 mod engine_run;
+mod host_plan;
 mod plan;
 mod plan_identity;
 mod reports;

@@ -38,6 +38,7 @@ const CI_INPUTS: &[&str] = &[
     "mutation-mutants-per-shard",
     "mutation-windows",
     "mutation-engine",
+    "mutation-provisioned-host",
     "sarif-reports",
     "clippy-level",
     "dependency-audit",
@@ -263,12 +264,12 @@ fn check_ci_input(line: &str) -> Result<(), Failure> {
             format!("{FILE}: [ci] {key} must be an array of package/feature strings").into(),
         );
     }
-    if key == "mutation-engine" && kind != "object" {
+    if matches!(key, "mutation-engine" | "mutation-provisioned-host") && kind != "object" {
         return Err(format!("{FILE}: [ci] {key} must be a table").into());
     }
     if !matches!(
         key,
-        "mutation-windows" | "mutation-engine" | "coverage-features"
+        "mutation-windows" | "mutation-engine" | "mutation-provisioned-host" | "coverage-features"
     ) && !matches!(kind, "string" | "number" | "boolean")
     {
         return Err(format!("{FILE}: [ci] {key} must be a string, a number or a boolean").into());

@@ -11,9 +11,9 @@ use crate::checks::inputs::{
     LicensePolicy, artifact_key, clippy_level, coverage_threshold, internal_shard_selftest,
     license_policy, mutation_mutants_per_shard, mutation_shards, unsafe_policy,
 };
-use crate::checks::mutation_engine;
 use crate::checks::quality_config::{FILE, QualityConfig, mutation_windows, read_config};
 use crate::checks::rust_versions::{channel_value, is_exact_stable, parse};
+use crate::checks::{mutation_engine, mutation_host};
 use crate::runner::{Cmd, Failure, Outcome, Step, export, flag, input, optional, output};
 use std::fs;
 use std::path::Path;
@@ -144,7 +144,8 @@ fn run() -> Outcome {
     let runners = platform_runners()?;
     let deny_config = deny_configuration(&project, &root)?;
     let directory = relative_directory(&project, &root)?;
-    export_engine_policy(&project, &mutation_windows)?;
+    let engine_files = export_engine_policy(&project, &mutation_windows)?;
+    export_host_policy(&project, &mutation_windows, &engine_files)?;
     export_coverage_features(&project)?;
     output(
         "artifact-name",
@@ -207,7 +208,7 @@ fn export_coverage_features(project: &Path) -> Outcome {
 }
 
 /// Validate and export the tested head's engine ownership before other settings.
-fn export_engine_policy(project: &Path, windows: &[String]) -> Outcome {
+fn export_engine_policy(project: &Path, windows: &[String]) -> Result<Vec<String>, Failure> {
     let explicit = optional("MUTATION_ENGINE_POLICY")?;
     let config = read_config(project)?;
     let value = if explicit.is_empty() {
@@ -237,7 +238,20 @@ fn export_engine_policy(project: &Path, windows: &[String]) -> Outcome {
     export(&[
         ("MUTATION_ENGINE_FEATURES", &features),
         ("MUTATION_ENGINE_FILES", &files),
-    ])
+    ])?;
+    Ok(policy.files)
+}
+
+/// Host ownership is never overridden by a reusable-workflow input.
+fn export_host_policy(project: &Path, windows: &[String], engine: &[String]) -> Outcome {
+    let policy = mutation_host::host_policy(project)?;
+    let files = if let Some(policy) = policy {
+        mutation_host::validate_owners(&policy, flag("MUTATION_TEST")?, windows, engine)?;
+        json_strings(&policy.files)?
+    } else {
+        "[]".to_owned()
+    };
+    output("mutation-host-files", &files)
 }
 
 /// A run no workflow called: this step again, with the `[ci]` table of the

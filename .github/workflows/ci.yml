@@ -175,6 +175,8 @@ jobs:
       mutation-matrix: ${{ steps.mutants-plan.outputs.mutation-matrix }}
       mutation-test: ${{ steps.validate.outputs.mutation-test }}
       mutation-mutants-per-shard: ${{ steps.validate.outputs.mutation-mutants-per-shard }}
+      mutation-host-count: ${{ steps.mutants-plan.outputs.mutation-host-count }}
+      mutation-host-files: ${{ steps.validate.outputs.mutation-host-files }}
       mutation-attempt: ${{ github.run_attempt }}
       mutation-windows: ${{ steps.validate.outputs.mutation-windows }}
       coverage-features: ${{ steps.validate.outputs.coverage-features }}
@@ -250,6 +252,7 @@ jobs:
       - name: Plan mutation shard routing
         id: mutants-plan
         env:
+          WORKFLOW_REVISION: ${{ job.workflow_sha }}
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           MUTATION_ENGINE_FILES: ${{ steps.validate.outputs.mutation-engine-files }}
           MUTATION_WINDOWS: ${{ steps.validate.outputs.mutation-windows }}
@@ -294,6 +297,8 @@ jobs:
       mutation-matrix: ${{ needs.mutation-plan.outputs.mutation-matrix }}
       mutation-test: ${{ steps.validate.outputs.mutation-test }}
       mutation-mutants-per-shard: ${{ steps.validate.outputs.mutation-mutants-per-shard }}
+      mutation-host-count: ${{ needs.mutation-plan.outputs.mutation-host-count }}
+      mutation-host-files: ${{ needs.mutation-plan.outputs.mutation-host-files }}
       mutation-attempt: ${{ github.run_attempt }}
       mutation-windows: ${{ steps.validate.outputs.mutation-windows }}
       coverage-features: ${{ steps.validate.outputs.coverage-features }}
@@ -491,6 +496,12 @@ jobs:
         run: rust-gate coverage
         env:
           NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
+      - name: Download immutable mutation planning reports
+        id: checks-plan-download
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ${{ needs.mutation-plan.outputs.artifact-name }}-plan
+          path: ${{ runner.temp }}/rust-reports
       - name: Coverage of the lines a pull request adds
         id: changed-coverage
         env:
@@ -504,12 +515,6 @@ jobs:
         env:
           LICENSE_ALLOWLIST: ${{ vars.LICENSE_ALLOWLIST }}
         run: rust-gate licenses
-      - name: Download immutable mutation planning reports
-        id: checks-plan-download
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
-        with:
-          name: ${{ needs.mutation-plan.outputs.artifact-name }}-plan
-          path: ${{ runner.temp }}/rust-reports
       - name: Mutation testing
         id: mutants
         if: ${{ needs.mutation-plan.outputs.mutation-mode != 'sharded' }}
@@ -579,6 +584,7 @@ jobs:
           OUT_MSRV: ${{ steps.msrv.outcome }}
           OUT_FEATURES: ${{ steps.features.outcome }}
           OUT_LICENCES: ${{ steps.licenses.outcome }}
+          MUTATION_HOST_COUNT: ${{ needs.mutation-plan.outputs.mutation-host-count }}
           OUT_MUTANTS: ${{ steps.mutants.outcome }}
           OUT_UNUSED: ${{ steps.unused.outcome }}
           OUT_STAGE: ${{ steps.stage.outcome }}
@@ -604,12 +610,12 @@ jobs:
         if: ${{ always() && steps.validate.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: ${{ steps.validate.outputs.artifact-name }}-${{ (needs.mutation-plan.outputs.mutation-mode == 'sharded' || needs.mutation-plan.outputs.mutation-engine-count != '0' || needs.mutation-plan.outputs.mutation-engine-default-count != '0') && 'checks-reports' || 'reports' }}
+          name: ${{ steps.validate.outputs.artifact-name }}-${{ (needs.mutation-plan.outputs.mutation-mode == 'sharded' || needs.mutation-plan.outputs.mutation-engine-count != '0' || needs.mutation-plan.outputs.mutation-engine-default-count != '0' || needs.mutation-plan.outputs.mutation-host-count != '0') && 'checks-reports' || 'reports' }}
           path: ${{ runner.temp }}/rust-reports/
           if-no-files-found: error
           retention-days: 7
       - name: Upload inline mutation outcomes for partition aggregation
-        if: ${{ always() && needs.mutation-plan.outputs.mutation-mode == 'inline' && (needs.mutation-plan.outputs.mutation-engine-count != '0' || needs.mutation-plan.outputs.mutation-engine-default-count != '0') }}
+        if: ${{ always() && needs.mutation-plan.outputs.mutation-mode == 'inline' && (needs.mutation-plan.outputs.mutation-engine-count != '0' || needs.mutation-plan.outputs.mutation-engine-default-count != '0' || needs.mutation-plan.outputs.mutation-host-count != '0') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: ${{ steps.validate.outputs.artifact-name }}-default-mutants
@@ -1106,6 +1112,8 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   mutation-summary:
+    outputs:
+      changed-coverage-state: ${{ steps.mutation-aggregate.outputs.changed-coverage-state }}
     name: Aggregate mutation shard evidence
     needs:
       - mutation-plan
@@ -1114,7 +1122,7 @@ jobs:
       - mutation-engine
       - mutation-engine-default
       - mutation-windows
-    if: ${{ always() && needs.mutation-plan.result == 'success' && (needs.checks.outputs.mutation-mode == 'sharded' || needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0') && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
+    if: ${{ always() && needs.mutation-plan.result == 'success' && (needs.checks.outputs.mutation-mode == 'sharded' || needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0' || needs.mutation-plan.outputs.mutation-host-count != '0') && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions: {}
@@ -1154,7 +1162,7 @@ jobs:
           path: ${{ runner.temp }}/mutation-shards
           merge-multiple: false
       - name: Download inline default mutation outcomes
-        if: ${{ always() && needs.checks.outputs.mutation-mode == 'inline' && (needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0') }}
+        if: ${{ always() && needs.checks.outputs.mutation-mode == 'inline' && (needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0' || needs.mutation-plan.outputs.mutation-host-count != '0') }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: ${{ needs.checks.outputs.artifact-name }}-default-mutants
@@ -1180,7 +1188,7 @@ jobs:
           path: ${{ runner.temp }}/engine-default-mutants
           merge-multiple: false
       - name: Download native Windows mutation evidence
-        if: ${{ always() && needs.checks.outputs.mutation-windows != '[]' && (needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0') }}
+        if: ${{ always() && needs.checks.outputs.mutation-windows != '[]' && (needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0' || needs.mutation-plan.outputs.mutation-host-count != '0') }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: ${{ needs.checks.outputs.artifact-name }}-windows-mutants
@@ -1189,6 +1197,7 @@ jobs:
         id: mutation-aggregate
         if: ${{ always() }}
         env:
+          MUTATION_HOST_COUNT: ${{ needs.mutation-plan.outputs.mutation-host-count }}
           CHECKS_RESULT: ${{ needs.checks.result }}
           ENGINE_MUTATIONS_RESULT: ${{ needs.mutation-engine.result }}
           ENGINE_DEFAULT_MUTATIONS_RESULT: ${{ needs.mutation-engine-default.result }}
@@ -1220,6 +1229,8 @@ jobs:
         if: ${{ always() }}
         env:
           MUTATION_STATE: ${{ steps.mutation-aggregate.outputs.mutation-state }}
+          MUTATION_HOST_COUNT: ${{ needs.mutation-plan.outputs.mutation-host-count }}
+          CHANGED_COVERAGE_STATE: ${{ steps.mutation-aggregate.outputs.changed-coverage-state }}
         run: rust-gate scorecard-finalize
       - name: Upload the canonical reports bundle
         id: mutation-summary-upload
@@ -1280,7 +1291,7 @@ jobs:
       - mutation-summary
     # A fork pull request's token cannot write security events; its SARIF
     # stays in the reports artifact.
-    if: ${{ !cancelled() && needs.checks.result == 'success' && ((needs.checks.outputs.mutation-mode != 'sharded' && needs.checks.outputs.mutation-engine-count == '0' && needs.checks.outputs.mutation-engine-default-count == '0') || needs.mutation-summary.result == 'success') && (github.event_name != 'merge_group' || needs.portability.result == 'success' || needs.portability.result == 'skipped') && inputs.artifact-key == '' && github.event_name != 'pull_request_target' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.checks.result == 'success' && ((needs.checks.outputs.mutation-mode != 'sharded' && needs.checks.outputs.mutation-engine-count == '0' && needs.checks.outputs.mutation-engine-default-count == '0' && needs.checks.outputs.mutation-host-count == '0') || needs.mutation-summary.result == 'success') && (github.event_name != 'merge_group' || needs.portability.result == 'success' || needs.portability.result == 'skipped') && inputs.artifact-key == '' && github.event_name != 'pull_request_target' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -1320,7 +1331,7 @@ jobs:
       - mutation-summary
     # A fork pull request gets no OIDC token; its reports stay in the reports
     # artifact.
-    if: ${{ !cancelled() && needs.checks.result == 'success' && ((needs.checks.outputs.mutation-mode != 'sharded' && needs.checks.outputs.mutation-engine-count == '0' && needs.checks.outputs.mutation-engine-default-count == '0') || needs.mutation-summary.result == 'success') && (github.event_name != 'merge_group' || needs.portability.result == 'success' || needs.portability.result == 'skipped') && inputs.artifact-key == '' && github.event_name != 'pull_request_target' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
+    if: ${{ !cancelled() && needs.checks.result == 'success' && ((needs.checks.outputs.mutation-mode != 'sharded' && needs.checks.outputs.mutation-engine-count == '0' && needs.checks.outputs.mutation-engine-default-count == '0' && needs.checks.outputs.mutation-host-count == '0') || needs.mutation-summary.result == 'success') && (github.event_name != 'merge_group' || needs.portability.result == 'success' || needs.portability.result == 'skipped') && inputs.artifact-key == '' && github.event_name != 'pull_request_target' && (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -1409,6 +1420,9 @@ jobs:
           MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
           MUTATION_MODE: ${{ needs.checks.outputs.mutation-mode }}
           MUTATION_COUNT: ${{ needs.checks.outputs.mutation-count }}
+          MUTATION_HOST_COUNT: ${{ needs.mutation-plan.outputs.mutation-host-count }}
+          MUTATION_HOST_FILES: ${{ needs.mutation-plan.outputs.mutation-host-files }}
+          CHANGED_COVERAGE_STATE: ${{ needs.mutation-summary.outputs.changed-coverage-state }}
           MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-shards }}
           MUTATION_MATRIX: ${{ needs.checks.outputs.mutation-matrix }}
           MUTATION_ATTEMPT: ${{ needs.checks.outputs.mutation-attempt }}
