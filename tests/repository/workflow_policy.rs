@@ -101,6 +101,11 @@ fn body_follows_the_shell_policy(command: &str) {
 }
 
 #[test]
+fn required_checks_budget_covers_cold_native_engine_builds() {
+    assert_eq!(workflow("ci")["jobs"]["checks"]["timeout-minutes"], 240);
+}
+
+#[test]
 fn all_jobs_use_github_runners_without_caller_overrides() {
     for name in [
         "ci",

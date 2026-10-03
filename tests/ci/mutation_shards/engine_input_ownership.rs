@@ -1,7 +1,8 @@
 //! Input-only ownership follows immutable checks outputs through every mutation worker.
 
 use crate::harness::{
-    Fixture, copy_tree, engine_workspace, fixture_git, output, refused, succeeds, workflow,
+    Fixture, copy_tree, engine_fixture, engine_workspace, fixture_git, output, refused, succeeds,
+    workflow,
 };
 use serde_json::Value;
 use std::fs;
@@ -275,4 +276,46 @@ fn complete(fixture: &mut Fixture, artifact: &str) {
         merged["inactive_without_features_caught_with_engine"]["total"],
         2
     );
+}
+
+#[test]
+fn engine_mutation_timeouts_include_cold_build_and_reporting_margin() {
+    let ci = workflow("ci");
+    for (job, id, inner, step, total, enabled) in [
+        ("mutation-engine", "engine-mutation-run", 60, 65, 75, true),
+        (
+            "mutation-engine-default",
+            "engine-default-mutation-run",
+            30,
+            35,
+            45,
+            false,
+        ),
+    ] {
+        let fixture = engine_fixture(true);
+        let steps = ci["jobs"][job]["steps"].as_array().unwrap();
+        let execution = steps.iter().find(|step| step["id"] == id).unwrap();
+        succeeds(&fixture.run("ci", id));
+        let trace = fixture.trace();
+        let command = trace
+            .lines()
+            .find(|line| line.contains("timeout --kill-after=1m"))
+            .unwrap();
+        let duration: u64 = command
+            .split("--kill-after=1m ")
+            .nth(1)
+            .unwrap()
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .trim_end_matches('m')
+            .parse()
+            .unwrap();
+        assert_eq!(duration, inner, "{job}: {command}");
+        assert_eq!(execution["timeout-minutes"], step, "{job}");
+        assert_eq!(ci["jobs"][job]["timeout-minutes"], total, "{job}");
+        assert!(duration + 1 < execution["timeout-minutes"].as_u64().unwrap());
+        assert!(execution["timeout-minutes"].as_u64().unwrap() < total);
+        assert_eq!(command.contains("--features engine"), enabled, "{command}");
+    }
 }

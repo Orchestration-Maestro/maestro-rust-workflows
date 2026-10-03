@@ -157,7 +157,9 @@ jobs:
     # The repository is found by its id, which a rename leaves alone.
     if: ${{ github.event_name != 'pull_request_target' && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Cold native coverage, API comparisons and per-feature checks need separate builds.
+    # Pi has no CI-job timeout; this is a hang ceiling, not an expected duration.
+    timeout-minutes: 240
     permissions:
       contents: read
     env:
@@ -664,7 +666,8 @@ jobs:
       matrix:
         shard: ${{ fromJSON(needs.checks.outputs.mutation-engine-matrix) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # 65 minutes for execution/reporting, plus 10 for setup and uploads.
+    timeout-minutes: 75
     permissions:
       contents: read
     env:
@@ -760,7 +763,8 @@ jobs:
           enableCrossOsArchive: false
       - name: Execute engine shards and their separate featureless obligations
         id: engine-mutation-run
-        timeout-minutes: 35
+        # 60-minute command, 1-minute kill grace, 4 minutes for reporting.
+        timeout-minutes: 65
         run: rust-gate mutants-engine
         env:
           NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}

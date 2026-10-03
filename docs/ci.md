@@ -1064,13 +1064,19 @@ invocation, `rust-gate` compiles from this repository at the workflow's commit
 with its own pinned compiler in a fresh directory. Neither its executable nor
 its Cargo build fingerprints are restored from a previous job.
 
+The `checks` job has a 240-minute hang ceiling, not an expected duration. Cold
+native coverage, public API comparisons and per-feature checks can each compile
+an opt-in engine independently. Pi has no CI-job or mutation timeout; its
+30-minute default run timeout applies to agent runs, not these jobs.
+
 Opt-in mutation sharding adds one worker job per shard (up to 256) and a summary
 job; the matrix runs at most 32 workers concurrently, so five merge groups may
 request up to 160 worker slots while the runner plan provides 60. Excess jobs
-queue at GitHub; small plans use fewer than 32 workers. Remote Linux shard
-commands are interrupted after 30 minutes, leaving four minutes before the
-35-minute step limit for evidence upload; the 45-minute job limit also leaves
-setup and upload time. Local and unsharded runs invoke cargo-mutants directly,
+queue at GitHub; small plans use fewer than 32 workers. Ordinary Linux shard
+commands are interrupted after 30 minutes, with a one-minute kill grace and
+four minutes for reporting before the 35-minute step limit; the 45-minute job
+limit also leaves setup and upload time. Engine-enabled shards use 60, 65 and
+75 minutes respectively to include a cold native build. Local and unsharded runs invoke cargo-mutants directly,
 without a platform-specific timeout command. Each worker builds the gate,
 downloads the plan and checks reports, runs a baseline and its mutants, then
 uploads evidence. Treat these as runner-minute costs, not a wall-
@@ -1216,8 +1222,13 @@ which the required status holds.
 `[ci.mutation-engine]` lists exact Rust files and package-local features. The
 planner retains their featureless mutants as separate control obligations and
 lists owning packages again with those features. Mode-specific mutants outside
-that ownership are refused. Both modes use the existing planner/cap independently,
-with separate required Linux matrices and the same 30-minute command deadline.
+that ownership are refused. Both modes use the existing count-based planner
+independently, with separate required Linux matrices. Engine-enabled commands
+have 60 minutes: a 21-minute cold native build, the ordinary 30-minute shard
+allowance and nine minutes of margin. Their step limit is 65 minutes, including
+one minute of kill grace and four for reporting; the job limit is 75 minutes,
+adding ten for setup and uploads. Featureless controls select no engine features
+and retain the 30-minute command, 35-minute step and 45-minute job limits.
 Default and Windows workers never receive feature flags. The aggregate verifies
 both matrices and the Windows job, then joins outcomes with explicit mode labels.
 A shared default-caught mutant becoming unviable fails; an already-unviable shared
@@ -1255,7 +1266,7 @@ The target is a calibration knob, not a time estimate. Every shard runs its
 own baseline and complete assigned mutant set with pinned cargo-mutants 27.1.0
 using round-robin identity assignment. The `mutations` matrix runs only after
 all of `checks` succeeds, so it cannot start before the main checks finish; at
-most 32 workers run together. Each worker has a 45-minute job limit, a
+most 32 workers run together. Each ordinary worker has a 45-minute job limit, a
 35-minute mutation-step limit and a 30-minute command timeout. On remote Linux shard jobs, GNU `timeout`
 sends `SIGTERM` at that deadline and allows one minute before it sends
 `SIGKILL`; local runs use the direct cargo-mutants invocation. The always-run
