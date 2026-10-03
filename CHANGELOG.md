@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.1...v4.8.2) (2026-10-03)
+
+
+### Bug Fixes
+
+* **ci:** let the checks job finish a cold native engine build ([#111](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/111)) ([862ed13](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/862ed130878658ada15ae087cf5f81a476b37f12))
+
 ## [4.8.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.0...v4.8.1) (2026-10-02)
 
 
