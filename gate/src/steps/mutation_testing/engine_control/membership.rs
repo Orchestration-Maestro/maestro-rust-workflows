@@ -1,22 +1,26 @@
 //! Retain and verify the default compiler's dep-info, bound to the worker receipt.
 
+use super::{
+    dep_info::{dep_paths, dependencies, normalized},
+    source,
+};
 use crate::checks::digests::sha256_hex;
 use crate::checks::native_cache::{NativeCache, native_cache_command};
-use crate::runner::{Cmd, Failure, Job, Outcome, input, optional, tee_line, write};
+use crate::runner::{Cmd, Failure, Job, Outcome, tee_line, write};
 use std::collections::BTreeSet;
 use std::fs;
-use std::mem;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// Default test-target compilation is a conservative superset of package-scoped mutant builds.
-const BUILD_COMMAND: &str = "cargo test --workspace --all-targets --no-run --locked";
+/// Match pinned cargo-mutants 27.1.0 default Cargo build arguments before instrumentation.
+const BUILD_COMMAND: &str = "cargo test --no-run --verbose";
 
 /// Build into a fresh target tree; never infer membership from stale cached dep-info.
 pub(super) fn build(
     job: &Job,
     root: &Path,
     receipt: &Path,
+    assigned: &Path,
     policy: Option<&NativeCache>,
 ) -> Outcome {
     let metadata = native_cache_command(
@@ -30,12 +34,21 @@ pub(super) fn build(
         .stdin_bytes(metadata.as_bytes())
         .capture()?;
     let workspace = Path::new(workspace.trim());
+    source::retain(job, root, &metadata)?;
+    let package = source::package(root, assigned)?;
     let config = workspace.join(".cargo/mutants.toml");
-    let fallback = compilation_config(&config);
+    let configuration = if config.exists() {
+        fs::read(&config)
+            .map_err(|error| format!("cannot retain compile configuration: {error}"))?
+    } else {
+        Vec::new()
+    };
+    write(&root.join("compile-config.toml"), &configuration, false)?;
+    let fallback = compilation_config(&config) || package.is_none() || job.project != workspace;
     if fallback {
         tee_line(
             concat!(
-                "Compile membership fallback: cargo-mutants configuration changes compilation; ",
+                "Compile membership fallback: package-scoped compile equivalence is unverified; ",
                 "testing every assigned mutant"
             ),
             &job.report("mutants-engine-default.txt")?,
@@ -48,15 +61,36 @@ pub(super) fn build(
         fs::remove_dir_all(&target)
             .map_err(|error| format!("cannot clear control target: {error}"))?;
     }
+    compile(
+        job,
+        (root, receipt),
+        policy,
+        workspace,
+        &package.unwrap_or_default(),
+    )
+}
+
+/// Instrument the equivalent single-package command without altering compiler flag resolution.
+fn compile(
+    job: &Job,
+    records: (&Path, &Path),
+    policy: Option<&NativeCache>,
+    workspace: &Path,
+    package: &str,
+) -> Outcome {
+    let (root, receipt) = records;
+    let target = job.temp.join("engine-control-target");
     let started = Cmd::new("jaq -nr").arg("now | todateiso8601").capture()?;
     let clock = Instant::now();
-    let encoded = encoded_flags()?;
     let result = native_cache_command(policy, "timeout --kill-after=1m 30m")
         .args(BUILD_COMMAND.split_whitespace())
+        .arg(format!("--package={package}"))
+        .arg("--locked")
         .arg("--message-format=json")
         .arg("--target-dir")
         .arg(&target)
-        .env("CARGO_ENCODED_RUSTFLAGS", &encoded)
+        .env("INSTA_UPDATE", "no")
+        .env("INSTA_FORCE_PASS", "0")
         .cwd(&job.project)
         .capture_output()?;
     write(&root.join("cargo-build.json"), &result.stdout, false)?;
@@ -70,11 +104,10 @@ pub(super) fn build(
         .args(["--argjson", "elapsed", &elapsed.to_string()])
         .args(["--arg", "target"])
         .arg(&target)
-        .args(["--arg", "flags", &encoded])
+        .args(["--arg", "package", package])
         .arg(concat!(
             "{start_time:$started, end_time:(now | todateiso8601), duration:$elapsed, ",
-            "encoded_rustflags:$flags, ",
-            r#"argv:["cargo","test","--workspace","--all-targets","--no-run","--locked","#,
+            r#"argv:["cargo","test","--no-run","--verbose",("--package="+$package),"--locked","#,
             r#""--message-format=json","--target-dir",$target]}"#
         ))
         .capture()?;
@@ -93,23 +126,6 @@ pub(super) fn build(
     save_binding(root, receipt, (&job.project, workspace), Some(&target))
 }
 
-/// Mirror pinned cargo-mutants 27.1.0's cap-lint flags, including its env precedence.
-fn encoded_flags() -> Result<String, Failure> {
-    let inherited = match input("CARGO_ENCODED_RUSTFLAGS") {
-        Ok(flags) => flags,
-        Err(_) => optional("RUSTFLAGS")?
-            .split(' ')
-            .filter(|flag| !flag.is_empty())
-            .collect::<Vec<_>>()
-            .join("\u{1f}"),
-    };
-    Ok(if inherited.is_empty() {
-        "--cap-lints=warn".into()
-    } else {
-        format!("{inherited}\u{1f}--cap-lints=warn")
-    })
-}
-
 /// Unknown config keys conservatively disable absence classification as well.
 fn compilation_config(path: &Path) -> bool {
     if !path.exists() {
@@ -117,12 +133,14 @@ fn compilation_config(path: &Path) -> bool {
     }
     let safe = Cmd::new("jaq --from toml -e")
         .arg(concat!(
-            "keys | all(.[]; . == \"test_tool\" or . == \"exclude_globs\" or ",
+            "(.cap_lints // false) == false and (.test_tool // \"cargo\") == \"cargo\" and ",
+            "(keys | all(.[]; . == \"cap_lints\" or . == \"test_tool\" or ",
+            ". == \"exclude_globs\" or ",
             ". == \"examine_globs\" or . == \"exclude_re\" or . == \"examine_re\" or ",
             ". == \"skip_calls\" or . == \"skip_calls_defaults\" or ",
             ". == \"timeout_multiplier\" or . == \"minimum_test_timeout\" or ",
             ". == \"build_timeout_multiplier\" or . == \"build_timeout\" or ",
-            ". == \"timeout\")"
+            ". == \"timeout\"))"
         ))
         .arg(path)
         .capture();
@@ -172,9 +190,20 @@ fn save_binding(
                 String::new()
             },
         ])
+        .args([
+            "--arg",
+            "source_digest",
+            &digest(&root.join("source-metadata.json"))?,
+        ])
+        .args([
+            "--arg",
+            "config_digest",
+            &digest(&root.join("compile-config.toml"))?,
+        ])
         .args(["--argjson", "digests", &strings(&digests)?])
         .arg(concat!(
-            "{schema:1, binding:$receipt[0], project:$project, workspace:$workspace, ",
+            "{schema:2, source_sha256:$source_digest, config_sha256:$config_digest, ",
+            "binding:$receipt[0], project:$project, workspace:$workspace, ",
             "target:$target, cargo_sha256:$cargo_digest, build_sha256:$build_digest, ",
             "dep_sha256:$digests}"
         ))
@@ -186,83 +215,14 @@ fn save_binding(
     )
 }
 
-/// Verify raw successful Cargo output and require dep-info for every emitted non-build-script unit.
-fn dep_paths(cargo: &Path) -> Result<Vec<String>, Failure> {
-    Cmd::new("jaq -se")
-        .arg(concat!(
-            "([.[] | select(.reason == \"build-finished\")] | length == 1) and ",
-            "([.[] | select(.reason == \"build-finished\")][0].success == true) and ",
-            "any(.[]; .reason == \"compiler-artifact\") and ",
-            "all(.[] | select(.reason == \"compiler-artifact\"); .fresh == false and ",
-            "(.target.src_path | type == \"string\" and startswith(\"/\")) and ",
-            "(.filenames | type == \"array\" and length > 0 and all(.[]; type == \"string\")))"
-        ))
-        .arg(cargo)
-        .capture()
-        .map_err(|_| "featureless build did not verify fresh compile membership")?;
-    let paths = Cmd::new("jaq -sr")
-        .arg(concat!(
-            "[.[] | select(.reason == \"compiler-artifact\") | ",
-            ".filenames[]] | unique | .[]"
-        ))
-        .arg(cargo)
-        .capture()?;
-    let mut deps = BTreeSet::new();
-    for path in paths.lines() {
-        let path = Path::new(path);
-        let stem = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .ok_or("featureless artifact filename is invalid")?;
-        let script_stem;
-        let stem = if stem == "build-script-build" {
-            let hash = path
-                .parent()
-                .and_then(Path::file_name)
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.rsplit_once('-'))
-                .map(|(_, hash)| hash)
-                .ok_or("featureless build-script artifact filename is invalid")?;
-            script_stem = format!("build_script_build-{hash}");
-            script_stem.as_str()
-        } else {
-            stem
-        };
-        let stem = match path.extension().and_then(|extension| extension.to_str()) {
-            Some("rlib" | "rmeta" | "so" | "dylib" | "a") => {
-                stem.strip_prefix("lib").unwrap_or(stem)
-            }
-            _ => stem,
-        };
-        deps.insert(
-            path.with_file_name(format!("{stem}.d"))
-                .to_string_lossy()
-                .into_owned(),
-        );
-    }
-    Ok(deps.into_iter().collect())
-}
-
 /// Absence is trusted only after rechecking the raw evidence and source-bound receipt.
-pub(super) fn verify(root: &Path, receipt: &Path) -> Result<Option<BTreeSet<String>>, Failure> {
+pub(super) fn verify(
+    root: &Path,
+    receipt: &Path,
+    assigned: &Path,
+) -> Result<Option<BTreeSet<String>>, Failure> {
     let manifest = root.join("compile-membership.json");
-    if !manifest.is_file() {
-        return Err("featureless compile membership evidence is missing".into());
-    }
-    Cmd::new("jaq -e")
-        .args(["--slurpfile", "receipt"])
-        .arg(receipt)
-        .arg(concat!(
-            r#"(keys | sort) == ["binding","build_sha256","cargo_sha256","dep_sha256","#,
-            r#""project","schema","target","workspace"] and "#,
-            ".schema == 1 and .binding == $receipt[0] and ",
-            "(.project | type == \"string\" and startswith(\"/\")) and ",
-            "(.workspace | type == \"string\" and startswith(\"/\")) and ",
-            "(.target | type == \"string\") and (.dep_sha256 | type == \"array\")"
-        ))
-        .arg(&manifest)
-        .capture()
-        .map_err(|_| "featureless compile membership binding differs from its plan")?;
+    verify_binding(root, receipt, assigned)?;
     let target = field(&manifest, ".target")?;
     if target.is_empty() {
         Cmd::new("jaq -e")
@@ -272,6 +232,25 @@ pub(super) fn verify(root: &Path, receipt: &Path) -> Result<Option<BTreeSet<Stri
             .map_err(|_| "featureless fallback contains unexpected compile evidence")?;
         return Ok(None);
     }
+    if compilation_config(&root.join("compile-config.toml"))
+        || field(&manifest, ".project")? != field(&manifest, ".workspace")?
+    {
+        return Err("featureless compile membership command is not equivalent".into());
+    }
+    let package = source::package(root, assigned)?
+        .ok_or("featureless compile membership command is not equivalent")?;
+    let build_record = root.join("build-record.json");
+    Cmd::new("jaq -e")
+        .args(["--arg", "target", &target])
+        .args(["--arg", "package", &package])
+        .arg(concat!(
+            r#".argv == ["cargo","test","--no-run","--verbose",("--package="+$package),"#,
+            r#""--locked","#,
+            r#""--message-format=json","--target-dir",$target]"#
+        ))
+        .arg(&build_record)
+        .capture()
+        .map_err(|_| "featureless compile membership command is not equivalent")?;
     let cargo = root.join("cargo-build.json");
     if digest(&cargo)? != field(&manifest, ".cargo_sha256")? {
         return Err("featureless compile membership cargo digest differs".into());
@@ -325,58 +304,33 @@ pub(super) fn verify(root: &Path, receipt: &Path) -> Result<Option<BTreeSet<Stri
     Ok(Some(members))
 }
 
-/// Parse rustc's first Make rule, including escaped spaces and line continuations.
-fn dependencies(text: &str) -> Result<Vec<String>, Failure> {
-    let joined = text.replace("\\\n", "");
-    let line = joined
-        .lines()
-        .next()
-        .ok_or("featureless dep-info is empty")?;
-    let (_, dependencies) = line
-        .split_once(": ")
-        .ok_or("featureless dep-info has no dependency rule")?;
-    let mut words = Vec::new();
-    let mut word = String::new();
-    let mut escaped = false;
-    for character in dependencies.chars() {
-        if escaped {
-            word.push(character);
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if character.is_whitespace() {
-            if !word.is_empty() {
-                words.push(mem::take(&mut word));
-            }
-        } else {
-            word.push(character);
-        }
+/// Check the versioned envelope before translating any compiler coordinates.
+fn verify_binding(root: &Path, receipt: &Path, assigned: &Path) -> Outcome {
+    let manifest = root.join("compile-membership.json");
+    if !manifest.is_file() {
+        return Err("featureless compile membership evidence is missing".into());
     }
-    if escaped {
-        return Err("featureless dep-info has an incomplete escape".into());
+    Cmd::new("jaq -e")
+        .args(["--slurpfile", "receipt"])
+        .arg(receipt)
+        .arg(concat!(
+            r#"(keys | sort) == ["binding","build_sha256","cargo_sha256","config_sha256","#,
+            r#""dep_sha256","#,
+            r#""project","schema","source_sha256","target","workspace"] and "#,
+            ".schema == 2 and .binding == $receipt[0] and ",
+            "(.target | type == \"string\") and (.dep_sha256 | type == \"array\")"
+        ))
+        .arg(&manifest)
+        .capture()
+        .map_err(|_| "featureless compile membership binding differs from its plan")?;
+    if digest(&root.join("source-metadata.json"))? != field(&manifest, ".source_sha256")? {
+        return Err("featureless compile membership source metadata digest differs".into());
     }
-    if !word.is_empty() {
-        words.push(word);
+    source::verify(root, receipt, assigned, &manifest)?;
+    if digest(&root.join("compile-config.toml"))? != field(&manifest, ".config_sha256")? {
+        return Err("featureless compile membership configuration digest differs".into());
     }
-    if words.is_empty() {
-        return Err("featureless dep-info has no source dependencies".into());
-    }
-    Ok(words)
-}
-
-/// Rust path attributes can contain parent components; normalize before matching plan paths.
-fn normalized(path: &Path) -> PathBuf {
-    let mut normalized = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::ParentDir => {
-                normalized.pop();
-            }
-            Component::CurDir => {}
-            _ => normalized.push(component.as_os_str()),
-        }
-    }
-    normalized
+    Ok(())
 }
 
 /// Read one field with the same pinned JSON reader used for all evidence.
@@ -406,58 +360,19 @@ fn digest(path: &Path) -> Result<String, Failure> {
 
 #[cfg(test)]
 mod tests {
-    use super::{compilation_config, dep_paths, dependencies, normalized};
-    use std::path::Path;
+    use super::compilation_config;
     use std::{env, fs, process};
-
-    #[test]
-    fn dep_info_escaping_and_phony_rules_preserve_exact_source_paths() {
-        assert_eq!(
-            dependencies("a: src/lib.rs src/a\\ b.rs \\\n src/c.rs\n\nsrc/lib.rs:\n").unwrap(),
-            ["src/lib.rs", "src/a b.rs", "src/c.rs"]
-        );
-        for text in ["", "bad", "a: ", "a: src/unfinished\\"] {
-            assert!(dependencies(text).is_err());
-        }
-    }
-
-    #[test]
-    fn cargo_artifact_names_select_library_test_and_build_script_dep_info() {
-        let path = env::temp_dir().join(format!("control-artifacts-{}.json", process::id()));
-        fs::write(&path, concat!(
-            r#"{"reason":"compiler-artifact","fresh":false,"target":{"src_path":"/p/build.rs"},"#,
-            r#""filenames":["/target/debug/build/probe-1234/build-script-build"]}"#, "\n",
-            r#"{"reason":"compiler-artifact","fresh":false,"target":{"src_path":"/p/src/lib.rs"},"#,
-            r#""filenames":["/target/debug/deps/libprobe-5678.rlib","#,
-            r#""/target/debug/deps/libprobe-5678.rmeta","/target/debug/deps/probe-9012"]}"#, "\n",
-            r#"{"reason":"build-finished","success":true}"#, "\n"
-        )).unwrap();
-        assert_eq!(
-            dep_paths(&path).unwrap(),
-            [
-                "/target/debug/build/probe-1234/build_script_build-1234.d",
-                "/target/debug/deps/probe-5678.d",
-                "/target/debug/deps/probe-9012.d"
-            ]
-        );
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn source_parent_components_do_not_hide_compiled_plan_paths() {
-        assert_eq!(
-            normalized(Path::new("/workspace/crates/a/src/../src/./engine.rs")),
-            Path::new("/workspace/crates/a/src/engine.rs")
-        );
-    }
 
     #[test]
     fn compilation_settings_trigger_conservative_membership_fallback() {
         let path = env::temp_dir().join(format!("control-config-{}.toml", process::id()));
         assert!(!compilation_config(&path));
-        fs::write(&path, "test_tool = 'nextest'\n").unwrap();
+        fs::write(&path, "cap_lints = false\ntest_tool = 'cargo'\n").unwrap();
         assert!(!compilation_config(&path));
+        fs::write(&path, "test_tool = 'nextest'\n").unwrap();
+        assert!(compilation_config(&path));
         for setting in [
+            "cap_lints = true",
             "features = ['engine']",
             "additional_cargo_args = ['--release']",
             "additional_cargo_test_args = ['--features','engine']",

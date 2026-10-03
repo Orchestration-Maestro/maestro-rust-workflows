@@ -262,10 +262,12 @@ in place.
 │   │   │   │   │   ├── viability.rs                             # Compare mode-aware identities against their same-source featureless control
 │   │   │   │   │   └── windows_evidence.rs                      # Join the native Windows owner without ever applying engine features to it
 │   │   │   │   ├── engine_control/                              # Verify featureless compile membership before classifying inactive control mutants
+│   │   │   │   │   ├── dep_info.rs                              # Verify raw compiler records and translate rustc dependency paths
 │   │   │   │   │   ├── membership.rs                            # Retain and verify the default compiler's dep-info, bound to the worker receipt
 │   │   │   │   │   ├── mod.rs                                   # Verify featureless compile membership before classifying inactive control mutants
 │   │   │   │   │   ├── outcomes.rs                              # Preserve raw tested results and account explicitly for every verified non-member mutant
-│   │   │   │   │   └── run.rs                                   # Run tests only for compiled assigned mutants, preserving the exact complete control plan
+│   │   │   │   │   ├── run.rs                                   # Run tests only for compiled assigned mutants, preserving the exact complete control plan
+│   │   │   │   │   └── source.rs                                # Bind the compiler coordinate frame and package selection to retained Cargo metadata
 │   │   │   │   ├── engine_plan.rs                               # Discover both modes and preserve every featureless obligation before routing workers
 │   │   │   │   ├── engine_run.rs                                # Execute exact shard obligations independently in featureless and engine modes
 │   │   │   │   ├── mod.rs                                       # rust-gate's mutation planning, scoped execution and shard aggregation
@@ -346,9 +348,12 @@ in place.
 │   │   │   ├── aggregation_evidence.rs                          # Mutation evidence validation and aggregation tests
 │   │   │   ├── aggregation_rejections.rs                        # Mutation aggregation refusal cases for incomplete or inconsistent evidence
 │   │   │   ├── engine_aggregation.rs                            # Every engine mode and its featureless control are required mutation evidence
+│   │   │   ├── engine_compile_regression.rs                     # Real package compilation and configured exact-selection regressions
 │   │   │   ├── engine_execution.rs                              # Engine worker selection, bound modes and complete execution
 │   │   │   ├── engine_input_ownership.rs                        # Input-only ownership follows immutable checks outputs through every mutation worker
 │   │   │   ├── engine_membership.rs                             # Compile membership, not redundant default test runs, proves featureless inactivity
+│   │   │   ├── engine_membership_binding.rs                     # Membership requires source metadata and a retained equivalent compile command
+│   │   │   ├── engine_membership_records.rs                     # Independent compiler record shape and failed-process stimuli
 │   │   │   ├── engine_planning.rs                               # Mode-aware engine ownership plans at the executable boundary
 │   │   │   ├── engine_regression.rs                             # Real, offline three-package regression of the complete required mutation gate
 │   │   │   ├── engine_rejections.rs                             # Plan, artifact and outcome corruption never becomes engine gate success

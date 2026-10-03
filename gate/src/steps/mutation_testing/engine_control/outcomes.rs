@@ -51,7 +51,7 @@ pub(in super::super) fn validate(
     let root = outcomes
         .parent()
         .ok_or("featureless outcomes have no directory")?;
-    let members = membership::verify(root, receipt)?;
+    let members = membership::verify(root, receipt, listing)?;
     let tested = root.join("tested-outcomes.json");
     let expected = compose(listing, &tested, members.as_ref())?;
     Cmd::new("jaq -e")

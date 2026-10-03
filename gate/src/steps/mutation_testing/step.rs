@@ -118,8 +118,6 @@ pub(crate) const STEPS: &[Step] = &[
         summary: "Execute featureless engine-file control shards",
         inputs: &[
             "CARGO_MUTANTS_VERSION",
-            "CARGO_ENCODED_RUSTFLAGS",
-            "RUSTFLAGS",
             "GITHUB_BASE_REF",
             "MUTATION_FULL_SCOPE",
             "GITHUB_RUN_ATTEMPT",

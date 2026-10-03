@@ -2,7 +2,9 @@
 
 use super::fixture::{Fixture, succeeds};
 use super::mutation_shards::{copy_tree, planning_fixture};
+use super::repository::tool;
 use serde_json::{Value, json};
+use std::path::Path;
 use std::{fs, process::Output};
 
 /// Shared policy fixture, optionally advanced through planning for worker contracts.
@@ -17,6 +19,7 @@ pub(crate) fn engine_fixture(planned: bool) -> Fixture {
 /// A feature-owned source with an independent featureless mode obligation.
 fn engine_planning_fixture() -> Fixture {
     let mut fixture = planning_fixture(2, 0, 1);
+    fixture.set("GITHUB_WORKSPACE", &fixture.root.display().to_string());
     fixture.set("MUTATION_ENGINE_FEATURES", "[\"engine\"]");
     fixture.set("MUTATION_ENGINE_FILES", "[\"src/engine.rs\"]");
     fs::write(fixture.root.join("project/src/engine.rs"), "").unwrap();
@@ -30,7 +33,7 @@ fn engine_planning_fixture() -> Fixture {
     fixture.set(
         "METADATA",
         &json!({"workspace_root":fixture.root.join("project"), "packages":[{
-            "name":"fixture", "features":{"engine":[]},
+            "name":"fixture", "version":"0.1.0", "features":{"engine":[]},
         "manifest_path":fixture.root.join("project/Cargo.toml")
         }]})
         .to_string(),
@@ -104,6 +107,8 @@ fn engine_execution_fixture(compiled: bool) -> Fixture {
         "cargo",
         r#"if [[ $1 == metadata ]]; then printf '%s' "$METADATA"; exit; fi
 if [[ $1 == test ]]; then
+ printf '%s' "${CARGO_ENCODED_RUSTFLAGS-unset}" > "$RUNNER_TEMP/encoded-flags"
+ printf '%s' "${RUSTFLAGS-unset}" > "$RUNNER_TEMP/rust-flags"
  target=''
  while (( $# )); do
   case $1 in --target-dir) target=$2; shift 2;; *) shift;; esac
@@ -116,7 +121,7 @@ if [[ $1 == test ]]; then
  printf '"src_path":"%s/src/lib.rs"},"filenames":["%s/debug/deps/libfixture.rlib"]}\n' \
   "$PROJECT" "$target"
  printf '{"reason":"build-finished","success":true}\n'
- exit
+ exit "${CONTROL_BUILD_STATUS:-0}"
 fi
 out=''; mode=default
 while (( $# )); do
@@ -126,7 +131,8 @@ mkdir -p "$out/mutants.out"
 cp "$RUNNER_TEMP/$mode-outcomes.json" "$out/mutants.out/outcomes.json"
 if [[ $mode == engine ]]; then list=mutation-engine-list.json;
 else list=mutation-engine-default-list.json; fi
-cp "$RUNNER_TEMP/reports/$list" "$out/mutants.out/mutants.json""#,
+cp "$RUNNER_TEMP/reports/$list" "$out/mutants.out/mutants.json"
+exit "${CONTROL_MUTANT_STATUS:-0}""#,
     );
     fixture
 }
@@ -214,4 +220,16 @@ pub(crate) fn summarize_engine(fixture: &Fixture) -> Output {
     fs::remove_dir_all(fixture.root.join("reports")).unwrap();
     fs::create_dir_all(fixture.root.join("reports")).unwrap();
     fixture.run_body("rust-gate mutants-aggregate")
+}
+
+/// Refresh a digest to exercise semantic refusal rather than only byte-integrity refusal.
+pub(crate) fn evidence_hash(path: &Path) -> String {
+    let result = tool("sha256sum").arg(path).output().unwrap();
+    succeeds(&result);
+    String::from_utf8(result.stdout)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned()
 }

@@ -1,12 +1,11 @@
 //! Compile membership, not redundant default test runs, proves featureless inactivity.
 
 use crate::harness::{
-    engine_aggregation_fixture, engine_fixture, engine_inactive_fixture, refused, succeeds,
-    summarize_engine, tool,
+    engine_aggregation_fixture, engine_fixture, engine_inactive_fixture, evidence_hash, refused,
+    succeeds, summarize_engine,
 };
 use serde_json::{Value, json};
 use std::fs;
-use std::path::Path;
 
 #[test]
 fn feature_only_mutants_are_classified_without_running_default_tests() {
@@ -15,7 +14,7 @@ fn feature_only_mutants_are_classified_without_running_default_tests() {
     fs::write(fixture.root.join("trace"), "").unwrap();
     succeeds(&fixture.run_body("rust-gate mutants-engine-default"));
     let trace = fixture.trace();
-    assert!(trace.contains("cargo test --workspace --all-targets --no-run --locked"));
+    assert!(trace.contains("cargo test --no-run --verbose --package=fixture@0.1.0 --locked"));
     assert!(!trace.lines().any(|line| line.contains("cargo mutants")));
     let outcomes: Value = serde_json::from_slice(
         &fs::read(
@@ -84,8 +83,38 @@ fn retained_membership_rejects_binding_drift_digest_drift_and_incomplete_units()
     let saved = fs::read(&manifest).unwrap();
     for (pointer, value, message) in [
         (
+            "/project",
+            json!("relative"),
+            "featureless compile membership binding differs from its plan",
+        ),
+        (
+            "/project",
+            json!(1),
+            "featureless compile membership binding differs from its plan",
+        ),
+        (
+            "/workspace",
+            json!("relative"),
+            "featureless compile membership binding differs from its plan",
+        ),
+        (
+            "/workspace",
+            json!(false),
+            "featureless compile membership binding differs from its plan",
+        ),
+        (
+            "/target",
+            json!(1),
+            "featureless compile membership binding differs from its plan",
+        ),
+        (
+            "/dep_sha256",
+            json!({}),
+            "featureless compile membership binding differs from its plan",
+        ),
+        (
             "/schema",
-            json!(2),
+            json!(3),
             "featureless compile membership binding differs from its plan",
         ),
         (
@@ -97,6 +126,16 @@ fn retained_membership_rejects_binding_drift_digest_drift_and_incomplete_units()
             "/binding/attempt",
             json!("2"),
             "featureless compile membership binding differs from its plan",
+        ),
+        (
+            "/source_sha256",
+            json!("wrong"),
+            "featureless compile membership source metadata digest differs",
+        ),
+        (
+            "/config_sha256",
+            json!("wrong"),
+            "featureless compile membership configuration digest differs",
         ),
         (
             "/cargo_sha256",
@@ -121,7 +160,7 @@ fn retained_membership_rejects_binding_drift_digest_drift_and_incomplete_units()
         (
             "/target",
             json!("/wrong"),
-            "featureless build dep-info escapes its clean target",
+            "featureless compile membership command is not equivalent",
         ),
         (
             "/target",
@@ -244,7 +283,7 @@ fn compilation_changing_config_falls_back_to_testing_every_assigned_mutant() {
     succeeds(&fixture.run_body("rust-gate mutants-engine-default"));
     let trace = fixture.trace();
     assert!(trace.contains("cargo mutants"));
-    assert!(!trace.contains("cargo test --workspace --all-targets --no-run"));
+    assert!(!trace.contains("cargo test --no-run"));
     let root = fixture.root.join("mutants-engine-default/mutants.out");
     let outcomes: Value =
         serde_json::from_slice(&fs::read(root.join("outcomes.json")).unwrap()).unwrap();
@@ -254,54 +293,30 @@ fn compilation_changing_config_falls_back_to_testing_every_assigned_mutant() {
         fs::read_to_string(fixture.root.join("reports/mutants-engine-default.txt"))
             .unwrap()
             .contains(
-                "cargo-mutants configuration changes compilation; testing every assigned mutant"
+                "package-scoped compile equivalence is unverified; testing every assigned mutant"
             )
     );
 }
 
 #[test]
-fn membership_uses_pinned_mutants_encoded_flag_precedence_not_cargo_config_flags() {
+fn default_membership_leaves_inherited_rust_flag_resolution_unchanged() {
     let mut fixture = engine_fixture(true);
     fixture.set("CONTROL_COMPILED", "false");
     fixture.set("RUSTFLAGS", "-D warnings --cfg fixture_flag");
-    for (encoded, expected) in [
-        (
-            None,
-            "-D\u{1f}warnings\u{1f}--cfg\u{1f}fixture_flag\u{1f}--cap-lints=warn",
-        ),
-        (Some(""), "--cap-lints=warn"),
-        (
-            Some("--cfg\u{1f}other"),
-            "--cfg\u{1f}other\u{1f}--cap-lints=warn",
-        ),
-    ] {
+    for encoded in [None, Some(""), Some("--cfg\u{1f}other")] {
         if let Some(encoded) = encoded {
             fixture.set("CARGO_ENCODED_RUSTFLAGS", encoded);
         }
         succeeds(&fixture.run_body("rust-gate mutants-engine-default"));
-        let record: Value = serde_json::from_slice(
-            &fs::read(
-                fixture
-                    .root
-                    .join("mutants-engine-default/mutants.out/build-record.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        assert_eq!(record["encoded_rustflags"], expected);
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("encoded-flags")).unwrap(),
+            encoded.unwrap_or("unset")
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.root.join("rust-flags")).unwrap(),
+            "-D warnings --cfg fixture_flag"
+        );
     }
-}
-
-/// Refresh a digest to exercise semantic refusal rather than only byte-integrity refusal.
-fn evidence_hash(path: &Path) -> String {
-    let result = tool("sha256sum").arg(path).output().unwrap();
-    succeeds(&result);
-    String::from_utf8(result.stdout)
-        .unwrap()
-        .split_whitespace()
-        .next()
-        .unwrap()
-        .to_owned()
 }
 
 #[test]
@@ -370,5 +385,41 @@ fn aggregation_refuses_a_tested_subset_that_does_not_equal_compile_membership() 
     refused(
         &summarize_engine(&fixture),
         "featureless tested discovery differs from compile membership",
+    );
+}
+
+#[test]
+fn aggregation_refuses_foreign_membership_coordinate_frames() {
+    let fixture = engine_inactive_fixture();
+    let root = fixture
+        .root
+        .join("engine-default/fixture-engine-default-mutants-0")
+        .join("mutants-engine-default/mutants.out");
+    let dep = root.join("dep-info/0.d");
+    fs::write(&dep, "a: src/lib.rs src/engine.rs\n").unwrap();
+    let manifest = root.join("compile-membership.json");
+    let mut binding: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    binding["dep_sha256"][0] = json!(evidence_hash(&dep));
+    binding["project"] = json!("/foreign-project");
+    fs::write(manifest, binding.to_string()).unwrap();
+    refused(
+        &summarize_engine(&fixture),
+        "featureless compile membership binding differs from its plan",
+    );
+}
+
+#[test]
+fn unknown_membership_manifest_keys_are_refused_independently() {
+    let fixture = engine_aggregation_fixture();
+    let manifest = fixture
+        .root
+        .join("engine-default/fixture-engine-default-mutants-0")
+        .join("mutants-engine-default/mutants.out/compile-membership.json");
+    let mut binding: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    binding["unexpected"] = json!(true);
+    fs::write(manifest, binding.to_string()).unwrap();
+    refused(
+        &summarize_engine(&fixture),
+        "featureless compile membership binding differs from its plan",
     );
 }

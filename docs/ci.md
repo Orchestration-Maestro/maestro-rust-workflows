@@ -1138,7 +1138,7 @@ or failed from complete evidence.
 | `mutation-engine-list.json`, `mutation-engine-default-list.json`, `mutation-engine-plan.json`, `mutation-engine-plan.log` | Feature-owned plan and separately named featureless control obligations, bound to policy and package owners | engine ownership is configured |
 | `mutants-engine-shard.json`, `mutants-engine-default-shard.json` | SHA-bound mode-specific shard receipts | engine workers |
 | `mutants-engine.txt`, `mutants-engine-default.txt` | Bounded worker command logs for each mode | engine workers |
-| `compile-membership.json`, `cargo-build.json`, `cargo-build.log`, `build-record.json`, `dep-info` | Default-build membership, raw compiler evidence and receipt binding, retained inside each control output artifact | featureless engine controls |
+| `compile-membership.json`, `source-metadata.json`, `compile-config.toml`, `selection-config.toml`, `cargo-build.json`, `cargo-build.log`, `build-record.json`, `dep-info` | Default-build membership, raw compiler evidence and receipt binding, retained inside each control output artifact | featureless engine controls |
 | `tested-mutants.json`, `tested-outcomes.json` | Raw cargo-mutants subset, or the successful compile-only baseline when every assigned mutant is a non-member | featureless engine controls |
 | `mutation-windows-plan.json`, `mutation-windows-list.json` | Native Windows discovery bound to the same source, policy and run | Windows-owned files |
 | `mutation-partitions` | Preserved engine/control/Windows raw evidence with mode-tagged outcomes | engine partition aggregation |
@@ -1244,22 +1244,29 @@ no repository policy exists; workers never reselect ownership from the caller or
 Without an engine policy, existing `.cargo/mutants.toml` settings remain unchanged. Global
 feature/workspace-test restrictions apply only when engine ownership is configured.
 
-The featureless control builds the default workspace's test targets once, without running
-its tests, in a clean target directory. Cargo JSON and rustc dep-info establish compile
-membership, including test-only modules, examples and build scripts. The build uses the
-same effective encoded Rust flags as pinned cargo-mutants. The control retains that raw
-evidence, its digests and a schema-1 binding to the complete source/run/shard receipt.
+The featureless control compiles one assigned owning package's default test targets, without
+running tests, in a clean target directory. Its command mirrors pinned cargo-mutants
+27.1.0's package-scoped Cargo build, including version-qualified selection and default-off
+`cap_lints`. It leaves Cargo's Rust flag resolution unchanged. Cargo JSON and rustc dep-info
+establish compile membership, including test-only modules and build scripts. Retained Cargo
+source metadata verifies the project/workspace coordinate frame and every planned owner.
+The control retains the raw evidence, configuration, digests and a schema-2 binding to the
+complete source/run/shard receipt. Aggregation rechecks the equivalent command and frame.
 A file absent from this verified build cannot affect default behavior. Its assigned mutants
 receive the explicit `NotCompiledWithoutFeatures` outcome, with no test phase and no
 per-mutant test invocation. They remain in the complete plan and outcome accounting;
 they are not relabelled caught, missed or unviable.
 
 Only assigned mutants in compiled files run through cargo-mutants, selected by anchored,
-escaped exact names. Every compiled control survivor now fails, even if its engine twin
+escaped exact names. A retained config copy removes only `examine_re`, so inherited inclusion
+regexes cannot broaden that exact selection; all other discovery and execution settings stay
+unchanged. Every compiled control survivor now fails, even if its engine twin
 is caught: default-compiled code in an engine-owned file must be killed by default tests.
 This strengthens the previous twin-only acceptance of featureless survivors. A
 cargo-mutants configuration that changes compilation, features, profile or Cargo arguments,
-or contains an unknown key, disables absence classification conservatively. The worker
+or contains an unknown key, disables absence classification conservatively. Nextest, enabled
+`cap_lints`, multiple assigned owners, an unverified package version, or a package working
+directory below the workspace root also use this fallback. The worker
 logs the fallback and tests every assigned mutant. Existing global feature/workspace-test
 restrictions remain in place. No timeout, shard count, default or limit is increased.
 

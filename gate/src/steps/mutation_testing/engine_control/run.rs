@@ -1,6 +1,6 @@
 //! Run tests only for compiled assigned mutants, preserving the exact complete control plan.
 
-use super::{membership, outcomes};
+use super::{membership, outcomes, source};
 use crate::checks::native_cache::{native_cache, native_cache_command};
 use crate::runner::{Cmd, Failure, Job, Outcome, input, output, tee_line, write};
 use std::fs;
@@ -23,17 +23,14 @@ pub(in super::super) fn execute(
     }
     fs::create_dir_all(&root).map_err(|error| format!("cannot create control output: {error}"))?;
     let policy = native_cache(&job.project)?;
-    membership::build(job, &root, receipt, policy.as_ref())?;
-    let members = membership::verify(&root, receipt)?;
+    membership::build(job, &root, receipt, assigned, policy.as_ref())?;
+    let members = membership::verify(&root, receipt, assigned)?;
     let listing = outcomes::tested_listing(assigned, members.as_ref())?;
     let tested_listing = root.join("tested-mutants.json");
     write(&tested_listing, listing.as_bytes(), false)?;
     let count = super::super::plan_identity::listing_count(&tested_listing)?;
     if count > 0 {
-        let remaining = Duration::from_secs(30 * 60).saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return Err(Failure::status(124));
-        }
+        let remaining = remaining_budget(started.elapsed())?;
         let mut command = native_cache_command(policy.as_ref(), "timeout --kill-after=1m")
             .arg(format!("{}s", remaining.as_secs().max(1)))
             .args([
@@ -44,6 +41,9 @@ pub(in super::super) fn execute(
                 "--colors=never",
                 "--level=info",
             ]);
+        command = command
+            .arg("--config")
+            .arg(source::selection_config(&root)?);
         if let Some(diff) = diff {
             command = command.arg("--in-diff").arg(diff);
         }
@@ -98,6 +98,15 @@ pub(in super::super) fn execute(
     output("applied", "true")
 }
 
+/// Membership and mutant execution share the existing 30-minute worker allowance.
+fn remaining_budget(elapsed: Duration) -> Result<Duration, Failure> {
+    let remaining = Duration::from_secs(30 * 60).saturating_sub(elapsed);
+    if remaining.is_zero() {
+        return Err(Failure::status(124));
+    }
+    Ok(remaining)
+}
+
 /// Anchor each escaped full cargo-mutants name, not a substring or file-level sample.
 fn exact_names(names: &str) -> String {
     let escaped: Vec<_> = names
@@ -137,7 +146,24 @@ fn copy_results(source: &Path, destination: &Path) -> Outcome {
 
 #[cfg(test)]
 mod tests {
-    use super::exact_names;
+    use super::{exact_names, remaining_budget};
+    use std::time::Duration;
+
+    #[test]
+    fn exhausted_shared_budget_refuses_at_and_beyond_the_deadline() {
+        assert_eq!(
+            remaining_budget(Duration::from_secs(1799)).unwrap(),
+            Duration::from_secs(1)
+        );
+        for seconds in [1800, 1801] {
+            assert_eq!(
+                remaining_budget(Duration::from_secs(seconds))
+                    .unwrap_err()
+                    .code,
+                124
+            );
+        }
+    }
 
     #[test]
     fn exact_selection_escapes_regex_metacharacters_and_anchors_every_name() {
