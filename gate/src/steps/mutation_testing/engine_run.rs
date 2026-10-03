@@ -107,13 +107,18 @@ fn execute_mode(
         return Ok(());
     }
     let policy = native_cache(&job.project)?;
-    let mut command = native_cache_command(
-        policy.as_ref(),
-        concat!(
-            "timeout --kill-after=1m 30m cargo mutants ",
-            "--no-shuffle --cargo-arg=--locked --colors=never --level=info"
-        ),
-    );
+    // Engine mode adds a cold native build to the ordinary 30-minute shard allowance.
+    // Pi has no mutation timeout; the featureless control retains its existing cap.
+    let mut command = native_cache_command(policy.as_ref(), "timeout --kill-after=1m")
+        .arg(if enabled { "60m" } else { "30m" })
+        .args([
+            "cargo",
+            "mutants",
+            "--no-shuffle",
+            "--cargo-arg=--locked",
+            "--colors=never",
+            "--level=info",
+        ]);
     if let Some(diff) = &source.diff {
         command = command.args(["--in-diff", &diff.to_string_lossy()]);
     }

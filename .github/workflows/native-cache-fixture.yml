@@ -254,7 +254,7 @@ jobs:
           enableCrossOsArchive: false
       - name: Execute engine shards and their separate featureless obligations
         id: engine-mutation-run
-        timeout-minutes: 35
+        timeout-minutes: 65
         run: rust-gate mutants-engine
         env:
           NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
