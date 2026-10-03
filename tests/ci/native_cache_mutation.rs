@@ -57,6 +57,20 @@ fn mutation_fixture(index: usize, policy: bool) -> Fixture {
         "cargo",
         r#"printf '%s %s\n' "$*" "${FIXTURE_NATIVE_CACHE_DIR:-unset}" >> "$REPORTS/child-env"
 if [[ $1 == metadata ]]; then printf '%s' "$METADATA"; exit; fi
+if [[ $1 == test ]]; then
+ target=''
+ while (( $# )); do
+  case $1 in --target-dir) target=$2; shift 2;; *) shift;; esac
+ done
+ mkdir -p "$target/debug/deps"
+ printf '%s: src/lib.rs src/engine.rs\n' "$target/debug/deps/fixture.d" \
+  > "$target/debug/deps/fixture.d"
+ printf '{"reason":"compiler-artifact","fresh":false,"target":{"kind":["lib"],'
+ printf '"src_path":"%s/src/lib.rs"},"filenames":["%s/debug/deps/libfixture.rlib"]}\n' \
+  "$PROJECT" "$target"
+ printf '{"reason":"build-finished","success":true}\n'
+ exit
+fi
 out=''; mode=default; shard=0; control=false
 while (( $# )); do
  case $1 in --features) mode=engine; shift 2;; --output) out=$2; shift 2;;
@@ -74,6 +88,7 @@ jaq --argjson index "$shard" '{outcomes:[{scenario:"Baseline",summary:"Success",
  cargo_mutants_version:"27.1.0",start_time:"2026-01-01T00:00:00Z",
  end_time:"2026-01-01T00:01:00Z"}' \
  "$REPORTS/$list" > "$out/mutants.out/outcomes.json"
+jaq --argjson index "$shard" '[.[$index]]' "$REPORTS/$list" > "$out/mutants.out/mutants.json"
 if [[ $mode == engine && -d ${FIXTURE_NATIVE_CACHE_DIR:-unset} ]]; then
  mkdir -p "$FIXTURE_NATIVE_CACHE_DIR/entry-worker"; fi"#,
     );
@@ -151,7 +166,10 @@ fn featureless_workers_strip_inherited_cache_while_absent_policy_preserves_envir
         succeeds(&fixture.run_body(&format!("rust-gate {step}")));
         let children = fs::read_to_string(fixture.root.join("reports/child-env")).unwrap();
         for child in children.lines() {
-            let expected = if policy && child.starts_with("mutants ") {
+            let isolated = child.starts_with("mutants ")
+                || child.starts_with("test ")
+                || child.starts_with("metadata --format-version 1 --no-deps --locked ");
+            let expected = if policy && isolated {
                 " unset"
             } else {
                 " /legacy-value"

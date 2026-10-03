@@ -2,13 +2,15 @@
 
 use super::fixture::{Fixture, succeeds};
 use super::mutation_shards::{copy_tree, planning_fixture};
+use super::repository::tool;
 use serde_json::{Value, json};
+use std::path::Path;
 use std::{fs, process::Output};
 
 /// Shared policy fixture, optionally advanced through planning for worker contracts.
 pub(crate) fn engine_fixture(planned: bool) -> Fixture {
     if planned {
-        engine_execution_fixture()
+        engine_execution_fixture(true)
     } else {
         engine_planning_fixture()
     }
@@ -17,6 +19,7 @@ pub(crate) fn engine_fixture(planned: bool) -> Fixture {
 /// A feature-owned source with an independent featureless mode obligation.
 fn engine_planning_fixture() -> Fixture {
     let mut fixture = planning_fixture(2, 0, 1);
+    fixture.set("GITHUB_WORKSPACE", &fixture.root.display().to_string());
     fixture.set("MUTATION_ENGINE_FEATURES", "[\"engine\"]");
     fixture.set("MUTATION_ENGINE_FILES", "[\"src/engine.rs\"]");
     fs::write(fixture.root.join("project/src/engine.rs"), "").unwrap();
@@ -29,8 +32,8 @@ fn engine_planning_fixture() -> Fixture {
     fs::write(fixture.root.join("engine.json"), engine.to_string()).unwrap();
     fixture.set(
         "METADATA",
-        &json!({"packages":[{
-            "name":"fixture", "features":{"engine":[]},
+        &json!({"workspace_root":fixture.root.join("project"), "packages":[{
+            "name":"fixture", "version":"0.1.0", "features":{"engine":[]},
         "manifest_path":fixture.root.join("project/Cargo.toml")
         }]})
         .to_string(),
@@ -46,8 +49,15 @@ else cat "$RUNNER_TEMP/listing.json"; fi"#,
 }
 
 /// A dual-mode worker fixture with independent real-shaped outcome documents.
-fn engine_execution_fixture() -> Fixture {
+fn engine_execution_fixture(compiled: bool) -> Fixture {
     let mut fixture = engine_planning_fixture();
+    if !compiled {
+        fs::copy(
+            fixture.root.join("listing.json"),
+            fixture.root.join("engine.json"),
+        )
+        .unwrap();
+    }
     succeeds(&fixture.run_body("rust-gate mutants-plan"));
     for (key, name) in [
         ("MUTATION_ENGINE_PLAN", "mutation-engine-plan.json"),
@@ -69,6 +79,7 @@ fn engine_execution_fixture() -> Fixture {
     }
     fixture.set("MUTATION_SHARDS", "1");
     fixture.set("MUTATION_SHARD", "0/1");
+    fixture.set("CONTROL_COMPILED", if compiled { "true" } else { "false" });
     for (name, listing) in [
         ("engine", "mutation-engine-list.json"),
         ("default", "mutation-engine-default-list.json"),
@@ -95,6 +106,28 @@ fn engine_execution_fixture() -> Fixture {
     fixture.stub(
         "cargo",
         r#"if [[ $1 == metadata ]]; then printf '%s' "$METADATA"; exit; fi
+if [[ $1 == mutants && $2 == --list ]]; then
+ if [[ " $* " == *" --features "* ]]; then cat "$RUNNER_TEMP/engine.json";
+ else cat "$RUNNER_TEMP/listing.json"; fi
+ exit
+fi
+if [[ $1 == test ]]; then
+ printf '%s' "${CARGO_ENCODED_RUSTFLAGS-unset}" > "$RUNNER_TEMP/encoded-flags"
+ printf '%s' "${RUSTFLAGS-unset}" > "$RUNNER_TEMP/rust-flags"
+ target=''
+ while (( $# )); do
+  case $1 in --target-dir) target=$2; shift 2;; *) shift;; esac
+ done
+ mkdir -p "$target/debug/deps"
+ sources='src/lib.rs'
+ if [[ $CONTROL_COMPILED == true ]]; then sources+=' src/engine.rs'; fi
+ printf '%s: %s\n' "$target/debug/deps/fixture.d" "$sources" > "$target/debug/deps/fixture.d"
+ printf '{"reason":"compiler-artifact","fresh":false,"target":{"kind":["lib"],'
+ printf '"src_path":"%s/src/lib.rs"},"filenames":["%s/debug/deps/libfixture.rlib"]}\n' \
+  "$PROJECT" "$target"
+ printf '{"reason":"build-finished","success":true}\n'
+ exit "${CONTROL_BUILD_STATUS:-0}"
+fi
 out=''; mode=default
 while (( $# )); do
  case $1 in --features) mode=engine; shift 2;; --output) out=$2; shift 2;; *) shift;; esac
@@ -103,14 +136,44 @@ mkdir -p "$out/mutants.out"
 cp "$RUNNER_TEMP/$mode-outcomes.json" "$out/mutants.out/outcomes.json"
 if [[ $mode == engine ]]; then list=mutation-engine-list.json;
 else list=mutation-engine-default-list.json; fi
-cp "$RUNNER_TEMP/reports/$list" "$out/mutants.out/mutants.json""#,
+cp "$RUNNER_TEMP/reports/$list" "$out/mutants.out/mutants.json"
+exit "${CONTROL_MUTANT_STATUS:-0}""#,
     );
     fixture
 }
 
 /// Complete inline/default, featureless control and engine evidence for one run.
 pub(crate) fn engine_aggregation_fixture() -> Fixture {
-    let mut fixture = engine_execution_fixture();
+    harvest_engine_fixture(engine_execution_fixture(true))
+}
+
+/// Unverified controls retain survivor acceptance only with an exact caught engine twin.
+pub(crate) fn engine_fallback_fixture(exact_twin: bool) -> Fixture {
+    let fixture = engine_execution_fixture(!exact_twin);
+    fs::create_dir_all(fixture.root.join("project/.cargo")).unwrap();
+    fs::write(
+        fixture.root.join("project/.cargo/mutants.toml"),
+        "cap_lints = true\n",
+    )
+    .unwrap();
+    succeeds(&fixture.run_body("rust-gate mutants-plan"));
+    let path = fixture.root.join("default-outcomes.json");
+    let mut outcomes: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    outcomes["caught"] = json!(0);
+    outcomes["missed"] = json!(1);
+    outcomes["outcomes"][1]["summary"] = json!("MissedMutant");
+    outcomes["outcomes"][1]["phase_results"][0]["process_status"] = json!("Success");
+    fs::write(path, outcomes.to_string()).unwrap();
+    harvest_engine_fixture(fixture)
+}
+
+/// Non-member controls with identical engine twins, using the same artifact transport.
+pub(crate) fn engine_inactive_fixture() -> Fixture {
+    harvest_engine_fixture(engine_execution_fixture(false))
+}
+
+/// Retain the complete required artifacts for either compile-membership case.
+fn harvest_engine_fixture(mut fixture: Fixture) -> Fixture {
     succeeds(&fixture.run_body("rust-gate mutants-engine"));
     succeeds(&fixture.run_body("rust-gate mutants-engine-default"));
     let checks = fixture.root.join("checks");
@@ -121,6 +184,10 @@ pub(crate) fn engine_aggregation_fixture() -> Fixture {
         serde_json::from_slice(&fs::read(fixture.root.join("default-outcomes.json")).unwrap())
             .unwrap();
     outcomes["outcomes"][1]["scenario"]["Mutant"] = listing[0].clone();
+    outcomes["caught"] = json!(1);
+    outcomes["missed"] = json!(0);
+    outcomes["outcomes"][1]["summary"] = json!("CaughtMutant");
+    outcomes["outcomes"][1]["phase_results"][0]["process_status"] = json!({"Failure":101});
     fs::write(checks.join("mutants.json"), outcomes.to_string()).unwrap();
     fs::create_dir_all(checks.join("mutants/mutants.out")).unwrap();
     fs::write(
@@ -182,4 +249,16 @@ pub(crate) fn summarize_engine(fixture: &Fixture) -> Output {
     fs::remove_dir_all(fixture.root.join("reports")).unwrap();
     fs::create_dir_all(fixture.root.join("reports")).unwrap();
     fixture.run_body("rust-gate mutants-aggregate")
+}
+
+/// Refresh a digest to exercise semantic refusal rather than only byte-integrity refusal.
+pub(crate) fn evidence_hash(path: &Path) -> String {
+    let result = tool("sha256sum").arg(path).output().unwrap();
+    succeeds(&result);
+    String::from_utf8(result.stdout)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap()
+        .to_owned()
 }

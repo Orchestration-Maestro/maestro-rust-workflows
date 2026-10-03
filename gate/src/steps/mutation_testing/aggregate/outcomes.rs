@@ -77,6 +77,8 @@ pub(super) fn merge_partitions(paths: &[PathBuf]) -> Result<String, Failure> {
             "outcomes:[.[] | .outcomes[]], total_mutants:(map(.total_mutants)|add), ",
             "caught:(map(.caught)|add), missed:(map(.missed)|add), timeout:(map(.timeout)|add), ",
             "unviable:(map(.unviable)|add), success:(map(.success)|add), ",
+            "engine_control_schema:1, ",
+            "not_compiled_without_features:(map(.not_compiled_without_features // 0)|add), ",
             "start_time:(map(.start_time)|min), end_time:(map(.end_time)|max), ",
             "cargo_mutants_version:$version}"
         ))

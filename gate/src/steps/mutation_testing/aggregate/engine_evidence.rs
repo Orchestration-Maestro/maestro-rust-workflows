@@ -177,10 +177,17 @@ fn collect_mode(
         let outcomes = safe_file(&source.join(format!("{mode}/mutants.out/outcomes.json")))?;
         let discovered = safe_file(&source.join(format!("{mode}/mutants.out/mutants.json")))?;
         super::super::plan_identity::validate_execution(&assigned_path, &outcomes)?;
-        let counts = partition_counts(&discovered, &outcomes, !enabled)?;
+        super::super::plan_identity::validate_execution(&discovered, &outcomes)?;
+        let counts = mode_counts(
+            job,
+            &assigned_path,
+            &discovered,
+            &outcomes,
+            (!enabled).then(|| source.join("rust-reports/mutants-engine-default-shard.json")),
+        )?;
         tee_line(
             &format!(
-                "{prefix} shard {index}/{shards}: total={} unviable={}",
+                "{prefix} shard {index}/{shards}: tested={} unviable={}",
                 counts.total, counts.unviable
             ),
             report,
@@ -189,6 +196,23 @@ fn collect_mode(
         paths.push(copied.join(format!("{mode}/mutants.out/outcomes.json")));
     }
     Ok(paths)
+}
+
+/// Control classification is trusted only after its source-bound compile evidence verifies.
+fn mode_counts(
+    job: &Job,
+    assigned: &Path,
+    discovered: &Path,
+    outcomes: &Path,
+    receipt: Option<PathBuf>,
+) -> Result<super::evidence::Counts, Failure> {
+    if let Some(receipt) = receipt {
+        let (compiled, tested, verified) =
+            super::super::engine_control::validate(job, assigned, outcomes, &receipt)?;
+        partition_counts(&compiled, &tested, !verified)
+    } else {
+        partition_counts(discovered, outcomes, false)
+    }
 }
 
 /// Concrete artifact and transport names for the two independent engine modes.
@@ -278,7 +302,8 @@ pub(super) fn tagged(job: &Job, source: &Path, name: &str, mode: &str) -> Result
         .args(["--arg", "prefix", &prefix])
         .arg(concat!(
             ".outcomes |= map(. + {mutation_mode:$mode} + ",
-            "(if $mode == \"engine-default\" and .summary == \"MissedMutant\" then ",
+            "(if $mode == \"engine-default\" and ",
+            "(.summary == \"NotCompiledWithoutFeatures\" or .summary == \"MissedMutant\") then ",
             "{mutation_class:\"inactive without features, caught with engine\"} else {} end) | ",
             ".log_path = (if (.log_path | type) == \"string\" then ",
             "$prefix + .log_path else .log_path end) | ",

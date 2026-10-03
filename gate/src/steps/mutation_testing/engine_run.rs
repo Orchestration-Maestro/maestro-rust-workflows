@@ -1,8 +1,8 @@
 //! Execute exact shard obligations independently in featureless and engine modes.
 
-use super::{aggregate, engine_plan, plan_identity, reports, scope};
+use super::{aggregate, engine_control, engine_plan, plan_identity, reports, scope};
 use crate::checks::native_cache::{native_cache, native_cache_command, native_command};
-use crate::runner::{Cmd, Job, Outcome, flag, input, optional, output, tee_line, write};
+use crate::runner::{Cmd, Job, Outcome, flag, input, optional, write};
 use std::path::Path;
 
 /// Verify the dual-mode plan before executing either mode.
@@ -106,11 +106,22 @@ fn execute_mode(
     if count == 0 {
         return Ok(());
     }
+    if !enabled {
+        let receipt = job.report("mutants-engine-default-shard.json")?;
+        engine_control::execute(job, &assigned_path, &receipt, source.diff.as_deref())?;
+        let outcomes = job
+            .temp
+            .join("mutants-engine-default/mutants.out/outcomes.json");
+        let (listing, tested, verified) =
+            engine_control::validate(job, &assigned_path, &outcomes, &receipt)?;
+        aggregate::evidence::partition_counts(&listing, &tested, !verified)?;
+        return Ok(());
+    }
     let policy = native_cache(&job.project)?;
     // Engine mode adds a cold native build to the ordinary 30-minute shard allowance.
     // Pi has no mutation timeout; the featureless control retains its existing cap.
     let mut command = native_cache_command(policy.as_ref(), "timeout --kill-after=1m")
-        .arg(if enabled { "60m" } else { "30m" })
+        .arg("60m")
         .args([
             "cargo",
             "mutants",
@@ -122,14 +133,8 @@ fn execute_mode(
     if let Some(diff) = &source.diff {
         command = command.args(["--in-diff", &diff.to_string_lossy()]);
     }
-    if enabled {
-        command = scope::engine_selection(command, &job.project, policy.as_ref())?;
-        command = native_command(job, command, policy.as_ref())?;
-    } else {
-        for file in scope::engine_files()? {
-            command = command.args(["--file", &file]);
-        }
-    }
+    command = scope::engine_selection(command, &job.project, policy.as_ref())?;
+    command = native_command(job, command, policy.as_ref())?;
     let directory = job.temp.join(name);
     let verdict = command
         .args(["--shard", &format!("{}/{}", shard.0, shard.1)])
@@ -137,36 +142,11 @@ fn execute_mode(
         .arg("--output")
         .arg(&directory)
         .cwd(&job.project)
-        .tee(
-            &job.report(if enabled {
-                "mutants-engine.txt"
-            } else {
-                "mutants-engine-default.txt"
-            })?,
-            true,
-        );
-    if let Err(failure) = &verdict
-        && (enabled || failure.code != 2)
-    {
-        return verdict;
-    }
+        .tee(&job.report("mutants-engine.txt")?, true);
+    verdict?;
     let outcomes = directory.join("mutants.out/outcomes.json");
     plan_identity::validate_execution(&assigned_path, &outcomes)?;
-    if enabled {
-        reports::report_outcomes(job, &outcomes, source.change.as_deref(), Some(count))
-    } else {
-        // Only the aggregate may pair a control survivor with an exact caught engine twin.
-        let counts = aggregate::evidence::partition_counts(&assigned_path, &outcomes, true)?;
-        if verdict.is_err() && counts.missed == 0 {
-            return verdict;
-        }
-        tee_line(
-            "Featureless control retained; aggregate must validate every survivor's engine twin",
-            &job.report("mutants-engine-default.txt")?,
-            true,
-        )?;
-        output("applied", "true")
-    }
+    reports::report_outcomes(job, &outcomes, source.change.as_deref(), Some(count))
 }
 
 #[cfg(test)]

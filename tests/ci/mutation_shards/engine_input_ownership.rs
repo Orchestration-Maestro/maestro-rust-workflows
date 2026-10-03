@@ -134,6 +134,7 @@ fn worker(fixture: &mut Fixture, job: &str, mode: &str, index: usize, artifact: 
 /// A real source with no repository ownership policy, configured only by caller input.
 fn input_fixture() -> Fixture {
     let mut fixture = Fixture::new();
+    fixture.set("GITHUB_WORKSPACE", &fixture.root.display().to_string());
     let project = fixture.root.join("project");
     engine_workspace(&project, true);
     fs::remove_file(project.join("maestro-quality.toml")).unwrap();

@@ -134,7 +134,14 @@ pub(crate) const STEPS: &[Step] = &[
             "MUTATION_ENGINE_LIST",
             "MUTATION_ENGINE_DEFAULT_LIST",
         ],
-        tools: &["cargo mutants", "cargo metadata", "git", "jaq", "timeout"],
+        tools: &[
+            "cargo test",
+            "cargo mutants",
+            "cargo metadata",
+            "git",
+            "jaq",
+            "timeout",
+        ],
         reports: &[
             "mutants-engine-default-shard.json",
             "mutants-engine.txt",

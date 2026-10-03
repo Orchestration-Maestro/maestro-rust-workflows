@@ -151,6 +151,13 @@ fn an_empty_engine_mode_is_intentionally_skipped_without_losing_default_obligati
         plan.to_string(),
     )
     .unwrap();
+    let membership = fixture
+        .root
+        .join("engine-default/fixture-engine-default-mutants-0")
+        .join("mutants-engine-default/mutants.out/compile-membership.json");
+    let mut binding: Value = serde_json::from_slice(&fs::read(&membership).unwrap()).unwrap();
+    binding["binding"] = plan;
+    fs::write(membership, binding.to_string()).unwrap();
     fixture.set("MUTATION_ENGINE_COUNT", "0");
     fixture.set("MUTATION_ENGINE_SHARDS", "0");
     fixture.set("MUTATION_ENGINE_MATRIX", "[]");

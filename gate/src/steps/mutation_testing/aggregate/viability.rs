@@ -86,23 +86,26 @@ fn results(paths: &[PathBuf]) -> Result<BTreeMap<String, MutantResult>, Failure>
     Ok(results)
 }
 
-/// A featureless survivor is evidence of inactivity only with its exact caught engine twin.
+/// Verified non-members and unverified control survivors require exact caught engine twins.
 fn matched_inactive(
     control: &BTreeMap<String, MutantResult>,
     engine: &BTreeMap<String, MutantResult>,
 ) -> Result<BTreeMap<String, usize>, Failure> {
     let mut packages = BTreeMap::new();
     for (identity, result) in control {
-        if result.summary != "MissedMutant" {
+        if result.summary != "NotCompiledWithoutFeatures" && result.summary != "MissedMutant" {
             continue;
         }
         if engine
             .get(identity)
             .is_none_or(|twin| twin.summary != "CaughtMutant")
         {
-            return Err(
-                "featureless control survivor is not caught by its exact engine twin".into(),
-            );
+            return Err(if result.summary == "MissedMutant" {
+                "featureless control survivor is not caught by its exact engine twin"
+            } else {
+                "non-compiled featureless control is not caught by its exact engine twin"
+            }
+            .into());
         }
         *packages.entry(result.package.clone()).or_default() += 1;
     }
@@ -184,7 +187,8 @@ mod tests {
     }
     #[test]
     fn an_inactive_control_requires_a_caught_exact_twin_not_a_fuzzy_or_failed_match() {
-        let control = BTreeMap::from([("identity".into(), result("A", "MissedMutant"))]);
+        let control =
+            BTreeMap::from([("identity".into(), result("A", "NotCompiledWithoutFeatures"))]);
         let caught = BTreeMap::from([("identity".into(), result("A", "CaughtMutant"))]);
         assert_eq!(
             matched_inactive(&control, &caught).unwrap(),
@@ -197,7 +201,7 @@ mod tests {
                     .unwrap_err()
                     .message
                     .as_deref(),
-                Some("featureless control survivor is not caught by its exact engine twin")
+                Some("non-compiled featureless control is not caught by its exact engine twin")
             );
         }
         let different = BTreeMap::from([("identity-other".into(), result("A", "CaughtMutant"))]);
