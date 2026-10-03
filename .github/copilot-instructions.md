@@ -268,6 +268,7 @@ in place.
 │   │   │   │   │   ├── outcomes.rs                              # Preserve raw tested results and account explicitly for every verified non-member mutant
 │   │   │   │   │   ├── package_build.rs                         # Retain and verify one owning package's independent compiler evidence
 │   │   │   │   │   ├── run.rs                                   # Run tests only for compiled assigned mutants, preserving the exact complete control plan
+│   │   │   │   │   ├── rustc_invocation.rs                      # Read Cargo's shell-escaped rustc commands without executing them
 │   │   │   │   │   └── source.rs                                # Bind the compiler coordinate frame and package selection to retained Cargo metadata
 │   │   │   │   ├── engine_plan.rs                               # Discover both modes and preserve every featureless obligation before routing workers
 │   │   │   │   ├── engine_run.rs                                # Execute exact shard obligations independently in featureless and engine modes

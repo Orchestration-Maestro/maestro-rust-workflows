@@ -30,7 +30,7 @@ fn unverified_controls_accept_engine_only_survivors_with_exact_caught_twins() {
 /// Retain a semantic change's hash so digest checks do not mask the guard under test.
 fn refresh_manifest(manifest: &Path, key: &str, evidence: &Path) {
     let mut binding: Value = serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
-    if key == "build_sha256" || key == "cargo_sha256" {
+    if key == "build_sha256" || key == "cargo_sha256" || key == "log_sha256" {
         binding["packages"][0][key] = json!(evidence_hash(evidence));
     } else {
         binding[key] = json!(evidence_hash(evidence));
@@ -173,6 +173,15 @@ fn retained_artifact_paths_cannot_escape_the_verified_clean_target() {
         .map(|row| serde_json::from_str(row).unwrap())
         .collect();
     records[0]["filenames"] = json!(["/foreign-target/debug/deps/libfixture.rlib"]);
+    let log = root.join("builds/0/cargo-build.log");
+    let original = fs::read_to_string(&log).unwrap();
+    let target = fixture.root.join("engine-control-target/0");
+    fs::write(
+        &log,
+        original.replace(target.to_str().unwrap(), "/foreign-target"),
+    )
+    .unwrap();
+    refresh_manifest(&root.join("compile-membership.json"), "log_sha256", &log);
     fs::write(
         &cargo,
         records
@@ -189,6 +198,6 @@ fn retained_artifact_paths_cannot_escape_the_verified_clean_target() {
     );
     refused(
         &summarize_engine(&fixture),
-        "featureless build dep-info escapes its clean target",
+        "featureless build dep-info escapes its clean target:",
     );
 }

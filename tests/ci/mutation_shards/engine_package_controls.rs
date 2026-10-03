@@ -7,6 +7,61 @@ use serde_json::{Value, json};
 use std::fs;
 
 #[test]
+fn all_inactive_package_controls_write_one_complete_multi_owner_baseline() {
+    let mut fixture = compile_fixture("packages-inactive");
+    fixture.set("MUTATION_SHARD", "0/1");
+    succeeds(&fixture.run_body("rust-gate mutants-engine-default"));
+    let root = fixture.root.join("mutants-engine-default/mutants.out");
+    let raw: Value =
+        serde_json::from_slice(&fs::read(root.join("tested-outcomes.json")).unwrap()).unwrap();
+    assert_eq!(raw["outcomes"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        raw["outcomes"][0]["phase_results"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(raw["total_mutants"], 0);
+    let complete: Value =
+        serde_json::from_slice(&fs::read(root.join("outcomes.json")).unwrap()).unwrap();
+    assert_eq!(complete["total_mutants"], 8);
+    assert_eq!(complete["not_compiled_without_features"], 8);
+    for (index, phase) in raw["outcomes"][0]["phase_results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let build: Value = serde_json::from_slice(
+            &fs::read(root.join(format!("builds/{index}/build-record.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(phase["argv"], build["argv"]);
+    }
+    let files = format!(
+        "{}/builds/0/build-record.json {}/builds/1/build-record.json",
+        root.display(),
+        root.display()
+    );
+    let per_file = fixture.run_body(&format!("jaq -sc '.' {files}"));
+    succeeds(&per_file);
+    let documents: Vec<Value> = serde_json::Deserializer::from_slice(&per_file.stdout)
+        .into_iter::<Value>()
+        .map(Result::unwrap)
+        .collect();
+    assert_eq!(
+        documents.len(),
+        2,
+        "pinned jaq slurps each file independently"
+    );
+    let joined = fixture.run_body(&format!("cat {files} | jaq -nc '[inputs]'"));
+    succeeds(&joined);
+    let joined: Value = serde_json::from_slice(&joined.stdout).unwrap();
+    assert_eq!(joined.as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn two_package_controls_build_each_owner_and_classify_only_its_evidence() {
     let fixture = compile_aggregate_fixture("packages");
     succeeds(&summarize_engine(&fixture));
@@ -136,7 +191,7 @@ fn aggregation_rechecks_each_package_build_argv_after_digest_refresh() {
         let build = root.join(format!("builds/{index}/build-record.json"));
         let original = fs::read(&build).unwrap();
         let mut record: Value = serde_json::from_slice(&original).unwrap();
-        record["argv"][5] = json!("--workspace");
+        record["argv"][6] = json!("--workspace");
         fs::write(&build, record.to_string()).unwrap();
         let mut binding: Value = serde_json::from_slice(&saved).unwrap();
         binding["packages"][index]["build_sha256"] = json!(evidence_hash(&build));

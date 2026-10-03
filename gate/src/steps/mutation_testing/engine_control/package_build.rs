@@ -51,18 +51,26 @@ pub(super) fn compile(
         .arg("{start_time:$started, end_time:(now | todateiso8601), duration:$elapsed, argv:$argv}")
         .capture()?;
     write(&root.join("build-record.json"), build.as_bytes(), false)?;
-    let paths = dep_paths(&root.join("cargo-build.json"))?;
+    let paths = dep_paths(root, &job.project)?;
     let directory = root.join("dep-info");
     fs::create_dir_all(&directory).map_err(|error| format!("cannot retain dep-info: {error}"))?;
     for (index, path) in paths.iter().enumerate() {
         let path = Path::new(path);
         if !path.starts_with(target) {
-            return Err("featureless build dep-info escapes its clean target".into());
+            return Err(format!(
+                "featureless build dep-info escapes its clean target: {}",
+                path.display()
+            )
+            .into());
         }
-        fs::copy(path, directory.join(format!("{index}.d")))
-            .map_err(|error| format!("cannot retain featureless dep-info: {error}"))?;
+        fs::copy(path, directory.join(format!("{index}.d"))).map_err(|error| {
+            format!(
+                "cannot retain featureless dep-info for {}: {error}",
+                path.display()
+            )
+        })?;
     }
-    save(root, Some(target))
+    save(root, Some(target), paths.len())
 }
 
 /// Match cargo-mutants 27.1.0's selected build tool, adding only evidence instrumentation.
@@ -77,7 +85,7 @@ fn build_arguments(
         .capture()?;
     let (command, message_format) = if nextest.trim() == "nextest" {
         (
-            "cargo nextest run --no-run --verbose",
+            "cargo nextest run --no-run --verbose --cargo-verbose",
             "--cargo-message-format=json",
         )
     } else {
@@ -95,14 +103,9 @@ fn build_arguments(
 }
 
 /// Bind the exact retained compiler bytes to this package build.
-pub(super) fn save(root: &Path, target: Option<&Path>) -> Result<String, Failure> {
-    let paths = if target.is_some() {
-        dep_paths(&root.join("cargo-build.json"))?
-    } else {
-        Vec::new()
-    };
+pub(super) fn save(root: &Path, target: Option<&Path>, units: usize) -> Result<String, Failure> {
     let mut digests = Vec::new();
-    for index in 0..paths.len() {
+    for index in 0..units {
         digests.push(digest(&root.join(format!("dep-info/{index}.d")))?);
     }
     let value = Cmd::new("jaq -cn")
@@ -119,6 +122,15 @@ pub(super) fn save(root: &Path, target: Option<&Path>) -> Result<String, Failure
         ])
         .args([
             "--arg",
+            "log_digest",
+            &if target.is_some() {
+                digest(&root.join("cargo-build.log"))?
+            } else {
+                String::new()
+            },
+        ])
+        .args([
+            "--arg",
             "build_digest",
             &if target.is_some() {
                 digest(&root.join("build-record.json"))?
@@ -128,7 +140,8 @@ pub(super) fn save(root: &Path, target: Option<&Path>) -> Result<String, Failure
         ])
         .args(["--argjson", "digests", &strings(&digests)?])
         .arg(concat!(
-            "{target:$target, cargo_sha256:$cargo_digest, build_sha256:$build_digest, ",
+            "{target:$target, cargo_sha256:$cargo_digest, log_sha256:$log_digest, ",
+            "build_sha256:$build_digest, ",
             "dep_sha256:$digests}"
         ))
         .capture()?;
@@ -145,7 +158,8 @@ pub(super) fn verify(
 ) -> Result<Option<BTreeSet<String>>, Failure> {
     Cmd::new("jaq -e")
         .arg(concat!(
-            r#"(keys | sort) == ["build_sha256","cargo_sha256","dep_sha256","target"] and "#,
+            r#"(keys | sort) == ["build_sha256","cargo_sha256","dep_sha256","log_sha256", "#,
+            r#""target"] and "#,
             "(.target | type == \"string\") and (.dep_sha256 | type == \"array\")"
         ))
         .stdin_bytes(binding.as_bytes())
@@ -154,7 +168,10 @@ pub(super) fn verify(
     let target = json_field(binding, ".target")?;
     if target.is_empty() {
         Cmd::new("jaq -e")
-            .arg(".cargo_sha256 == \"\" and .build_sha256 == \"\" and .dep_sha256 == []")
+            .arg(concat!(
+                ".cargo_sha256 == \"\" and .log_sha256 == \"\" and ",
+                ".build_sha256 == \"\" and .dep_sha256 == []",
+            ))
             .stdin_bytes(binding.as_bytes())
             .capture()
             .map_err(|_| "featureless fallback contains unexpected compile evidence")?;
@@ -180,12 +197,15 @@ pub(super) fn verify(
     if digest(&cargo)? != json_field(binding, ".cargo_sha256")? {
         return Err("featureless compile membership cargo digest differs".into());
     }
+    if digest(&root.join("cargo-build.log"))? != json_field(binding, ".log_sha256")? {
+        return Err("featureless compile membership compiler log digest differs".into());
+    }
     if digest(&root.join("build-record.json"))? != json_field(binding, ".build_sha256")? {
         return Err("featureless compile membership build record digest differs".into());
     }
     let (project, workspace) = frame;
     let digests = json_field(binding, ".dep_sha256[]")?;
-    let paths = dep_paths(&cargo)?;
+    let paths = dep_paths(root, workspace)?;
     let digests: Vec<_> = digests.lines().collect();
     if paths.len() != digests.len() {
         return Err("featureless compile membership omits dep-info units".into());
@@ -193,7 +213,9 @@ pub(super) fn verify(
     let mut members = BTreeSet::new();
     for (index, (path, expected_digest)) in paths.iter().zip(digests).enumerate() {
         if !Path::new(path).starts_with(&target) {
-            return Err("featureless build dep-info escapes its clean target".into());
+            return Err(
+                format!("featureless build dep-info escapes its clean target: {path}").into(),
+            );
         }
         let retained = root.join(format!("dep-info/{index}.d"));
         if digest(&retained)? != expected_digest {

@@ -114,8 +114,8 @@ fn retained_membership_rejects_binding_drift_digest_drift_and_incomplete_units()
         ),
         (
             "/schema",
-            json!(4),
-            "featureless compile membership binding differs from its plan",
+            json!(3),
+            "featureless compile membership requires schema 4 compiler logs",
         ),
         (
             "/binding/sha",
@@ -215,10 +215,13 @@ fn aggregation_rechecks_successful_fresh_cargo_output_and_raw_dependency_rules()
         );
     }
     for (filename, message) in [
-        ("", "featureless artifact filename is invalid"),
+        (
+            "",
+            "featureless compiler unit has no unique rustc invocation:",
+        ),
         (
             "/packages/0/target/nohash/build-script-build",
-            "featureless build-script artifact filename is invalid",
+            "featureless compiler unit has no unique rustc invocation:",
         ),
     ] {
         let mut rows: Vec<Value> = original

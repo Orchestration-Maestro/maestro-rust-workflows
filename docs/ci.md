@@ -1248,20 +1248,32 @@ The featureless control compiles each assigned owning package's default test tar
 without running tests, in its own clean target directory. Its command mirrors pinned cargo-mutants
 27.1.0's package-scoped Cargo or Nextest build, including version-qualified selection and
 default-off `cap_lints`. With `test_tool = "nextest"`, it runs `cargo nextest run --no-run
---verbose --package=<name@version> --locked`, adding `--cargo-message-format=json` to
+--verbose --cargo-verbose --package=<name@version> --locked`, adding `--cargo-message-format=json` to
 forward Cargo's build evidence and `--target-dir` for the clean directory. It leaves
 Cargo's Rust flag resolution unchanged. Cargo JSON and rustc dep-info
 establish compile membership, including test-only modules and build scripts. Retained Cargo
 source metadata verifies the project/workspace coordinate frame and every planned owner.
-The control retains the raw evidence, configuration, digests and a schema-3 binding to the
-complete source/run/shard receipt. Each package entry binds its build argv and dep-info evidence;
+The control retains the raw evidence, configuration, digests and a schema-4 binding to the
+complete source/run/shard receipt. Each package entry binds its build argv, raw compiler log and
+dep-info evidence. Paths derive from rustc's crate name, output directory and extra filename;
+uplifted integration-test binaries do not need a sibling `.d` file. Each fresh Cargo artifact
+must match exactly one rustc invocation with dep-info emission. A Cargo test profile requires
+`--test` or explicit `--cfg test`, including `harness = false` targets. A non-test profile refuses
+`--test` but permits user-supplied `--cfg test`; only non-test binary targets can match uplifted
+outputs from a `/deps` directory. Missing compiler records, malformed quoting and missing
+dep-info fail closed with the unit named. Unescaped double quotes outside single-quoted
+arguments are refused; literal double quotes inside them, such as `--cfg 'feature="engine"'`,
+are preserved. Schema-3 or mixed
+compiler evidence is refused;
 aggregation rechecks every equivalent command and frame. A mutant is classified only against
 its own package build, never the union of dependency feature sets. Project paths lexically
 drop dot components once, without resolving symlinks.
 A file absent from this verified build cannot affect default behavior. Its assigned mutants
 receive the explicit `NotCompiledWithoutFeatures` outcome, with no test phase and no
 per-mutant test invocation. They remain in the complete plan and outcome accounting;
-they are not relabelled caught, missed or unviable.
+they are not relabelled caught, missed or unviable. When every assigned mutant is inactive,
+one baseline document records the successful build phase of every owning package. The pinned
+JSON reader collects all build records explicitly, rather than slurping files separately.
 
 Only assigned mutants in compiled files run through cargo-mutants, selected by anchored,
 escaped exact names. A retained config copy removes only `examine_re`, so inherited inclusion
