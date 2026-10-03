@@ -52,6 +52,11 @@ allowance. Host lines cannot increase that allowance. Every owned file must
 have LCOV line records. Pushes have empty changed identities but still require
 complete host mutation evidence. Raw global LLVM coverage stays unchanged.
 
+All versioned envelopes, manifest identities, receipt records, outcome records
+and line records require their exact key sets before identity and behaviour
+validation. Unknown fields, missing fields and unknown schema versions refuse.
+Native cargo-mutants listing fields retain the upstream contract.
+
 ## Schema 1 outcomes
 
 The executor produces `host-outcomes.json`, never cargo-mutants' native outcomes.
@@ -75,7 +80,7 @@ baselines require successful tests and every phase passed. Mutants run every
 phase, with only passed or failed statuses. Every failed phase must be named in
 `test_failure`; a phase-only failure or multiple named phase failures can prove
 a kill after successful build, provision and cleanup. A Rust test failure must
-name a selected test with a positive failed count. Ignored or zero tests,
+name exactly as many unique selected tests as the failed count. Ignored or zero tests,
 unviable, timeout, partial, missing, stale and mismatched evidence refuse.
 Raw logs must be nonempty regular files inside a checked safe artifact tree.
 

@@ -172,7 +172,7 @@ pub(crate) const STEPS: &[Step] = &[
             "PROJECT",
             "RUSTUP_TOOLCHAIN",
         ],
-        tools: &["cargo mutants", "git", "jaq"],
+        tools: &["cargo mutants", "cargo metadata", "git", "jaq"],
         reports: &[
             "mutants.json",
             "mutants.txt",

@@ -172,23 +172,25 @@ fn host_source_requires_regular_nonsymlink_tracked_and_instrumentable_files() {
     let fixture = host_fixture();
     let project = fixture.root.join("project");
     let path = project.join("src/host.rs");
-    fs::write(&path, "#[mutants::skip] pub fn host() {}\n").unwrap();
-    fixture_git(&project, &["add", "."]);
-    fixture_git(
-        &project,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--quiet",
-            "-m",
-            "skip",
-        ],
-    );
-    refused(
-        &fixture.run_body("rust-gate validate"),
-        "host mutation file `src/host.rs` disables mutation or coverage",
-    );
+    for attribute in ["mutants::skip", "coverage(off)"] {
+        fs::write(&path, format!("#[{attribute}] pub fn host() {{}}\n")).unwrap();
+        fixture_git(&project, &["add", "."]);
+        fixture_git(
+            &project,
+            &[
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "skip",
+            ],
+        );
+        refused(
+            &fixture.run_body("rust-gate validate"),
+            "host mutation file `src/host.rs` disables mutation or coverage",
+        );
+    }
     fs::remove_file(&path).unwrap();
     fs::create_dir(&path).unwrap();
     refused(
@@ -235,6 +237,11 @@ fn host_discovery_refuses_missing_patches_functions_and_foreign_population() {
         ("/0/diff", json!("")),
         ("/0/function", json!(null)),
         ("/0/file", json!("src/lib.rs")),
+        ("/0/function/span/start/line", json!(0)),
+        ("/0/function/span/start/line", json!(0.5)),
+        ("/0/function/span/end/line", json!(1.5)),
+        ("/0/function/span/start/line", json!(2)),
+        ("/0/function/span/end/line", json!(0)),
     ] {
         let mut listing = original.clone();
         *listing.pointer_mut(pointer).unwrap() = value;
@@ -244,4 +251,27 @@ fn host_discovery_refuses_missing_patches_functions_and_foreign_population() {
             "host discovery requires nonempty exact files, patches and enclosing functions",
         );
     }
+}
+
+#[test]
+fn windows_worker_accepts_a_disjoint_current_host_policy() {
+    let mut fixture = host_fixture();
+    fixture.set("MUTATION_WINDOWS", "[\"src/lib.rs\"]");
+    succeeds(&fixture.run_body("rust-gate mutants-windows"));
+    assert!(!fixture.calls().contains("--file src/host.rs"));
+}
+
+#[test]
+fn policy_only_transfer_to_windows_requires_full_file_mutants() {
+    let mut fixture = host_fixture();
+    commit_policy(
+        &fixture,
+        "[ci]\nmutation-test=true\nmutation-windows=['src/host.rs']\n",
+    );
+    fixture.set("MUTATION_WINDOWS", "[\"src/host.rs\"]");
+    fs::write(fixture.root.join("host-list.json"), "[]").unwrap();
+    refused(
+        &fixture.run_body("rust-gate mutants-windows"),
+        "src/host.rs produced no mutants",
+    );
 }

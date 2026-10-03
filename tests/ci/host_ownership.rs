@@ -82,3 +82,11 @@ fn host_aggregation_is_scheduled_from_the_early_plan_not_checks() {
                 == "${{ needs.mutation-plan.outputs.mutation-host-count }}")
     );
 }
+
+#[test]
+fn host_plan_download_precedes_changed_coverage_in_checks() {
+    let ci = workflow("ci");
+    let steps = ci["jobs"]["checks"]["steps"].as_array().unwrap();
+    let position = |id| steps.iter().position(|step| step["id"] == id).unwrap();
+    assert!(position("checks-plan-download") < position("changed-coverage"));
+}

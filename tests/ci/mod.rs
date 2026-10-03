@@ -11,6 +11,7 @@ mod coverage_features;
 mod duplication_report;
 mod feature_combinations;
 mod host_coverage_join;
+mod host_evidence_schema;
 mod host_ownership;
 mod host_policy_validation;
 mod host_required_status;

@@ -50,6 +50,9 @@ pub(super) fn join(job: &Job, report: &Path) -> Outcome {
             .args(["--arg", "tool", &input("CARGO_MUTANTS_VERSION")?])
             .stdin_bytes(&documents))
     };
+    command()?.arg(SHAPE).capture().map_err(
+        |_| "host plan, pending coverage or outcomes belong to another source, policy or run",
+    )?;
     command()?.arg(IDENTITY).capture().map_err(
         |_| "host plan, pending coverage or outcomes belong to another source, policy or run",
     )?;
@@ -86,6 +89,28 @@ pub(super) fn join(job: &Job, report: &Path) -> Outcome {
     output("changed-coverage-state", "passed")
 }
 
+/// Exact versioned envelopes and records; native cargo-mutants identities stay unchanged.
+const SHAPE: &str = concat!(
+    "def keys_are($names): type == \"object\" and (keys|sort) == ($names|split(\" \")|sort); ",
+    "def receipt: keys_are(\"build provision test cleanup selected_tests passed failed ignored ",
+    "phases test_sha256 bootstrap_sha256 logs\"); ",
+    ".[0] as $p | .[1] as $c | .[2] as $o | ",
+    "($p | keys_are(\"schema identity mutants files features packages source_sha256 policy_sha256 ",
+    "provisioner provisioner_sha256 workflow_revision\")) and ",
+    "($p.identity | keys_are(\"sha first_parent directory toolchain cargo_mutants_version run_id ",
+    "attempt config_sha256 diff_sha256 mutant_count shard_count\")) and ",
+    "($c | keys_are(\"schema state sha run_id attempt plan_sha256 policy_sha256 target coverable ",
+    "ordinary host ordinary_uncovered ordinary_allowed full_allowed\")) and ",
+    "all([$c.coverable,$c.ordinary,$c.host,$c.ordinary_uncovered][]; ",
+    "type == \"array\" and all(.[]; keys_are(\"file line hits\"))) and ",
+    "($o | keys_are(\"schema sha run_id attempt plan_sha256 policy_sha256 provisioner_sha256 ",
+    "source_sha256 baseline_before baseline_after outcomes\")) and ",
+    "all([$o.baseline_before,$o.baseline_after][]; receipt) and ",
+    "($o.outcomes|type == \"array\" and all(.[]; ",
+    "keys_are(\"mutant outcome patched_source_sha256 receipt\") and ",
+    "(.receipt | has(\"test_failure\") and (del(.test_failure)|receipt))))"
+);
+
 /// All documents bind to the same plan digest and current attempt, not an old qualification.
 const IDENTITY: &str = concat!(
     ".[0] as $p | .[1] as $c | .[2] as $o | ",
@@ -111,12 +136,13 @@ const POPULATION: &str = concat!(
 );
 
 /// Infrastructure, unviable and timeout results never prove behaviour.
+/// Integral selection and named-failure array lengths imply integral test counters.
 const PHASES: &str = concat!(
     "def positive: (.selected_tests|type == \"array\" and length > 0) and ",
     "(.selected_tests|length) == (.selected_tests|unique|length) and ",
     "all(.selected_tests[]; type == \"string\" and length > 0) and ",
-    "(.passed|type == \"number\" and floor == . and . >= 0) and ",
-    "(.failed|type == \"number\" and floor == . and . >= 0) and .ignored == 0 and ",
+    "(.passed|type == \"number\" and . >= 0) and ",
+    "(.failed|type == \"number\" and . >= 0) and .ignored == 0 and ",
     "(.selected_tests|length) == (.passed + .failed); ",
     "def setup: .build == \"passed\" and .provision == \"passed\" and ",
     ".cleanup == \"passed\" and (.test_sha256|test(\"^[0-9a-f]{64}$\")) and ",
@@ -130,6 +156,7 @@ const PHASES: &str = concat!(
     "all($names[]; type == \"string\" and length > 0) and ",
     "all($r.phases|to_entries[]; .value == \"passed\" or ",
     "(.key as $name | $names|index($name))) and ",
+    "([$names[] | select(. as $name | $r.phases|has($name)|not)]|length) == $r.failed and ",
     "all($names[]; . as $name | if $r.phases|has($name) then ",
     "$r.phases[$name] == \"failed\" else ($r.selected_tests|index($name)) and ",
     "$r.failed > 0 end); ",
@@ -156,8 +183,7 @@ const COVERAGE: &str = concat!(
     "$c.ordinary_uncovered == [$c.ordinary[]|select(.hits == 0)] and ",
     "$c.ordinary_allowed == ([1,((100-$t)*($c.ordinary|length)/100|floor)]|max) and ",
     "$c.full_allowed == ([1,((100-$t)*($c.coverable|length)/100|floor)]|max) and ",
-    "($c.ordinary_uncovered|length) <= $c.ordinary_allowed and ",
-    "($c.ordinary_uncovered|length) <= $c.full_allowed"
+    "($c.ordinary_uncovered|length) <= $c.ordinary_allowed"
 );
 
 /// Every retained log is a nonempty safe file bound by its digest, not just a claimed status.

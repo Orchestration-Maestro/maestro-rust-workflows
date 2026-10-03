@@ -386,6 +386,7 @@ in place.
 │   │   ├── duplication_report.rs                                # ci.yml: pairs reported, three functions of one shape refused unless excused
 │   │   ├── feature_combinations.rs                              # ci.yml: real per-feature and combined compilation, plus replay coverage
 │   │   ├── host_coverage_join.rs                                # Host evidence is distinct from LLVM hits and cannot enlarge ordinary allowances
+│   │   ├── host_evidence_schema.rs                                # Versioned host envelopes and nested records refuse schema drift
 │   │   ├── host_ownership.rs                                    # Provisioned-host ownership is a transfer, never a coverage exemption
 │   │   ├── host_policy_validation.rs                            # Strict tested-head host policy, overlaps and all discovery modes
 │   │   ├── host_required_status.rs                              # Every default mode requires host execution, aggregation and coverage in the same attempt

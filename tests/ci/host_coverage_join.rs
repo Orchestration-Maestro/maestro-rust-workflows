@@ -1,8 +1,9 @@
 //! Host evidence is distinct from LLVM hits and cannot enlarge ordinary allowances.
 
-use crate::harness::{Fixture, copy_tree, fixture_git, host_fixture, output, refused, succeeds};
+use crate::harness::{
+    host_coverage_fixture, host_evidence_digest, host_evidence_fixture, output, refused, succeeds,
+};
 use serde_json::{Value, json};
-use std::fmt::Write as _;
 use std::fs;
 
 /// Shared immutable identity refusal for each independently tampered binding.
@@ -13,118 +14,9 @@ const HOST_IDENTITY_REFUSAL: &str = "host plan, pending coverage or outcomes bel
 const HOST_PHASE_REFUSAL: &str = "host evidence requires caught mutants, successful baselines, \
     build, provisioning and cleanup";
 
-/// Create real changed identities and the pending report through the gate.
-fn coverage_fixture(misses: usize) -> Fixture {
-    let mut fixture = host_fixture();
-    let project = fixture.root.join("project");
-    fs::write(
-        project.join("src/host.rs"),
-        "pub fn host() -> bool { false }\n",
-    )
-    .unwrap();
-    fs::write(
-        project.join("src/lib.rs"),
-        "pub fn ordinary() {}\n".repeat(3),
-    )
-    .unwrap();
-    fixture_git(&project, &["add", "."]);
-    fixture_git(
-        &project,
-        &[
-            "-c",
-            "commit.gpgsign=false",
-            "commit",
-            "--quiet",
-            "-m",
-            "sources",
-        ],
-    );
-    fixture.set("GITHUB_SHA", &fixture_git(&project, &["rev-parse", "HEAD"]));
-    fixture.set("GITHUB_BASE_REF", "main");
-    fixture.set("PULL_REQUEST_TITLE", "feat(ci): host owner");
-    succeeds(&fixture.run_body("rust-gate mutants-plan"));
-    let lcov = format!(
-        "SF:{}/src/host.rs\nDA:1,0\nend_of_record\nSF:{}/src/lib.rs\n{}end_of_record\n",
-        project.display(),
-        project.display(),
-        (1..=3).fold(String::new(), |mut text, line| {
-            writeln!(text, "DA:{line},{}", u8::from(line > misses)).unwrap();
-            text
-        })
-    );
-    fs::write(fixture.root.join("reports/coverage.lcov"), lcov).unwrap();
-    fixture
-}
-
-/// Hash raw fixture evidence with the same standard SHA utility, outside gate trust.
-fn digest(fixture: &Fixture, path: &str) -> String {
-    let result = fixture.run_body(&format!("sha256sum '{path}'"));
-    succeeds(&result);
-    String::from_utf8(result.stdout)
-        .unwrap()
-        .split_whitespace()
-        .next()
-        .unwrap()
-        .to_owned()
-}
-
-/// Synthetic schema-1 receipt consumed by the permanent aggregation path, not production.
-fn evidence_fixture() -> Fixture {
-    let mut fixture = coverage_fixture(1);
-    succeeds(&fixture.run_body("rust-gate changed-coverage"));
-    let checks = fixture.root.join("checks");
-    copy_tree(&fixture.root.join("reports"), &checks);
-    let root = fixture.root.join("host-evidence");
-    fs::create_dir(&root).unwrap();
-    fs::write(
-        root.join("phases.log"),
-        "selected host assertion failed; cleanup completed\n",
-    )
-    .unwrap();
-    let plan: Value =
-        serde_json::from_slice(&fs::read(checks.join("mutation-host-plan.json")).unwrap()).unwrap();
-    let receipt = json!({
-        "build":"passed", "provision":"passed", "test":"passed", "cleanup":"passed",
-        "selected_tests":["host_assertion"], "passed":1, "failed":0, "ignored":0,
-        "phases":{"normal":"passed","abandon":"passed","preparing":"passed",
-            "recover_abandon":"passed","recover_preparing":"passed"},
-        "test_sha256":"c".repeat(64), "bootstrap_sha256":"d".repeat(64),
-        "logs":{"phases.log":digest(&fixture, &root.join("phases.log").display().to_string())}
-    });
-    let mut caught = receipt.clone();
-    caught["test"] = json!("failed");
-    caught["passed"] = json!(0);
-    caught["failed"] = json!(1);
-    caught["test_failure"] = json!(["host_assertion"]);
-    let plan_digest = digest(
-        &fixture,
-        &checks.join("mutation-host-plan.json").display().to_string(),
-    );
-    let outcomes = json!({
-        "schema":1,"sha":fixture.env["GITHUB_SHA"],"run_id":"123","attempt":"1",
-        "plan_sha256":plan_digest,
-        "policy_sha256":plan["policy_sha256"],"provisioner_sha256":plan["provisioner_sha256"],
-        "source_sha256":plan["source_sha256"],"baseline_before":receipt,"baseline_after":receipt,
-        "outcomes":[{"mutant":plan["mutants"][0],"outcome":"caught",
-            "patched_source_sha256":"e".repeat(64), "receipt":caught}]
-    });
-    fs::write(root.join("host-outcomes.json"), outcomes.to_string()).unwrap();
-    for (key, value) in [
-        ("MUTATION_HOST_COUNT", "1"),
-        ("HOST_MUTATIONS_RESULT", "success"),
-        ("CHECKS_RESULT", "success"),
-        ("MUTATION_MODE", "empty"),
-    ] {
-        fixture.set(key, value);
-    }
-    fixture.set("MUTATION_PLAN_DIR", &checks.display().to_string());
-    fixture.set("MUTATION_HOST_ARTIFACTS", &root.display().to_string());
-    fixture
-}
-
 #[test]
 fn pending_host_coverage_preserves_raw_hits_and_both_denominators() {
-    let fixture = coverage_fixture(1);
+    let fixture = host_coverage_fixture(1);
     succeeds(&fixture.run_body("rust-gate changed-coverage"));
     let pending: Value = serde_json::from_slice(
         &fs::read(fixture.root.join("reports/changed-coverage-pending.json")).unwrap(),
@@ -141,7 +33,7 @@ fn pending_host_coverage_preserves_raw_hits_and_both_denominators() {
             .unwrap()
             .contains("pending-host")
     );
-    let failing = coverage_fixture(2);
+    let failing = host_coverage_fixture(2);
     refused(
         &failing.run_body("rust-gate changed-coverage"),
         "changed-coverage: ordinary uncovered lines exceed their unchanged allowance",
@@ -150,7 +42,7 @@ fn pending_host_coverage_preserves_raw_hits_and_both_denominators() {
 
 #[test]
 fn complete_host_proof_joins_without_forging_llvm_execution() {
-    let fixture = evidence_fixture();
+    let fixture = host_evidence_fixture();
     succeeds(&fixture.run_body("rust-gate mutants-aggregate"));
     assert_eq!(output(&fixture, "changed-coverage-state"), "passed");
     let report = fs::read_to_string(fixture.root.join("reports/changed-coverage.txt")).unwrap();
@@ -169,7 +61,7 @@ fn complete_host_proof_joins_without_forging_llvm_execution() {
 
 #[test]
 fn host_join_rejects_stale_duplicate_unviable_timed_out_and_partial_outcomes() {
-    let fixture = evidence_fixture();
+    let fixture = host_evidence_fixture();
     let path = fixture.root.join("host-evidence/host-outcomes.json");
     let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     for (pointer, value, message) in [
@@ -182,6 +74,16 @@ fn host_join_rejects_stale_duplicate_unviable_timed_out_and_partial_outcomes() {
             HOST_IDENTITY_REFUSAL,
         ),
         ("/attempt", json!("2"), HOST_IDENTITY_REFUSAL),
+        (
+            "/source_sha256/src~1host.rs",
+            json!("0".repeat(64)),
+            HOST_IDENTITY_REFUSAL,
+        ),
+        (
+            "/outcomes/0/mutant/name",
+            json!("foreign"),
+            "host outcomes do not equal the complete nonempty planned mutant population",
+        ),
         ("/plan_sha256", json!("0".repeat(64)), HOST_IDENTITY_REFUSAL),
         (
             "/provisioner_sha256",
@@ -255,7 +157,7 @@ fn host_join_rejects_stale_duplicate_unviable_timed_out_and_partial_outcomes() {
 
 #[test]
 fn host_join_refuses_unmapped_functions_and_ordinary_allowance_inflation() {
-    let fixture = evidence_fixture();
+    let fixture = host_evidence_fixture();
     let pending = fixture.root.join("checks/changed-coverage-pending.json");
     let original: Value = serde_json::from_slice(&fs::read(&pending).unwrap()).unwrap();
     for change in ["line", "ordinary", "allowance", "full-allowance", "target"] {
@@ -267,6 +169,7 @@ fn host_join_refuses_unmapped_functions_and_ordinary_allowance_inflation() {
             }
             "ordinary" => {
                 value["ordinary"][1]["hits"] = json!(0);
+                value["coverable"][2]["hits"] = json!(0);
                 value["ordinary_uncovered"] = json!([value["ordinary"][0], value["ordinary"][1]]);
             }
             "full-allowance" => value["full_allowed"] = json!(2),
@@ -286,7 +189,7 @@ fn host_join_refuses_unmapped_functions_and_ordinary_allowance_inflation() {
 
 #[test]
 fn host_pending_coverage_refuses_absent_owned_lcov_records() {
-    let fixture = coverage_fixture(0);
+    let fixture = host_coverage_fixture(0);
     fs::write(fixture.root.join("reports/coverage.lcov"), "TN:\n").unwrap();
     refused(
         &fixture.run_body("rust-gate changed-coverage"),
@@ -296,7 +199,7 @@ fn host_pending_coverage_refuses_absent_owned_lcov_records() {
 
 #[test]
 fn host_raw_phase_logs_require_safe_paths_and_exact_digests() {
-    let mut fixture = evidence_fixture();
+    let mut fixture = host_evidence_fixture();
     let path = fixture.root.join("host-evidence/host-outcomes.json");
     let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     for (logs, message) in [
@@ -333,7 +236,7 @@ fn host_raw_phase_logs_require_safe_paths_and_exact_digests() {
 
 #[test]
 fn named_phase_only_and_multiple_phase_failures_are_legitimate_host_kills() {
-    let fixture = evidence_fixture();
+    let fixture = host_evidence_fixture();
     let path = fixture.root.join("host-evidence/host-outcomes.json");
     let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     for names in [vec!["abandon"], vec!["abandon", "recover_abandon"]] {
@@ -352,7 +255,7 @@ fn named_phase_only_and_multiple_phase_failures_are_legitimate_host_kills() {
 
 #[test]
 fn unnamed_unrun_and_baseline_phase_failures_never_count_as_host_kills() {
-    let fixture = evidence_fixture();
+    let fixture = host_evidence_fixture();
     let path = fixture.root.join("host-evidence/host-outcomes.json");
     let original: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     for (pointer, value) in [
@@ -361,9 +264,37 @@ fn unnamed_unrun_and_baseline_phase_failures_never_count_as_host_kills() {
         ("/baseline_before/phases/normal", json!("failed")),
         ("/baseline_after/phases/recover_preparing", json!("failed")),
         ("/outcomes/0/receipt/test_failure", json!([])),
+        (
+            "/outcomes/0/receipt/test_failure",
+            json!(["host_assertion", "host_assertion"]),
+        ),
+        (
+            "/outcomes/0/receipt/selected_tests",
+            json!(["host_assertion", "host_assertion"]),
+        ),
+        ("/outcomes/0/receipt/passed", json!(0.5)),
+        ("/outcomes/0/receipt/failed", json!(0.5)),
+        ("/outcomes/0/receipt/passed", json!(1)),
+        ("/outcomes/0/receipt/ignored", json!(1)),
+        ("/outcomes/0/receipt/test_sha256", json!("bad")),
+        ("/outcomes/0/receipt/bootstrap_sha256", json!("bad")),
+        ("/outcomes/0/patched_source_sha256", json!("bad")),
     ] {
         let mut changed = original.clone();
         *changed.pointer_mut(pointer).unwrap() = value;
+        if pointer.ends_with("selected_tests") {
+            changed["outcomes"][0]["receipt"]["passed"] = json!(1);
+        } else if pointer.ends_with("test_failure")
+            && changed
+                .pointer(pointer)
+                .unwrap()
+                .as_array()
+                .is_some_and(|names| names.len() == 2)
+        {
+            changed["outcomes"][0]["receipt"]["selected_tests"] =
+                json!(["host_assertion", "other"]);
+            changed["outcomes"][0]["receipt"]["failed"] = json!(2);
+        }
         fs::write(&path, changed.to_string()).unwrap();
         refused(
             &fixture.run_body("rust-gate mutants-aggregate"),
@@ -372,4 +303,72 @@ fn unnamed_unrun_and_baseline_phase_failures_never_count_as_host_kills() {
     }
     fs::write(&path, original.to_string()).unwrap();
     succeeds(&fixture.run_body("rust-gate mutants-aggregate"));
+}
+
+#[test]
+fn host_receipt_refuses_unnamed_failed_rust_tests_beside_phase_failures() {
+    let fixture = host_evidence_fixture();
+    let path = fixture.root.join("host-evidence/host-outcomes.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    value["outcomes"][0]["receipt"]["phases"]["abandon"] = json!("failed");
+    value["outcomes"][0]["receipt"]["test_failure"] = json!(["abandon"]);
+    fs::write(path, value.to_string()).unwrap();
+    refused(
+        &fixture.run_body("rust-gate mutants-aggregate"),
+        HOST_PHASE_REFUSAL,
+    );
+}
+
+#[test]
+fn host_toolchain_and_tool_version_drift_refuse_current_evidence() {
+    let mut fixture = host_evidence_fixture();
+    for (key, value, original) in [
+        ("RUSTUP_TOOLCHAIN", "1.98.0", "1.98.1"),
+        ("CARGO_MUTANTS_VERSION", "27.0.0", "27.1.0"),
+    ] {
+        fixture.set(key, value);
+        refused(
+            &fixture.run_body("rust-gate mutants-aggregate"),
+            HOST_IDENTITY_REFUSAL,
+        );
+        fixture.set(key, original);
+    }
+}
+
+#[test]
+fn host_lines_before_function_and_large_partition_misses_are_refused() {
+    let fixture = host_evidence_fixture();
+    let plan_path = fixture.root.join("checks/mutation-host-plan.json");
+    let pending_path = fixture.root.join("checks/changed-coverage-pending.json");
+    let outcomes_path = fixture.root.join("host-evidence/host-outcomes.json");
+    let mut plan: Value = serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
+    let mut pending: Value = serde_json::from_slice(&fs::read(&pending_path).unwrap()).unwrap();
+    let mut outcomes: Value = serde_json::from_slice(&fs::read(&outcomes_path).unwrap()).unwrap();
+    for (start, end, misses) in [(2, 40, 1), (1, 40, 2)] {
+        plan["mutants"][0]["function"]["span"]["start"]["line"] = json!(start);
+        plan["mutants"][0]["function"]["span"]["end"]["line"] = json!(end);
+        fs::write(&plan_path, plan.to_string()).unwrap();
+        let binding = host_evidence_digest(&fixture, &plan_path.display().to_string());
+        pending["plan_sha256"] = json!(binding);
+        outcomes["plan_sha256"] = json!(binding);
+        outcomes["outcomes"][0]["mutant"] = plan["mutants"][0].clone();
+        let host: Vec<Value> = (1..=40)
+            .map(|line| json!({"file":"src/host.rs","line":line,"hits":0}))
+            .collect();
+        let ordinary: Vec<Value> = (1..=3)
+            .map(|line| json!({"file":"src/lib.rs","line":line,"hits":u8::from(line > misses)}))
+            .collect();
+        pending["host"] = json!(host);
+        pending["ordinary"] = json!(ordinary);
+        pending["ordinary_uncovered"] = json!(&ordinary[..misses]);
+        pending["coverable"] = json!(host.into_iter().chain(ordinary).collect::<Vec<_>>());
+        pending["full_allowed"] = json!(2);
+        fs::write(&pending_path, pending.to_string()).unwrap();
+        fs::write(&outcomes_path, outcomes.to_string()).unwrap();
+        refused(
+            &fixture.run_body("rust-gate mutants-aggregate"),
+            "host coverage partition, ordinary allowance or enclosing-function \
+            evidence is incomplete",
+        );
+    }
 }

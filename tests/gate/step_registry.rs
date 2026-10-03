@@ -326,12 +326,19 @@ fn windows_mutation_commands_are_declared_by_their_windows_steps() {
         "Windows install-tools command set differs from its platform declaration"
     );
 
-    let mutation_source =
-        fs::read_to_string(root().join("gate/src/steps/mutation_testing/windows.rs")).unwrap();
-    let mutation_commands: BTreeSet<_> = quoted_after(&mutation_source, "Cmd::new(")
-        .iter()
-        .map(|command| tool_key(command))
-        .collect();
+    let mut mutation_commands = BTreeSet::new();
+    for path in [
+        "gate/src/steps/mutation_testing/windows.rs",
+        "gate/src/steps/mutation_testing/scope.rs",
+        "gate/src/checks/mutation_host.rs",
+    ] {
+        let source = fs::read_to_string(root().join(path)).unwrap();
+        mutation_commands.extend(
+            quoted_after(&source, "Cmd::new(")
+                .iter()
+                .map(|command| tool_key(command)),
+        );
+    }
     let declarations =
         fs::read_to_string(root().join("gate/src/steps/mutation_testing/step.rs")).unwrap();
     let windows_step = declarations
