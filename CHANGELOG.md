@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.3...v4.8.4) (2026-10-03)
+
+
+### Performance Improvements
+
+* **ci:** share verified native roots across checks ([#115](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/115)) ([de41f84](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/de41f84eb3775bd2f5590b5de0ff50c67cae1180))
+
 ## [4.8.3](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.2...v4.8.3) (2026-10-03)
 
 
