@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.6](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.5...v4.8.6) (2026-10-03)
+
+
+### Bug Fixes
+
+* **ci:** verify root and multi-package engine controls ([#119](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/119)) ([378a0a4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/378a0a4734104d19b0c69bdf1b75abc4a2aa52a4))
+
 ## [4.8.5](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.4...v4.8.5) (2026-10-03)
 
 
