@@ -3,9 +3,10 @@
 use crate::checks::coverage_features::coverage_features;
 use crate::checks::inputs::coverage_threshold;
 use crate::checks::native_cache::{
-    NativeCache, native_cache, native_cache_command, native_command,
+    NativeCache, cache_platform, native_cache, native_cache_command, native_command,
 };
 use crate::runner::{Cmd, Failure, Job, Outcome, Step, input, non_empty, optional, summary, write};
+use std::env::consts::OS;
 use std::path::Path;
 use std::time::Instant;
 
@@ -45,8 +46,12 @@ fn run() -> Outcome {
     if features.is_empty() {
         native_cache_command(
             policy.as_ref(),
-            "cargo llvm-cov --workspace --locked --lcov --output-path",
+            &coverage_execution(
+                policy.as_ref(),
+                "cargo llvm-cov --workspace --locked --lcov",
+            ),
         )
+        .arg("--output-path")
         .arg(&lcov)
         .arg("--fail-under-lines")
         .arg(coverage_threshold()?)
@@ -56,6 +61,15 @@ fn run() -> Outcome {
         merged_coverage(&job, &lcov, &features, policy.as_ref())?;
     }
     non_empty(&lcov)
+}
+
+/// Preserve wrapper mode except for native policy opt-in on a supported host.
+fn coverage_execution(policy: Option<&NativeCache>, words: &str) -> String {
+    if policy.is_some_and(|policy| cache_platform(OS, &policy.platforms)) {
+        format!("{words} --no-rustc-wrapper")
+    } else {
+        words.to_owned()
+    }
 }
 
 /// Start with clean profiles, retain the first run, then evaluate one locally generated report.
@@ -69,7 +83,7 @@ fn merged_coverage(
     bound_checkout(job, &sha)?;
     write(lcov, b"", false)?;
     let features = features.join(",");
-    let default = "cargo llvm-cov --workspace --locked --no-report";
+    let default = coverage_execution(policy, "cargo llvm-cov --workspace --locked --no-report");
     let feature = format!("{default} --features {features}");
     let report = format!(
         "cargo llvm-cov report --lcov --output-path {} --fail-under-lines {}",
@@ -82,17 +96,15 @@ fn merged_coverage(
         .cwd(&job.project)
         .run()?;
     let started = Instant::now();
-    native_cache_command(policy, default)
+    native_cache_command(policy, &default)
         .cwd(&job.project)
         .run()?;
     let default_seconds = started.elapsed().as_secs_f64();
     let started = Instant::now();
-    let command = native_cache_command(
-        policy,
-        "cargo llvm-cov --workspace --locked --no-report --features",
-    )
-    .arg(&features)
-    .cwd(&job.project);
+    let command = native_cache_command(policy, &default)
+        .arg("--features")
+        .arg(&features)
+        .cwd(&job.project);
     native_command(job, command, policy)?.run()?;
     let feature_seconds = started.elapsed().as_secs_f64();
     bound_checkout(job, &sha)?;

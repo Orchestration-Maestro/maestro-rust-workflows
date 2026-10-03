@@ -140,3 +140,92 @@ fn different_native_flags_publish_distinct_immutable_entries() {
     succeeds(&fixture.run_body("rust-gate native-cache-inventory"));
     assert_eq!(output(&fixture, "save"), "false");
 }
+
+#[test]
+fn cold_checks_share_verified_payload_and_keep_the_initial_save_inventory() {
+    let mut fixture = Fixture::new();
+    engine_workspace(&fixture.root.join("project"), true);
+    let cargo = fixture.run_body("command -v cargo");
+    succeeds(&cargo);
+    fixture.set(
+        "REAL_CARGO",
+        String::from_utf8(cargo.stdout).unwrap().trim(),
+    );
+    fixture.set("COVERAGE_FEATURES", "[\"crate-a/engine\"]");
+    fixture.set("NATIVE_CACHE_MODE", "coverage");
+    fixture.set("NATIVE_CACHE_OS", "linux");
+    fixture.set("NATIVE_CACHE_ARCH", "X64");
+    succeeds(&fixture.run_body("cd project && cargo generate-lockfile --offline"));
+    succeeds(&fixture.run_body("rust-gate native-cache-prepare"));
+    let root = output(&fixture, "root");
+    fixture.set("NATIVE_CACHE_ROOT", &root);
+    fixture.set(
+        "FIXTURE_NATIVE_BUILD_LOG",
+        &fixture.root.join("build-count").display().to_string(),
+    );
+    fixture.stub(
+        "git",
+        r#"case "$1 $2" in
+  "rev-parse --show-toplevel") pwd ;;
+  "rev-parse HEAD") printf '%s' "$GITHUB_SHA" ;;
+  "show "*) member="${2#HEAD^1:crates/}"; member="${member%%/*}"
+    printf '[package]\nname="crate-%s"\n' "$member" ;;
+  *) exit 0 ;;
+esac"#,
+    );
+    fixture.stub(
+        "cargo",
+        r#"case "$1" in
+  metadata) exec "$REAL_CARGO" "$@" ;;
+  llvm-cov)
+    if [[ $* == *--features* ]]; then
+      "$REAL_CARGO" test --offline --workspace --features crate-a/engine \
+        --target-dir "$RUNNER_TEMP/coverage-target"
+    fi
+    while [[ $# -gt 0 ]]; do
+      if [[ $1 == --output-path ]]; then echo LCOV > "$2"; fi; shift
+    done ;;
+  semver-checks)
+    for revision in head baseline; do
+      "$REAL_CARGO" test --offline --workspace --features crate-a/engine \
+        --target-dir "$RUNNER_TEMP/api-$revision-target"
+    done ;;
+  hack) "$REAL_CARGO" check --offline --workspace --features crate-a/engine \
+    --target-dir "$RUNNER_TEMP/features-target" ;;
+esac"#,
+    );
+    succeeds(&fixture.run("ci", "coverage"));
+    let before = fs::read(fixture.root.join("reports/native-cache-before.txt")).unwrap();
+    fixture.set("API_COMPATIBILITY", "true");
+    fixture.set("GITHUB_BASE_REF", "main");
+    succeeds(&fixture.run("ci", "api"));
+    succeeds(&fixture.run_body(
+        "cd project && cargo metadata --offline --no-deps --format-version 1 \
+         > \"$RUNNER_TEMP/metadata.json\"",
+    ));
+    succeeds(&fixture.run("ci", "features"));
+    assert_eq!(
+        fs::read(fixture.root.join("reports/native-cache-before.txt")).unwrap(),
+        before
+    );
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("build-count"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+    for (key, value) in [
+        ("EVENT", "push"),
+        ("REF", "refs/heads/main"),
+        ("DEFAULT_BRANCH", "main"),
+        ("JOB_SUCCESS", "true"),
+    ] {
+        fixture.set(key, value);
+    }
+    fs::write(fixture.root.join("output"), "").unwrap();
+    succeeds(&fixture.run_body("rust-gate native-cache-inventory"));
+    assert_eq!(output(&fixture, "save"), "true");
+    println!("GREEN: four fresh targets, one source build, three verified reuses; save=true");
+}

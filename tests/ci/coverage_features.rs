@@ -428,3 +428,45 @@ fn uncommitted_source_is_refused_even_with_the_correct_head_sha() {
         "coverage: checkout does not match the job source SHA",
     );
 }
+
+#[test]
+#[ignore = "real coverage replay: just check runs example_gate with nocapture"]
+fn example_gate_native_no_wrapper_keeps_the_default_feature_coverage_union() {
+    let mut fixture = coverage_workspace();
+    fs::write(
+        fixture.root.join("project/maestro-quality.toml"),
+        concat!(
+            "[native-cache]\nenvironment='FIXTURE_NATIVE_CACHE_DIR'\n",
+            "platforms=['linux']\nkey-files=['Cargo.lock']\npublished=['entry-*']\n"
+        ),
+    )
+    .unwrap();
+    let project = fixture.root.join("project");
+    fixture_git(&project, &["add", "."]);
+    fixture_git(
+        &project,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "native-policy",
+        ],
+    );
+    fixture.set("GITHUB_SHA", &fixture_git(&project, &["rev-parse", "HEAD"]));
+    fixture.set("COVERAGE_FEATURES", "[\"crate-a/engine\"]");
+    succeeds(&fixture.run("ci", "coverage"));
+    let lcov = fs::read_to_string(fixture.root.join("reports/coverage.lcov")).unwrap();
+    assert!(
+        lcov.contains("engine_answer") && lcov.contains("absent"),
+        "{lcov}"
+    );
+    for line in ["DA:8,1", "DA:4,1", "DA:5,1"] {
+        assert!(lcov.contains(line), "{line}: {lcov}");
+    }
+    let binding = fs::read_to_string(fixture.root.join("reports/coverage-binding.txt")).unwrap();
+    assert!(binding.contains(&fixture.env["GITHUB_SHA"]));
+    assert_eq!(binding.matches("--no-rustc-wrapper").count(), 2);
+    assert_eq!(fixture.trace().matches("--fail-under-lines 90").count(), 1);
+    println!("GREEN native no-wrapper: same-source default/feature union passes the 90% floor");
+}

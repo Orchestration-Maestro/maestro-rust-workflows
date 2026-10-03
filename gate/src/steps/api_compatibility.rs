@@ -5,6 +5,7 @@
 //! with `!` after its type, which release-please turns into a major release,
 //! declares the break and skips the comparison.
 
+use crate::checks::native_cache::{native_cache, native_cache_command, native_command};
 use crate::checks::rust_versions::parse;
 use crate::runner::{Cmd, Failure, Job, Outcome, Step, flag, input, optional, output, tee_line};
 
@@ -18,9 +19,10 @@ pub(crate) const STEPS: &[Step] = &[Step {
         "GITHUB_BASE_REF",
         "PULL_REQUEST_TITLE",
         "RUSTUP_TOOLCHAIN",
+        "NATIVE_CACHE_ROOT",
     ],
     tools: &["cargo metadata", "cargo semver-checks", "git", "jaq"],
-    reports: &["api-compatibility.txt"],
+    reports: &["api-compatibility.txt", "native-cache-before.txt"],
     run,
 }];
 
@@ -67,9 +69,13 @@ fn run() -> Outcome {
     if !parent {
         return Err("pull request checkout must include the base parent".into());
     }
-    let metadata = Cmd::new("cargo metadata --format-version 1 --no-deps --locked")
-        .cwd(&job.project)
-        .capture()?;
+    let policy = native_cache(&job.project)?;
+    let metadata = native_cache_command(
+        policy.as_ref(),
+        "cargo metadata --format-version 1 --no-deps --locked",
+    )
+    .cwd(&job.project)
+    .capture()?;
     let libraries = Cmd::new("jaq -r")
         .arg(LIBRARIES)
         .stdin_bytes(metadata.as_bytes())
@@ -91,11 +97,14 @@ fn run() -> Outcome {
         )?;
         return output("applied", "false");
     }
-    let mut check = Cmd::new("cargo semver-checks --baseline-rev HEAD^1 --release-type minor");
+    let mut check = native_cache_command(
+        policy.as_ref(),
+        "cargo semver-checks --baseline-rev HEAD^1 --release-type minor",
+    );
     for name in &compared {
         check = check.arg("--package").arg(name);
     }
-    check.cwd(&job.project).tee(&report, true)?;
+    native_command(&job, check.cwd(&job.project), policy.as_ref())?.tee(&report, true)?;
     output("applied", "true")
 }
 

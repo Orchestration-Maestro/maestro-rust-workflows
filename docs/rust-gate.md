@@ -102,12 +102,17 @@ outcomes and counters, and writes the merged canonical reports only after every
 planned worker is complete. Local CI skips planning and still runs the full
 mutation command unsharded.
 
-Coverage and mutation share the policy-aware child-command seam in
-`checks/native_cache.rs`. Engine workers verify their plan before root verification
-and cargo-mutants injection. Featureless, default and Windows execution remove
-an inherited configured variable; without policy, commands and environments stay
-unchanged. Pre-validation metadata is unchanged. Every engine shard restores;
-only shard zero inventories and saves after success. See the
+Coverage, API comparison, feature checks and mutation share the policy-aware
+child-command seam in `checks/native_cache.rs`. Every selected child revalidates
+its root; the first inventory is retained for the job's final save decision.
+Engine workers verify their plan before root verification and cargo-mutants
+injection. Featureless, default and Windows mutation execution remove an
+inherited configured variable; so do API and feature-check children whenever
+policy is present, even on an unsupported platform. Without policy, commands and
+environments stay unchanged. Pre-validation mutation metadata is unchanged. Every engine shard
+restores; only shard zero inventories and saves after success. Native policy
+opt-in on a selected Unix platform also selects no-wrapper coverage for both
+passes. See the
 [consumer native-cache contract](ci.md#optional-native-cache).
 
 The compiler keeps the layers apart: a step is private to `gate/src/steps/`, so

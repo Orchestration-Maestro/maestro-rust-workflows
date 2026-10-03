@@ -17,6 +17,7 @@ mod local_ci_run;
 mod managed_files;
 mod mutation_shards;
 mod native_cache;
+mod native_cache_checks;
 mod native_cache_fixture;
 mod native_cache_hosted_mutation;
 mod native_cache_mutation;
