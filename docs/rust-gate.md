@@ -102,6 +102,14 @@ outcomes and counters, and writes the merged canonical reports only after every
 planned worker is complete. Local CI skips planning and still runs the full
 mutation command unsharded.
 
+Featureless engine controls use a clean default test-target build to establish compile
+membership from Cargo JSON and rustc dep-info. Non-members receive the explicit
+`NotCompiledWithoutFeatures` outcome rather than redundant default test runs. Compiled
+mutants still run and must be caught by default tests. Aggregation verifies the retained
+source-bound membership and exact caught engine twins before accepting non-members;
+raw tested outcomes remain separate. Compilation-changing cargo-mutants configuration
+falls back to testing all assigned mutants. See [mutation testing](ci.md#mutation-testing).
+
 Coverage, API comparison, feature checks and mutation share the policy-aware
 child-command seam in `checks/native_cache.rs`. Every selected child revalidates
 its root; the first inventory is retained for the job's final save decision.

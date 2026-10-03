@@ -5,6 +5,7 @@ mod aggregation_rejections;
 mod engine_aggregation;
 mod engine_execution;
 mod engine_input_ownership;
+mod engine_membership;
 mod engine_planning;
 mod engine_regression;
 mod engine_rejections;

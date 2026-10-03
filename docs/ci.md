@@ -1138,6 +1138,8 @@ or failed from complete evidence.
 | `mutation-engine-list.json`, `mutation-engine-default-list.json`, `mutation-engine-plan.json`, `mutation-engine-plan.log` | Feature-owned plan and separately named featureless control obligations, bound to policy and package owners | engine ownership is configured |
 | `mutants-engine-shard.json`, `mutants-engine-default-shard.json` | SHA-bound mode-specific shard receipts | engine workers |
 | `mutants-engine.txt`, `mutants-engine-default.txt` | Bounded worker command logs for each mode | engine workers |
+| `compile-membership.json`, `cargo-build.json`, `cargo-build.log`, `build-record.json`, `dep-info` | Default-build membership, raw compiler evidence and receipt binding, retained inside each control output artifact | featureless engine controls |
+| `tested-mutants.json`, `tested-outcomes.json` | Raw cargo-mutants subset, or the successful compile-only baseline when every assigned mutant is a non-member | featureless engine controls |
 | `mutation-windows-plan.json`, `mutation-windows-list.json` | Native Windows discovery bound to the same source, policy and run | Windows-owned files |
 | `mutation-partitions` | Preserved engine/control/Windows raw evidence with mode-tagged outcomes | engine partition aggregation |
 | `mutants.diff` | First-parent source diff used to constrain mutation scope | Mutation execution with a first parent |
@@ -1242,15 +1244,34 @@ no repository policy exists; workers never reselect ownership from the caller or
 Without an engine policy, existing `.cargo/mutants.toml` settings remain unchanged. Global
 feature/workspace-test restrictions apply only when engine ownership is configured.
 
-The featureless control can report MISSED for a cfg-disabled engine body: its mutation is in
-code that is not compiled without features. Such an outcome is accepted **only** when the
-engine run caught its exact twin (package, file, complete source span, function and mutation
-text). This is evidence of inactivity, not an accepted test gap. A missing, surviving,
-timed-out or unviable engine twin fails. Default-only/cfg-exclusive control survivors still
-fail. Every raw control outcome remains MISSED; it is never relabelled CAUGHT. The aggregate
-adds the separate `inactive_without_features_caught_with_engine` class, counted globally,
-per `engine-default` partition and per package, and tags the accepted pairs in its JSON.
-Default-caught to engine-unviable regressions and feature-only unviable mutants still fail.
+The featureless control builds the default workspace's test targets once, without running
+its tests, in a clean target directory. Cargo JSON and rustc dep-info establish compile
+membership, including test-only modules, examples and build scripts. The build uses the
+same effective encoded Rust flags as pinned cargo-mutants. The control retains that raw
+evidence, its digests and a schema-1 binding to the complete source/run/shard receipt.
+A file absent from this verified build cannot affect default behavior. Its assigned mutants
+receive the explicit `NotCompiledWithoutFeatures` outcome, with no test phase and no
+per-mutant test invocation. They remain in the complete plan and outcome accounting;
+they are not relabelled caught, missed or unviable.
+
+Only assigned mutants in compiled files run through cargo-mutants, selected by anchored,
+escaped exact names. Every compiled control survivor now fails, even if its engine twin
+is caught: default-compiled code in an engine-owned file must be killed by default tests.
+This strengthens the previous twin-only acceptance of featureless survivors. A
+cargo-mutants configuration that changes compilation, features, profile or Cargo arguments,
+or contains an unknown key, disables absence classification conservatively. The worker
+logs the fallback and tests every assigned mutant. Existing global feature/workspace-test
+restrictions remain in place. No timeout, shard count, default or limit is increased.
+
+Aggregation rechecks the receipt binding, successful fresh Cargo build, every retained
+dep-info unit and digest, raw tested subset, complete outcome identities and counters.
+It accepts `NotCompiledWithoutFeatures` only for verified non-members and only when the
+engine run catches the exact twin (package, file, complete source span, function and
+mutation text). A missing, surviving, timed-out or unviable twin fails. The schema-1
+control and aggregate documents add `not_compiled_without_features` to the existing
+counters. The separate `inactive_without_features_caught_with_engine` class remains
+counted globally, per `engine-default` partition and per package. Default-caught to
+engine-unviable regressions and feature-only unviable mutants still fail.
 
 `mutation-shards: 1` is the compatible default: it runs the existing inline
 mutation command once, with no discovery listing; the worker and summary jobs
@@ -1263,7 +1284,7 @@ GitHub's 256-job matrix limit. A fixed value `2` through `256` selects
 execution stays inline. With `M = 0`, no workers are scheduled and the inline
 step records its established no-work message without inventing outcomes.
 
-The target is a calibration knob, not a time estimate. Every shard runs its
+The target is a calibration knob, not a time estimate. Every shard retains its
 own baseline and complete assigned mutant set with pinned cargo-mutants 27.1.0
 using round-robin identity assignment. The early `mutation-plan` job validates the
 consumer, installs the pinned compiler and mutation tool, and uploads the complete

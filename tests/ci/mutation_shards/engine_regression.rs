@@ -219,6 +219,26 @@ fn three_package_gate_refuses_engine_survivors_then_catches_every_default_and_en
     rising_workspace(&project);
     snapshot(&mut fixture, true);
     unviable_phase(&mut fixture);
+    restart(&fixture);
+    engine_workspace(&project, true);
+    let lib = project.join("crates/a/src/lib.rs");
+    fs::write(
+        &lib,
+        fs::read_to_string(&lib)
+            .unwrap()
+            .replace("#[cfg(feature = \"engine\")]\n", ""),
+    )
+    .unwrap();
+    let engine = project.join("crates/a/src/engine.rs");
+    fs::write(
+        &engine,
+        fs::read_to_string(&engine)
+            .unwrap()
+            .replace("#[cfg(test)]", "#[cfg(all(test, feature = \"engine\"))]"),
+    )
+    .unwrap();
+    snapshot(&mut fixture, true);
+    mixed_phase(&mut fixture);
 }
 
 /// Removing only the engine assertion must fail the ordinary branch-protection gate.
@@ -256,7 +276,7 @@ fn survivor_phase(fixture: &mut Fixture) {
     );
 }
 
-/// The paired controls remain MISSED, visibly counted separately from eight CAUGHT mutants.
+/// The paired controls are verified non-members, separately counted from eight caught mutants.
 fn caught_phase(fixture: &mut Fixture) {
     succeeds(&run(fixture, "mutants-plan"));
     routing(fixture);
@@ -274,7 +294,8 @@ fn caught_phase(fixture: &mut Fixture) {
     assert_eq!(outcomes["total_mutants"], 10);
     assert_eq!(outcomes["caught"], 8);
     assert_eq!(outcomes["unviable"], 0);
-    assert_eq!(outcomes["missed"], 2);
+    assert_eq!(outcomes["missed"], 0);
+    assert_eq!(outcomes["not_compiled_without_features"], 2);
     let inactive = &outcomes["inactive_without_features_caught_with_engine"];
     assert_eq!(inactive["total"], 2);
     assert_eq!(inactive["by_package"]["crate-a"], 2);
@@ -365,4 +386,64 @@ fn unviable_phase(fixture: &mut Fixture) {
         "Mutation partition aggregation failed or was skipped",
     );
     eprintln!("C2 UNVIABLE RED: default 1 caught -> engine 1 unviable; aggregate and gate refuse.");
+}
+
+/// A mixed file cannot use an engine-only assertion to excuse a compiled default survivor.
+fn mixed_phase(fixture: &mut Fixture) {
+    succeeds(&run(fixture, "mutants-plan"));
+    routing(fixture);
+    succeeds(&run(fixture, "mutants"));
+    refused(
+        &engine_worker(fixture, "mutants-engine-default"),
+        "partition contains a survivor, timeout or untested mutant",
+    );
+    succeeds(&engine_worker(fixture, "mutants-engine"));
+    let controls: Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .root
+                .join("mutants-engine-default/mutants.out/outcomes.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let engines: Value = serde_json::from_slice(
+        &fs::read(
+            fixture
+                .root
+                .join("mutants-engine/mutants.out/outcomes.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(controls["missed"], 2);
+    assert_eq!(controls["not_compiled_without_features"], 0);
+    assert_eq!(engines["caught"], 2);
+    let twins: Vec<_> = engines["outcomes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|result| result["summary"] == "CaughtMutant")
+        .map(|result| &result["scenario"])
+        .collect();
+    assert!(
+        controls["outcomes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|result| result["summary"] == "MissedMutant")
+            .all(|result| twins.contains(&&result["scenario"]))
+    );
+    harvest(fixture);
+    // Even a forged green worker status cannot override the raw survivor evidence.
+    fixture.set("ENGINE_MUTATIONS_RESULT", "success");
+    fixture.set("ENGINE_DEFAULT_MUTATIONS_RESULT", "success");
+    refused(
+        &run(fixture, "mutants-aggregate"),
+        "partition contains a survivor, timeout or untested mutant",
+    );
+    eprintln!(concat!(
+        "MIXED RED: 2 default-compiled survivors refused by worker and aggregate ",
+        "despite 2 exact caught engine twins."
+    ));
 }

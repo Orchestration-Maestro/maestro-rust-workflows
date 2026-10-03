@@ -27,7 +27,9 @@ pub(crate) use workflow_yaml::{
     GATE_STEPS, action, query, step, tool_rows, workflow, workflow_steps,
 };
 
-pub(crate) use engine_mutations::{engine_aggregation_fixture, engine_fixture, summarize_engine};
+pub(crate) use engine_mutations::{
+    engine_aggregation_fixture, engine_fixture, engine_inactive_fixture, summarize_engine,
+};
 
 pub(crate) use engine_workspace::{engine_workspace, fixture_git};
 

@@ -1,6 +1,8 @@
 //! Every engine mode and its featureless control are required mutation evidence.
 
-use crate::harness::{engine_aggregation_fixture, refused, succeeds, summarize_engine};
+use crate::harness::{
+    engine_aggregation_fixture, engine_inactive_fixture, refused, succeeds, summarize_engine,
+};
 use serde_json::{Value, json};
 use std::fs;
 
@@ -50,4 +52,31 @@ fn aggregation_requires_both_modes_and_rejects_new_unviable_or_untested_mutants(
     );
     fs::write(&path, original).unwrap();
     succeeds(&summarize_engine(&fixture));
+}
+
+#[test]
+fn aggregate_counters_include_every_verified_non_compiled_control_obligation() {
+    let fixture = engine_inactive_fixture();
+    succeeds(&summarize_engine(&fixture));
+    let merged: Value =
+        serde_json::from_slice(&fs::read(fixture.root.join("reports/mutants.json")).unwrap())
+            .unwrap();
+    assert_eq!(merged["engine_control_schema"], 1);
+    assert_eq!(merged["total_mutants"], 3);
+    assert_eq!(merged["caught"], 2);
+    assert_eq!(merged["missed"], 0);
+    assert_eq!(merged["not_compiled_without_features"], 1);
+    assert_eq!(
+        merged["inactive_without_features_caught_with_engine"]["total"],
+        1
+    );
+    assert_eq!(
+        merged["outcomes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|result| result["scenario"].is_object())
+            .count(),
+        3
+    );
 }

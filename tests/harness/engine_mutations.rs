@@ -8,7 +8,7 @@ use std::{fs, process::Output};
 /// Shared policy fixture, optionally advanced through planning for worker contracts.
 pub(crate) fn engine_fixture(planned: bool) -> Fixture {
     if planned {
-        engine_execution_fixture()
+        engine_execution_fixture(true)
     } else {
         engine_planning_fixture()
     }
@@ -29,7 +29,7 @@ fn engine_planning_fixture() -> Fixture {
     fs::write(fixture.root.join("engine.json"), engine.to_string()).unwrap();
     fixture.set(
         "METADATA",
-        &json!({"packages":[{
+        &json!({"workspace_root":fixture.root.join("project"), "packages":[{
             "name":"fixture", "features":{"engine":[]},
         "manifest_path":fixture.root.join("project/Cargo.toml")
         }]})
@@ -46,8 +46,15 @@ else cat "$RUNNER_TEMP/listing.json"; fi"#,
 }
 
 /// A dual-mode worker fixture with independent real-shaped outcome documents.
-fn engine_execution_fixture() -> Fixture {
+fn engine_execution_fixture(compiled: bool) -> Fixture {
     let mut fixture = engine_planning_fixture();
+    if !compiled {
+        fs::copy(
+            fixture.root.join("listing.json"),
+            fixture.root.join("engine.json"),
+        )
+        .unwrap();
+    }
     succeeds(&fixture.run_body("rust-gate mutants-plan"));
     for (key, name) in [
         ("MUTATION_ENGINE_PLAN", "mutation-engine-plan.json"),
@@ -69,6 +76,7 @@ fn engine_execution_fixture() -> Fixture {
     }
     fixture.set("MUTATION_SHARDS", "1");
     fixture.set("MUTATION_SHARD", "0/1");
+    fixture.set("CONTROL_COMPILED", if compiled { "true" } else { "false" });
     for (name, listing) in [
         ("engine", "mutation-engine-list.json"),
         ("default", "mutation-engine-default-list.json"),
@@ -95,6 +103,21 @@ fn engine_execution_fixture() -> Fixture {
     fixture.stub(
         "cargo",
         r#"if [[ $1 == metadata ]]; then printf '%s' "$METADATA"; exit; fi
+if [[ $1 == test ]]; then
+ target=''
+ while (( $# )); do
+  case $1 in --target-dir) target=$2; shift 2;; *) shift;; esac
+ done
+ mkdir -p "$target/debug/deps"
+ sources='src/lib.rs'
+ if [[ $CONTROL_COMPILED == true ]]; then sources+=' src/engine.rs'; fi
+ printf '%s: %s\n' "$target/debug/deps/fixture.d" "$sources" > "$target/debug/deps/fixture.d"
+ printf '{"reason":"compiler-artifact","fresh":false,"target":{"kind":["lib"],'
+ printf '"src_path":"%s/src/lib.rs"},"filenames":["%s/debug/deps/libfixture.rlib"]}\n' \
+  "$PROJECT" "$target"
+ printf '{"reason":"build-finished","success":true}\n'
+ exit
+fi
 out=''; mode=default
 while (( $# )); do
  case $1 in --features) mode=engine; shift 2;; --output) out=$2; shift 2;; *) shift;; esac
@@ -110,7 +133,16 @@ cp "$RUNNER_TEMP/reports/$list" "$out/mutants.out/mutants.json""#,
 
 /// Complete inline/default, featureless control and engine evidence for one run.
 pub(crate) fn engine_aggregation_fixture() -> Fixture {
-    let mut fixture = engine_execution_fixture();
+    harvest_engine_fixture(engine_execution_fixture(true))
+}
+
+/// Non-member controls with identical engine twins, using the same artifact transport.
+pub(crate) fn engine_inactive_fixture() -> Fixture {
+    harvest_engine_fixture(engine_execution_fixture(false))
+}
+
+/// Retain the complete required artifacts for either compile-membership case.
+fn harvest_engine_fixture(mut fixture: Fixture) -> Fixture {
     succeeds(&fixture.run_body("rust-gate mutants-engine"));
     succeeds(&fixture.run_body("rust-gate mutants-engine-default"));
     let checks = fixture.root.join("checks");
