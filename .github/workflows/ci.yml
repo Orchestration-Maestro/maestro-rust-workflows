@@ -149,23 +149,21 @@ defaults:
   run:
     shell: bash
 jobs:
-  checks:
-    name: Rust CI checks
+  mutation-plan:
+    name: Plan mutation routing
     # Forks run too: CI takes no secret and a read-only token, and the
     # organization holds external contributors' runs for approval. Inside
     # this repository, only a caller runs it: its root holds no Cargo package.
     # The repository is found by its id, which a rename leaves alone.
     if: ${{ github.event_name != 'pull_request_target' && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
     runs-on: ubuntu-24.04
-    # Cold native coverage, API comparisons and per-feature checks need separate builds.
-    # Pi has no CI-job timeout; this is a hang ceiling, not an expected duration.
+    # Retain the checks hang ceiling; discovery does not compile native engines.
     timeout-minutes: 240
     permissions:
       contents: read
     env:
       CARGO_MUTANTS_VERSION: '27.1.0'
     outputs:
-      artifact-id: ${{ steps.upload.outputs.artifact-id }}
       artifact-name: ${{ steps.validate.outputs.artifact-name }}
       revision: ${{ github.sha }}
       directory: ${{ steps.validate.outputs.directory }}
@@ -189,6 +187,125 @@ jobs:
       mutation-engine-default-count: ${{ steps.mutants-plan.outputs.mutation-engine-default-count }}
       mutation-engine-default-shards: ${{ steps.mutants-plan.outputs.mutation-engine-default-shards }}
       mutation-engine-default-matrix: ${{ steps.mutants-plan.outputs.mutation-engine-default-matrix }}
+    steps:
+      - name: Checkout the gate at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          persist-credentials: false
+      - name: Build the gate
+        uses: ./.github/actions/gate
+      # Replaces the gate's checkout: another repository's is deleted first.
+      - name: Checkout consumer revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          # Mutation testing diffs the commit against its first parent: the base
+          # branch of a pull request's merge commit, or the previous commit of a
+          # push or tag. A run no workflow called reads its settings there.
+          fetch-depth: 2
+      # Before validate: a run no workflow called reads its settings from
+      # maestro-quality.toml through jaq.
+      - name: Install the settings reader
+        run: rust-gate install-tools
+        env:
+          TOOLS: jaq 01mf02/jaq/releases/download/v3.1.1/jaq-x86_64-unknown-linux-gnu 5922c7b67d9bd6841d6676d1f954410c6bf04b47203dcb661c4f052dfef7f454
+      - name: Validate consumer inputs
+        id: validate
+        env:
+          CALLED: ${{ inputs.artifact-key != '' }}
+          DIRECTORY: ${{ inputs.working-directory }}
+          REQUESTED_TOOLCHAIN: ${{ inputs.rust-version }}
+          COVERAGE: ${{ inputs.coverage-threshold }}
+          ARTIFACT_KEY: ${{ inputs.artifact-key }}
+          LICENSE_POLICY: ${{ inputs.license-policy }}
+          MUTATION_TEST: ${{ inputs.mutation-test }}
+          MUTATION_SHARDS: ${{ inputs.mutation-shards }}
+          MUTATION_MUTANTS_PER_SHARD: ${{ inputs.mutation-mutants-per-shard }}
+          MUTATION_ENGINE_POLICY: ${{ inputs.mutation-engine }}
+          COVERAGE_FEATURES: ${{ inputs.coverage-features }}
+          MUTATION_WINDOWS: ${{ inputs.mutation-windows }}
+          INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
+          API_COMPATIBILITY: ${{ inputs.api-compatibility }}
+          PLATFORMS: ${{ inputs.platforms }}
+          SARIF_REPORTS: ${{ inputs.sarif-reports }}
+          UNUSED_DEPENDENCIES: ${{ inputs.unused-dependencies }}
+          UNSAFE_POLICY: ${{ inputs.unsafe-policy }}
+          DEPENDENCY_AUDIT: ${{ inputs.dependency-audit }}
+          CLIPPY_LEVEL: ${{ inputs.clippy-level }}
+        run: rust-gate validate
+      - name: Configure private Cargo state for direct crates.io access
+        id: registry
+        run: rust-gate registry
+      - name: Install the mutation testing tool
+        if: ${{ env.MUTATION_TEST == 'true' }}
+        run: rust-gate install-tools
+        env:
+          TOOLS: cargo-mutants sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e cargo-mutants
+      - name: Install the toolchain
+        id: tools
+        run: rust-gate tools
+      - name: Plan mutation shard routing
+        id: mutants-plan
+        env:
+          INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
+          MUTATION_ENGINE_FILES: ${{ steps.validate.outputs.mutation-engine-files }}
+          MUTATION_WINDOWS: ${{ steps.validate.outputs.mutation-windows }}
+          MUTATION_ENGINE_FEATURES: ${{ steps.validate.outputs.mutation-engine-features }}
+        run: rust-gate mutants-plan
+      - name: Upload immutable mutation planning reports
+        id: plan-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ${{ steps.validate.outputs.artifact-name }}-plan
+          path: ${{ runner.temp }}/rust-reports/
+          if-no-files-found: error
+          retention-days: 7
+
+  checks:
+    name: Rust CI checks
+    needs:
+      - mutation-plan
+    # Forks run too: CI takes no secret and a read-only token, and the
+    # organization holds external contributors' runs for approval. Inside
+    # this repository, only a caller runs it: its root holds no Cargo package.
+    # The repository is found by its id, which a rename leaves alone.
+    if: ${{ github.event_name != 'pull_request_target' && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
+    runs-on: ubuntu-24.04
+    # Cold native coverage, API comparisons and per-feature checks need separate builds.
+    # Pi has no CI-job timeout; this is a hang ceiling, not an expected duration.
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    env:
+      CARGO_MUTANTS_VERSION: '27.1.0'
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      artifact-name: ${{ steps.validate.outputs.artifact-name }}
+      revision: ${{ github.sha }}
+      directory: ${{ steps.validate.outputs.directory }}
+      platforms: ${{ steps.validate.outputs.platforms }}
+      toolchain: ${{ steps.validate.outputs.toolchain }}
+      mutation-mode: ${{ needs.mutation-plan.outputs.mutation-mode }}
+      mutation-count: ${{ needs.mutation-plan.outputs.mutation-count }}
+      mutation-shards: ${{ needs.mutation-plan.outputs.mutation-shards }}
+      mutation-matrix: ${{ needs.mutation-plan.outputs.mutation-matrix }}
+      mutation-test: ${{ steps.validate.outputs.mutation-test }}
+      mutation-mutants-per-shard: ${{ steps.validate.outputs.mutation-mutants-per-shard }}
+      mutation-attempt: ${{ github.run_attempt }}
+      mutation-windows: ${{ steps.validate.outputs.mutation-windows }}
+      coverage-features: ${{ steps.validate.outputs.coverage-features }}
+      mutation-engine-policy: ${{ steps.validate.outputs.mutation-engine-policy }}
+      mutation-engine-features: ${{ steps.validate.outputs.mutation-engine-features }}
+      mutation-engine-files: ${{ steps.validate.outputs.mutation-engine-files }}
+      mutation-engine-count: ${{ needs.mutation-plan.outputs.mutation-engine-count }}
+      mutation-engine-shards: ${{ needs.mutation-plan.outputs.mutation-engine-shards }}
+      mutation-engine-matrix: ${{ needs.mutation-plan.outputs.mutation-engine-matrix }}
+      mutation-engine-default-count: ${{ needs.mutation-plan.outputs.mutation-engine-default-count }}
+      mutation-engine-default-shards: ${{ needs.mutation-plan.outputs.mutation-engine-default-shards }}
+      mutation-engine-default-matrix: ${{ needs.mutation-plan.outputs.mutation-engine-default-matrix }}
     steps:
       - name: Checkout the gate at this workflow's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -387,17 +504,15 @@ jobs:
         env:
           LICENSE_ALLOWLIST: ${{ vars.LICENSE_ALLOWLIST }}
         run: rust-gate licenses
-      - name: Plan mutation shard routing
-        id: mutants-plan
-        env:
-          INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
-          MUTATION_ENGINE_FILES: ${{ steps.validate.outputs.mutation-engine-files }}
-          MUTATION_WINDOWS: ${{ steps.validate.outputs.mutation-windows }}
-          MUTATION_ENGINE_FEATURES: ${{ steps.validate.outputs.mutation-engine-features }}
-        run: rust-gate mutants-plan
+      - name: Download immutable mutation planning reports
+        id: checks-plan-download
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          name: ${{ needs.mutation-plan.outputs.artifact-name }}-plan
+          path: ${{ runner.temp }}/rust-reports
       - name: Mutation testing
         id: mutants
-        if: ${{ steps.mutants-plan.outputs.mutation-mode != 'sharded' }}
+        if: ${{ needs.mutation-plan.outputs.mutation-mode != 'sharded' }}
         env:
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           MUTATION_ENGINE_FILES: ${{ steps.validate.outputs.mutation-engine-files }}
@@ -486,23 +601,12 @@ jobs:
         if: ${{ always() && steps.validate.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: ${{ steps.validate.outputs.artifact-name }}-${{ (steps.mutants-plan.outputs.mutation-mode == 'sharded' || steps.mutants-plan.outputs.mutation-engine-count != '0' || steps.mutants-plan.outputs.mutation-engine-default-count != '0') && 'checks-reports' || 'reports' }}
+          name: ${{ steps.validate.outputs.artifact-name }}-${{ (needs.mutation-plan.outputs.mutation-mode == 'sharded' || needs.mutation-plan.outputs.mutation-engine-count != '0' || needs.mutation-plan.outputs.mutation-engine-default-count != '0') && 'checks-reports' || 'reports' }}
           path: ${{ runner.temp }}/rust-reports/
           if-no-files-found: error
           retention-days: 7
-      - name: Upload immutable engine mutation plan
-        if: ${{ always() && steps.validate.outcome == 'success' && (steps.mutants-plan.outputs.mutation-engine-count != '0' || steps.mutants-plan.outputs.mutation-engine-default-count != '0') }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
-        with:
-          name: ${{ steps.validate.outputs.artifact-name }}-engine-plan
-          path: |
-            ${{ runner.temp }}/rust-reports/mutation-engine-list.json
-            ${{ runner.temp }}/rust-reports/mutation-engine-plan.json
-            ${{ runner.temp }}/rust-reports/mutation-engine-default-list.json
-          if-no-files-found: error
-          retention-days: 7
       - name: Upload inline mutation outcomes for partition aggregation
-        if: ${{ always() && steps.mutants-plan.outputs.mutation-mode == 'inline' && (steps.mutants-plan.outputs.mutation-engine-count != '0' || steps.mutants-plan.outputs.mutation-engine-default-count != '0') }}
+        if: ${{ always() && needs.mutation-plan.outputs.mutation-mode == 'inline' && (needs.mutation-plan.outputs.mutation-engine-count != '0' || needs.mutation-plan.outputs.mutation-engine-default-count != '0') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: ${{ steps.validate.outputs.artifact-name }}-default-mutants
@@ -530,28 +634,28 @@ jobs:
           enableCrossOsArchive: false
 
   mutations:
-    name: Mutation shard ${{ matrix.shard }} of ${{ needs.checks.outputs.mutation-shards }}
+    name: Mutation shard ${{ matrix.shard }} of ${{ needs.mutation-plan.outputs.mutation-shards }}
     needs:
-      - checks
-    if: ${{ needs.checks.result == 'success' && needs.checks.outputs.mutation-mode == 'sharded' }}
+      - mutation-plan
+    if: ${{ needs.mutation-plan.result == 'success' && needs.mutation-plan.outputs.mutation-mode == 'sharded' }}
     strategy:
       fail-fast: false
       max-parallel: 32
       matrix:
-        shard: ${{ fromJSON(needs.checks.outputs.mutation-matrix) }}
+        shard: ${{ fromJSON(needs.mutation-plan.outputs.mutation-matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
     env:
       CARGO_MUTANTS_VERSION: '27.1.0'
-      MUTATION_ENGINE_POLICY: ${{ needs.checks.outputs.mutation-engine-policy }}
-      MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
-      MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+      MUTATION_ENGINE_POLICY: ${{ needs.mutation-plan.outputs.mutation-engine-policy }}
+      MUTATION_ENGINE_FEATURES: ${{ needs.mutation-plan.outputs.mutation-engine-features }}
+      MUTATION_ENGINE_FILES: ${{ needs.mutation-plan.outputs.mutation-engine-files }}
     defaults:
       run:
         shell: bash
-        working-directory: ${{ needs.checks.outputs.directory }}
+        working-directory: ${{ needs.mutation-plan.outputs.directory }}
     steps:
       - name: Checkout the gate at this workflow's commit
         id: mutation-gate-checkout
@@ -582,16 +686,16 @@ jobs:
         id: mutation-validate
         env:
           CALLED: 'true'
-          DIRECTORY: ${{ needs.checks.outputs.directory }}
-          REQUESTED_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          DIRECTORY: ${{ needs.mutation-plan.outputs.directory }}
+          REQUESTED_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
           COVERAGE: '90'
-          COVERAGE_FEATURES: ${{ needs.checks.outputs.coverage-features }}
+          COVERAGE_FEATURES: ${{ needs.mutation-plan.outputs.coverage-features }}
           ARTIFACT_KEY: mutation-worker
           LICENSE_POLICY: auto
-          MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
-          MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-shards }}
-          MUTATION_MUTANTS_PER_SHARD: ${{ needs.checks.outputs.mutation-mutants-per-shard }}
-          MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
+          MUTATION_TEST: ${{ needs.mutation-plan.outputs.mutation-test }}
+          MUTATION_SHARDS: ${{ needs.mutation-plan.outputs.mutation-shards }}
+          MUTATION_MUTANTS_PER_SHARD: ${{ needs.mutation-plan.outputs.mutation-mutants-per-shard }}
+          MUTATION_WINDOWS: ${{ needs.mutation-plan.outputs.mutation-windows }}
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           API_COMPATIBILITY: 'false'
           PLATFORMS: ''
@@ -629,16 +733,16 @@ jobs:
         if: ${{ always() }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: ${{ needs.checks.outputs.artifact-name }}-checks-reports
+          name: ${{ needs.mutation-plan.outputs.artifact-name }}-plan
           path: ${{ runner.temp }}/mutation-plan
       - name: Mutation testing
         id: mutation-worker-run
         timeout-minutes: 35
         env:
-          MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
-          MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-shards }}
-          MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.checks.outputs.mutation-shards }}
-          MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
+          MUTATION_TEST: ${{ needs.mutation-plan.outputs.mutation-test }}
+          MUTATION_SHARDS: ${{ needs.mutation-plan.outputs.mutation-shards }}
+          MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.mutation-plan.outputs.mutation-shards }}
+          MUTATION_WINDOWS: ${{ needs.mutation-plan.outputs.mutation-windows }}
           INTERNAL_SHARD_SELFTEST: ${{ inputs.internal-shard-selftest || false }}
           MUTATION_PLAN: ${{ runner.temp }}/mutation-plan/mutation-plan.json
           MUTATION_LIST: ${{ runner.temp }}/mutation-plan/mutants-list.json
@@ -648,7 +752,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: ${{ needs.checks.outputs.artifact-name }}-mutants-${{ matrix.shard }}-of-${{ needs.checks.outputs.mutation-shards }}
+          name: ${{ needs.mutation-plan.outputs.artifact-name }}-mutants-${{ matrix.shard }}-of-${{ needs.mutation-plan.outputs.mutation-shards }}
           path: |
             ${{ runner.temp }}/mutants/mutants.out/
             ${{ runner.temp }}/rust-reports/mutants.json
@@ -657,14 +761,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   mutation-engine:
-    name: Engine shard ${{ matrix.shard }} of ${{ needs.checks.outputs.mutation-engine-shards }}
+    name: Engine shard ${{ matrix.shard }} of ${{ needs.mutation-plan.outputs.mutation-engine-shards }}
     needs:
-      - checks
-    if: ${{ needs.checks.result == 'success' && needs.checks.outputs.mutation-test == 'true' && needs.checks.outputs.mutation-engine-count != '0' }}
+      - mutation-plan
+    if: ${{ needs.mutation-plan.result == 'success' && needs.mutation-plan.outputs.mutation-test == 'true' && needs.mutation-plan.outputs.mutation-engine-count != '0' }}
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.checks.outputs.mutation-engine-matrix) }}
+        shard: ${{ fromJSON(needs.mutation-plan.outputs.mutation-engine-matrix) }}
     runs-on: ubuntu-24.04
     # 65 minutes for execution/reporting, plus 10 for setup and uploads.
     timeout-minutes: 75
@@ -672,13 +776,13 @@ jobs:
       contents: read
     env:
       CARGO_MUTANTS_VERSION: '27.1.0'
-      MUTATION_ENGINE_POLICY: ${{ needs.checks.outputs.mutation-engine-policy }}
-      MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
-      MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+      MUTATION_ENGINE_POLICY: ${{ needs.mutation-plan.outputs.mutation-engine-policy }}
+      MUTATION_ENGINE_FEATURES: ${{ needs.mutation-plan.outputs.mutation-engine-features }}
+      MUTATION_ENGINE_FILES: ${{ needs.mutation-plan.outputs.mutation-engine-files }}
     defaults:
       run:
         shell: bash
-        working-directory: ${{ needs.checks.outputs.directory }}
+        working-directory: ${{ needs.mutation-plan.outputs.directory }}
     steps:
       - name: Checkout the gate at this workflow's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -701,17 +805,17 @@ jobs:
       - name: Validate consumer inputs
         env:
           CALLED: 'true'
-          DIRECTORY: ${{ needs.checks.outputs.directory }}
-          REQUESTED_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          DIRECTORY: ${{ needs.mutation-plan.outputs.directory }}
+          REQUESTED_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
           COVERAGE: '90'
-          COVERAGE_FEATURES: ${{ needs.checks.outputs.coverage-features }}
+          COVERAGE_FEATURES: ${{ needs.mutation-plan.outputs.coverage-features }}
           ARTIFACT_KEY: engine-mutation
           LICENSE_POLICY: auto
-          MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
+          MUTATION_TEST: ${{ needs.mutation-plan.outputs.mutation-test }}
           MUTATION_SHARDS: '1'
-          MUTATION_MUTANTS_PER_SHARD: ${{ needs.checks.outputs.mutation-mutants-per-shard }}
-          MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
-          MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+          MUTATION_MUTANTS_PER_SHARD: ${{ needs.mutation-plan.outputs.mutation-mutants-per-shard }}
+          MUTATION_WINDOWS: ${{ needs.mutation-plan.outputs.mutation-windows }}
+          MUTATION_ENGINE_FILES: ${{ needs.mutation-plan.outputs.mutation-engine-files }}
           INTERNAL_SHARD_SELFTEST: 'false'
           API_COMPATIBILITY: 'false'
           PLATFORMS: ''
@@ -727,7 +831,7 @@ jobs:
         run: rust-gate tools
         env:
           REPORTS: ${{ runner.temp }}/rust-reports
-          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          RUSTUP_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
       - name: Install pinned engine mutation tools
         run: rust-gate install-tools
         env:
@@ -737,7 +841,7 @@ jobs:
       - name: Download this run's immutable engine mutation plan
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: ${{ needs.checks.outputs.artifact-name }}-engine-plan
+          name: ${{ needs.mutation-plan.outputs.artifact-name }}-plan
           path: ${{ runner.temp }}/mutation-plan
       - name: Prepare private native cache restore
         id: native-cache-prepare
@@ -746,10 +850,10 @@ jobs:
           NATIVE_CACHE_MODE: mutation
           NATIVE_CACHE_OS: ${{ runner.os }}
           NATIVE_CACHE_ARCH: ${{ runner.arch }}
-          MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
-          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          MUTATION_ENGINE_FEATURES: ${{ needs.mutation-plan.outputs.mutation-engine-features }}
+          PROJECT: ${{ github.workspace }}/${{ needs.mutation-plan.outputs.directory }}
           REPORTS: ${{ runner.temp }}/rust-reports
-          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          RUSTUP_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
       - name: Restore published native entries
         id: native-cache-restore
         if: ${{ steps.native-cache-prepare.outputs.enabled == 'true' }}
@@ -769,22 +873,22 @@ jobs:
         env:
           NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
           CARGO_MUTANTS_VERSION: '27.1.0'
-          MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
-          MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+          MUTATION_ENGINE_FEATURES: ${{ needs.mutation-plan.outputs.mutation-engine-features }}
+          MUTATION_ENGINE_FILES: ${{ needs.mutation-plan.outputs.mutation-engine-files }}
           MUTATION_ENGINE_PLAN: ${{ runner.temp }}/mutation-plan/mutation-engine-plan.json
           MUTATION_ENGINE_LIST: ${{ runner.temp }}/mutation-plan/mutation-engine-list.json
-          MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-engine-shards }}
-          MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.checks.outputs.mutation-engine-shards }}
+          MUTATION_SHARDS: ${{ needs.mutation-plan.outputs.mutation-engine-shards }}
+          MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.mutation-plan.outputs.mutation-engine-shards }}
           MUTATION_ENGINE_DEFAULT_LIST: ${{ runner.temp }}/mutation-plan/mutation-engine-default-list.json
-          MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
-          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          MUTATION_TEST: ${{ needs.mutation-plan.outputs.mutation-test }}
+          PROJECT: ${{ github.workspace }}/${{ needs.mutation-plan.outputs.directory }}
           REPORTS: ${{ runner.temp }}/rust-reports
-          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          RUSTUP_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
       - name: Upload raw engine mutation outcomes
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: ${{ needs.checks.outputs.artifact-name }}-engine-mutants-${{ matrix.shard }}
+          name: ${{ needs.mutation-plan.outputs.artifact-name }}-engine-mutants-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/mutants-engine/mutants.out/
             ${{ runner.temp }}/rust-reports/mutants-engine-shard.json
@@ -802,7 +906,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
           JOB_SUCCESS: 'true'
-          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          PROJECT: ${{ github.workspace }}/${{ needs.mutation-plan.outputs.directory }}
           REPORTS: ${{ runner.temp }}/rust-reports
           NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
       - name: Save published native entries
@@ -815,27 +919,27 @@ jobs:
           enableCrossOsArchive: false
 
   mutation-engine-default:
-    name: Engine featureless control shard ${{ matrix.shard }} of ${{ needs.checks.outputs.mutation-engine-default-shards }}
+    name: Engine featureless control shard ${{ matrix.shard }} of ${{ needs.mutation-plan.outputs.mutation-engine-default-shards }}
     needs:
-      - checks
-    if: ${{ needs.checks.result == 'success' && needs.checks.outputs.mutation-test == 'true' && needs.checks.outputs.mutation-engine-default-count != '0' }}
+      - mutation-plan
+    if: ${{ needs.mutation-plan.result == 'success' && needs.mutation-plan.outputs.mutation-test == 'true' && needs.mutation-plan.outputs.mutation-engine-default-count != '0' }}
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.checks.outputs.mutation-engine-default-matrix) }}
+        shard: ${{ fromJSON(needs.mutation-plan.outputs.mutation-engine-default-matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
     env:
       CARGO_MUTANTS_VERSION: '27.1.0'
-      MUTATION_ENGINE_POLICY: ${{ needs.checks.outputs.mutation-engine-policy }}
-      MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
-      MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+      MUTATION_ENGINE_POLICY: ${{ needs.mutation-plan.outputs.mutation-engine-policy }}
+      MUTATION_ENGINE_FEATURES: ${{ needs.mutation-plan.outputs.mutation-engine-features }}
+      MUTATION_ENGINE_FILES: ${{ needs.mutation-plan.outputs.mutation-engine-files }}
     defaults:
       run:
         shell: bash
-        working-directory: ${{ needs.checks.outputs.directory }}
+        working-directory: ${{ needs.mutation-plan.outputs.directory }}
     steps:
       - name: Checkout the gate at this workflow's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -858,17 +962,17 @@ jobs:
       - name: Validate consumer inputs
         env:
           CALLED: 'true'
-          DIRECTORY: ${{ needs.checks.outputs.directory }}
-          REQUESTED_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          DIRECTORY: ${{ needs.mutation-plan.outputs.directory }}
+          REQUESTED_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
           COVERAGE: '90'
-          COVERAGE_FEATURES: ${{ needs.checks.outputs.coverage-features }}
+          COVERAGE_FEATURES: ${{ needs.mutation-plan.outputs.coverage-features }}
           ARTIFACT_KEY: engine-default-mutation
           LICENSE_POLICY: auto
-          MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
+          MUTATION_TEST: ${{ needs.mutation-plan.outputs.mutation-test }}
           MUTATION_SHARDS: '1'
-          MUTATION_MUTANTS_PER_SHARD: ${{ needs.checks.outputs.mutation-mutants-per-shard }}
-          MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
-          MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+          MUTATION_MUTANTS_PER_SHARD: ${{ needs.mutation-plan.outputs.mutation-mutants-per-shard }}
+          MUTATION_WINDOWS: ${{ needs.mutation-plan.outputs.mutation-windows }}
+          MUTATION_ENGINE_FILES: ${{ needs.mutation-plan.outputs.mutation-engine-files }}
           INTERNAL_SHARD_SELFTEST: 'false'
           API_COMPATIBILITY: 'false'
           PLATFORMS: ''
@@ -884,7 +988,7 @@ jobs:
         run: rust-gate tools
         env:
           REPORTS: ${{ runner.temp }}/rust-reports
-          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          RUSTUP_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
       - name: Install pinned engine mutation tools
         run: rust-gate install-tools
         env:
@@ -894,7 +998,7 @@ jobs:
       - name: Download this run's immutable engine mutation plan
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: ${{ needs.checks.outputs.artifact-name }}-engine-plan
+          name: ${{ needs.mutation-plan.outputs.artifact-name }}-plan
           path: ${{ runner.temp }}/mutation-plan
       - name: Execute featureless engine-file control shards
         id: engine-default-mutation-run
@@ -902,22 +1006,22 @@ jobs:
         run: rust-gate mutants-engine-default
         env:
           CARGO_MUTANTS_VERSION: '27.1.0'
-          MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
-          MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+          MUTATION_ENGINE_FEATURES: ${{ needs.mutation-plan.outputs.mutation-engine-features }}
+          MUTATION_ENGINE_FILES: ${{ needs.mutation-plan.outputs.mutation-engine-files }}
           MUTATION_ENGINE_PLAN: ${{ runner.temp }}/mutation-plan/mutation-engine-plan.json
           MUTATION_ENGINE_LIST: ${{ runner.temp }}/mutation-plan/mutation-engine-list.json
-          MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-engine-default-shards }}
-          MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.checks.outputs.mutation-engine-default-shards }}
+          MUTATION_SHARDS: ${{ needs.mutation-plan.outputs.mutation-engine-default-shards }}
+          MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.mutation-plan.outputs.mutation-engine-default-shards }}
           MUTATION_ENGINE_DEFAULT_LIST: ${{ runner.temp }}/mutation-plan/mutation-engine-default-list.json
-          MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
-          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          MUTATION_TEST: ${{ needs.mutation-plan.outputs.mutation-test }}
+          PROJECT: ${{ github.workspace }}/${{ needs.mutation-plan.outputs.directory }}
           REPORTS: ${{ runner.temp }}/rust-reports
-          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          RUSTUP_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
       - name: Upload raw engine mutation outcomes
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: ${{ needs.checks.outputs.artifact-name }}-engine-default-mutants-${{ matrix.shard }}
+          name: ${{ needs.mutation-plan.outputs.artifact-name }}-engine-default-mutants-${{ matrix.shard }}
           path: |
             ${{ runner.temp }}/mutants-engine-default/mutants.out/
             ${{ runner.temp }}/rust-reports/mutants-engine-default-shard.json
@@ -928,21 +1032,21 @@ jobs:
   mutation-windows:
     name: Windows-owned mutations
     needs:
-      - checks
-    if: ${{ needs.checks.result == 'success' && needs.checks.outputs.mutation-test == 'true' && needs.checks.outputs.mutation-windows != '[]' }}
+      - mutation-plan
+    if: ${{ needs.mutation-plan.result == 'success' && needs.mutation-plan.outputs.mutation-test == 'true' && needs.mutation-plan.outputs.mutation-windows != '[]' }}
     runs-on: windows-2025
     timeout-minutes: 60
     permissions:
       contents: read
     env:
       CARGO_MUTANTS_VERSION: '27.1.0'
-      MUTATION_ENGINE_POLICY: ${{ needs.checks.outputs.mutation-engine-policy }}
-      MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
-      MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+      MUTATION_ENGINE_POLICY: ${{ needs.mutation-plan.outputs.mutation-engine-policy }}
+      MUTATION_ENGINE_FEATURES: ${{ needs.mutation-plan.outputs.mutation-engine-features }}
+      MUTATION_ENGINE_FILES: ${{ needs.mutation-plan.outputs.mutation-engine-files }}
     defaults:
       run:
         shell: bash
-        working-directory: ${{ needs.checks.outputs.directory }}
+        working-directory: ${{ needs.mutation-plan.outputs.directory }}
     steps:
       - name: Checkout the gate at this workflow's commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -965,7 +1069,7 @@ jobs:
         run: rust-gate tools
         env:
           REPORTS: ${{ runner.temp }}/rust-reports
-          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          RUSTUP_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
       - name: Install pinned Windows mutation tools
         id: windows-mutation-tools
         run: rust-gate install-tools
@@ -978,17 +1082,17 @@ jobs:
         id: windows-mutation-run
         run: rust-gate mutants-windows
         env:
-          MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
-          MUTATION_WINDOWS: ${{ needs.checks.outputs.mutation-windows }}
-          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          MUTATION_TEST: ${{ needs.mutation-plan.outputs.mutation-test }}
+          MUTATION_WINDOWS: ${{ needs.mutation-plan.outputs.mutation-windows }}
+          PROJECT: ${{ github.workspace }}/${{ needs.mutation-plan.outputs.directory }}
           REPORTS: ${{ runner.temp }}/rust-reports
-          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          RUSTUP_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
       - name: Upload Windows mutation reports
         id: windows-mutation-upload
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: ${{ needs.checks.outputs.artifact-name }}-windows-mutants
+          name: ${{ needs.mutation-plan.outputs.artifact-name }}-windows-mutants
           path: |
             ${{ runner.temp }}/mutants/mutants.out/
             ${{ runner.temp }}/rust-reports/mutants.json
@@ -1001,12 +1105,13 @@ jobs:
   mutation-summary:
     name: Aggregate mutation shard evidence
     needs:
+      - mutation-plan
       - checks
       - mutations
       - mutation-engine
       - mutation-engine-default
       - mutation-windows
-    if: ${{ always() && (needs.checks.outputs.mutation-mode == 'sharded' || needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0') && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
+    if: ${{ always() && needs.mutation-plan.result == 'success' && (needs.checks.outputs.mutation-mode == 'sharded' || needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0') && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions: {}
@@ -1055,7 +1160,7 @@ jobs:
         if: ${{ always() && (needs.checks.outputs.mutation-engine-count != '0' || needs.checks.outputs.mutation-engine-default-count != '0') }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: ${{ needs.checks.outputs.artifact-name }}-engine-plan
+          name: ${{ needs.mutation-plan.outputs.artifact-name }}-plan
           path: ${{ runner.temp }}/engine-plan
       - name: Download every engine mutation shard
         if: ${{ always() && needs.checks.outputs.mutation-engine-count != '0' }}
@@ -1267,6 +1372,7 @@ jobs:
   gate:
     name: Required Rust CI
     needs:
+      - mutation-plan
       - checks
       - portability
       - mutations

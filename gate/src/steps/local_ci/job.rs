@@ -108,9 +108,9 @@ pub(super) const CHECKS: &[(&str, Local)] = &[
         Local::Gate("licenses"),
     ),
     (
-        "Plan mutation shard routing",
+        "Download immutable mutation planning reports",
         Local::NotApplied(
-            "local CI always runs the full mutation suite inline; shard planning is remote-only",
+            "local CI always runs the full mutation suite inline; remote plans are not consumed",
         ),
     ),
     ("Mutation testing", Local::Gate("mutants")),
@@ -147,10 +147,6 @@ pub(super) const CHECKS: &[(&str, Local)] = &[
         Local::NotApplied("only a GitHub run keeps an artifact; the reports stay in rust-reports"),
     ),
     (
-        "Upload immutable engine mutation plan",
-        Local::NotApplied("only GitHub keeps the immutable engine plan artifact"),
-    ),
-    (
         "Upload inline mutation outcomes for partition aggregation",
         Local::NotApplied("only GitHub harvests the inline default mutation artifacts"),
     ),
@@ -169,6 +165,10 @@ pub(super) const ALWAYS: &str = "scorecard";
 
 /// Every other job of `ci.yml`, by its id, and why none applies here.
 pub(super) const OTHER_JOBS: &[(&str, &str)] = &[
+    (
+        "mutation-plan",
+        "local CI always runs the full mutation suite inline; shard planning is remote-only",
+    ),
     (
         "portability",
         "it builds and tests on GitHub's macOS and Windows runners",

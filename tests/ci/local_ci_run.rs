@@ -184,8 +184,8 @@ fn every_step_of_the_ci_job_runs_locally_or_says_why_not() {
     assert!(ran.iter().any(|id| id == "mutants"));
     assert!(!ran.iter().any(|id| id == "mutants-plan"));
     assert!(stdout.contains(concat!(
-        "Plan mutation shard routing\n",
-        "not applied locally: local CI always runs the full mutation suite inline"
+        "job mutation-plan: local CI always runs the full mutation suite inline; ",
+        "shard planning is remote-only"
     )));
     // Just's formatter runs among the hooks and the private documentation in
     // the quality step, so a local run holds a repository to both.

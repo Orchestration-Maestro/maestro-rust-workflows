@@ -10,10 +10,10 @@ fn hosted_mutation_cache_steps_equal_the_production_transport_contract() {
     let production = ci["jobs"]["mutation-engine"]["steps"].as_array().unwrap();
     let job = &fixture["jobs"]["mutation-engine"];
     assert_eq!(job["if"], "${{ github.event_name != 'pull_request' }}");
-    assert_eq!(job["needs"], "checks");
+    assert_eq!(job["needs"], "mutation-plan");
     assert_eq!(
         job["strategy"]["matrix"]["shard"],
-        "${{ fromJSON(needs.checks.outputs.mutation-engine-matrix) }}"
+        "${{ fromJSON(needs.mutation-plan.outputs.mutation-engine-matrix) }}"
     );
     let hosted = job["steps"]
         .as_array()
@@ -29,7 +29,9 @@ fn hosted_mutation_cache_steps_equal_the_production_transport_contract() {
         assert_eq!(find(hosted), find(production), "{id}");
     }
     assert_eq!(hosted.last().unwrap()["id"], "native-cache-save");
-    let plan = fixture["jobs"]["checks"]["steps"].as_array().unwrap();
+    let plan = fixture["jobs"]["mutation-plan"]["steps"]
+        .as_array()
+        .unwrap();
     let checkout = plan
         .iter()
         .find(|step| {
@@ -79,7 +81,7 @@ fn each_hosted_verifier_selects_exactly_its_own_mode() {
 #[test]
 fn hosted_workers_consume_the_bound_planners_package_local_selection() {
     let fixture = workflow("native-cache-fixture");
-    let checks = &fixture["jobs"]["checks"];
+    let checks = &fixture["jobs"]["mutation-plan"];
     assert_eq!(checks["env"]["MUTATION_ENGINE_FEATURES"], "[\"engine\"]");
     for name in ["mutation-engine-features", "mutation-engine-files"] {
         assert_eq!(

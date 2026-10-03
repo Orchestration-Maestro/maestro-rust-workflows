@@ -277,7 +277,7 @@ fn explicit_coverage_override_survives_every_mutation_worker_validation() {
         fs::write(worker.root.join("project/maestro-quality.toml"), policy).unwrap();
         worker.set(
             "COVERAGE_FEATURES",
-            if selection == "${{ needs.checks.outputs.coverage-features }}" {
+            if selection == "${{ needs.mutation-plan.outputs.coverage-features }}" {
                 &resolved
             } else {
                 ""
@@ -287,7 +287,10 @@ fn explicit_coverage_override_survives_every_mutation_worker_validation() {
         println!("{name} validation: {}", validated.status);
         succeeds(&validated);
         assert_eq!(output(&worker, "coverage-features"), resolved);
-        assert_eq!(selection, "${{ needs.checks.outputs.coverage-features }}");
+        assert_eq!(
+            selection,
+            "${{ needs.mutation-plan.outputs.coverage-features }}"
+        );
     }
     assert_eq!(
         ci["jobs"]["checks"]["outputs"]["coverage-features"],

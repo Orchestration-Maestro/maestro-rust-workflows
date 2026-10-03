@@ -1078,7 +1078,7 @@ four minutes for reporting before the 35-minute step limit; the 45-minute job
 limit also leaves setup and upload time. Engine-enabled shards use 60, 65 and
 75 minutes respectively to include a cold native build. Local and unsharded runs invoke cargo-mutants directly,
 without a platform-specific timeout command. Each worker builds the gate,
-downloads the plan and checks reports, runs a baseline and its mutants, then
+downloads the early plan, runs a baseline and its mutants, then
 uploads evidence. Treat these as runner-minute costs, not a wall-
 clock promise; the hosted pilot measures actual setup, execution and summary
 latency.
@@ -1235,7 +1235,8 @@ A shared default-caught mutant becoming unviable fails; an already-unviable shar
 identity is allowed; a newly discovered feature-only unviable fails. Package and
 partition counts are reported so offsets cannot hide regressions.
 
-The checks job exports its resolved policy, features and files as immutable job outputs.
+The early `mutation-plan` job exports its resolved policy, features and files as immutable
+job outputs.
 Every mutation worker validates that resolved policy, including input-only ownership when
 no repository policy exists; workers never reselect ownership from the caller or checkout.
 Without an engine policy, existing `.cargo/mutants.toml` settings remain unchanged. Global
@@ -1254,7 +1255,7 @@ Default-caught to engine-unviable regressions and feature-only unviable mutants 
 `mutation-shards: 1` is the compatible default: it runs the existing inline
 mutation command once, with no discovery listing; the worker and summary jobs
 stay skipped. Opt-in
-`mutation-shards: 0` lists all filtered mutants in the `checks` job and chooses
+`mutation-shards: 0` lists all filtered mutants in the early `mutation-plan` job and chooses
 `N = max(1, ceil(M / target))`, where `M` is the full count and `target` is
 `mutation-mutants-per-shard` (default 50). Planning fails if `N` exceeds
 GitHub's 256-job matrix limit. A fixed value `2` through `256` selects
@@ -1264,9 +1265,15 @@ step records its established no-work message without inventing outcomes.
 
 The target is a calibration knob, not a time estimate. Every shard runs its
 own baseline and complete assigned mutant set with pinned cargo-mutants 27.1.0
-using round-robin identity assignment. The `mutations` matrix runs only after
-all of `checks` succeeds, so it cannot start before the main checks finish; at
-most 32 workers run together. Each ordinary worker has a 45-minute job limit, a
+using round-robin identity assignment. The early `mutation-plan` job validates the
+consumer, installs the pinned compiler and mutation tool, and uploads the complete
+immutable planning reports as `<artifact-name>-plan`. It does not compile the native
+engine. The checks job and every Linux, engine, featureless-control and Windows
+mutation worker start after planning succeeds, in parallel with one another. At
+most 32 ordinary Linux workers run together. Checks download the same plan before
+inline execution and include it in their diagnostic reports; workers verify the
+same source, first parent, toolchain, configuration, diff and run-attempt bindings
+as before. Planning failure skips checks and workers and fails the required status. Each ordinary worker has a 45-minute job limit, a
 35-minute mutation-step limit and a 30-minute command timeout. On remote Linux shard jobs, GNU `timeout`
 sends `SIGTERM` at that deadline and allows one minute before it sends
 `SIGKILL`; local runs use the direct cargo-mutants invocation. The always-run
@@ -1302,7 +1309,7 @@ and the original per-shard outcomes, logs and diffs. Other callers keep the
 existing report artifact name. The scorecard in `checks` marks mutation
 `not-run` until aggregation finalizes it from verified evidence. The one
 required job, `Required Rust CI`, requires every planned index and a successful
-summary in addition to the `checks` and requested portability results.
+summary in addition to the plan, `checks` and requested portability results.
 
 ### Platform portability
 

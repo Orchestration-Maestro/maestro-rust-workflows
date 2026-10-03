@@ -58,6 +58,7 @@ fn publication_defaults_and_required_dependencies() {
     assert_eq!(
         ci["jobs"]["gate"]["needs"],
         json!([
+            "mutation-plan",
             "checks",
             "portability",
             "mutations",

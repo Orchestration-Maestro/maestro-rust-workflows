@@ -14,6 +14,7 @@ fn workflow_step<'a>(steps: &'a [Value], id: &str) -> &'a Value {
 fn assert_required_gate_wiring(ci: &Value) {
     let jobs = &ci["jobs"];
     for name in [
+        "mutation-plan",
         "checks",
         "portability",
         "mutations",
@@ -60,7 +61,7 @@ fn assert_worker_matrix_contract(workers: &Value) {
     );
     assert_eq!(
         workers["strategy"]["matrix"]["shard"],
-        "${{ fromJSON(needs.checks.outputs.mutation-matrix) }}"
+        "${{ fromJSON(needs.mutation-plan.outputs.mutation-matrix) }}"
     );
     let steps = workers["steps"].as_array().unwrap();
     let execution = workflow_step(steps, "mutation-worker-run");
@@ -114,17 +115,21 @@ fn assert_summary_job_contract(jobs: &Value) {
 }
 
 fn assert_planner_and_consumer_contract(ci: &Value) {
-    let mutation_steps = ci["jobs"]["checks"]["steps"].as_array().unwrap();
-    let planner = mutation_steps
+    let planning = ci["jobs"]["mutation-plan"]["steps"].as_array().unwrap();
+    assert_eq!(
+        workflow_step(planning, "mutants-plan")["run"],
+        "rust-gate mutants-plan"
+    );
+    let checks = ci["jobs"]["checks"]["steps"].as_array().unwrap();
+    let download = checks
         .iter()
-        .position(|step| step["id"] == "mutants-plan")
+        .position(|step| step["id"] == "checks-plan-download")
         .unwrap();
-    let runner = mutation_steps
+    let runner = checks
         .iter()
         .position(|step| step["id"] == "mutants")
         .unwrap();
-    assert!(planner < runner);
-    assert_eq!(mutation_steps[planner]["run"], "rust-gate mutants-plan");
+    assert!(download < runner);
 
     let internal = workflow("ci-internal");
     let windows_files =
@@ -159,7 +164,7 @@ fn windows_mutation_job_is_required_and_uses_its_pinned_asset() {
     let ci = workflow("ci");
     let windows = &ci["jobs"]["mutation-windows"];
     assert_eq!(windows["runs-on"], "windows-2025");
-    assert_eq!(windows["needs"], json!(["checks"]));
+    assert_eq!(windows["needs"], json!(["mutation-plan"]));
     assert!(
         windows["if"]
             .as_str()
@@ -244,7 +249,7 @@ fn linux_mutation_workers_exclude_windows_owned_files() {
     let execute = workflow_step(workers, "mutation-worker-run");
     assert_eq!(
         execute["env"]["MUTATION_WINDOWS"],
-        "${{ needs.checks.outputs.mutation-windows }}"
+        "${{ needs.mutation-plan.outputs.mutation-windows }}"
     );
     let inline = ci["jobs"]["checks"]["steps"].as_array().unwrap();
     let execute = workflow_step(inline, "mutants");
@@ -322,7 +327,7 @@ fn internal_shard_selftest_is_gated_and_runs_in_both_consumers() {
     assert_eq!(caller["mutation-shards"], 2);
     assert_eq!(caller["internal-shard-selftest"], true);
     let planning = workflow_step(
-        ci["jobs"]["checks"]["steps"].as_array().unwrap(),
+        ci["jobs"]["mutation-plan"]["steps"].as_array().unwrap(),
         "mutants-plan",
     );
     assert_eq!(
@@ -355,7 +360,7 @@ fn worker_artifact_contract_matches_the_summary_and_gate_layout() {
     let checks_download = workflow_step(workers, "mutation-plan-download");
     assert_eq!(
         checks_download["with"]["name"],
-        "${{ needs.checks.outputs.artifact-name }}-checks-reports"
+        "${{ needs.mutation-plan.outputs.artifact-name }}-plan"
     );
     assert_eq!(
         checks_download["with"]["path"],
@@ -374,8 +379,8 @@ fn worker_artifact_contract_matches_the_summary_and_gate_layout() {
     assert_eq!(
         upload["with"]["name"],
         concat!(
-            "${{ needs.checks.outputs.artifact-name }}-mutants-",
-            "${{ matrix.shard }}-of-${{ needs.checks.outputs.mutation-shards }}"
+            "${{ needs.mutation-plan.outputs.artifact-name }}-mutants-",
+            "${{ matrix.shard }}-of-${{ needs.mutation-plan.outputs.mutation-shards }}"
         )
     );
     let paths: Vec<_> = upload["with"]["path"]

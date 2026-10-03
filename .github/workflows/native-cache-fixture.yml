@@ -115,7 +115,7 @@ jobs:
           path: ${{ steps.native-cache-inventory.outputs.paths }}
           key: ${{ steps.native-cache-prepare.outputs.key }}
           enableCrossOsArchive: false
-  checks:
+  mutation-plan:
     name: Native mutation plan
     # PR coverage proves restoration. Mutation needs the existing parentless full listing:
     # push, queue and dispatch have no PR base; the shallow checkout has no first parent.
@@ -181,11 +181,11 @@ jobs:
           retention-days: 7
   mutation-engine:
     name: Native engine shard ${{ matrix.shard }}
-    needs: checks
+    needs: mutation-plan
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.checks.outputs.mutation-engine-matrix) }}
+        shard: ${{ fromJSON(needs.mutation-plan.outputs.mutation-engine-matrix) }}
     # PR coverage proves restoration. Mutation needs the existing parentless full listing:
     # push, queue and dispatch have no PR base; the shallow checkout has no first parent.
     if: ${{ github.event_name != 'pull_request' }}
@@ -237,10 +237,10 @@ jobs:
           NATIVE_CACHE_MODE: mutation
           NATIVE_CACHE_OS: ${{ runner.os }}
           NATIVE_CACHE_ARCH: ${{ runner.arch }}
-          MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
-          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          MUTATION_ENGINE_FEATURES: ${{ needs.mutation-plan.outputs.mutation-engine-features }}
+          PROJECT: ${{ github.workspace }}/${{ needs.mutation-plan.outputs.directory }}
           REPORTS: ${{ runner.temp }}/rust-reports
-          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          RUSTUP_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
       - name: Restore published native entries
         id: native-cache-restore
         if: ${{ steps.native-cache-prepare.outputs.enabled == 'true' }}
@@ -259,17 +259,17 @@ jobs:
         env:
           NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
           CARGO_MUTANTS_VERSION: '27.1.0'
-          MUTATION_ENGINE_FEATURES: ${{ needs.checks.outputs.mutation-engine-features }}
-          MUTATION_ENGINE_FILES: ${{ needs.checks.outputs.mutation-engine-files }}
+          MUTATION_ENGINE_FEATURES: ${{ needs.mutation-plan.outputs.mutation-engine-features }}
+          MUTATION_ENGINE_FILES: ${{ needs.mutation-plan.outputs.mutation-engine-files }}
           MUTATION_ENGINE_PLAN: ${{ runner.temp }}/mutation-plan/mutation-engine-plan.json
           MUTATION_ENGINE_LIST: ${{ runner.temp }}/mutation-plan/mutation-engine-list.json
-          MUTATION_SHARDS: ${{ needs.checks.outputs.mutation-engine-shards }}
-          MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.checks.outputs.mutation-engine-shards }}
+          MUTATION_SHARDS: ${{ needs.mutation-plan.outputs.mutation-engine-shards }}
+          MUTATION_SHARD: ${{ matrix.shard }}/${{ needs.mutation-plan.outputs.mutation-engine-shards }}
           MUTATION_ENGINE_DEFAULT_LIST: ${{ runner.temp }}/mutation-plan/mutation-engine-default-list.json
-          MUTATION_TEST: ${{ needs.checks.outputs.mutation-test }}
-          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          MUTATION_TEST: ${{ needs.mutation-plan.outputs.mutation-test }}
+          PROJECT: ${{ github.workspace }}/${{ needs.mutation-plan.outputs.directory }}
           REPORTS: ${{ runner.temp }}/rust-reports
-          RUSTUP_TOOLCHAIN: ${{ needs.checks.outputs.toolchain }}
+          RUSTUP_TOOLCHAIN: ${{ needs.mutation-plan.outputs.toolchain }}
       - name: Verify mutation child environment and native build counts
         run: cargo test --manifest-path tests/Cargo.toml --locked --features native-cache-hosted --test native_cache_hosted verify_the_executed_native_mutation_fixture -- --exact --nocapture
         env:
@@ -295,7 +295,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
           JOB_SUCCESS: 'true'
-          PROJECT: ${{ github.workspace }}/${{ needs.checks.outputs.directory }}
+          PROJECT: ${{ github.workspace }}/${{ needs.mutation-plan.outputs.directory }}
           REPORTS: ${{ runner.temp }}/rust-reports
           NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
       - name: Save published native entries

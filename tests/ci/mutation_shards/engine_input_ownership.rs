@@ -50,7 +50,7 @@ fn every_mutation_worker_uses_the_checks_jobs_resolved_engine_policy_and_ownersh
         ] {
             assert_eq!(
                 ci["jobs"][job]["env"][variable].as_str().unwrap_or(""),
-                format!("${{{{ needs.checks.outputs.mutation-engine-{field} }}}}"),
+                format!("${{{{ needs.mutation-plan.outputs.mutation-engine-{field} }}}}"),
                 "{job}"
             );
         }
@@ -72,7 +72,7 @@ fn worker_ownership(fixture: &mut Fixture, job: &str) {
     ] {
         let expression = ci["jobs"][job]["env"][variable].as_str().unwrap_or("");
         let field = expression
-            .strip_prefix("${{ needs.checks.outputs.")
+            .strip_prefix("${{ needs.mutation-plan.outputs.")
             .and_then(|value| value.strip_suffix(" }}"))
             .unwrap_or("missing-output");
         fixture.set(variable, &output(fixture, field));
