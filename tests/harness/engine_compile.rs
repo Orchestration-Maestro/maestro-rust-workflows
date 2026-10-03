@@ -213,7 +213,7 @@ fn configure_packages(project: &Path, probe: &str, engine: &str) {
         fs::read_to_string(&lib)
             .unwrap()
             .replace(
-                "#[cfg(feature = \"engine\")]\npub mod engine;",
+                "pub mod engine;",
                 "#[cfg(any(feature = \"engine\", not(feature = \"other\")))]\npub mod engine;",
             )
             .replace(
