@@ -148,8 +148,11 @@ fn only_feature_coverage_receives_the_private_native_variable() {
     assert_eq!(
         child.lines().collect::<Vec<_>>(),
         [
-            "llvm-cov --workspace --locked --no-report unset".to_owned(),
-            format!("llvm-cov --workspace --locked --no-report --features fixture/engine {root}")
+            "llvm-cov --workspace --locked --no-report --no-rustc-wrapper unset".to_owned(),
+            format!(
+                "llvm-cov --workspace --locked --no-report --no-rustc-wrapper \
+                 --features fixture/engine {root}"
+            )
         ]
     );
     assert_eq!(
@@ -217,4 +220,44 @@ fn failed_private_allocation_leaves_the_child_variable_unset() {
     );
     succeeds(&fixture.run_body("rust-gate native-cache-prepare"));
     assert_eq!(output(&fixture, "enabled"), "false");
+}
+
+#[test]
+fn native_coverage_disables_the_wrapper_only_on_opted_in_platforms() {
+    for selection in ["", "[\"fixture/engine\"]"] {
+        for state in ["enabled", "absent", "platform"] {
+            let mut fixture = coverage_child_fixture();
+            fixture.set("COVERAGE_FEATURES", selection);
+            let policy = fixture.root.join("project/maestro-quality.toml");
+            if state == "absent" {
+                fs::remove_file(&policy).unwrap();
+            } else if state == "platform" {
+                let text = fs::read_to_string(&policy).unwrap();
+                fs::write(policy, text.replace("['linux','macos']", "['macos']")).unwrap();
+            }
+            succeeds(&fixture.run("ci", "coverage"));
+            let calls = fixture.calls();
+            let executions: Vec<_> = calls
+                .lines()
+                .filter(|line| line.starts_with("llvm-cov --workspace"))
+                .collect();
+            assert_eq!(executions.len(), if selection.is_empty() { 1 } else { 2 });
+            for command in executions {
+                assert_eq!(
+                    command.contains("--no-rustc-wrapper"),
+                    state == "enabled",
+                    "{state}/{selection}: {command}"
+                );
+            }
+            assert_eq!(calls.matches("--fail-under-lines 90").count(), 1);
+            if !selection.is_empty() {
+                let binding =
+                    fs::read_to_string(fixture.root.join("reports/coverage-binding.txt")).unwrap();
+                assert_eq!(
+                    binding.matches("--no-rustc-wrapper").count(),
+                    if state == "enabled" { 2 } else { 0 }
+                );
+            }
+        }
+    }
 }

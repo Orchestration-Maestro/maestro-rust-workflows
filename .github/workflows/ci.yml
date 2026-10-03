@@ -525,6 +525,7 @@ jobs:
         id: api
         env:
           PULL_REQUEST_TITLE: ${{ github.event.pull_request.title }}
+          NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
         run: rust-gate api
       - name: Redacted source secret scan
         id: secrets
@@ -534,6 +535,8 @@ jobs:
         run: rust-gate msrv
       - name: Every declared feature compiles
         id: features
+        env:
+          NATIVE_CACHE_ROOT: ${{ steps.native-cache-prepare.outputs.root }}
         run: rust-gate features
       - name: Unused declared dependencies
         id: unused

@@ -188,7 +188,7 @@ pub(crate) fn native_cache_command(policy: Option<&NativeCache>, words: &str) ->
     command
 }
 
-/// Only feature execution receives the consumer variable, after restored bytes are checked.
+/// Selected build execution receives the consumer variable after restored bytes are checked.
 pub(crate) fn native_command(
     job: &Job,
     command: Cmd,
@@ -221,12 +221,17 @@ pub(crate) fn native_command(
             return Ok(command);
         }
     };
-    let before = published_inventory(&root, &policy.published)?;
-    write(
-        &job.report("native-cache-before.txt")?,
-        format!("{}\n{before}", root.display()).as_bytes(),
-        false,
-    )?;
+    // Keep the job's initial inventory even if a later command selects a fallback.
+    // Final inventory refuses a root mismatch; every command still revalidates above.
+    let record = job.report("native-cache-before.txt")?;
+    if !record.exists() {
+        let before = published_inventory(&root, &policy.published)?;
+        write(
+            &record,
+            format!("{}\n{before}", root.display()).as_bytes(),
+            false,
+        )?;
+    }
     Ok(command.env(&policy.environment, &root))
 }
 

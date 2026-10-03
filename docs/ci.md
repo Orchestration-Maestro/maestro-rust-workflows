@@ -1572,14 +1572,22 @@ An outer restore is not proof of compatibility or producer authenticity.
 Cross-mode reuse requires matching consumer entry keys, including the flags that
 change native output, as E03's native consumer binds them.
 
-Feature coverage and every engine mutation shard restore. Only the coverage
-feature child and engine cargo-mutants descendants receive the verified private
-root variable. Default coverage and featureless, default and Windows mutation
+Feature coverage and every engine mutation shard restore. The coverage feature
+child, API comparison (both head and baseline), cargo-hack feature checks and
+engine cargo-mutants descendants receive the same reverified private root
+variable. Default coverage and featureless, default and Windows mutation
 execution remove an inherited configured variable but receive no cache root.
+API and feature-check metadata also remove that variable when policy is present.
 Pre-validation mutation metadata retains its existing environment and runs no
 build scripts. No variable is added to the job environment.
 
-Feature coverage and engine shard zero are the only writers. They save last,
+On a policy-selected Unix platform, both default and feature coverage executions
+use `--no-rustc-wrapper`. Absent policy and unsupported platforms retain wrapper
+mode. This instruments Rust dependencies too; its extra Rust compilation and
+execution cost is unmeasured. The same-source coverage union and floor stay
+unchanged. Native reuse still requires compatible consumer entry keys.
+
+The checks job and engine shard zero are the only writers. They save last,
 after job success, only when the published-entry inventory is nonempty and has
 changed. Saving requires either a push to the repository's exact default branch
 or a merge group whose base is that branch. Pull requests and manual dispatches
@@ -1609,14 +1617,17 @@ and select an empty private source-build root. If safe allocation also fails,
 the variable stays unset. Windows skips preparation, restore and save and builds
 from source even with engine features selected.
 
-To opt out, remove the entire `[native-cache]` table. Without a policy, mutation
-and coverage child commands and inherited environments remain unchanged.
+To opt out, remove the entire `[native-cache]` table. Without a policy, mutation,
+coverage, API and feature-check child commands and inherited environments remain
+unchanged.
 
 ### Native cache transport reports
 
 An opted-in feature-coverage or engine mutation run writes `native-cache-binding.txt` with the
 policy, key-file digests and snapshot key. `native-cache-before.txt` records the
-verified private root and its published-entry inventory before execution.
+verified private root and its published-entry inventory once before the first
+selected execution. Later commands reverify the root without replacing that
+initial record, so a no-new-entry command cannot suppress a valid save.
 Restore failure selects an empty private root and does not save that fallback.
 Every selected root, including a random fallback, must be an owned directory
 with exactly mode 0700. If allocation or verification fails, the variable stays unset.

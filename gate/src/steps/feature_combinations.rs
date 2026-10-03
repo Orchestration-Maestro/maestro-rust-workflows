@@ -7,6 +7,9 @@
 //! A workspace declaring no feature has nothing to check, and the
 //! step says so rather than spending a compile to prove it.
 
+use crate::checks::native_cache::{
+    NativeCache, native_cache, native_cache_command, native_command,
+};
 use crate::runner::{Cmd, Failure, Job, Outcome, Step, output};
 use std::collections::BTreeSet;
 use std::fs;
@@ -17,9 +20,9 @@ pub(crate) const STEPS: &[Step] = &[Step {
     workflow: "ci",
     id: "features",
     summary: "Every declared feature compiles",
-    inputs: &[],
+    inputs: &["NATIVE_CACHE_ROOT"],
     tools: &["cargo metadata", "cargo hack", "jaq"],
-    reports: &["features.txt"],
+    reports: &["features.txt", "native-cache-before.txt"],
     run,
 }];
 
@@ -67,10 +70,13 @@ struct Snapshot {
 impl Snapshot {
     /// Discover current workspace members without resolving dependencies, then
     /// read every byte before allowing cargo-hack to modify anything.
-    fn read(job: &Job) -> Result<Self, Failure> {
-        let metadata = Cmd::new("cargo metadata --offline --no-deps --format-version 1")
-            .cwd(&job.project)
-            .capture()?;
+    fn read(job: &Job, policy: Option<&NativeCache>) -> Result<Self, Failure> {
+        let metadata = native_cache_command(
+            policy,
+            "cargo metadata --offline --no-deps --format-version 1",
+        )
+        .cwd(&job.project)
+        .capture()?;
         let paths = Cmd::new("jaq -r")
             .arg(
                 ".workspace_members as $m | .workspace_root + \"/Cargo.toml\",
@@ -159,7 +165,8 @@ fn run() -> Outcome {
     // front end, and a consumer pays for one type check per feature instead of
     // one link. `--each-feature` is linear in the number of features, where a
     // powerset is exponential and would price this gate out of every run.
-    let mut snapshot = Snapshot::read(&job)?;
+    let policy = native_cache(&job.project)?;
+    let mut snapshot = Snapshot::read(&job, policy.as_ref())?;
     let locked = Cmd::new("jaq -r --from toml")
         .arg(LOCKED_PACKAGES)
         .stdin_bytes(&snapshot.original_lock)
@@ -170,10 +177,12 @@ fn run() -> Outcome {
     // Earlier locked steps fill a fresh CI Cargo home. Offline resolution can
     // prune dev-only packages without fetching alternatives; reject any drift
     // before accepting a result, including when run with a warmer local cache.
-    let checked =
-        Cmd::new("cargo hack check --workspace --offline --each-feature --remove-dev-deps")
-            .cwd(&job.project)
-            .run();
+    let command = native_cache_command(
+        policy.as_ref(),
+        "cargo hack check --workspace --offline --each-feature --remove-dev-deps",
+    )
+    .cwd(&job.project);
+    let checked = native_command(&job, command, policy.as_ref())?.run();
     let validated = Cmd::new("jaq -r --from toml")
         .arg(LOCKED_PACKAGES)
         .arg(&snapshot.lock)

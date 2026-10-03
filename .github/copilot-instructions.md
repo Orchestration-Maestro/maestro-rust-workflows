@@ -372,6 +372,7 @@ in place.
 │   │   ├── managed_files.rs                                     # init, sync, sync --check and managed-files: written, refused by name, written back
 │   │   ├── mod.rs                                               # The repository modules, listed and nothing else
 │   │   ├── native_cache.rs                                      # Native cache policy, private restore transport and coverage-only injection
+│   │   ├── native_cache_checks.rs                               # API and feature children share only a policy-opted-in, reverified native root
 │   │   ├── native_cache_fixture.rs                              # Real fresh-target builds prove optional consumer cache reuse, not a command stub
 │   │   ├── native_cache_hosted_mutation.rs                      # Hosted mutation proof shares production transport rather than a copied contract
 │   │   ├── native_cache_mutation.rs                             # Native mutation transport routing, child-only injection and legacy compatibility
