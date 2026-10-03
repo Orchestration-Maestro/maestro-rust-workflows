@@ -18,6 +18,19 @@ fn integration_binary_uplift_retains_only_exact_compiler_dep_info() {
             .join("mutants-engine-default/mutants.out/builds/0");
         let records = fs::read_to_string(root.join("cargo-build.json")).unwrap();
         assert!(records.contains("/x86_64-unknown-linux-gnu/debug/crate-a\""));
+        let harness_free: Value = records
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|record| record["target"]["name"] == "harness_free")
+            .unwrap();
+        assert_eq!(harness_free["profile"]["test"], true);
+        let log = fs::read_to_string(root.join("cargo-build.log")).unwrap();
+        let invocation = log
+            .lines()
+            .find(|line| line.contains("--crate-name harness_free"))
+            .unwrap();
+        assert!(invocation.contains("--cfg test"));
+        assert!(!invocation.contains("--test"));
         assert!(
             !fixture
                 .root

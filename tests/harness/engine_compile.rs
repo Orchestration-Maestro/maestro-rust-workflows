@@ -196,6 +196,20 @@ fn configure_binary(project: &Path) {
     fs::write(project.join("crates/a/src/main.rs"), "fn main() {}\n").unwrap();
     fs::create_dir_all(project.join("crates/a/tests")).unwrap();
     fs::write(
+        project.join("crates/a/tests/harness_free.rs"),
+        "fn main() {}\n",
+    )
+    .unwrap();
+    let manifest = project.join("crates/a/Cargo.toml");
+    fs::write(
+        &manifest,
+        format!(
+            "{}\n[[test]]\nname = 'harness_free'\nharness = false\n",
+            fs::read_to_string(&manifest).unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(
         project.join("crates/a/tests/binary_output.rs"),
         concat!(
             "#[test]\nfn integration_uses_the_uplifted_binary() {\n",

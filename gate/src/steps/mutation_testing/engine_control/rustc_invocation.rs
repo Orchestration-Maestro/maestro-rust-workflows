@@ -21,6 +21,12 @@ pub(super) fn words(command: &str) -> Result<Vec<String>, Failure> {
                 escaped = true;
                 started = true;
             }
+            '"' if !quoted => {
+                return Err(format!(
+                    "featureless rustc invocation has malformed quoting: {command}"
+                )
+                .into());
+            }
             '\'' => {
                 quoted = !quoted;
                 started = true;
@@ -93,14 +99,22 @@ mod tests {
     #[test]
     fn cargo_quoting_keeps_paths_spaces_and_embedded_quotes() {
         assert_eq!(
-            words("rustc 'a b' 'it'\\''s.rs' a\\ b").unwrap(),
-            ["rustc", "a b", "it's.rs", "a b"]
+            words("rustc 'a b' 'it'\\''s.rs' a\\ b --cfg 'feature=\"engine\"' \\\"").unwrap(),
+            [
+                "rustc",
+                "a b",
+                "it's.rs",
+                "a b",
+                "--cfg",
+                "feature=\"engine\"",
+                "\""
+            ]
         );
         assert_eq!(
             words("rustc '' probe ''").unwrap(),
             ["rustc", "", "probe", ""]
         );
-        for command in ["rustc 'unfinished", "rustc unfinished\\"] {
+        for command in ["rustc 'unfinished", "rustc unfinished\\", "rustc \""] {
             let error = words(command).unwrap_err();
             assert!(
                 error

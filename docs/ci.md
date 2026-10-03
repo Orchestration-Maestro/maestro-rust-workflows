@@ -1257,8 +1257,13 @@ The control retains the raw evidence, configuration, digests and a schema-4 bind
 complete source/run/shard receipt. Each package entry binds its build argv, raw compiler log and
 dep-info evidence. Paths derive from rustc's crate name, output directory and extra filename;
 uplifted integration-test binaries do not need a sibling `.d` file. Each fresh Cargo artifact
-must match exactly one rustc invocation with dep-info emission. Missing compiler records,
-malformed quoting and missing dep-info fail closed with the unit named. Schema-3 or mixed
+must match exactly one rustc invocation with dep-info emission. A Cargo test profile requires
+`--test` or explicit `--cfg test`, including `harness = false` targets. A non-test profile refuses
+`--test` but permits user-supplied `--cfg test`; only non-test binary targets can match uplifted
+outputs from a `/deps` directory. Missing compiler records, malformed quoting and missing
+dep-info fail closed with the unit named. Unescaped double quotes outside single-quoted
+arguments are refused; literal double quotes inside them, such as `--cfg 'feature="engine"'`,
+are preserved. Schema-3 or mixed
 compiler evidence is refused;
 aggregation rechecks every equivalent command and frame. A mutant is classified only against
 its own package build, never the union of dependency feature sets. Project paths lexically

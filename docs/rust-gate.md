@@ -107,6 +107,10 @@ or Nextest test-target build for each assigned owner to establish compile member
 Dep-info paths come from each verbose rustc invocation's crate name, output directory and
 extra filename, not Cargo's uplifted binary filenames. Every fresh artifact must match exactly
 one compiler invocation; absent emission or dep-info fails closed with its unit named.
+Cargo test profiles require either `--test` or explicit `--cfg test`, including harness-free
+targets. Non-test profiles refuse `--test` without inferring a test profile from user configuration.
+Only non-test binaries match uplifted outputs from `/deps`. Compiler argument parsing preserves
+double quotes inside single quotes and refuses unescaped double quotes outside them.
 Nextest's evidence build adds `--cargo-verbose` to forward the compiler invocations.
 Default-off `cap_lints` leaves Cargo flag resolution unchanged. Retained source metadata
 binds the normalized coordinate frame and planned owners; schema-4 membership binds every

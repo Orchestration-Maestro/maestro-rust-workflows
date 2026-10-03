@@ -45,13 +45,15 @@ pub(super) fn dep_paths(root: &Path, workspace: &Path) -> Result<Vec<String>, Fa
         .arg(concat!(
             "def matches($a; $u): ",
             "($u.sources | index($a.target.src_path)) != null and ",
-            "$u.name == ($a.target.name | gsub(\"-\";\"_\")) and $u.test == $a.profile.test and ",
+            "$u.name == ($a.target.name | gsub(\"-\";\"_\")) and ",
+            "(if $a.profile.test then ($u.harness_test or $u.cfg_test) ",
+            "else $u.harness_test == false end) and ",
             "any($a.filenames[]; . as $f | ",
             "$f == $u.base or ($f | startswith($u.base + \".\")) or ",
             "$f == $u.libbase or ($f | startswith($u.libbase + \".\")) or ",
             "($a.target.kind == [\"custom-build\"] and ",
             "$f == $u.directory + \"/build-script-build\") or ",
-            "($a.target.kind == [\"bin\"] and $u.test == false and ",
+            "($a.target.kind == [\"bin\"] and $a.profile.test == false and ",
             "($u.directory | endswith(\"/deps\")) and ",
             "$f == ($u.directory | rtrimstr(\"/deps\")) + \"/\" + $a.target.name)); ",
             ". as $units | [$cargo[] | select(.reason == \"compiler-artifact\")] as $artifacts | ",
@@ -102,8 +104,19 @@ fn unit(argv: &[String], workspace: &Path) -> Result<String, Failure> {
         ])
         .args([
             "--argjson",
-            "test",
+            "harness_test",
             if argv.iter().any(|word| word == "--test") {
+                "true"
+            } else {
+                "false"
+            },
+        ])
+        .args([
+            "--argjson",
+            "cfg_test",
+            if argv.windows(2).any(|pair| pair == ["--cfg", "test"])
+                || argv.iter().any(|word| word == "--cfg=test")
+            {
                 "true"
             } else {
                 "false"
@@ -118,7 +131,8 @@ fn unit(argv: &[String], workspace: &Path) -> Result<String, Failure> {
         .args(["--arg", "libbase"])
         .arg(directory.join(format!("lib{stem}")))
         .arg(concat!(
-            "{name:$name,test:$test,path:$path,directory:$directory,",
+            "{name:$name,harness_test:$harness_test,cfg_test:$cfg_test,",
+            "path:$path,directory:$directory,",
             "base:$base,libbase:$libbase,sources:$ARGS.positional}",
         ))
         .args(["--args", "--"])
