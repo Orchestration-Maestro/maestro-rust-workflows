@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.7](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.6...v4.8.7) (2026-10-03)
+
+
+### Bug Fixes
+
+* **ci:** retain exact featureless compiler dep-info ([#123](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/123)) ([e4a7088](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/e4a70882ee1c879017255a289090dbc9117c3a8b))
+
 ## [4.8.6](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.5...v4.8.6) (2026-10-03)
 
 
