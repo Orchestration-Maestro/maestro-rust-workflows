@@ -32,6 +32,33 @@ fn two_package_controls_build_each_owner_and_classify_only_its_evidence() {
 }
 
 #[test]
+fn dependency_features_really_construct_the_owned_source_hiding_case() {
+    let mut fixture = compile_fixture("packages");
+    let source = fs::read_to_string(fixture.root.join("project/crates/a/src/lib.rs")).unwrap();
+    assert!(
+        source.contains(
+            "#[cfg(any(feature = \"engine\", not(feature = \"other\")))]\npub mod engine;"
+        ),
+        "missing feature-hiding fixture guard: {source}"
+    );
+    fixture.set("MUTATION_SHARD", "0/1");
+    succeeds(&fixture.run_body("rust-gate mutants-engine-default"));
+    let root = fixture.root.join("mutants-engine-default/mutants.out");
+    for (index, owner, expected) in [(0, "crate-a", true), (1, "crate-b", false)] {
+        let dep_info = root.join(format!("builds/{index}/dep-info"));
+        let contains = fs::read_dir(dep_info).unwrap().any(|entry| {
+            fs::read_to_string(entry.unwrap().path())
+                .unwrap()
+                .contains("crates/a/src/engine.rs")
+        });
+        assert_eq!(
+            contains, expected,
+            "A's engine source in {owner}'s dep-info"
+        );
+    }
+}
+
+#[test]
 fn two_package_control_rejects_a_default_compiled_survivor() {
     let mut fixture = compile_fixture("packages-survivor");
     fixture.set("MUTATION_SHARD", "0/1");
@@ -128,6 +155,23 @@ fn aggregation_rechecks_each_package_build_argv_after_digest_refresh() {
 fn featureless_package_builds_share_the_existing_non_increasing_worker_budget() {
     let mut fixture = compile_fixture("packages");
     fixture.set("MUTATION_SHARD", "0/1");
+    let executable = fixture.run_body("command -v cargo");
+    succeeds(&executable);
+    fixture.set(
+        "REAL_CARGO",
+        String::from_utf8(executable.stdout).unwrap().trim(),
+    );
+    let delay_seconds = 2;
+    fixture.set("FIRST_BUILD_DELAY_SECONDS", &delay_seconds.to_string());
+    fixture.stub(
+        "cargo",
+        r#"if [[ " $* " == *" --no-run "* && " $* " == *" --package=crate-a@0.1.0 "* &&
+ ! -e "$RUNNER_TEMP/first-build-delayed" ]]; then
+ touch "$RUNNER_TEMP/first-build-delayed"
+ sleep "$FIRST_BUILD_DELAY_SECONDS"
+fi
+exec "$REAL_CARGO" "$@""#,
+    );
     fs::write(fixture.root.join("trace"), "").unwrap();
     succeeds(&fixture.run_body("rust-gate mutants-engine-default"));
     let trace = fixture.trace();
@@ -136,6 +180,8 @@ fn featureless_package_builds_share_the_existing_non_increasing_worker_budget() 
         .filter(|line| line.contains("timeout --kill-after=1m"))
         .collect();
     assert_eq!(commands.len(), 3);
+    assert!(fixture.root.join("first-build-delayed").is_file());
+    let mut allowances = Vec::new();
     let mut previous = 1800;
     for command in commands {
         let timeout = command
@@ -152,5 +198,10 @@ fn featureless_package_builds_share_the_existing_non_increasing_worker_budget() 
         };
         assert!(seconds > 0 && seconds <= previous, "{command}");
         previous = seconds;
+        allowances.push(seconds);
     }
+    assert!(
+        allowances[0] - allowances[1] >= delay_seconds,
+        "the second package must debit the first build's {delay_seconds}s delay: {allowances:?}"
+    );
 }
