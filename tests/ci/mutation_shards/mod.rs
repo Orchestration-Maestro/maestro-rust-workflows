@@ -9,6 +9,7 @@ mod engine_input_ownership;
 mod engine_membership;
 mod engine_membership_binding;
 mod engine_membership_records;
+mod engine_package_controls;
 mod engine_planning;
 mod engine_regression;
 mod engine_rejections;

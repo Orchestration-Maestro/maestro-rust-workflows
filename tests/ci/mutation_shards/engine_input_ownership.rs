@@ -298,25 +298,34 @@ fn engine_mutation_timeouts_include_cold_build_and_reporting_margin() {
         let execution = steps.iter().find(|step| step["id"] == id).unwrap();
         succeeds(&fixture.run("ci", id));
         let trace = fixture.trace();
-        let command = trace
+        let mut previous = inner * 60;
+        for command in trace
             .lines()
-            .find(|line| line.contains("timeout --kill-after=1m"))
-            .unwrap();
-        let duration: u64 = command
-            .split("--kill-after=1m ")
-            .nth(1)
-            .unwrap()
-            .split_whitespace()
-            .next()
-            .unwrap()
-            .trim_end_matches('m')
-            .parse()
-            .unwrap();
-        assert_eq!(duration, inner, "{job}: {command}");
+            .filter(|line| line.contains("timeout --kill-after=1m"))
+        {
+            let timeout = command
+                .split("--kill-after=1m ")
+                .nth(1)
+                .unwrap()
+                .split_whitespace()
+                .next()
+                .unwrap();
+            let duration: u64 = if let Some(minutes) = timeout.strip_suffix('m') {
+                minutes.parse::<u64>().unwrap() * 60
+            } else {
+                timeout.strip_suffix('s').unwrap().parse().unwrap()
+            };
+            if enabled {
+                assert_eq!(timeout, "60m", "{job}: {command}");
+            } else {
+                assert!(duration > 0 && duration <= previous, "{job}: {command}");
+            }
+            previous = duration;
+            assert!(duration + 60 < step * 60);
+            assert_eq!(command.contains("--features engine"), enabled, "{command}");
+        }
         assert_eq!(execution["timeout-minutes"], step, "{job}");
         assert_eq!(ci["jobs"][job]["timeout-minutes"], total, "{job}");
-        assert!(duration + 1 < execution["timeout-minutes"].as_u64().unwrap());
         assert!(execution["timeout-minutes"].as_u64().unwrap() < total);
-        assert_eq!(command.contains("--features engine"), enabled, "{command}");
     }
 }

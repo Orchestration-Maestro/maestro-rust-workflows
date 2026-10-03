@@ -93,10 +93,10 @@ pub(crate) struct Job {
 }
 
 impl Job {
-    /// Read the three directories `validate` exported.
+    /// Read the three directories `validate` exported, dropping project dot components lexically.
     pub(crate) fn current() -> Result<Self, Failure> {
         Ok(Self {
-            project: path("PROJECT")?,
+            project: path("PROJECT")?.components().collect(),
             reports: path("REPORTS")?,
             temp: path("RUNNER_TEMP")?,
         })

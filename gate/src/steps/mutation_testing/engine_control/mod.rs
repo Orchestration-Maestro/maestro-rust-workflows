@@ -3,6 +3,7 @@
 mod dep_info;
 mod membership;
 mod outcomes;
+mod package_build;
 mod run;
 mod source;
 

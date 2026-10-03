@@ -102,16 +102,18 @@ outcomes and counters, and writes the merged canonical reports only after every
 planned worker is complete. Local CI skips planning and still runs the full
 mutation command unsharded.
 
-Featureless engine controls use a clean, version-qualified package-scoped default Cargo
-or Nextest test-target build to establish compile membership from Cargo JSON and rustc dep-info.
+Featureless engine controls use a separate clean, version-qualified package-scoped default Cargo
+or Nextest test-target build for each assigned owner to establish compile membership from Cargo JSON and rustc dep-info.
 Default-off `cap_lints` leaves Cargo flag resolution unchanged. Retained source metadata
-binds the coordinate frame and planned owners; aggregation verifies the equivalent command. Non-members receive the explicit
+binds the normalized coordinate frame and planned owners; schema-3 membership binds every
+package build and aggregation verifies each equivalent command. Non-members receive the explicit
 `NotCompiledWithoutFeatures` outcome rather than redundant default test runs. Compiled
 mutants still run and must be caught by default tests. Aggregation verifies the retained
 source-bound membership and exact caught engine twins before accepting non-members;
 raw tested outcomes remain separate. Compilation-changing cargo-mutants configuration
-falls back to testing all assigned mutants, as do multiple owners and nested package
-working directories. Unverified control survivors retain exact-caught-engine-twin acceptance;
+falls back to testing all assigned mutants, as do nested package working directories.
+Unverified versions fall back only for their own package. Each mutant uses only its own
+package build's dep-info, so dependency feature unification cannot hide or expose its sources. Unverified control survivors retain exact-caught-engine-twin acceptance;
 only verified membership enables compiled-survivor rejection. Exact-name execution removes only inherited `examine_re`
 from a retained config copy. See [mutation testing](ci.md#mutation-testing).
 

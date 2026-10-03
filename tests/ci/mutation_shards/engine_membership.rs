@@ -103,18 +103,18 @@ fn retained_membership_rejects_binding_drift_digest_drift_and_incomplete_units()
             "featureless compile membership binding differs from its plan",
         ),
         (
-            "/target",
+            "/packages/0/target",
             json!(1),
             "featureless compile membership binding differs from its plan",
         ),
         (
-            "/dep_sha256",
+            "/packages/0/dep_sha256",
             json!({}),
             "featureless compile membership binding differs from its plan",
         ),
         (
             "/schema",
-            json!(3),
+            json!(4),
             "featureless compile membership binding differs from its plan",
         ),
         (
@@ -138,32 +138,32 @@ fn retained_membership_rejects_binding_drift_digest_drift_and_incomplete_units()
             "featureless compile membership configuration digest differs",
         ),
         (
-            "/cargo_sha256",
+            "/packages/0/cargo_sha256",
             json!("wrong"),
             "featureless compile membership cargo digest differs",
         ),
         (
-            "/build_sha256",
+            "/packages/0/build_sha256",
             json!("wrong"),
             "featureless compile membership build record digest differs",
         ),
         (
-            "/dep_sha256",
+            "/packages/0/dep_sha256",
             json!([]),
             "featureless compile membership omits dep-info units",
         ),
         (
-            "/dep_sha256/0",
+            "/packages/0/dep_sha256/0",
             json!("wrong"),
             "featureless compile membership dep-info digest differs",
         ),
         (
-            "/target",
+            "/packages/0/target",
             json!("/wrong"),
             "featureless compile membership command is not equivalent",
         ),
         (
-            "/target",
+            "/packages/0/target",
             json!(""),
             "featureless fallback contains unexpected compile evidence",
         ),
@@ -185,7 +185,7 @@ fn aggregation_rechecks_successful_fresh_cargo_output_and_raw_dependency_rules()
         .join("engine-default/fixture-engine-default-mutants-0/mutants-engine-default/mutants.out");
     let manifest = root.join("compile-membership.json");
     let saved = fs::read(&manifest).unwrap();
-    let cargo = root.join("cargo-build.json");
+    let cargo = root.join("builds/0/cargo-build.json");
     let original = fs::read_to_string(&cargo).unwrap();
     for (key, value) in [("fresh", true), ("success", false)] {
         let mut rows: Vec<Value> = original
@@ -207,7 +207,7 @@ fn aggregation_rechecks_successful_fresh_cargo_output_and_raw_dependency_rules()
         )
         .unwrap();
         let mut binding: Value = serde_json::from_slice(&saved).unwrap();
-        binding["cargo_sha256"] = json!(evidence_hash(&cargo));
+        binding["packages"][0]["cargo_sha256"] = json!(evidence_hash(&cargo));
         fs::write(&manifest, binding.to_string()).unwrap();
         refused(
             &summarize_engine(&fixture),
@@ -217,7 +217,7 @@ fn aggregation_rechecks_successful_fresh_cargo_output_and_raw_dependency_rules()
     for (filename, message) in [
         ("", "featureless artifact filename is invalid"),
         (
-            "/target/nohash/build-script-build",
+            "/packages/0/target/nohash/build-script-build",
             "featureless build-script artifact filename is invalid",
         ),
     ] {
@@ -235,12 +235,12 @@ fn aggregation_rechecks_successful_fresh_cargo_output_and_raw_dependency_rules()
         )
         .unwrap();
         let mut binding: Value = serde_json::from_slice(&saved).unwrap();
-        binding["cargo_sha256"] = json!(evidence_hash(&cargo));
+        binding["packages"][0]["cargo_sha256"] = json!(evidence_hash(&cargo));
         fs::write(&manifest, binding.to_string()).unwrap();
         refused(&summarize_engine(&fixture), message);
     }
     fs::write(&cargo, original).unwrap();
-    let dep = root.join("dep-info/0.d");
+    let dep = root.join("builds/0/dep-info/0.d");
     let original = fs::read(&dep).unwrap();
     for (contents, message) in [
         ("", "featureless dep-info is empty"),
@@ -257,7 +257,7 @@ fn aggregation_rechecks_successful_fresh_cargo_output_and_raw_dependency_rules()
     ] {
         fs::write(&dep, contents).unwrap();
         let mut binding: Value = serde_json::from_slice(&saved).unwrap();
-        binding["dep_sha256"][0] = json!(evidence_hash(&dep));
+        binding["packages"][0]["dep_sha256"][0] = json!(evidence_hash(&dep));
         fs::write(&manifest, binding.to_string()).unwrap();
         refused(&summarize_engine(&fixture), message);
     }
@@ -341,7 +341,7 @@ fn aggregation_accepts_verified_non_members_only_with_exact_caught_engine_twins(
     let dep = fixture
         .root
         .join("engine-default/fixture-engine-default-mutants-0")
-        .join("mutants-engine-default/mutants.out/dep-info/0.d");
+        .join("mutants-engine-default/mutants.out/builds/0/dep-info/0.d");
     let original = fs::read(&dep).unwrap();
     fs::write(&dep, b"a: src/lib.rs src/engine.rs\n").unwrap();
     let manifest = dep
@@ -349,10 +349,14 @@ fn aggregation_accepts_verified_non_members_only_with_exact_caught_engine_twins(
         .unwrap()
         .parent()
         .unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .join("compile-membership.json");
     let saved = fs::read(&manifest).unwrap();
     let mut binding: Value = serde_json::from_slice(&saved).unwrap();
-    binding["dep_sha256"][0] = json!(evidence_hash(&dep));
+    binding["packages"][0]["dep_sha256"][0] = json!(evidence_hash(&dep));
     fs::write(&manifest, binding.to_string()).unwrap();
     refused(
         &summarize_engine(&fixture),
@@ -370,11 +374,11 @@ fn aggregation_refuses_a_tested_subset_that_does_not_equal_compile_membership() 
         .root
         .join("engine-default/fixture-engine-default-mutants-0")
         .join("mutants-engine-default/mutants.out");
-    let dep = root.join("dep-info/0.d");
+    let dep = root.join("builds/0/dep-info/0.d");
     fs::write(&dep, "a: src/lib.rs src/nested/../engine.rs\n").unwrap();
     let manifest = root.join("compile-membership.json");
     let mut binding: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-    binding["dep_sha256"][0] = json!(evidence_hash(&dep));
+    binding["packages"][0]["dep_sha256"][0] = json!(evidence_hash(&dep));
     fs::write(manifest, binding.to_string()).unwrap();
     succeeds(&summarize_engine(&fixture));
     let discovery = fixture
@@ -395,11 +399,11 @@ fn aggregation_refuses_foreign_membership_coordinate_frames() {
         .root
         .join("engine-default/fixture-engine-default-mutants-0")
         .join("mutants-engine-default/mutants.out");
-    let dep = root.join("dep-info/0.d");
+    let dep = root.join("builds/0/dep-info/0.d");
     fs::write(&dep, "a: src/lib.rs src/engine.rs\n").unwrap();
     let manifest = root.join("compile-membership.json");
     let mut binding: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-    binding["dep_sha256"][0] = json!(evidence_hash(&dep));
+    binding["packages"][0]["dep_sha256"][0] = json!(evidence_hash(&dep));
     binding["project"] = json!("/foreign-project");
     fs::write(manifest, binding.to_string()).unwrap();
     refused(
@@ -422,4 +426,37 @@ fn unknown_membership_manifest_keys_are_refused_independently() {
         &summarize_engine(&fixture),
         "featureless compile membership binding differs from its plan",
     );
+}
+
+#[test]
+fn membership_requires_the_complete_exact_package_set_and_strict_build_fields() {
+    let fixture = engine_aggregation_fixture();
+    let manifest = fixture
+        .root
+        .join("engine-default/fixture-engine-default-mutants-0")
+        .join("mutants-engine-default/mutants.out/compile-membership.json");
+    let saved: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    for (pointer, value) in [
+        ("/packages/0/package", json!("foreign")),
+        ("/packages/0/package", json!(null)),
+        ("/packages", json!([])),
+        ("/packages", json!({})),
+    ] {
+        let mut binding = saved.clone();
+        *binding.pointer_mut(pointer).unwrap() = value;
+        fs::write(&manifest, binding.to_string()).unwrap();
+        refused(
+            &summarize_engine(&fixture),
+            "featureless compile membership binding differs from its plan",
+        );
+    }
+    let mut binding = saved.clone();
+    binding["packages"][0]["unexpected"] = json!(true);
+    fs::write(&manifest, binding.to_string()).unwrap();
+    refused(
+        &summarize_engine(&fixture),
+        "featureless compile membership binding differs from its plan",
+    );
+    fs::write(&manifest, saved.to_string()).unwrap();
+    succeeds(&summarize_engine(&fixture));
 }

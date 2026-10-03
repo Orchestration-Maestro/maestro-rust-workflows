@@ -112,9 +112,8 @@ fn execute_mode(
         let outcomes = job
             .temp
             .join("mutants-engine-default/mutants.out/outcomes.json");
-        let (listing, tested, verified) =
-            engine_control::validate(job, &assigned_path, &outcomes, &receipt)?;
-        aggregate::evidence::partition_counts(&listing, &tested, !verified)?;
+        let (listing, tested) = engine_control::validate(job, &assigned_path, &outcomes, &receipt)?;
+        aggregate::evidence::partition_counts(&listing, &tested, true)?;
         return Ok(());
     }
     let policy = native_cache(&job.project)?;

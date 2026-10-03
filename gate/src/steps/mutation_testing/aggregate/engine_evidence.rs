@@ -207,9 +207,9 @@ fn mode_counts(
     receipt: Option<PathBuf>,
 ) -> Result<super::evidence::Counts, Failure> {
     if let Some(receipt) = receipt {
-        let (compiled, tested, verified) =
+        let (compiled, tested) =
             super::super::engine_control::validate(job, assigned, outcomes, &receipt)?;
-        partition_counts(&compiled, &tested, !verified)
+        partition_counts(&compiled, &tested, true)
     } else {
         partition_counts(discovered, outcomes, false)
     }

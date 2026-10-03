@@ -63,7 +63,7 @@ fn malformed_compiler_records_are_refused_with_refreshed_digests() {
         .join("mutants-engine-default/mutants.out");
     let manifest = root.join("compile-membership.json");
     let binding: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-    let cargo = root.join("cargo-build.json");
+    let cargo = root.join("builds/0/cargo-build.json");
     let rows: Vec<Value> = fs::read_to_string(&cargo)
         .unwrap()
         .lines()
@@ -96,7 +96,7 @@ fn malformed_compiler_records_are_refused_with_refreshed_digests() {
         )
         .unwrap();
         let mut changed = binding.clone();
-        changed["cargo_sha256"] = json!(evidence_hash(&cargo));
+        changed["packages"][0]["cargo_sha256"] = json!(evidence_hash(&cargo));
         fs::write(&manifest, changed.to_string()).unwrap();
         refused(
             &summarize_engine(&fixture),
