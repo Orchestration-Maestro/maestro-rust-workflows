@@ -88,10 +88,14 @@ pub(in super::super) fn execute(
         .map_err(|error| format!("cannot retain complete control listing: {error}"))?;
     super::super::plan_identity::validate_execution(assigned, &root.join("outcomes.json"))?;
     tee_line(
-        concat!(
-            "Featureless control complete; non-members verified from compiler dep-info; ",
-            "compiled mutants tested"
-        ),
+        if members.is_some() {
+            concat!(
+                "Featureless control complete; non-members verified from compiler dep-info; ",
+                "compiled mutants tested"
+            )
+        } else {
+            "Featureless control complete; membership unverified; every assigned mutant tested"
+        },
         &job.report("mutants-engine-default.txt")?,
         true,
     )?;

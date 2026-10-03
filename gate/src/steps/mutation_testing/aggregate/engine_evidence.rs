@@ -207,9 +207,9 @@ fn mode_counts(
     receipt: Option<PathBuf>,
 ) -> Result<super::evidence::Counts, Failure> {
     if let Some(receipt) = receipt {
-        let (compiled, tested) =
+        let (compiled, tested, verified) =
             super::super::engine_control::validate(job, assigned, outcomes, &receipt)?;
-        partition_counts(&compiled, &tested, false)
+        partition_counts(&compiled, &tested, !verified)
     } else {
         partition_counts(discovered, outcomes, false)
     }
@@ -302,7 +302,8 @@ pub(super) fn tagged(job: &Job, source: &Path, name: &str, mode: &str) -> Result
         .args(["--arg", "prefix", &prefix])
         .arg(concat!(
             ".outcomes |= map(. + {mutation_mode:$mode} + ",
-            "(if $mode == \"engine-default\" and .summary == \"NotCompiledWithoutFeatures\" then ",
+            "(if $mode == \"engine-default\" and ",
+            "(.summary == \"NotCompiledWithoutFeatures\" or .summary == \"MissedMutant\") then ",
             "{mutation_class:\"inactive without features, caught with engine\"} else {} end) | ",
             ".log_path = (if (.log_path | type) == \"string\" then ",
             "$prefix + .log_path else .log_path end) | ",

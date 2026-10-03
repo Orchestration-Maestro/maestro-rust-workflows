@@ -1,10 +1,42 @@
 //! Independent compiler record shape and failed-process stimuli.
 
 use crate::harness::{
-    engine_aggregation_fixture, engine_fixture, evidence_hash, refused, summarize_engine,
+    engine_aggregation_fixture, engine_fallback_fixture, engine_fixture, evidence_hash, refused,
+    summarize_engine,
 };
 use serde_json::{Value, json};
 use std::fs;
+
+#[test]
+fn unverified_control_survivors_fail_without_their_exact_engine_twins() {
+    let fixture = engine_fallback_fixture(false);
+    refused(
+        &summarize_engine(&fixture),
+        "featureless control survivor is not caught by its exact engine twin",
+    );
+}
+
+#[test]
+fn aggregation_rejects_verified_compiled_survivors_despite_a_caught_engine_twin() {
+    let fixture = engine_aggregation_fixture();
+    let root = fixture
+        .root
+        .join("engine-default/fixture-engine-default-mutants-0")
+        .join("mutants-engine-default/mutants.out");
+    for name in ["outcomes.json", "tested-outcomes.json"] {
+        let path = root.join(name);
+        let mut outcomes: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        outcomes["caught"] = json!(0);
+        outcomes["missed"] = json!(1);
+        outcomes["outcomes"][1]["summary"] = json!("MissedMutant");
+        outcomes["outcomes"][1]["phase_results"][0]["process_status"] = json!("Success");
+        fs::write(path, outcomes.to_string()).unwrap();
+    }
+    refused(
+        &summarize_engine(&fixture),
+        "partition contains a survivor, timeout or untested mutant",
+    );
+}
 
 #[test]
 fn failed_compiler_status_cannot_supply_successful_membership_records() {

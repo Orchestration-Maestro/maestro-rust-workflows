@@ -12,9 +12,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// Match pinned cargo-mutants 27.1.0 default Cargo build arguments before instrumentation.
-const BUILD_COMMAND: &str = "cargo test --no-run --verbose";
-
 /// Build into a fresh target tree; never infer membership from stale cached dep-info.
 pub(super) fn build(
     job: &Job,
@@ -49,7 +46,7 @@ pub(super) fn build(
         tee_line(
             concat!(
                 "Compile membership fallback: package-scoped compile equivalence is unverified; ",
-                "testing every assigned mutant"
+                "testing every assigned mutant; compiled-survivor rejection inactive"
             ),
             &job.report("mutants-engine-default.txt")?,
             true,
@@ -82,13 +79,9 @@ fn compile(
     let target = job.temp.join("engine-control-target");
     let started = Cmd::new("jaq -nr").arg("now | todateiso8601").capture()?;
     let clock = Instant::now();
+    let argv = build_arguments(root, package, &target)?;
     let result = native_cache_command(policy, "timeout --kill-after=1m 30m")
-        .args(BUILD_COMMAND.split_whitespace())
-        .arg(format!("--package={package}"))
-        .arg("--locked")
-        .arg("--message-format=json")
-        .arg("--target-dir")
-        .arg(&target)
+        .args(&argv)
         .env("INSTA_UPDATE", "no")
         .env("INSTA_FORCE_PASS", "0")
         .cwd(&job.project)
@@ -102,14 +95,8 @@ fn compile(
     let build = Cmd::new("jaq -cn")
         .args(["--arg", "started", started.trim()])
         .args(["--argjson", "elapsed", &elapsed.to_string()])
-        .args(["--arg", "target"])
-        .arg(&target)
-        .args(["--arg", "package", package])
-        .arg(concat!(
-            "{start_time:$started, end_time:(now | todateiso8601), duration:$elapsed, ",
-            r#"argv:["cargo","test","--no-run","--verbose",("--package="+$package),"--locked","#,
-            r#""--message-format=json","--target-dir",$target]}"#
-        ))
+        .args(["--argjson", "argv", &strings(&argv)?])
+        .arg("{start_time:$started, end_time:(now | todateiso8601), duration:$elapsed, argv:$argv}")
         .capture()?;
     write(&root.join("build-record.json"), build.as_bytes(), false)?;
     let paths = dep_paths(&root.join("cargo-build.json"))?;
@@ -126,6 +113,31 @@ fn compile(
     save_binding(root, receipt, (&job.project, workspace), Some(&target))
 }
 
+/// Match cargo-mutants 27.1.0's selected build tool, adding only evidence instrumentation.
+fn build_arguments(root: &Path, package: &str, target: &Path) -> Result<Vec<String>, Failure> {
+    let nextest = Cmd::new("jaq --from toml -r")
+        .arg(".test_tool // \"cargo\"")
+        .arg(root.join("compile-config.toml"))
+        .capture()?;
+    let (command, message_format) = if nextest.trim() == "nextest" {
+        (
+            "cargo nextest run --no-run --verbose",
+            "--cargo-message-format=json",
+        )
+    } else {
+        ("cargo test --no-run --verbose", "--message-format=json")
+    };
+    let mut argv: Vec<String> = command.split_whitespace().map(str::to_owned).collect();
+    argv.extend([
+        format!("--package={package}"),
+        "--locked".into(),
+        message_format.into(),
+        "--target-dir".into(),
+        target.to_string_lossy().into_owned(),
+    ]);
+    Ok(argv)
+}
+
 /// Unknown config keys conservatively disable absence classification as well.
 fn compilation_config(path: &Path) -> bool {
     if !path.exists() {
@@ -133,7 +145,8 @@ fn compilation_config(path: &Path) -> bool {
     }
     let safe = Cmd::new("jaq --from toml -e")
         .arg(concat!(
-            "(.cap_lints // false) == false and (.test_tool // \"cargo\") == \"cargo\" and ",
+            "(.cap_lints // false) == false and ",
+            "((.test_tool // \"cargo\") == \"cargo\" or .test_tool == \"nextest\") and ",
             "(keys | all(.[]; . == \"cap_lints\" or . == \"test_tool\" or ",
             ". == \"exclude_globs\" or ",
             ". == \"examine_globs\" or . == \"exclude_re\" or . == \"examine_re\" or ",
@@ -241,13 +254,12 @@ pub(super) fn verify(
         .ok_or("featureless compile membership command is not equivalent")?;
     let build_record = root.join("build-record.json");
     Cmd::new("jaq -e")
-        .args(["--arg", "target", &target])
-        .args(["--arg", "package", &package])
-        .arg(concat!(
-            r#".argv == ["cargo","test","--no-run","--verbose",("--package="+$package),"#,
-            r#""--locked","#,
-            r#""--message-format=json","--target-dir",$target]"#
-        ))
+        .args([
+            "--argjson",
+            "argv",
+            &strings(&build_arguments(root, &package, Path::new(&target))?)?,
+        ])
+        .arg(".argv == $argv")
         .arg(&build_record)
         .capture()
         .map_err(|_| "featureless compile membership command is not equivalent")?;
@@ -347,6 +359,7 @@ fn strings(values: &[String]) -> Result<String, Failure> {
     Cmd::new("jaq -cn")
         .arg("$ARGS.positional")
         .arg("--args")
+        .arg("--")
         .args(values)
         .capture()
 }
@@ -370,8 +383,9 @@ mod tests {
         fs::write(&path, "cap_lints = false\ntest_tool = 'cargo'\n").unwrap();
         assert!(!compilation_config(&path));
         fs::write(&path, "test_tool = 'nextest'\n").unwrap();
-        assert!(compilation_config(&path));
+        assert!(!compilation_config(&path));
         for setting in [
+            "test_tool = 'unsupported'",
             "cap_lints = true",
             "features = ['engine']",
             "additional_cargo_args = ['--release']",

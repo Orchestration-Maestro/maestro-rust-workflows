@@ -28,8 +28,8 @@ pub(crate) use workflow_yaml::{
 };
 
 pub(crate) use engine_mutations::{
-    engine_aggregation_fixture, engine_fixture, engine_inactive_fixture, evidence_hash,
-    summarize_engine,
+    engine_aggregation_fixture, engine_fallback_fixture, engine_fixture, engine_inactive_fixture,
+    evidence_hash, summarize_engine,
 };
 
 pub(crate) use engine_workspace::{engine_workspace, fixture_git};

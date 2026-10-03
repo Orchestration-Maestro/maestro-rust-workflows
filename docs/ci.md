@@ -1246,8 +1246,11 @@ feature/workspace-test restrictions apply only when engine ownership is configur
 
 The featureless control compiles one assigned owning package's default test targets, without
 running tests, in a clean target directory. Its command mirrors pinned cargo-mutants
-27.1.0's package-scoped Cargo build, including version-qualified selection and default-off
-`cap_lints`. It leaves Cargo's Rust flag resolution unchanged. Cargo JSON and rustc dep-info
+27.1.0's package-scoped Cargo or Nextest build, including version-qualified selection and
+default-off `cap_lints`. With `test_tool = "nextest"`, it runs `cargo nextest run --no-run
+--verbose --package=<name@version> --locked`, adding `--cargo-message-format=json` to
+forward Cargo's build evidence and `--target-dir` for the clean directory. It leaves
+Cargo's Rust flag resolution unchanged. Cargo JSON and rustc dep-info
 establish compile membership, including test-only modules and build scripts. Retained Cargo
 source metadata verifies the project/workspace coordinate frame and every planned owner.
 The control retains the raw evidence, configuration, digests and a schema-2 binding to the
@@ -1260,14 +1263,15 @@ they are not relabelled caught, missed or unviable.
 Only assigned mutants in compiled files run through cargo-mutants, selected by anchored,
 escaped exact names. A retained config copy removes only `examine_re`, so inherited inclusion
 regexes cannot broaden that exact selection; all other discovery and execution settings stay
-unchanged. Every compiled control survivor now fails, even if its engine twin
-is caught: default-compiled code in an engine-owned file must be killed by default tests.
-This strengthens the previous twin-only acceptance of featureless survivors. A
-cargo-mutants configuration that changes compilation, features, profile or Cargo arguments,
-or contains an unknown key, disables absence classification conservatively. Nextest, enabled
-`cap_lints`, multiple assigned owners, an unverified package version, or a package working
-directory below the workspace root also use this fallback. The worker
-logs the fallback and tests every assigned mutant. Existing global feature/workspace-test
+unchanged. With verified membership, every compiled control survivor fails, even if its
+engine twin is caught: default-compiled code in an engine-owned file must be killed by
+default tests. A cargo-mutants configuration that changes compilation, features, profile or
+Cargo arguments, or contains an unknown key, disables absence classification conservatively.
+Enabled `cap_lints`, multiple assigned owners, an unverified package version, or a package
+working directory below the workspace root also use this fallback. The worker logs that
+compiled-survivor rejection is inactive and tests every assigned mutant. Unverified
+featureless survivors retain the previous acceptance rule: aggregation requires an exact
+caught engine twin. Fallback never produces `NotCompiledWithoutFeatures` outcomes. Existing global feature/workspace-test
 restrictions remain in place. No timeout, shard count, default or limit is increased.
 
 Aggregation rechecks the receipt binding, successful fresh Cargo build, every retained

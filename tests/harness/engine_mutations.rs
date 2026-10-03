@@ -106,6 +106,11 @@ fn engine_execution_fixture(compiled: bool) -> Fixture {
     fixture.stub(
         "cargo",
         r#"if [[ $1 == metadata ]]; then printf '%s' "$METADATA"; exit; fi
+if [[ $1 == mutants && $2 == --list ]]; then
+ if [[ " $* " == *" --features "* ]]; then cat "$RUNNER_TEMP/engine.json";
+ else cat "$RUNNER_TEMP/listing.json"; fi
+ exit
+fi
 if [[ $1 == test ]]; then
  printf '%s' "${CARGO_ENCODED_RUSTFLAGS-unset}" > "$RUNNER_TEMP/encoded-flags"
  printf '%s' "${RUSTFLAGS-unset}" > "$RUNNER_TEMP/rust-flags"
@@ -142,6 +147,26 @@ pub(crate) fn engine_aggregation_fixture() -> Fixture {
     harvest_engine_fixture(engine_execution_fixture(true))
 }
 
+/// Unverified controls retain survivor acceptance only with an exact caught engine twin.
+pub(crate) fn engine_fallback_fixture(exact_twin: bool) -> Fixture {
+    let fixture = engine_execution_fixture(!exact_twin);
+    fs::create_dir_all(fixture.root.join("project/.cargo")).unwrap();
+    fs::write(
+        fixture.root.join("project/.cargo/mutants.toml"),
+        "cap_lints = true\n",
+    )
+    .unwrap();
+    succeeds(&fixture.run_body("rust-gate mutants-plan"));
+    let path = fixture.root.join("default-outcomes.json");
+    let mut outcomes: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    outcomes["caught"] = json!(0);
+    outcomes["missed"] = json!(1);
+    outcomes["outcomes"][1]["summary"] = json!("MissedMutant");
+    outcomes["outcomes"][1]["phase_results"][0]["process_status"] = json!("Success");
+    fs::write(path, outcomes.to_string()).unwrap();
+    harvest_engine_fixture(fixture)
+}
+
 /// Non-member controls with identical engine twins, using the same artifact transport.
 pub(crate) fn engine_inactive_fixture() -> Fixture {
     harvest_engine_fixture(engine_execution_fixture(false))
@@ -159,6 +184,10 @@ fn harvest_engine_fixture(mut fixture: Fixture) -> Fixture {
         serde_json::from_slice(&fs::read(fixture.root.join("default-outcomes.json")).unwrap())
             .unwrap();
     outcomes["outcomes"][1]["scenario"]["Mutant"] = listing[0].clone();
+    outcomes["caught"] = json!(1);
+    outcomes["missed"] = json!(0);
+    outcomes["outcomes"][1]["summary"] = json!("CaughtMutant");
+    outcomes["outcomes"][1]["phase_results"][0]["process_status"] = json!({"Failure":101});
     fs::write(checks.join("mutants.json"), outcomes.to_string()).unwrap();
     fs::create_dir_all(checks.join("mutants/mutants.out")).unwrap();
     fs::write(

@@ -103,15 +103,16 @@ planned worker is complete. Local CI skips planning and still runs the full
 mutation command unsharded.
 
 Featureless engine controls use a clean, version-qualified package-scoped default Cargo
-test-target build to establish compile membership from Cargo JSON and rustc dep-info.
+or Nextest test-target build to establish compile membership from Cargo JSON and rustc dep-info.
 Default-off `cap_lints` leaves Cargo flag resolution unchanged. Retained source metadata
 binds the coordinate frame and planned owners; aggregation verifies the equivalent command. Non-members receive the explicit
 `NotCompiledWithoutFeatures` outcome rather than redundant default test runs. Compiled
 mutants still run and must be caught by default tests. Aggregation verifies the retained
 source-bound membership and exact caught engine twins before accepting non-members;
 raw tested outcomes remain separate. Compilation-changing cargo-mutants configuration
-falls back to testing all assigned mutants, as do Nextest, multiple owners and nested
-package working directories. Exact-name execution removes only inherited `examine_re`
+falls back to testing all assigned mutants, as do multiple owners and nested package
+working directories. Unverified control survivors retain exact-caught-engine-twin acceptance;
+only verified membership enables compiled-survivor rejection. Exact-name execution removes only inherited `examine_re`
 from a retained config copy. See [mutation testing](ci.md#mutation-testing).
 
 Coverage, API comparison, feature checks and mutation share the policy-aware

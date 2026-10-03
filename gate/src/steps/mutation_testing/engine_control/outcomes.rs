@@ -41,13 +41,13 @@ pub(super) fn compose(
         .capture()
 }
 
-/// Validate classification before the ordinary evidence validator sees the tested subset.
+/// Validate the tested subset and return whether membership enables survivor rejection.
 pub(in super::super) fn validate(
     job: &Job,
     listing: &Path,
     outcomes: &Path,
     receipt: &Path,
-) -> Result<(PathBuf, PathBuf), Failure> {
+) -> Result<(PathBuf, PathBuf, bool), Failure> {
     let root = outcomes
         .parent()
         .ok_or("featureless outcomes have no directory")?;
@@ -70,7 +70,7 @@ pub(in super::super) fn validate(
         .arg(&discovered)
         .capture()
         .map_err(|_| "featureless tested discovery differs from compile membership")?;
-    Ok((projection, tested))
+    Ok((projection, tested, members.is_some()))
 }
 
 /// Use Cargo's verified build as the baseline when no mutant needs a test invocation.

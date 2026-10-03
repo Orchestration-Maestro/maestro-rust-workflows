@@ -1,11 +1,31 @@
 //! Membership requires source metadata and a retained equivalent compile command.
 
 use crate::harness::{
-    engine_aggregation_fixture, engine_fixture, evidence_hash, refused, succeeds, summarize_engine,
+    engine_aggregation_fixture, engine_fallback_fixture, engine_fixture, evidence_hash, refused,
+    succeeds, summarize_engine,
 };
 use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
+
+#[test]
+fn unverified_controls_accept_engine_only_survivors_with_exact_caught_twins() {
+    let fixture = engine_fallback_fixture(true);
+    let worker =
+        fs::read_to_string(fixture.root.join("reports/mutants-engine-default.txt")).unwrap();
+    assert!(worker.contains("compiled-survivor rejection inactive"));
+    succeeds(&summarize_engine(&fixture));
+    let report = fs::read_to_string(fixture.root.join("reports/mutants.txt")).unwrap();
+    assert!(report.contains("inactive without features, caught with engine"));
+    let merged: Value =
+        serde_json::from_slice(&fs::read(fixture.root.join("reports/mutants.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        merged["inactive_without_features_caught_with_engine"]["total"],
+        1
+    );
+    assert_eq!(merged["not_compiled_without_features"], 0);
+}
 
 /// Retain a semantic change's hash so digest checks do not mask the guard under test.
 fn refresh_manifest(manifest: &Path, key: &str, evidence: &Path) {
@@ -95,7 +115,10 @@ fn unverified_package_version_and_compilation_configuration_test_all_assigned_mu
     assert_eq!(outcomes["not_compiled_without_features"], 0);
     fs::create_dir_all(fixture.root.join(".cargo")).unwrap();
     metadata["workspace_root"] = json!(fixture.root);
-    for config in ["cap_lints = true\n", "test_tool = 'nextest'\n"] {
+    for config in [
+        "cap_lints = true\n",
+        "additional_cargo_args = ['--release']\n",
+    ] {
         fs::write(fixture.root.join(".cargo/mutants.toml"), config).unwrap();
         metadata["packages"][0]["version"] = json!("0.1.0");
         fixture.set("METADATA", &metadata.to_string());
