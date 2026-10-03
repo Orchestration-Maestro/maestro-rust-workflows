@@ -107,8 +107,9 @@ child-command seam in `checks/native_cache.rs`. Every selected child revalidates
 its root; the first inventory is retained for the job's final save decision.
 Engine workers verify their plan before root verification and cargo-mutants
 injection. Featureless, default and Windows mutation execution remove an
-inherited configured variable; without policy, commands and environments stay
-unchanged. Pre-validation mutation metadata is unchanged. Every engine shard
+inherited configured variable; so do API and feature-check children whenever
+policy is present, even on an unsupported platform. Without policy, commands and
+environments stay unchanged. Pre-validation mutation metadata is unchanged. Every engine shard
 restores; only shard zero inventories and saves after success. Native policy
 opt-in on a selected Unix platform also selects no-wrapper coverage for both
 passes. See the

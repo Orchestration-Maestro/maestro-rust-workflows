@@ -1578,6 +1578,9 @@ engine cargo-mutants descendants receive the same reverified private root
 variable. Default coverage and featureless, default and Windows mutation
 execution remove an inherited configured variable but receive no cache root.
 API and feature-check metadata also remove that variable when policy is present.
+With policy present, API and feature-check Cargo children remove the configured
+variable even on an unsupported platform; only a verified, platform-selected
+root is ever injected.
 Pre-validation mutation metadata retains its existing environment and runs no
 build scripts. No variable is added to the job environment.
 
