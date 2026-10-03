@@ -88,6 +88,37 @@ fn early_planning_releases_every_mutation_worker_before_checks_finish() {
     }
 }
 
+#[test]
+fn failed_planning_cannot_skip_the_required_status() {
+    let ci = workflow("ci");
+    let jobs = &ci["jobs"];
+    assert_eq!(
+        jobs["gate"]["if"],
+        "${{ always() && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}"
+    );
+    assert_eq!(jobs["checks"]["needs"], json!(["mutation-plan"]));
+    let required = jobs["gate"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["id"] == "required")
+        .unwrap();
+    assert_eq!(required["env"]["RESULT"], "${{ needs.checks.result }}");
+    // Checks depend on successful planning, so each unsuccessful plan skips them.
+    for planner_result in ["failure", "cancelled", "skipped"] {
+        let needs = json!({
+            "mutation-plan": {"result": planner_result},
+            "checks": {"result": "skipped"}
+        });
+        let mut fixture = Fixture::new();
+        fixture.set("RESULT", needs["checks"]["result"].as_str().unwrap());
+        refused(
+            &fixture.run("ci", "required"),
+            "Required Rust checks failed or were skipped",
+        );
+    }
+}
+
 fn scorecard_fixture(scorecard: &Value, state: &str) -> Fixture {
     let mut fixture = Fixture::new();
     fixture.set("MUTATION_STATE", state);

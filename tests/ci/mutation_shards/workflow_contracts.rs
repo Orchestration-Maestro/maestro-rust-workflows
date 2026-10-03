@@ -277,6 +277,14 @@ fn cargo_mutants_version_environment_matches_the_installed_pin() {
         .find(|row| row.name == "cargo-mutants")
         .unwrap()
         .asset;
+    let planning = ci["jobs"]["mutation-plan"]["steps"].as_array().unwrap();
+    let planner_asset = planning
+        .iter()
+        .flat_map(tool_rows)
+        .find(|row| row.name == "cargo-mutants")
+        .unwrap()
+        .asset;
+    assert_eq!(planner_asset, asset);
     let version = asset
         .split("/download/v")
         .nth(1)
@@ -296,6 +304,7 @@ fn cargo_mutants_version_environment_matches_the_installed_pin() {
         .unwrap();
     assert!(windows_mutants.contains(&format!("/download/v{version}/")));
     for name in [
+        "mutation-plan",
         "checks",
         "mutations",
         "mutation-summary",
