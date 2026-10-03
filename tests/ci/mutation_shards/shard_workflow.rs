@@ -1,8 +1,123 @@
 //! Required mutation status and final scorecard contract tests.
 
-use crate::harness::{Fixture, SCORECARD_OUTCOMES, describe_text, refused, succeeds};
+use crate::harness::{Fixture, SCORECARD_OUTCOMES, describe_text, refused, succeeds, workflow};
 use serde_json::{Value, json};
 use std::fs;
+
+#[test]
+fn early_planning_uploads_the_complete_immutable_reports_before_execution() {
+    let ci = workflow("ci");
+    let jobs = &ci["jobs"];
+    let plan = &jobs["mutation-plan"];
+    assert!(plan.get("needs").is_none());
+    assert_eq!(plan["if"], jobs["checks"]["if"]);
+    assert_eq!(plan["permissions"], json!({"contents":"read"}));
+    let steps = plan["steps"].as_array().unwrap();
+    let positions: Vec<_> = [
+        "validate",
+        "registry",
+        "tools",
+        "mutants-plan",
+        "plan-upload",
+    ]
+    .map(|id| steps.iter().position(|step| step["id"] == id).unwrap())
+    .into();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(steps[positions[3]]["run"], "rust-gate mutants-plan");
+    let checks = jobs["checks"]["steps"].as_array().unwrap();
+    assert_eq!(
+        steps[positions[0]],
+        *checks.iter().find(|step| step["id"] == "validate").unwrap()
+    );
+    assert_eq!(
+        steps[2]["with"],
+        json!({"ref":"${{ github.sha }}", "persist-credentials":false, "fetch-depth":2})
+    );
+    let upload = &steps[positions[4]];
+    assert_eq!(
+        upload["with"]["name"],
+        "${{ steps.validate.outputs.artifact-name }}-plan"
+    );
+    assert_eq!(upload["with"]["path"], "${{ runner.temp }}/rust-reports/");
+    assert_eq!(upload["with"]["if-no-files-found"], "error");
+}
+
+#[test]
+fn early_planning_releases_every_mutation_worker_before_checks_finish() {
+    let ci = workflow("ci");
+    let jobs = &ci["jobs"];
+    for name in [
+        "mutations",
+        "mutation-engine",
+        "mutation-engine-default",
+        "mutation-windows",
+    ] {
+        let worker = &jobs[name];
+        assert_eq!(worker["needs"], json!(["mutation-plan"]), "{name}");
+        assert!(
+            worker["if"]
+                .as_str()
+                .unwrap()
+                .contains("needs.mutation-plan.result == 'success'")
+        );
+        assert!(!worker.to_string().contains("needs.checks"), "{name}");
+    }
+    assert_eq!(jobs["checks"]["needs"], json!(["mutation-plan"]));
+    let checks = jobs["checks"]["steps"].as_array().unwrap();
+    assert!(
+        !checks
+            .iter()
+            .any(|step| step["run"] == "rust-gate mutants-plan")
+    );
+    let download = checks
+        .iter()
+        .find(|step| step["id"] == "checks-plan-download")
+        .unwrap();
+    assert_eq!(
+        download["with"]["name"],
+        "${{ needs.mutation-plan.outputs.artifact-name }}-plan"
+    );
+    assert_eq!(download["with"]["path"], "${{ runner.temp }}/rust-reports");
+    for name in ["gate", "mutation-summary"] {
+        assert!(
+            jobs[name]["needs"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("mutation-plan"))
+        );
+    }
+}
+
+#[test]
+fn failed_planning_cannot_skip_the_required_status() {
+    let ci = workflow("ci");
+    let jobs = &ci["jobs"];
+    assert_eq!(
+        jobs["gate"]["if"],
+        "${{ always() && (inputs.artifact-key != '' || github.repository_id != '1382744803') }}"
+    );
+    assert_eq!(jobs["checks"]["needs"], json!(["mutation-plan"]));
+    let required = jobs["gate"]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["id"] == "required")
+        .unwrap();
+    assert_eq!(required["env"]["RESULT"], "${{ needs.checks.result }}");
+    // Checks depend on successful planning, so each unsuccessful plan skips them.
+    for planner_result in ["failure", "cancelled", "skipped"] {
+        let needs = json!({
+            "mutation-plan": {"result": planner_result},
+            "checks": {"result": "skipped"}
+        });
+        let mut fixture = Fixture::new();
+        fixture.set("RESULT", needs["checks"]["result"].as_str().unwrap());
+        refused(
+            &fixture.run("ci", "required"),
+            "Required Rust checks failed or were skipped",
+        );
+    }
+}
 
 fn scorecard_fixture(scorecard: &Value, state: &str) -> Fixture {
     let mut fixture = Fixture::new();

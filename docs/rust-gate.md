@@ -89,12 +89,13 @@ imports flowing one way only:
 ### Mutation workflow steps
 
 `rust-gate mutants-plan` writes the full filtered listing and immutable run
-manifest only for opted-in automatic or fixed sharding; the serial default and
+manifest in the early `mutation-plan` job for opted-in automatic or fixed sharding;
+the serial default and
 disabled mode write routing outputs without invoking cargo-mutants. The manifest
 binds workers to the tested revision, first parent, project directory, compiler,
 tool version, run attempt, config and diff digests. `rust-gate mutants` keeps
 its existing inline path when `MUTATION_SHARD` is empty; a worker validates its
-zero-based `K/N` and the manifest before passing `--shard K/N
+zero-based `K/N` and the downloaded early manifest before passing `--shard K/N
 --sharding round-robin` to cargo-mutants. `rust-gate mutants-aggregate` treats
 downloaded artifacts as data, validates receipts, assigned identities, raw
 outcomes and counters, and writes the merged canonical reports only after every

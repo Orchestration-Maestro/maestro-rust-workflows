@@ -142,6 +142,7 @@ fn checks_hand_the_runners_to_portability_and_the_result_to_the_required_status(
     assert_eq!(
         gate["needs"],
         json!([
+            "mutation-plan",
             "checks",
             "portability",
             "mutations",

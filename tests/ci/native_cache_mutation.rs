@@ -200,7 +200,7 @@ fn engine_restore_and_save_steps_bind_only_the_selected_worker() {
     assert_eq!(prepare["env"]["NATIVE_CACHE_MODE"], "mutation");
     assert_eq!(
         prepare["env"]["MUTATION_ENGINE_FEATURES"],
-        "${{ needs.checks.outputs.mutation-engine-features }}"
+        "${{ needs.mutation-plan.outputs.mutation-engine-features }}"
     );
     let restore = find("native-cache-restore");
     assert_eq!(
