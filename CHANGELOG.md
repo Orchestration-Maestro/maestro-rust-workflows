@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.3](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.2...v4.8.3) (2026-10-03)
+
+
+### Performance Improvements
+
+* **ci:** start mutation workers before the checks job finishes ([#113](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/113)) ([942552b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/942552bf40a33d9d531de3aab626ec1ad747c4e2))
+
 ## [4.8.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.1...v4.8.2) (2026-10-03)
 
 
