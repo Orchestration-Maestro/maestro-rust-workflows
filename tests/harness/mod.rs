@@ -3,6 +3,7 @@
 //! fixture that runs a step against stand-ins. Each part names what it takes
 //! from its siblings; nothing here names a test module.
 
+mod engine_compile;
 mod engine_mutations;
 mod engine_workspace;
 mod fixture;
@@ -31,6 +32,8 @@ pub(crate) use engine_mutations::{
     engine_aggregation_fixture, engine_fallback_fixture, engine_fixture, engine_inactive_fixture,
     evidence_hash, summarize_engine,
 };
+
+pub(crate) use engine_compile::{compile_aggregate_fixture, compile_fixture};
 
 pub(crate) use engine_workspace::{engine_workspace, fixture_git};
 

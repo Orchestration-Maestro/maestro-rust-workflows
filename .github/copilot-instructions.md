@@ -266,6 +266,7 @@ in place.
 │   │   │   │   │   ├── membership.rs                            # Retain and verify the default compiler's dep-info, bound to the worker receipt
 │   │   │   │   │   ├── mod.rs                                   # Verify featureless compile membership before classifying inactive control mutants
 │   │   │   │   │   ├── outcomes.rs                              # Preserve raw tested results and account explicitly for every verified non-member mutant
+│   │   │   │   │   ├── package_build.rs                         # Retain and verify one owning package's independent compiler evidence
 │   │   │   │   │   ├── run.rs                                   # Run tests only for compiled assigned mutants, preserving the exact complete control plan
 │   │   │   │   │   └── source.rs                                # Bind the compiler coordinate frame and package selection to retained Cargo metadata
 │   │   │   │   ├── engine_plan.rs                               # Discover both modes and preserve every featureless obligation before routing workers
@@ -354,6 +355,7 @@ in place.
 │   │   │   ├── engine_membership.rs                             # Compile membership, not redundant default test runs, proves featureless inactivity
 │   │   │   ├── engine_membership_binding.rs                     # Membership requires source metadata and a retained equivalent compile command
 │   │   │   ├── engine_membership_records.rs                     # Independent compiler record shape and failed-process stimuli
+│   │   │   ├── engine_package_controls.rs                       # Independent package builds, evidence binding and package-local fallback
 │   │   │   ├── engine_planning.rs                               # Mode-aware engine ownership plans at the executable boundary
 │   │   │   ├── engine_regression.rs                             # Real, offline three-package regression of the complete required mutation gate
 │   │   │   ├── engine_rejections.rs                             # Plan, artifact and outcome corruption never becomes engine gate success
@@ -442,6 +444,7 @@ in place.
 │   │   ├── step_and_refusal_coverage.rs                         # Every declared step is run by a contract test; every refusal the binary composes is asserted by a test
 │   │   └── step_registry.rs                                     # The step registry: declarations, the generated document, every body registered
 │   ├── harness/                                                 # The one door of the tests: the repository, YAML readers, gate declarations and the fixture
+│   │   ├── engine_compile.rs                                    # Shared real package build and aggregate fixtures for exact compile membership
 │   │   ├── engine_mutations.rs                                  # Shared mode-aware engine planner, worker and aggregate fixtures
 │   │   ├── engine_workspace.rs                                  # Real Git setup for mode and input-only ownership regressions
 │   │   ├── fixture.rs                                           # One temporary checkout, one environment table, a step run against stand-ins, every command traced

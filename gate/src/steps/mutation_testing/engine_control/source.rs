@@ -43,17 +43,23 @@ pub(super) fn verify(root: &Path, receipt: &Path, assigned: &Path, manifest: &Pa
     Ok(())
 }
 
-/// Only one owning package can be compiled without unifying distinct owners' features.
-pub(super) fn package(root: &Path, assigned: &Path) -> Result<Option<String>, Failure> {
-    let package = Cmd::new("jaq -r")
-        .args(["--slurpfile", "assigned"])
+/// Enumerate exact owning packages, independently of whether each build is equivalent.
+pub(super) fn owners(assigned: &Path) -> Result<Vec<String>, Failure> {
+    let owners = Cmd::new("jaq -r")
+        .arg("map(.package) | unique | .[]")
         .arg(assigned)
+        .capture()?;
+    Ok(owners.lines().map(str::to_owned).collect())
+}
+
+/// Resolve one owner to the version-qualified selection cargo-mutants builds.
+pub(super) fn package(root: &Path, owner: &str) -> Result<Option<String>, Failure> {
+    let package = Cmd::new("jaq -r")
+        .args(["--arg", "owner", owner])
         .arg(concat!(
-            "($assigned[0] | map(.package) | unique) as $owners | ",
-            "if ($owners | length) == 1 then ",
-            "[.metadata.packages[] | select(.name == $owners[0])] | ",
+            "[.metadata.packages[] | select(.name == $owner)] | ",
             "if length == 1 and (.[0].version | type == \"string\") then ",
-            ".[0] | .name + \"@\" + .version else empty end else empty end"
+            ".[0] | .name + \"@\" + .version else empty end"
         ))
         .arg(root.join("source-metadata.json"))
         .capture()?;
@@ -81,7 +87,7 @@ mod tests {
     use std::{env, fs, process};
 
     #[test]
-    fn only_one_version_qualified_planned_package_can_establish_compile_membership() {
+    fn each_version_qualified_planned_package_can_establish_compile_membership() {
         let root = env::temp_dir().join(format!("control-owner-{}", process::id()));
         fs::create_dir_all(&root).unwrap();
         let listing = root.join("assigned.json");
@@ -92,10 +98,7 @@ mod tests {
             r#"{"metadata":{"packages":[{"name":"a","version":"1.2.3"}]}}"#,
         )
         .unwrap();
-        assert_eq!(
-            package(&root, &listing).unwrap().as_deref(),
-            Some("a@1.2.3")
-        );
+        assert_eq!(package(&root, "a").unwrap().as_deref(), Some("a@1.2.3"));
         for metadata in [
             r#"{"metadata":{"packages":[]}}"#,
             r#"{"metadata":{"packages":[{"name":"a"}]}}"#,
@@ -103,17 +106,19 @@ mod tests {
             r#"{"metadata":{"packages":[{"name":"a","version":"1"},{"name":"a","version":"2"}]}}"#,
         ] {
             fs::write(&source, metadata).unwrap();
-            assert_eq!(package(&root, &listing).unwrap(), None);
+            assert_eq!(package(&root, "a").unwrap(), None);
         }
         fs::write(
             &source,
             r#"{"metadata":{"packages":[{"name":"a","version":"1"},{"name":"b","version":"1"}]}}"#,
         )
         .unwrap();
-        for assigned in ["[]", r#"[{"package":"a"},{"package":"b"}]"#] {
-            fs::write(&listing, assigned).unwrap();
-            assert_eq!(package(&root, &listing).unwrap(), None);
-        }
+        fs::write(&listing, r#"[{"package":"a"},{"package":"b"}]"#).unwrap();
+        assert_eq!(super::owners(&listing).unwrap(), ["a", "b"]);
+        assert_eq!(package(&root, "a").unwrap().as_deref(), Some("a@1"));
+        assert_eq!(package(&root, "b").unwrap().as_deref(), Some("b@1"));
+        fs::write(&listing, "[]").unwrap();
+        assert!(super::owners(&listing).unwrap().is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 }

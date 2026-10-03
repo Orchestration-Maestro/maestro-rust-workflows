@@ -30,7 +30,11 @@ fn unverified_controls_accept_engine_only_survivors_with_exact_caught_twins() {
 /// Retain a semantic change's hash so digest checks do not mask the guard under test.
 fn refresh_manifest(manifest: &Path, key: &str, evidence: &Path) {
     let mut binding: Value = serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
-    binding[key] = json!(evidence_hash(evidence));
+    if key == "build_sha256" || key == "cargo_sha256" {
+        binding["packages"][0][key] = json!(evidence_hash(evidence));
+    } else {
+        binding[key] = json!(evidence_hash(evidence));
+    }
     fs::write(manifest, binding.to_string()).unwrap();
 }
 
@@ -89,7 +93,7 @@ fn retained_compilation_settings_and_arguments_require_exact_equivalence() {
     );
     fs::write(&config, "").unwrap();
     refresh_manifest(&manifest, "config_sha256", &config);
-    let build = root.join("build-record.json");
+    let build = root.join("builds/0/build-record.json");
     let mut record: Value = serde_json::from_slice(&fs::read(&build).unwrap()).unwrap();
     record["argv"][4] = json!("--workspace");
     fs::write(&build, record.to_string()).unwrap();
@@ -162,7 +166,7 @@ fn retained_artifact_paths_cannot_escape_the_verified_clean_target() {
         .root
         .join("engine-default/fixture-engine-default-mutants-0")
         .join("mutants-engine-default/mutants.out");
-    let cargo = root.join("cargo-build.json");
+    let cargo = root.join("builds/0/cargo-build.json");
     let mut records: Vec<Value> = fs::read_to_string(&cargo)
         .unwrap()
         .lines()
