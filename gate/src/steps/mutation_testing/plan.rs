@@ -1,7 +1,7 @@
 //! Route the compatible default mode or plan every engine/default obligation.
 
 use super::scope::{self, Scope};
-use super::{engine_plan, plan_identity, selftest};
+use super::{engine_plan, host_plan, plan_identity, selftest};
 use crate::checks::inputs::{mutation_mutants_per_shard, mutation_shards};
 use crate::runner::{Cmd, Failure, Job, Outcome, flag, optional, output, tee_line, write};
 use std::fs;
@@ -13,6 +13,7 @@ pub(super) fn run() -> Outcome {
     fs::create_dir_all(&job.reports)
         .map_err(|error| format!("cannot create mutation reports: {error}"))?;
     let report = job.report("mutants-plan.txt")?;
+    let host = host_plan::policy(&job)?;
     if !flag("MUTATION_TEST")? {
         engine_plan::disabled()?;
         tee_line("Mutation plan: disabled", &report, false)?;
@@ -24,7 +25,8 @@ pub(super) fn run() -> Outcome {
     if !engine {
         engine_plan::disabled()?;
     }
-    if inline_without_discovery(requested, engine) {
+    let transfer = !scope::returned_host_files(&job)?.is_empty();
+    if inline_without_discovery(requested, engine || host.is_some() || transfer) {
         tee_line(
             "Mutation plan: inline (serial default; discovery not run)",
             &report,
@@ -46,6 +48,9 @@ pub(super) fn run() -> Outcome {
     let (mode, shards, matrix) = plan_identity::selection(mutants, requested, target)?;
     let manifest = job.report("mutation-plan.json")?;
     plan_identity::write_manifest(&manifest, &job.project, &scope, mutants, shards)?;
+    if let Some(host) = &host {
+        host_plan::discover(&job, host, &manifest)?;
+    }
     tee_line(
         &format!("Mutation plan: {mode}; {mutants} mutants; {shards} shard(s)"),
         &report,

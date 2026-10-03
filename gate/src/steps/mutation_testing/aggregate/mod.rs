@@ -3,6 +3,7 @@
 mod artifacts;
 mod engine_evidence;
 pub(super) mod evidence;
+mod host_evidence;
 mod merge;
 mod outcomes;
 mod run;

@@ -15,6 +15,7 @@ pub(crate) const STEPS: &[Step] = &[
         summary: "Plan mutation shard routing",
         inputs: &[
             "CARGO_MUTANTS_VERSION",
+            "WORKFLOW_REVISION",
             "GITHUB_BASE_REF",
             "MUTATION_FULL_SCOPE",
             "GITHUB_RUN_ATTEMPT",
@@ -36,6 +37,9 @@ pub(crate) const STEPS: &[Step] = &[
             "mutants-plan.log",
             "mutants-list.json",
             "mutation-plan.json",
+            "mutation-host-plan.json",
+            "mutation-host-list.json",
+            "mutation-host-plan.log",
             "mutation-engine-list.json",
             "mutation-engine-default-list.json",
             "mutation-engine-plan.json",
@@ -69,7 +73,7 @@ pub(crate) const STEPS: &[Step] = &[
             "MUTATION_ENGINE_FILES",
             "RUSTUP_TOOLCHAIN",
         ],
-        tools: &["cargo mutants", "git", "jaq", "timeout"],
+        tools: &["cargo mutants", "cargo metadata", "git", "jaq", "timeout"],
         reports: &[
             "mutants.json",
             "mutants.txt",
@@ -185,6 +189,9 @@ pub(crate) const STEPS: &[Step] = &[
         inputs: &[
             "CARGO_MUTANTS_VERSION",
             "CHECKS_RESULT",
+            "MUTATION_HOST_COUNT",
+            "HOST_MUTATIONS_RESULT",
+            "MUTATION_HOST_ARTIFACTS",
             "MUTATION_WINDOWS",
             "WINDOWS_MUTATIONS_RESULT",
             "MUTATION_WINDOWS_ARTIFACTS",
@@ -217,6 +224,8 @@ pub(crate) const STEPS: &[Step] = &[
         reports: &[
             "mutation-shards",
             "mutation-partitions",
+            "changed-coverage.txt",
+            "changed-coverage-final.json",
             "mutants.json",
             "mutants.txt",
         ],

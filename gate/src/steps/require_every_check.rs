@@ -14,6 +14,10 @@ pub(crate) const STEPS: &[Step] = &[Step {
         "INTERNAL_SHARD_SELFTEST",
         "MUTATION_ATTEMPT",
         "MUTATION_COUNT",
+        "MUTATION_HOST_COUNT",
+        "MUTATION_HOST_FILES",
+        "HOST_MUTATIONS_RESULT",
+        "CHANGED_COVERAGE_STATE",
         "MUTATION_ENGINE_COUNT",
         "MUTATION_ENGINE_DEFAULT_COUNT",
         "ENGINE_DEFAULT_MUTATIONS_RESULT",
@@ -50,6 +54,7 @@ fn run() -> Outcome {
             return Err("Portability checks failed or were skipped".into());
         }
     }
+    require_host_mutations()?;
     require_default_mutations()?;
     require_engine_mutations()?;
     require_windows_mutations()
@@ -82,8 +87,12 @@ fn require_default_mutations() -> Outcome {
         workers: &workers,
         aggregate: &aggregate,
     })?;
-    let aggregate_expected =
-        mode == "sharded" || engine_count > 0 || input("MUTATION_ENGINE_DEFAULT_COUNT")? != "0";
+    let aggregate_expected = mode == "sharded"
+        || engine_count > 0
+        || input("MUTATION_ENGINE_DEFAULT_COUNT")? != "0"
+        || optional("MUTATION_HOST_COUNT")?
+            .parse::<usize>()
+            .is_ok_and(|count| count > 0);
     if mode != "sharded" && workers != "skipped" {
         return Err("Mutation jobs were not intentionally skipped".into());
     }
@@ -224,5 +233,32 @@ fn require_windows_mutations() -> Outcome {
         });
     }
     summary(&format!("Windows-owned mutations: {result}\n"))?;
+    Ok(())
+}
+
+/// Require a nonempty host plan, its executor and the final same-run coverage join.
+fn require_host_mutations() -> Outcome {
+    let count = optional("MUTATION_HOST_COUNT")?;
+    let files = optional("MUTATION_HOST_FILES")?;
+    if (files.is_empty() || files == "[]") && (count.is_empty() || count == "0") {
+        return Ok(());
+    }
+    if input("MUTATION_TEST")? != "true" || count.parse::<usize>().unwrap_or(0) == 0 {
+        return Err("provisioned-host ownership requires an enabled nonempty mutation plan".into());
+    }
+    let result = optional("HOST_MUTATIONS_RESULT")?;
+    if result.is_empty() {
+        return Err("provisioned-host mutation result is missing; no host executor ran".into());
+    }
+    if result != "success"
+        || input("MUTATION_SUMMARY_RESULT")? != "success"
+        || optional("CHANGED_COVERAGE_STATE")? != "passed"
+        || input("MUTATION_ATTEMPT")? != input("GITHUB_RUN_ATTEMPT")?
+    {
+        return Err(
+            "provisioned-host execution, aggregation and coverage join must pass in this attempt"
+                .into(),
+        );
+    }
     Ok(())
 }

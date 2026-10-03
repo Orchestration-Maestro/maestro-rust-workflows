@@ -3,11 +3,12 @@
 
 use crate::checks::checkout_paths::canonical;
 use crate::checks::digests::sha256_hex;
-use crate::checks::mutation_engine;
 use crate::checks::native_cache::{NativeCache, native_cache_command};
 use crate::checks::quality_config::mutation_windows;
+use crate::checks::{mutation_engine, mutation_host};
 use crate::runner::{Cmd, Failure, Job, input, optional};
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -63,6 +64,7 @@ pub(super) fn prepare(job: &Job, base: &str) -> Result<Scope, Failure> {
         Cmd::new("git diff --relative HEAD^1 HEAD -- .")
             .cwd(&job.project)
             .stdout_to(&diff)?;
+        transferred_host_diff(job, &diff)?;
         fs::copy(&diff, job.report("mutants.diff")?)
             .map_err(|error| format!("cannot preserve the mutation diff: {error}"))?;
         let bytes =
@@ -84,6 +86,68 @@ pub(super) fn prepare(job: &Job, base: &str) -> Result<Scope, Failure> {
     })
 }
 
+/// A policy-only transfer restores the still-existing file's complete new-owner obligation.
+fn transferred_host_diff(job: &Job, diff: &Path) -> Result<(), Failure> {
+    let mut text =
+        fs::read_to_string(diff).map_err(|error| format!("cannot read mutation diff: {error}"))?;
+    for file in returned_host_files(job)? {
+        let path = job.project.join(&file);
+        if !path.is_file() {
+            continue;
+        }
+        let source = fs::read_to_string(&path).map_err(|error| format!("{file}: {error}"))?;
+        let _ = writeln!(
+            text,
+            "diff --git a/{file} b/{file}\n--- /dev/null\n+++ b/{file}"
+        );
+        let _ = writeln!(text, "@@ -0,0 +1,{} @@", source.lines().count());
+        for line in source.lines() {
+            let _ = writeln!(text, "+{line}");
+        }
+    }
+    fs::write(diff, text)
+        .map_err(|error| format!("cannot preserve transferred host diff: {error}").into())
+}
+
+/// Existing files whose previous host ownership has been removed require full new-owner tests.
+pub(super) fn returned_host_files(job: &Job) -> Result<Vec<String>, Failure> {
+    let root = PathBuf::from(input("GITHUB_WORKSPACE")?);
+    if !root.join(".git").exists() && !job.project.join(".git").exists() {
+        return Ok(Vec::new());
+    }
+    let parent = Cmd::new("git rev-parse --verify -q HEAD^1")
+        .cwd(&job.project)
+        .capture();
+    match parent {
+        Err(failure) if failure.code == 1 && failure.message.is_none() => return Ok(Vec::new()),
+        Err(failure) => return Err(failure),
+        Ok(_) => {}
+    }
+    let previous = Cmd::new("git ls-tree --name-only HEAD^1 -- maestro-quality.toml")
+        .cwd(&job.project)
+        .capture()?;
+    if previous.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let prefix = Cmd::new("git rev-parse --show-prefix")
+        .cwd(&job.project)
+        .capture()?;
+    let base = Cmd::new("git show")
+        .arg(format!("HEAD^1:{}maestro-quality.toml", prefix.trim()))
+        .cwd(&job.project)
+        .capture()?;
+    let old = Cmd::new("jaq --from toml -r")
+        .arg(".ci[\"mutation-provisioned-host\"].files // [] | .[]")
+        .stdin_bytes(base.as_bytes())
+        .capture()?;
+    let current = host_files(&job.project)?;
+    Ok(old
+        .lines()
+        .filter(|file| !current.iter().any(|name| name == file) && job.project.join(file).is_file())
+        .map(str::to_owned)
+        .collect())
+}
+
 /// Exclude every Windows-owned file from a Linux mutation listing or run.
 pub(super) fn exclude_windows_files(mut command: Cmd, project: &Path) -> Result<Cmd, Failure> {
     for file in mutation_windows(project, &optional("MUTATION_WINDOWS")?)? {
@@ -94,8 +158,16 @@ pub(super) fn exclude_windows_files(mut command: Cmd, project: &Path) -> Result<
 
 /// Exclude Windows and engine-owned files from the featureless default mutation mode.
 pub(super) fn exclude_default_files(command: Cmd, project: &Path) -> Result<Cmd, Failure> {
-    let mut command = exclude_windows_files(command, project)?;
+    let mut command = exclude_host_files(exclude_windows_files(command, project)?, project)?;
     for file in engine_files()? {
+        command = command.args(["--exclude", &file]);
+    }
+    Ok(command)
+}
+
+/// Keep host-owned source out of both raw engine/control discoveries and ordinary runs.
+pub(super) fn exclude_host_files(mut command: Cmd, project: &Path) -> Result<Cmd, Failure> {
+    for file in host_files(project)? {
         command = command.args(["--exclude", &file]);
     }
     Ok(command)
@@ -203,7 +275,13 @@ pub(super) fn transferred_files(project: &Path) -> Result<BTreeSet<String>, Fail
         .into_iter()
         .collect();
     files.extend(engine_files()?);
+    files.extend(host_files(project)?);
     Ok(files)
+}
+
+/// Host-owned files transfer to required full-file host discovery.
+fn host_files(project: &Path) -> Result<Vec<String>, Failure> {
+    Ok(mutation_host::host_policy(project)?.map_or_else(Vec::new, |policy| policy.files))
 }
 
 /// Whether the current run owns a nonempty engine partition.

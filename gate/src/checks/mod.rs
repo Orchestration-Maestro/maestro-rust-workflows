@@ -17,6 +17,7 @@ pub(crate) mod lint_policy;
 pub(crate) mod manifests;
 pub(crate) mod module_tree;
 pub(crate) mod mutation_engine;
+pub(crate) mod mutation_host;
 pub(crate) mod mutation_windows;
 pub(crate) mod native_cache;
 pub(crate) mod native_cache_inventory;
