@@ -104,6 +104,9 @@ fn configure_source(project: &Path, probe: &str) {
         original.replace("#[cfg(feature = \"engine\")]", replacement),
     )
     .unwrap();
+    if probe.starts_with("uplifted-bin") {
+        configure_binary(project);
+    }
     if probe == "workspace" {
         for (path, from, to) in [
             (
@@ -122,6 +125,13 @@ fn configure_source(project: &Path, probe: &str) {
         }
     }
     fs::create_dir_all(project.join(".cargo")).unwrap();
+    if probe == "uplifted-bin-nextest" {
+        fs::write(
+            project.join(".cargo/mutants.toml"),
+            "test_tool = 'nextest'\n",
+        )
+        .unwrap();
+    }
     if probe == "rustflags" {
         fs::write(
             project.join(".cargo/config.toml"),
@@ -162,7 +172,7 @@ fn configure_source(project: &Path, probe: &str) {
         if probe.starts_with("packages") {
             configure_packages(project, probe, &original);
         }
-    } else {
+    } else if !probe.starts_with("uplifted-bin") {
         if probe == "nextest-survivor" {
             fs::write(
                 project.join(".cargo/mutants.toml"),
@@ -179,6 +189,21 @@ fn configure_source(project: &Path, probe: &str) {
         )
         .unwrap();
     }
+}
+
+/// Require a binary uplift for an integration test's Cargo-provided executable path.
+fn configure_binary(project: &Path) {
+    fs::write(project.join("crates/a/src/main.rs"), "fn main() {}\n").unwrap();
+    fs::create_dir_all(project.join("crates/a/tests")).unwrap();
+    fs::write(
+        project.join("crates/a/tests/binary_output.rs"),
+        concat!(
+            "#[test]\nfn integration_uses_the_uplifted_binary() {\n",
+            " assert!(std::process::Command::new(env!(\"CARGO_BIN_EXE_crate-a\"))",
+            ".status().unwrap().success());\n}\n"
+        ),
+    )
+    .unwrap();
 }
 
 /// B's dependency features both hide and expose A's modules only in B's own build.
@@ -239,6 +264,19 @@ fn configure_packages(project: &Path, probe: &str, engine: &str) {
         ),
     )
     .unwrap();
+    if probe == "packages-inactive" {
+        for lib in [project.join("crates/a/src/lib.rs"), sources.join("lib.rs")] {
+            fs::write(
+                &lib,
+                concat!(
+                    "//! Featureless inactive fixture.\n",
+                    "#[cfg(feature = \"engine\")]\npub mod engine;\n",
+                    "#[cfg(feature = \"engine\")]\npub mod engine_only;\n",
+                ),
+            )
+            .unwrap();
+        }
+    }
     if probe == "packages-fallback-survivor" {
         let source = project.join("crates/a/src/engine.rs");
         fs::write(

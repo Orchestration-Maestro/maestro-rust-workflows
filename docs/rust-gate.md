@@ -104,8 +104,12 @@ mutation command unsharded.
 
 Featureless engine controls use a separate clean, version-qualified package-scoped default Cargo
 or Nextest test-target build for each assigned owner to establish compile membership from Cargo JSON and rustc dep-info.
+Dep-info paths come from each verbose rustc invocation's crate name, output directory and
+extra filename, not Cargo's uplifted binary filenames. Every fresh artifact must match exactly
+one compiler invocation; absent emission or dep-info fails closed with its unit named.
+Nextest's evidence build adds `--cargo-verbose` to forward the compiler invocations.
 Default-off `cap_lints` leaves Cargo flag resolution unchanged. Retained source metadata
-binds the normalized coordinate frame and planned owners; schema-3 membership binds every
+binds the normalized coordinate frame and planned owners; schema-4 membership binds every
 package build and aggregation verifies each equivalent command. Non-members receive the explicit
 `NotCompiledWithoutFeatures` outcome rather than redundant default test runs. Compiled
 mutants still run and must be caught by default tests. Aggregation verifies the retained

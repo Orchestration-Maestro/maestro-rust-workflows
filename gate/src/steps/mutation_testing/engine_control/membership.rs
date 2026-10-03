@@ -62,7 +62,7 @@ pub(super) fn build(
                 &job.report("mutants-engine-default.txt")?,
                 true,
             )?;
-            package_build::save(&directory, None)?
+            package_build::save(&directory, None, 0)?
         } else {
             let target = job.temp.join(format!("engine-control-target/{index}"));
             if target.exists() {
@@ -104,7 +104,7 @@ pub(super) fn build(
         ])
         .args(["--argjson", "packages", &format!("[{}]", builds.join(","))])
         .arg(concat!(
-            "{schema:3, source_sha256:$source_digest, config_sha256:$config_digest, ",
+            "{schema:4, source_sha256:$source_digest, config_sha256:$config_digest, ",
             "binding:$receipt[0], project:$project, workspace:$workspace, packages:$packages}"
         ))
         .capture()?;
@@ -169,13 +169,18 @@ fn verify_binding(root: &Path, receipt: &Path, assigned: &Path) -> Outcome {
         return Err("featureless compile membership evidence is missing".into());
     }
     Cmd::new("jaq -e")
+        .arg(".schema == 4")
+        .arg(&manifest)
+        .capture()
+        .map_err(|_| "featureless compile membership requires schema 4 compiler logs")?;
+    Cmd::new("jaq -e")
         .args(["--slurpfile", "receipt"])
         .arg(receipt)
         .args(["--argjson", "owners", &strings(&source::owners(assigned)?)?])
         .arg(concat!(
             r#"(keys | sort) == ["binding","config_sha256","packages","project","schema","#,
             r#""source_sha256","workspace"] and "#,
-            ".schema == 3 and .binding == $receipt[0] and ",
+            ".binding == $receipt[0] and ",
             "(.packages | type == \"array\") and ([.packages[].package] == $owners)"
         ))
         .arg(&manifest)

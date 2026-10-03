@@ -66,8 +66,10 @@ if [[ $1 == test ]]; then
  printf '%s: src/lib.rs src/engine.rs\n' "$target/debug/deps/fixture.d" \
   > "$target/debug/deps/fixture.d"
  printf '{"reason":"compiler-artifact","fresh":false,"target":{"kind":["lib"],'
- printf '"src_path":"%s/src/lib.rs"},"filenames":["%s/debug/deps/libfixture.rlib"]}\n' \
-  "$PROJECT" "$target"
+ printf '"name":"fixture","src_path":"%s/src/lib.rs"},"profile":{"test":false},' "$PROJECT"
+ printf '"filenames":["%s/debug/deps/libfixture.rlib"]}\n' "$target"
+ printf 'Running `rustc --crate-name fixture %s --emit=dep-info,link --out-dir %s`\n' \
+  "$PROJECT/src/lib.rs" "$target/debug/deps" >&2
  printf '{"reason":"build-finished","success":true}\n'
  exit
 fi

@@ -2,6 +2,7 @@
 
 use super::membership::{self, Membership};
 use crate::runner::{Cmd, Failure, Job, Outcome, write};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Project only the assigned mutants whose files the default build compiles.
@@ -76,17 +77,22 @@ pub(in super::super) fn validate(
 
 /// Use every owning package's verified build as the baseline when no mutant needs testing.
 pub(super) fn build_baseline(root: &Path, version: &str, packages: usize) -> Outcome {
-    let mut command = Cmd::new("jaq -sc").args(["--arg", "version", version]).arg(concat!(
+    let mut documents = Vec::new();
+    for index in 0..packages {
+        let path = root.join(format!("builds/{index}/build-record.json"));
+        documents.extend(
+            fs::read(&path)
+                .map_err(|error| format!("cannot read baseline build record: {error}"))?,
+        );
+        documents.push(b'\n');
+    }
+    let value = Cmd::new("jaq -sc").args(["--arg", "version", version]).arg(concat!(
         ". as $builds | {outcomes:[{scenario:\"Baseline\",summary:\"Success\",phase_results:",
         "[$builds[] | {phase:\"Build\",duration:.duration,process_status:\"Success\",argv:.argv}],",
         "log_path:\"builds/0/cargo-build.log\"}],total_mutants:0,caught:0,missed:0,timeout:0,",
         "unviable:0,success:0,cargo_mutants_version:$version,",
         "start_time:$builds[0].start_time,end_time:$builds[-1].end_time}"
-    ));
-    for index in 0..packages {
-        command = command.arg(root.join(format!("builds/{index}/build-record.json")));
-    }
-    let value = command.capture()?;
+    )).stdin_bytes(&documents).capture()?;
     write(&root.join("tested-outcomes.json"), value.as_bytes(), false)
 }
 
