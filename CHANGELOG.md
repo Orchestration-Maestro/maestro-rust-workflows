@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.5](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.4...v4.8.5) (2026-10-03)
+
+
+### Bug Fixes
+
+* **ci:** verify compile membership in featureless engine controls ([#117](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/117)) ([ffd06cd](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/ffd06cd319fd23e24a33d66cf3cf6ede12c9cdda))
+
 ## [4.8.4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v4.8.3...v4.8.4) (2026-10-03)
 
 
