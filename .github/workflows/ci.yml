@@ -36,7 +36,7 @@ jobs:
           rustup show
           rustup component add rustfmt clippy
       - name: Format
-        run: cargo fmt --all
+        run: cargo fmt --all --check
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
