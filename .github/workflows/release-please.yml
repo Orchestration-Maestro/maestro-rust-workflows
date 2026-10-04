@@ -11,6 +11,9 @@ jobs:
   release:
     name: Release pull request and tag
     runs-on: ubuntu-latest
+    outputs:
+      release-created: ${{ steps.release.outputs.release_created }}
+      tag-name: ${{ steps.release.outputs.tag_name }}
     steps:
       # An App token lets release pull requests trigger the required checks.
       - name: Mint the release token
@@ -23,8 +26,65 @@ jobs:
           permission-issues: write
           permission-pull-requests: write
       - name: Open the release pull request or tag the merged release
+        id: release
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ steps.token.outputs.token }}
           config-file: .github/release-please/config.json
           manifest-file: .github/release-please/manifest.json
+
+  evidence:
+    name: Attested release assets
+    needs: release
+    if: needs.release.outputs.release-created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release.outputs.tag-name }}
+      ASSETS: release-assets
+    steps:
+      - name: Checkout the release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release.outputs.tag-name }}
+          persist-credentials: false
+      - name: Export the dependency graph SBOM
+        # Bound the API poll to 2 minutes, with requests 5 seconds apart.
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$ASSETS"
+          url=$(gh api "repos/$GITHUB_REPOSITORY/dependency-graph/sbom/generate-report" --jq .sbom_url)
+          [[ "$url" == "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/dependency-graph/sbom/fetch-report/"* ]]
+          while true; do
+            status=$(curl --fail --silent --show-error --location --max-time 15 \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              --output "$ASSETS/sbom.spdx.json" --write-out '%{http_code}' "$url")
+            case "$status" in
+              200) break ;;
+              202) sleep 5 ;;
+              *) echo "Unexpected SBOM response: $status" >&2; exit 1 ;;
+            esac
+          done
+          python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["spdxVersion"].startswith("SPDX-")' "$ASSETS/sbom.spdx.json"
+      - name: Archive the tag and checksum the assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz --prefix="maestro-rust-workflows-$TAG/" HEAD > "$ASSETS/source.tar.gz"
+          cd "$ASSETS"
+          sha256sum source.tar.gz sbom.spdx.json > SHA256SUMS
+          sha256sum -c SHA256SUMS
+      - name: Attest every release asset
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: release-assets/*
+          create-storage-record: false
+      - name: Attach the release assets
+        shell: bash
+        run: gh release upload "$TAG" "$ASSETS"/* --repo "$GITHUB_REPOSITORY"

@@ -36,3 +36,26 @@ The final checks are `Required repository quality` and
 Release-please opens release pull requests and tags merged releases, starting
 at `v0.1.0`. The organization rules pin a version tag; releasing here does not
 move those pins. CI changes, features and fixes appear in the changelog.
+
+### Verify a release
+
+Releases include `source.tar.gz` (a git archive of the tag), `sbom.spdx.json`
+(GitHub's dependency graph SPDX export), and `SHA256SUMS` covering both files.
+All three assets have SLSA build provenance attestations, including the checksum
+file. The SBOM describes GitHub's dependency graph at export time.
+
+With GitHub CLI authenticated, set `tag` to the release to verify and run in an
+empty directory:
+
+```bash
+set -euo pipefail
+repo=Orchestration-Maestro/maestro-rust-workflows
+tag=v0.1.1
+gh release download "$tag" --repo "$repo" \
+  --pattern source.tar.gz --pattern sbom.spdx.json --pattern SHA256SUMS
+for asset in source.tar.gz sbom.spdx.json SHA256SUMS; do
+  gh attestation verify "$asset" --repo "$repo" \
+    --signer-workflow "$repo/.github/workflows/release-please.yml"
+done
+sha256sum -c SHA256SUMS
+```
