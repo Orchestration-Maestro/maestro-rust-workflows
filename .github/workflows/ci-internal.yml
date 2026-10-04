@@ -1,0 +1,76 @@
+name: CI self-test
+
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  sample:
+    name: Sample
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: fixtures/sample
+
+  quality:
+    name: Required repository quality
+    needs: sample
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sample passed every check
+        env:
+          RESULT: ${{ needs.sample.result }}
+        run: test "$RESULT" = success
+
+  consumers:
+    name: Required consumer tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        working-directory: fixtures/sample
+        run: |
+          rustup show
+          rustup component add rustfmt clippy
+      # Reusable workflow calls cannot use continue-on-error. The broken
+      # fixtures run the workflow's own commands and assert all nine outcomes.
+      - name: Each broken fixture fails only its own check
+        shell: python
+        run: |
+          import pathlib
+          import re
+          import shlex
+          import subprocess
+
+          workflow = pathlib.Path('.github/workflows/ci.yml').read_text()
+          commands = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE)
+          expected = [
+              'cargo fmt --all --check',
+              'cargo clippy --workspace --all-targets --locked -- -D warnings',
+              'cargo test --workspace --locked',
+          ]
+          assert commands == expected, f'Unexpected check commands: {commands}'
+          assert 'continue-on-error' not in workflow
+          assert '|| true' not in workflow
+          for step in workflow.split('      - name:')[1:]:
+              if any(f'run: {command}\n' in step for command in commands):
+                  assert not re.search(r'^        if:', step, re.MULTILINE)
+
+          failures = []
+          for fixture, broken in [('unformatted', 0), ('clippy-warning', 1), ('failing-test', 2)]:
+              for check, command in enumerate(commands):
+                  result = subprocess.run(shlex.split(command), cwd=f'fixtures/{fixture}')
+                  expected_failure = check == broken
+                  print(f'{fixture}: {command}: exit {result.returncode}; '
+                        f'expected {"failure" if expected_failure else "success"}', flush=True)
+                  if (result.returncode != 0) != expected_failure:
+                      failures.append(f'{fixture}: {command}: exit {result.returncode}')
+          assert not failures, '\n'.join(failures)
