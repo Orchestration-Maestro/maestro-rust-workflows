@@ -71,6 +71,14 @@ jobs:
           flags = re.search(r'^          RUSTDOCFLAGS: (.+)$', docs_step, re.MULTILINE)
           assert flags and flags.group(1) == '-D warnings -D missing_docs'
 
+          concurrency = re.search(r'^concurrency:\n((?:[ \t].*\n)+)', workflow, re.MULTILINE)
+          assert concurrency, 'Missing top-level concurrency'
+          group = re.search(r'^  group: (.+)$', concurrency.group(1), re.MULTILINE)
+          assert group and 'github.ref' in group.group(1), 'Concurrency group must contain github.ref'
+          cancellation = re.search(r'^  cancel-in-progress: (.+)$', concurrency.group(1), re.MULTILINE)
+          assert cancellation and cancellation.group(1) == "$" + "{{ github.event_name == 'pull_request' }}", \
+              'Cancellation must be limited to pull requests'
+
           failures = []
           for fixture, broken in [('unformatted', 0), ('clippy-warning', 1),
                                   ('failing-test', 3), ('undocumented', 2), ('broken-doc-link', 2)]:

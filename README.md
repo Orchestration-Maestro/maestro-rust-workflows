@@ -12,6 +12,7 @@ One shared Rust CI, with four checks:
 Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
 be documented, and documentation warnings fail the check. Tests run on Linux
 for now; macOS and Windows return before the first release.
+A new push to a pull request cancels that pull request's older run.
 
 ## Adoption
 
