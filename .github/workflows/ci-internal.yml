@@ -41,10 +41,11 @@ jobs:
           rustup show
           rustup component add rustfmt clippy
       # Reusable workflow calls cannot use continue-on-error. The broken
-      # fixtures run the workflow's own commands and assert all nine outcomes.
+      # fixtures run the workflow's own commands and assert all twenty outcomes.
       - name: Each broken fixture fails only its own check
         shell: python
         run: |
+          import os
           import pathlib
           import re
           import shlex
@@ -55,6 +56,7 @@ jobs:
           expected = [
               'cargo fmt --all --check',
               'cargo clippy --workspace --all-targets --locked -- -D warnings',
+              'cargo doc --workspace --no-deps --locked',
               'cargo test --workspace --locked',
           ]
           assert commands == expected, f'Unexpected check commands: {commands}'
@@ -64,10 +66,19 @@ jobs:
               if any(f'run: {command}\n' in step for command in commands):
                   assert not re.search(r'^        if:', step, re.MULTILINE)
 
+          docs_step = next(step for step in workflow.split('      - name:')[1:]
+                           if 'run: cargo doc --workspace --no-deps --locked\n' in step)
+          flags = re.search(r'^          RUSTDOCFLAGS: (.+)$', docs_step, re.MULTILINE)
+          assert flags and flags.group(1) == '-D warnings -D missing_docs'
+
           failures = []
-          for fixture, broken in [('unformatted', 0), ('clippy-warning', 1), ('failing-test', 2)]:
+          for fixture, broken in [('unformatted', 0), ('clippy-warning', 1),
+                                  ('failing-test', 3), ('undocumented', 2), ('broken-doc-link', 2)]:
               for check, command in enumerate(commands):
-                  result = subprocess.run(shlex.split(command), cwd=f'fixtures/{fixture}')
+                  env = os.environ.copy()
+                  if check == 2:
+                      env['RUSTDOCFLAGS'] = flags.group(1)
+                  result = subprocess.run(shlex.split(command), cwd=f'fixtures/{fixture}', env=env)
                   expected_failure = check == broken
                   print(f'{fixture}: {command}: exit {result.returncode}; '
                         f'expected {"failure" if expected_failure else "success"}', flush=True)
