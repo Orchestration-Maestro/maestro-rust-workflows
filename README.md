@@ -1,12 +1,17 @@
 # maestro-rust-workflows
 
-One shared Rust CI, with three checks:
+One shared Rust CI, with four checks:
 
 | Check | Command | Systems |
 | --- | --- | --- |
 | Format | `cargo fmt --all --check` | Linux |
 | Lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Linux |
-| Tests | `cargo test --workspace --locked` | Linux, macOS, Windows |
+| Docs | `cargo doc --workspace --no-deps --locked` | Linux |
+| Tests | `cargo test --workspace --locked` | Linux |
+
+Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
+be documented, and documentation warnings fail the check. Tests run on Linux
+for now; macOS and Windows return before the first release.
 
 ## Adoption
 
@@ -22,10 +27,11 @@ releases; publishing the first release does not change existing consumers.
 ## Self-test
 
 `ci-internal.yml` calls the shared workflow on `fixtures/sample`, which must
-pass on all three systems. The three broken copies are independent packages,
+pass every check on Linux. The five broken copies are independent packages,
 not members of a root workspace. Each fails only its intended command:
-format, lint or tests. The self-test reads these commands from `ci.yml` and
-runs all nine combinations on Linux, because reusable workflow calls cannot
+format, lint, tests, an undocumented public item or a broken documentation link.
+The self-test reads the commands and documentation flags from `ci.yml` and
+runs all twenty combinations on Linux, because reusable workflow calls cannot
 mark expected failures with `continue-on-error`.
 
 The final checks are `Required repository quality` and
