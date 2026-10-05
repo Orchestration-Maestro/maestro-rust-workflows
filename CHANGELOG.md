@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.2.0...v0.2.1) (2026-10-05)
+
+
+### Bug Fixes
+
+* cancel a pull request's older run on a new push ([#8](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/8)) ([2918f61](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/2918f613fcd28b83c32f30e3411cf20fb9741262))
+
 ## [0.2.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.1.1...v0.2.0) (2026-10-05)
 
 
