@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.1.1...v0.2.0) (2026-10-05)
+
+
+### Features
+
+* enforce public documentation and run tests on Linux ([#6](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/6)) ([d5b030b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/d5b030bb9c8dbb7b251075d17f3bdcf98e8e6753))
+
 ## [0.1.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.1.0...v0.1.1) (2026-10-04)
 
 
