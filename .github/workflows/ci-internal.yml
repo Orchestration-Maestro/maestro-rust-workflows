@@ -76,7 +76,7 @@ jobs:
           group = re.search(r'^  group: (.+)$', concurrency.group(1), re.MULTILINE)
           assert group and 'github.ref' in group.group(1), 'Concurrency group must contain github.ref'
           cancellation = re.search(r'^  cancel-in-progress: (.+)$', concurrency.group(1), re.MULTILINE)
-          assert cancellation and cancellation.group(1) == "${{ github.event_name == 'pull_request' }}", \
+          assert cancellation and cancellation.group(1) == "$" + "{{ github.event_name == 'pull_request' }}", \
               'Cancellation must be limited to pull requests'
 
           failures = []
