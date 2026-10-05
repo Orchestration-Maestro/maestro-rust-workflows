@@ -1,6 +1,7 @@
 # maestro-rust-workflows
 
-The shared CI checks only formatting, Clippy warnings and tests. Its spec is
+The shared CI checks only formatting, Clippy warnings, documentation and
+tests. Its spec is
 [One shared Rust CI](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md).
 
 - Keep consumer settings out of the workflow. The directory input is for its
