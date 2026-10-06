@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Caller-declared Rust checks",
+  "description": "The parsed shape of the optional .github/ci.toml document.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["wasm_crates", "check_targets"],
+  "properties": {
+    "wasm_crates": {
+      "description": "Exact caller Cargo package names, in execution order. Repetitions are retained.",
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "check_targets": {
+      "description": "Exact caller compiler targets with a supported native runner, in execution order.",
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "browser_build": {
+      "description": "Run the caller's mise-pinned just browser-build after the listed wasm builds.",
+      "type": "boolean",
+      "default": false
+    }
+  }
+}

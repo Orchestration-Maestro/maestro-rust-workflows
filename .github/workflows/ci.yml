@@ -22,10 +22,87 @@ defaults:
     shell: bash
 
 jobs:
+  declaration:
+    name: Caller declaration
+    if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory || '.' }}
+    outputs:
+      enabled: ${{ steps.config.outputs.enabled }}
+      wasm_crates: ${{ steps.config.outputs.wasm_crates }}
+      targets: ${{ steps.config.outputs.targets }}
+      browser_build: ${{ steps.config.outputs.browser_build }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup show
+      - name: Read caller declaration
+        id: config
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          import tomllib
+          import subprocess
+          path = pathlib.Path('.github/ci.toml')
+          try:
+              with path.open('rb') as source:
+                  config = tomllib.load(source)
+          except FileNotFoundError:
+              if path.is_symlink():
+                  raise SystemExit(f'{path}: unreadable declaration')
+              config = None
+          except (OSError, tomllib.TOMLDecodeError) as error:
+              raise SystemExit(f'{path}: {error}') from error
+          values = dict(enabled='false', wasm_crates='[]', targets='[]', browser_build='false')
+          if config is not None:
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build'}
+              if unknown:
+                  raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
+              for key in ('wasm_crates', 'check_targets'):
+                  if key not in config or not isinstance(config[key], list) or any(type(item) is not str for item in config[key]):
+                      raise SystemExit(f'{path}: {key} must be an array of strings')
+              if type(config.get('browser_build', False)) is not bool:
+                  raise SystemExit(f'{path}: browser_build must be a boolean')
+              try:
+                  packages = {package['name'] for package in json.loads(subprocess.check_output(
+                      ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))['packages']}
+                  supported = set(subprocess.check_output(['rustc', '--print', 'target-list'], text=True).splitlines())
+              except (subprocess.CalledProcessError, OSError, ValueError) as error:
+                  raise SystemExit(f'{path}: caller metadata/toolchain failed') from error
+              runners = {
+                  'aarch64-unknown-linux-gnu': 'ubuntu-24.04-arm',
+                  'aarch64-apple-darwin': 'macos-latest',
+                  'x86_64-apple-darwin': 'macos-latest',
+                  'x86_64-pc-windows-msvc': 'windows-latest',
+              }
+              for crate in config['wasm_crates']:
+                  if crate not in packages:
+                      raise SystemExit(f'{path}: wasm_crates contains unknown package {crate!r}')
+              targets = []
+              for target in config['check_targets']:
+                  if target not in supported:
+                      raise SystemExit(f'{path}: check_targets contains unknown target {target!r}')
+                  if target not in runners:
+                      raise SystemExit(f'{path}: check_targets has no runner for {target!r}')
+                  targets.append(dict(target=target, runner=runners[target]))
+              values.update(targets=json.dumps(targets))
+              values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
+                            browser_build=str(config.get('browser_build', False)).lower())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              for key, value in values.items():
+                  output.write(f'{key}={value}\n')
+          PYTHON
   quality:
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ github.repository_id != '1404598722' || inputs.working-directory != '' }}
+    if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -56,7 +133,7 @@ jobs:
   docs:
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ github.repository_id != '1404598722' || inputs.working-directory != '' }}
+    if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -83,8 +160,9 @@ jobs:
         run: cargo doc --workspace --no-deps --locked
 
   tests:
+    needs: declaration
     name: Tests (${{ matrix.os }})
-    if: ${{ github.repository_id != '1404598722' || inputs.working-directory != '' }}
+    if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
     strategy:
       matrix:
         os: [ubuntu-latest]
@@ -109,4 +187,127 @@ jobs:
       - name: Toolchain
         run: rustup show
       - name: Tests
+        if: needs.declaration.outputs.enabled != 'true'
         run: cargo test --workspace --locked
+      - name: Search tools
+        if: needs.declaration.outputs.enabled == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep fd-find
+          mkdir -p "$RUNNER_TEMP/maestro-search-bin"
+          ln -s /usr/bin/fdfind "$RUNNER_TEMP/maestro-search-bin/fd"
+          echo "$RUNNER_TEMP/maestro-search-bin" >> "$GITHUB_PATH"
+      - name: Isolated tests
+        if: needs.declaration.outputs.enabled == 'true'
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
+          GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY OPENROUTER_API_KEY ZAI_API_KEY
+          MISTRAL_API_KEY MINIMAX_API_KEY MINIMAX_CN_API_KEY KIMI_API_KEY HF_TOKEN
+          AI_GATEWAY_API_KEY OPENCODE_API_KEY COPILOT_GITHUB_TOKEN GH_TOKEN GITHUB_TOKEN
+          GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_PROJECT GCLOUD_PROJECT
+          GOOGLE_CLOUD_LOCATION AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+          AWS_SESSION_TOKEN AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK
+          AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI
+          AWS_WEB_IDENTITY_TOKEN_FILE BEDROCK_EXTENSIVE_MODEL_TEST FIREWORKS_API_KEY'''.split()
+          found = sorted(name for name in os.environ if name in names or name.endswith('_API_KEY'))
+          if found:
+              raise SystemExit('Credential variables present: ' + ', '.join(found))
+          PYTHON
+          cargo_home=$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd)
+          rustup_home=$(cd "${RUSTUP_HOME:-$HOME/.rustup}" && pwd)
+          isolation=$(mktemp -d "$RUNNER_TEMP/maestro-tests.XXXXXX")
+          trap 'rm -rf "$isolation"' EXIT
+          mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
+          env -i PATH="$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" \
+            HOME="$isolation/home" TMPDIR="$isolation/tmp" TMP="$isolation/tmp" TEMP="$isolation/tmp" \
+            XDG_CONFIG_HOME="$isolation/config" XDG_DATA_HOME="$isolation/data" \
+            XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
+            XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
+            XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 \
+            cargo test --workspace --locked
+
+  targets:
+    name: Check (${{ matrix.target }})
+    needs: declaration
+    if: needs.declaration.outputs.targets != '[]'
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.declaration.outputs.targets) }}
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory || '.' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup show
+      - name: Check target
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          rustup target add "$TARGET"
+          cargo check --workspace --all-targets --locked --target "$TARGET"
+
+  browser:
+    name: Wasm and browser build
+    needs: declaration
+    if: needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory || '.' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup show
+      - name: Build wasm crates
+        env:
+          WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+          crates = json.loads(os.environ['WASM_CRATES'])
+          if crates:
+              subprocess.run(['rustup', 'target', 'add', 'wasm32-unknown-unknown'], check=True)
+          for crate in crates:
+              subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
+          PYTHON
+      - name: Browser tools
+        if: needs.declaration.outputs.browser_build == 'true'
+        run: |
+          # https://github.com/jdx/mise/releases/download/v2026.10.2/SHASUMS256.txt
+          version=2026.10.2
+          url=https://github.com/jdx/mise/releases/download/v2026.10.2/mise-v2026.10.2-linux-x64
+          digest=8f5f6660336f572830e33cd9b378d3131e529a0d4c4f0c553776be90a1ba302a
+          installed=$(mise --version 2>/dev/null | cut -d ' ' -f 1) || installed=
+          if [ "$installed" != "$version" ]; then
+            bin=$(mktemp -d "$RUNNER_TEMP/maestro-mise.XXXXXX")
+            curl --fail --location "$url" --output "$bin/mise"
+            printf '%s  %s\n' "$digest" "$bin/mise" | sha256sum --check --status
+            chmod +x "$bin/mise"
+            export PATH="$bin:$PATH"
+            echo "$bin" >> "$GITHUB_PATH"
+          fi
+          test -f mise.toml
+          python3 - <<'PYTHON'
+          import tomllib
+          with open('mise.toml', 'rb') as source:
+              config = tomllib.load(source)
+          if 'just' not in config.get('tools', {}):
+              raise SystemExit('mise.toml: tools.just must select the caller browser tool')
+          PYTHON
+          mise install
+      - name: Browser recipe
+        if: needs.declaration.outputs.browser_build == 'true'
+        run: |
+          mise exec -- just browser-build
