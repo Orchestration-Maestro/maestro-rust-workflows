@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.3.0...v0.4.0) (2026-10-06)
+
+
+### Features
+
+* **ci:** expose caller-pinned tools to isolated tests ([#17](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/17)) ([e4bfbd6](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/e4bfbd6de8e19bdd30bc1a2c223b61c3fceaaf02)), closes [#16](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/16)
+
 ## [0.3.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.2.1...v0.3.0) (2026-10-06)
 
 
