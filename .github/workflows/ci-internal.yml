@@ -150,7 +150,13 @@ jobs:
                      if k not in credential_names and not k.endswith('_API_KEY')}
               env.update(extra or {})
               command = body(name)
-              argv = ['bash', '-e', '-o', 'pipefail', '-c', command]
+              bash = 'bash'
+              if os.name == 'nt':
+                  import shutil
+                  # Match the runner's Bash shell, not the Windows WSL launcher.
+                  bash = str(pathlib.Path(shutil.which('git')).parent.parent / 'bin/bash.exe')
+                  assert pathlib.Path(bash).is_file(), f'Git Bash not found: {bash}'
+              argv = [bash, '-e', '-o', 'pipefail', '-c', command]
               if os.environ.get('MAESTRO_LOCAL_CAPPED'):
                   command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
                   argv = [os.path.expanduser('~/.local/bin/capped'), 'bash', '-e', '-o', 'pipefail', '-c', command]
@@ -327,6 +333,11 @@ jobs:
           print('PASS real_search_tools_are_exercised')
 
           def supported_targets_use_native_runners():
+              targets_job = workflow.split('  targets:\n', 1)[1].split('\n  browser:', 1)[0]
+              assert 'defaults:\n      run:\n        shell: bash\n' in targets_job, \
+                  'Target commands require Bash, including on Windows'
+              assert 'strategy:\n      fail-fast: false\n' in targets_job, \
+                  'Every target must finish instead of cancelling matrix siblings'
               expected = [
                   {'target': 'aarch64-unknown-linux-gnu', 'runner': 'ubuntu-24.04-arm'},
                   {'target': 'aarch64-apple-darwin', 'runner': 'macos-latest'},
