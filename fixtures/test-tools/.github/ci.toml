@@ -1,0 +1,3 @@
+wasm_crates = []
+check_targets = []
+test_tools = true

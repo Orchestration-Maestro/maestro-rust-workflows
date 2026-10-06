@@ -8,6 +8,7 @@ workflow's directory input exists only for its fixture self-test.
 wasm_crates = ["my-browser-library"]
 check_targets = ["x86_64-pc-windows-msvc"]
 browser_build = false
+test_tools = false
 ```
 
 ## Reusable-call concurrency
@@ -24,14 +25,15 @@ same concurrency group with its called workflow; see GitHub's
 
 ## Declaration
 
-Both arrays are required, including when empty. `browser_build` is optional
-and defaults to `false`. The [schema](../.github/ci.schema.json) describes the
-parsed TOML shape; there is no version key or older-format reader.
+Both arrays are required, including when empty. `browser_build` and
+`test_tools` are optional booleans that default to `false`. The
+[schema](../.github/ci.schema.json) describes the parsed TOML shape; there is no
+version key or older-format reader.
 
 Only an absent file keeps the original four checks without isolation, search
 tool installation or optional jobs. An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
-member or non-boolean browser flag fails declaration validation. An empty
+member or non-boolean tool/build flag fails declaration validation. An empty
 present document is invalid. Integer and string booleans are not accepted.
 
 Names are exact, without whitespace or Unicode normalization. Each wasm name
@@ -64,6 +66,28 @@ overrides are not inherited. The test argv stays
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
 retain the runner's normal home and cache access.
+
+## Caller-pinned test tools
+
+With `test_tools = true`, the Tests job reuses the browser build's
+checksum-verified mise 2026.10.2 bootstrap, runs `mise install` from the caller
+directory, and adds the installed tool bin directories to `PATH` before
+isolated tests. Provide a `mise.toml` pinning the tools your tests spawn, for
+example:
+
+```toml
+[tools]
+just = "1.58.0"
+prek = "0.5.3"
+```
+
+Tool versions come from the caller, not the shared workflow. Missing
+`mise.toml` or a failed installation fails the job. False or omitted
+`test_tools` skips the bootstrap and tool installation, preserving the existing
+test path. An absent declaration still runs the original unisolated tests.
+The test argv remains `cargo test --workspace --locked`; credential guards,
+fresh directories and the child environment allowlist are unchanged. Only the
+installed tools' executable paths are added, not mise's environment settings.
 
 ## Wasm and browser builds
 

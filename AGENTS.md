@@ -2,7 +2,8 @@
 
 The shared CI always checks formatting, Clippy warnings, documentation and
 tests. The optional caller declaration adds isolated tests, real search tools,
-wasm builds, native foreign-target checks and the fixed browser recipe hook. Its spec is
+caller-pinned test tools, wasm builds, native foreign-target checks and the
+fixed browser recipe hook. Its spec is
 [One shared Rust CI](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md).
 
 - Accept only the optional `.github/ci.toml` declaration documented in

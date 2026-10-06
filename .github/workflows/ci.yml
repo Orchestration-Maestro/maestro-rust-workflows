@@ -38,6 +38,7 @@ jobs:
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       targets: ${{ steps.config.outputs.targets }}
       browser_build: ${{ steps.config.outputs.browser_build }}
+      test_tools: ${{ steps.config.outputs.test_tools }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -64,16 +65,17 @@ jobs:
               config = None
           except (OSError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(enabled='false', wasm_crates='[]', targets='[]', browser_build='false')
+          values = dict(enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false')
           if config is not None:
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build'}
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
                   if key not in config or not isinstance(config[key], list) or any(type(item) is not str for item in config[key]):
                       raise SystemExit(f'{path}: {key} must be an array of strings')
-              if type(config.get('browser_build', False)) is not bool:
-                  raise SystemExit(f'{path}: browser_build must be a boolean')
+              for key in ('browser_build', 'test_tools'):
+                  if type(config.get(key, False)) is not bool:
+                      raise SystemExit(f'{path}: {key} must be a boolean')
               try:
                   packages = {package['name'] for package in json.loads(subprocess.check_output(
                       ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))['packages']}
@@ -98,7 +100,8 @@ jobs:
                   targets.append(dict(target=target, runner=runners[target]))
               values.update(targets=json.dumps(targets))
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
-                            browser_build=str(config.get('browser_build', False)).lower())
+                            browser_build=str(config.get('browser_build', False)).lower(),
+                            test_tools=str(config.get('test_tools', False)).lower())
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
@@ -201,6 +204,28 @@ jobs:
           mkdir -p "$RUNNER_TEMP/maestro-search-bin"
           ln -s /usr/bin/fdfind "$RUNNER_TEMP/maestro-search-bin/fd"
           echo "$RUNNER_TEMP/maestro-search-bin" >> "$GITHUB_PATH"
+      - name: Mise bootstrap
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: &mise-bootstrap |
+          # https://github.com/jdx/mise/releases/download/v2026.10.2/SHASUMS256.txt
+          version=2026.10.2
+          url=https://github.com/jdx/mise/releases/download/v2026.10.2/mise-v2026.10.2-linux-x64
+          digest=8f5f6660336f572830e33cd9b378d3131e529a0d4c4f0c553776be90a1ba302a
+          installed=$(mise --version 2>/dev/null | cut -d ' ' -f 1) || installed=
+          if [ "$installed" != "$version" ]; then
+            bin=$(mktemp -d "$RUNNER_TEMP/maestro-mise.XXXXXX")
+            curl --fail --location "$url" --output "$bin/mise"
+            printf '%s  %s\n' "$digest" "$bin/mise" | sha256sum --check --status
+            chmod +x "$bin/mise"
+            export PATH="$bin:$PATH"
+            echo "$bin" >> "$GITHUB_PATH"
+          fi
+      - name: Test tools
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: |
+          test -f mise.toml
+          mise install
+          mise bin-paths >> "$GITHUB_PATH"
       - name: Isolated tests
         if: needs.declaration.outputs.enabled == 'true'
         run: |
@@ -288,22 +313,12 @@ jobs:
           for crate in crates:
               subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
           PYTHON
+      - name: Browser mise bootstrap
+        if: needs.declaration.outputs.browser_build == 'true'
+        run: *mise-bootstrap
       - name: Browser tools
         if: needs.declaration.outputs.browser_build == 'true'
         run: |
-          # https://github.com/jdx/mise/releases/download/v2026.10.2/SHASUMS256.txt
-          version=2026.10.2
-          url=https://github.com/jdx/mise/releases/download/v2026.10.2/mise-v2026.10.2-linux-x64
-          digest=8f5f6660336f572830e33cd9b378d3131e529a0d4c4f0c553776be90a1ba302a
-          installed=$(mise --version 2>/dev/null | cut -d ' ' -f 1) || installed=
-          if [ "$installed" != "$version" ]; then
-            bin=$(mktemp -d "$RUNNER_TEMP/maestro-mise.XXXXXX")
-            curl --fail --location "$url" --output "$bin/mise"
-            printf '%s  %s\n' "$digest" "$bin/mise" | sha256sum --check --status
-            chmod +x "$bin/mise"
-            export PATH="$bin:$PATH"
-            echo "$bin" >> "$GITHUB_PATH"
-          fi
           test -f mise.toml
           python3 - <<'PYTHON'
           import tomllib
