@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.2.1...v0.3.0) (2026-10-06)
+
+
+### Features
+
+* **ci:** run caller-declared isolated and target checks ([#12](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/12)) ([b85d671](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/b85d67123cc4be1b29acf58b66aea1a129a0f2fe))
+
 ## [0.2.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.2.0...v0.2.1) (2026-10-05)
 
 
