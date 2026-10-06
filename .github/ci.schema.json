@@ -16,6 +16,11 @@
       "type": "array",
       "items": {"type": "string"}
     },
+    "test_tools": {
+      "description": "Install caller mise.toml tools and expose their binaries to isolated tests.",
+      "type": "boolean",
+      "default": false
+    },
     "browser_build": {
       "description": "Run the caller's mise-pinned just browser-build after the listed wasm builds.",
       "type": "boolean",

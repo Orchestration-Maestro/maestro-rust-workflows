@@ -24,13 +24,20 @@ jobs:
       working-directory: fixtures/declared
       concurrency-key: declared
 
+  test-tools:
+    name: Caller test tools
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: fixtures/test-tools
+      concurrency-key: test-tools
+
   quality:
     name: Required repository quality
-    needs: [sample, declared]
+    needs: [sample, declared, test-tools]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Both callers passed every check
+      - name: All callers passed every check
         env:
           RESULTS: ${{ toJSON(needs) }}
         shell: python
@@ -141,7 +148,7 @@ jobs:
           def body(name):
               steps = workflow.split('      - name: ')
               step = next(s for s in steps[1:] if s.splitlines()[0] == name)
-              match = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
+              match = re.search(r'^        run: (?:&mise-bootstrap )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
               assert match, f'Missing executable body: {name}'
               return textwrap.dedent(match.group(1))
 
@@ -150,6 +157,8 @@ jobs:
                      if k not in credential_names and not k.endswith('_API_KEY')}
               env.update(extra or {})
               command = body(name)
+              if name in ['Browser tools', 'Test tools']:
+                  command = body('Mise bootstrap') + command
               bash = 'bash'
               if os.name == 'nt':
                   import shutil
@@ -182,13 +191,111 @@ jobs:
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'enabled': 'false', 'wasm_crates': '[]', 'targets': '[]', 'browser_build': 'false'}
+              assert values == {'enabled': 'false', 'wasm_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false'}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
 
           absent_keeps_base_checks()
           print('PASS absent_keeps_base_checks')
+
+          def test_tools_defaults_preserve_behavior():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  result, values = declaration(directory)
+                  assert result.returncode == 0, result.stderr
+                  assert values['test_tools'] == 'false'
+                  (directory / '.github').mkdir()
+                  path = directory / '.github/ci.toml'
+                  for flag in ['', '\ntest_tools=false']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]' + flag)
+                      result, values = declaration(directory)
+                      assert result.returncode == 0 and values['test_tools'] == 'false', result.stderr
+                  for flag in ['1', '"true"', '[]']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_tools=' + flag)
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and 'test_tools must be a boolean' in result.stderr
+                  assert workflow.count('digest=8f5f6660') == 1
+                  browser = workflow.split('  browser:\n', 1)[1]
+                  assert "if: needs.declaration.outputs.browser_build == 'true'\n        run: *mise-bootstrap" in browser
+                  tests = workflow.split('  tests:\n', 1)[1].split('  targets:', 1)[0]
+                  for name in ['Mise bootstrap', 'Test tools']:
+                      step = next(s for s in tests.split('      - name: ')[1:] if s.splitlines()[0] == name)
+                      assert "if: needs.declaration.outputs.test_tools == 'true'" in step
+
+          test_tools_defaults_preserve_behavior()
+          print('PASS test_tools_defaults_preserve_behavior')
+
+          def test_tools_are_opt_in():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/test-tools', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  # Keep rustup's bin directory present so its proxy does not prepend it.
+                  proxies = directory / 'rust-bin'
+                  proxies.mkdir()
+                  for tool in ['cargo', 'rustc', 'rustdoc']:
+                      (proxies / tool).symlink_to(shutil.which(tool))
+                  for tool in ['just', 'prek']:
+                      missing = proxies / tool
+                      missing.write_text('#!/bin/sh\nexit 127\n')
+                      missing.chmod(0o755)
+                  env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(directory / 'paths'),
+                         'PATH': f'{proxies}:/usr/bin:/bin:' + str(pathlib.Path.home() / '.cargo/bin')}
+                  path = directory / '.github/ci.toml'
+                  for flag in ['', '\ntest_tools=false']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]' + flag)
+                      result, values = declaration(directory)
+                      assert result.returncode == 0 and values['test_tools'] == 'false', result.stderr
+                      result = execute('Isolated tests', directory, env)
+                      assert result.returncode != 0 and 'test result: FAILED' in result.stdout, result.stderr
+                  path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_tools=true')
+                  result, values = declaration(directory)
+                  assert result.returncode == 0 and values['test_tools'] == 'true', result.stderr
+                  result = execute('Test tools', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  env['PATH'] = ':'.join((directory / 'paths').read_text().splitlines()) + ':' + env['PATH']
+                  result = execute('Isolated tests', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert 'caller_pinned_tools_are_available ... ok' in result.stdout
+
+          test_tools_are_opt_in()
+          print('PASS test_tools_are_opt_in')
+
+          def test_tools_follow_only_caller_pins():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/test-tools', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  conflict = directory / 'conflict'
+                  conflict.mkdir()
+                  for tool in ['just', 'prek']:
+                      binary = conflict / tool
+                      binary.write_text('#!/bin/sh\necho conflicting-tool\nexit 29\n')
+                      binary.chmod(0o755)
+                  env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(directory / 'paths'),
+                         'PATH': f'{conflict}:' + os.environ['PATH']}
+                  for just, prek in [('1.58.0', '0.5.3'), ('1.40.0', '0.5.0')]:
+                      (directory / 'paths').write_text('')
+                      (directory / 'mise.toml').write_text(f'[tools]\njust="{just}"\nprek="{prek}"\n')
+                      source = (root / 'fixtures/test-tools/src/lib.rs').read_text()
+                      (directory / 'src/lib.rs').write_text(source.replace('1.58.0', just).replace('0.5.3', prek))
+                      result = execute('Test tools', directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      child = env | {'PATH': ':'.join((directory / 'paths').read_text().splitlines()) + ':' + env['PATH']}
+                      result = execute('Isolated tests', directory, child)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                  (directory / 'mise.toml').unlink()
+                  result = execute('Test tools', directory, env)
+                  assert result.returncode != 0
+                  (directory / 'mise.toml').write_text('[tools]\njust="not-a-real-version"\n')
+                  result = execute('Test tools', directory, env)
+                  assert result.returncode != 0
+
+          test_tools_follow_only_caller_pins()
+          print('PASS test_tools_follow_only_caller_pins')
 
           def declaration_types_are_checked():
               with tempfile.TemporaryDirectory() as temporary:
@@ -530,7 +637,8 @@ jobs:
           def workflow_failures_remain_required():
               internal = (root / '.github/workflows/ci-internal.yml').read_text()
               assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
-              assert 'needs: [sample, declared]' in internal
+              assert 'needs: [sample, declared, test-tools]' in internal
+              assert 'working-directory: fixtures/test-tools' in internal
               assert 'needs: [seams, native]' in internal
               assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
               assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
@@ -549,13 +657,13 @@ jobs:
               assert group == 'rust-ci-$' + '{{ github.ref }}$' + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
                   'Reusable calls share a concurrency group and can cancel each other'
               keys = []
-              for job in ['sample', 'declared']:
+              for job in ['sample', 'declared', 'test-tools']:
                   section = re.split(r'\n  \S', internal.split(f'  {job}:\n', 1)[1], maxsplit=1)[0]
                   key = re.search(r'^      concurrency-key: (.+)$', section, re.MULTILINE)
                   assert key, f'{job} must select its own stable concurrency key'
                   keys.append(key.group(1).casefold())
-              assert len(set(keys)) == 2, 'Concurrency groups are case-insensitive'
-              assert 'needs: [sample, declared]' in internal
+              assert len(set(keys)) == 3, 'Concurrency groups are case-insensitive'
+              assert 'needs: [sample, declared, test-tools]' in internal
               assert "all(job['result'] == 'success'" in internal
               assert "cancel-in-progress: $" + "{{ github.event_name == 'pull_request' }}" in workflow
 
