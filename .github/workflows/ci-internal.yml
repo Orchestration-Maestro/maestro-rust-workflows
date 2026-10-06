@@ -15,20 +15,34 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: fixtures/sample
+      concurrency-key: sample
+
+  declared:
+    name: Declared caller
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: fixtures/declared
+      concurrency-key: declared
 
   quality:
     name: Required repository quality
-    needs: sample
+    needs: [sample, declared]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Sample passed every check
+      - name: Both callers passed every check
         env:
-          RESULT: ${{ needs.sample.result }}
-        run: test "$RESULT" = success
+          RESULTS: ${{ toJSON(needs) }}
+        shell: python
+        run: |
+          import json
+          import os
+          assert all(job['result'] == 'success' for job in json.loads(os.environ['RESULTS']).values())
 
-  consumers:
-    name: Required consumer tests
+  seams:
+    name: Workflow seam proofs
+    outputs:
+      targets: ${{ steps.cases.outputs.targets }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -63,8 +77,15 @@ jobs:
           assert 'continue-on-error' not in workflow
           assert '|| true' not in workflow
           for step in workflow.split('      - name:')[1:]:
-              if any(f'run: {command}\n' in step for command in commands):
+              if any(f'run: {command}\n' in step for command in commands[:3]):
                   assert not re.search(r'^        if:', step, re.MULTILINE)
+          base_test = next(step for step in workflow.split('      - name:')[1:]
+                           if 'run: cargo test --workspace --locked\n' in step)
+          assert "if: needs.declaration.outputs.enabled != 'true'" in base_test
+          isolated_test = next(step for step in workflow.split('      - name:')[1:]
+                               if step.startswith(' Isolated tests\n'))
+          assert "if: needs.declaration.outputs.enabled == 'true'" in isolated_test
+          assert 'cargo test --workspace --locked\n' in isolated_test
 
           docs_step = next(step for step in workflow.split('      - name:')[1:]
                            if 'run: cargo doc --workspace --no-deps --locked\n' in step)
@@ -93,3 +114,530 @@ jobs:
                   if (result.returncode != 0) != expected_failure:
                       failures.append(f'{fixture}: {command}: exit {result.returncode}')
           assert not failures, '\n'.join(failures)
+      - name: Real search tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep fd-find
+          mkdir -p "$RUNNER_TEMP/maestro-search-bin"
+          ln -s /usr/bin/fdfind "$RUNNER_TEMP/maestro-search-bin/fd"
+          echo "$RUNNER_TEMP/maestro-search-bin" >> "$GITHUB_PATH"
+      - name: Caller checks at workflow seam
+        id: cases
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import re
+          import shlex
+          import subprocess
+          import tempfile
+          import textwrap
+          import tomllib
+
+          workflow = pathlib.Path('.github/workflows/ci.yml').read_text()
+          root = pathlib.Path.cwd()
+
+          def body(name):
+              steps = workflow.split('      - name: ')
+              step = next(s for s in steps[1:] if s.splitlines()[0] == name)
+              match = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
+              assert match, f'Missing executable body: {name}'
+              return textwrap.dedent(match.group(1))
+
+          def execute(name, cwd, extra=None):
+              env = {k: v for k, v in os.environ.items()
+                     if k not in credential_names and not k.endswith('_API_KEY')}
+              env.update(extra or {})
+              command = body(name)
+              bash = 'bash'
+              if os.name == 'nt':
+                  import shutil
+                  # Match the runner's Bash shell, not the Windows WSL launcher.
+                  bash = str(pathlib.Path(shutil.which('git')).parent.parent / 'bin/bash.exe')
+                  assert pathlib.Path(bash).is_file(), f'Git Bash not found: {bash}'
+              argv = [bash, '-e', '-o', 'pipefail', '-c', command]
+              if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                  command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
+                  argv = [os.path.expanduser('~/.local/bin/capped'), 'bash', '-e', '-o', 'pipefail', '-c', command]
+                  env['CARGO_BUILD_JOBS'] = '3'
+              return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
+
+          credential_names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
+          GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY OPENROUTER_API_KEY ZAI_API_KEY
+          MISTRAL_API_KEY MINIMAX_API_KEY MINIMAX_CN_API_KEY KIMI_API_KEY HF_TOKEN
+          AI_GATEWAY_API_KEY OPENCODE_API_KEY COPILOT_GITHUB_TOKEN GH_TOKEN GITHUB_TOKEN
+          GOOGLE_APPLICATION_CREDENTIALS GOOGLE_CLOUD_PROJECT GCLOUD_PROJECT
+          GOOGLE_CLOUD_LOCATION AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+          AWS_SESSION_TOKEN AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK
+          AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI
+          AWS_WEB_IDENTITY_TOKEN_FILE BEDROCK_EXTENSIVE_MODEL_TEST FIREWORKS_API_KEY'''.split()
+
+          def declaration(directory):
+              with tempfile.NamedTemporaryFile() as output:
+                  result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': output.name})
+                  values = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text().splitlines())
+                  return result, values
+
+          def absent_keeps_base_checks():
+              result, values = declaration(root / 'fixtures/sample')
+              assert result.returncode == 0, result.stdout + result.stderr
+              assert values == {'enabled': 'false', 'wasm_crates': '[]', 'targets': '[]', 'browser_build': 'false'}
+              assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
+              assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
+              assert "inputs.working-directory != '.'" in workflow
+
+          absent_keeps_base_checks()
+          print('PASS absent_keeps_base_checks')
+
+          def declaration_types_are_checked():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  for filename in ['Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml']:
+                      (directory / filename).write_bytes((root / 'fixtures/sample' / filename).read_bytes())
+                  (directory / 'src').mkdir()
+                  (directory / 'src/lib.rs').write_text('//! Fixture.\n')
+                  path = directory / '.github/ci.toml'
+                  for text in ['wasm_crates=[]\ncheck_targets=[]',
+                               'wasm_crates=[]\ncheck_targets=[]\nbrowser_build=false',
+                               'wasm_crates=[]\ncheck_targets=[]\nbrowser_build=true']:
+                      path.write_text(text)
+                      result, values = declaration(directory)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      assert values['enabled'] == 'true'
+                      assert values['browser_build'] == str('browser_build=true' in text).lower()
+                  for text in ['', 'broken [', 'wasm_crates=[]', 'check_targets=[]',
+                               'wasm_crates=[]\ncheck_targets=[]\nextra=true',
+                               'wasm_crates="sample"\ncheck_targets=[]',
+                               'wasm_crates=[]\ncheck_targets="target"',
+                               'wasm_crates=[1]\ncheck_targets=[]',
+                               'wasm_crates=[]\ncheck_targets=[false]',
+                               'wasm_crates=[]\ncheck_targets=[]\nbrowser_build=1',
+                               'wasm_crates=[]\ncheck_targets=[]\nbrowser_build="true"',
+                               'wasm_crates=[]\nwasm_crates=[]\ncheck_targets=[]']:
+                      path.write_text(text)
+                      result, values = declaration(directory)
+                      assert result.returncode != 0, text
+                      assert '.github/ci.toml' in result.stderr
+                      if 'extra=true' in text:
+                          assert 'extra' in result.stderr
+                      assert not values
+                  path.unlink()
+                  path.mkdir()  # A present path that cannot be read as a file is not absence.
+                  result, values = declaration(directory)
+                  assert result.returncode != 0 and not values
+                  path.rmdir()
+                  path.symlink_to(directory / 'missing')
+                  result, values = declaration(directory)
+                  assert result.returncode != 0 and not values
+
+          declaration_types_are_checked()
+          print('PASS declaration_types_are_checked')
+
+          def declared_members_are_literal_arguments():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  import shutil
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  path = directory / '.github/ci.toml'
+                  path.write_text('wasm_crates=["sample", "sample"]\ncheck_targets=["x86_64-pc-windows-msvc", "x86_64-pc-windows-msvc"]')
+                  result, values = declaration(directory)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert json.loads(values['wasm_crates']) == ['sample', 'sample']
+                  assert json.loads(values['targets']) == [
+                      {'target': 'x86_64-pc-windows-msvc', 'runner': 'windows-latest'},
+                      {'target': 'x86_64-pc-windows-msvc', 'runner': 'windows-latest'}]
+                  for key, valid in [('wasm_crates', 'sample'), ('check_targets', 'x86_64-pc-windows-msvc')]:
+                      for value in ['missing', ' '+valid, valid+' ', valid+'\n', '/'+valid,
+                                    '--help', '$(touch marker)', '\ufeff'+valid, valid+'\ufeff',
+                                    '\u0085'+valid, valid+'\u0085']:
+                          path.write_text(f'wasm_crates=[]\ncheck_targets=[]\n'.replace(f'{key}=[]', f'{key}=[{json.dumps(value)}]'))
+                          result, values = declaration(directory)
+                          assert result.returncode != 0 and not values, value
+                          assert key in result.stderr and '.github/ci.toml' in result.stderr
+                          assert not (directory / 'marker').exists()
+                  path.write_text('wasm_crates=[]\ncheck_targets=["x86_64-unknown-linux-gnu"]')
+                  result, values = declaration(directory)
+                  assert result.returncode != 0 and 'runner' in result.stderr and not values
+
+          declared_members_are_literal_arguments()
+          print('PASS declared_members_are_literal_arguments')
+
+          def credential_names_fail_closed():
+              with tempfile.TemporaryDirectory() as temporary:
+                  for name in credential_names + ['DEEPSEEK_API_KEY']:
+                      for value in ['', 'secret-canary-do-not-print']:
+                          result = execute('Isolated tests', root / 'fixtures/sample',
+                                           {name: value, 'RUNNER_TEMP': temporary})
+                          assert result.returncode != 0
+                          assert name in result.stderr, result.stderr
+                          assert 'secret-canary-do-not-print' not in result.stdout + result.stderr
+                          assert 'Compiling' not in result.stderr
+                  result = execute('Isolated tests', root / 'fixtures/sample',
+                                   {'AZURE_EXTENSION_DIR': 'allowed', 'RUNNER_TEMP': temporary})
+                  assert result.returncode == 0, result.stdout + result.stderr
+
+          credential_names_fail_closed()
+          print('PASS credential_names_fail_closed')
+
+          def isolated_tests_ignore_ambient_state():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  home = directory / 'original-home'
+                  home.mkdir()
+                  (home / '.maestro').mkdir()
+                  sentinel = home / '.maestro/auth.json'
+                  sentinel.write_text('original-auth-canary')
+                  (home / 'original-home-marker').write_text('controlled-home')
+                  env = {'HOME': str(home), 'CARGO_HOME': os.environ.get('CARGO_HOME', str(pathlib.Path.home() / '.cargo')),
+                         'RUSTUP_HOME': os.environ.get('RUSTUP_HOME', str(pathlib.Path.home() / '.rustup')),
+                         'RUNNER_TEMP': temporary, 'UNRELATED_AMBIENT_CANARY': 'must-not-inherit'}
+                  result = execute('Isolated tests', root / 'fixtures/declared', env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert sentinel.read_text() == 'original-auth-canary'
+                  for fixture in ['credential-dependent', 'home-dependent']:
+                      contaminated = env | {'OPENAI_API_KEY': 'controlled-provider'}
+                      command = ['cargo', 'test', '--workspace', '--locked']
+                      if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                          command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+                          contaminated['CARGO_BUILD_JOBS'] = '3'
+                      positive = subprocess.run(command, cwd=root / 'fixtures' / fixture,
+                                                env=os.environ | contaminated, capture_output=True, text=True)
+                      assert positive.returncode == 0, positive.stderr
+                      negative = execute('Isolated tests', root / 'fixtures' / fixture, env)
+                      assert negative.returncode != 0 and 'test result: FAILED' in negative.stdout, negative.stderr
+                      assert sentinel.read_text() == 'original-auth-canary'
+                  sentinel.unlink()
+                  result = execute('Isolated tests', root / 'fixtures/declared', env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert not sentinel.exists()
+
+          isolated_tests_ignore_ambient_state()
+          print('PASS isolated_tests_ignore_ambient_state')
+
+          def real_search_tools_are_exercised():
+              assert 'sudo apt-get install -y ripgrep fd-find' in body('Search tools')
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  bin_dir = directory / 'bin'
+                  bin_dir.mkdir()
+                  (bin_dir / 'fd').symlink_to('/usr/bin/fdfind')
+                  result = execute('Isolated tests', root / 'fixtures/declared',
+                                   {'RUNNER_TEMP': temporary, 'PATH': f'{bin_dir}:/usr/bin:' + os.environ['PATH']})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert 'search_commands_read_fixture_files ... ok' in result.stdout
+
+          real_search_tools_are_exercised()
+          print('PASS real_search_tools_are_exercised')
+
+          def supported_targets_use_native_runners():
+              targets_job = workflow.split('  targets:\n', 1)[1].split('\n  browser:', 1)[0]
+              assert 'defaults:\n      run:\n        shell: bash\n' in targets_job, \
+                  'Target commands require Bash, including on Windows'
+              assert 'strategy:\n      fail-fast: false\n' in targets_job, \
+                  'Every target must finish instead of cancelling matrix siblings'
+              expected = [
+                  {'target': 'aarch64-unknown-linux-gnu', 'runner': 'ubuntu-24.04-arm'},
+                  {'target': 'aarch64-apple-darwin', 'runner': 'macos-latest'},
+                  {'target': 'x86_64-apple-darwin', 'runner': 'macos-latest'},
+                  {'target': 'x86_64-pc-windows-msvc', 'runner': 'windows-latest'},
+              ]
+              result, values = declaration(root / 'fixtures/declared')
+              assert result.returncode == 0, result.stderr
+              assert json.loads(values['targets']) == expected
+              assert 'runs-on: $' + '{{ matrix.runner }}' in workflow
+              assert 'rustup target add "$TARGET"' in body('Check target')
+              assert 'cargo check --workspace --all-targets --locked --target "$TARGET"' in body('Check target')
+              if 'GITHUB_OUTPUT' in os.environ:
+                  with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                      output.write('targets=' + json.dumps(expected) + '\n')
+
+          supported_targets_use_native_runners()
+          print('PASS supported_targets_use_native_runners')
+
+          def wasm_target_failure_is_detected():
+              for fixture in ['declared', 'wasm-rejected']:
+                  result = execute('Build wasm crates', root / 'fixtures' / fixture,
+                                   {'WASM_CRATES': json.dumps([fixture])})
+                  if fixture == 'declared':
+                      assert result.returncode == 0, result.stderr
+                  else:
+                      assert result.returncode != 0 and 'fixture rejects wasm32' in result.stderr, result.stderr
+                      command = ['cargo', 'check', '--workspace', '--all-targets', '--locked']
+                      if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                          command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+                      host = subprocess.run(command, cwd=root / 'fixtures' / fixture, capture_output=True, text=True)
+                      assert host.returncode == 0, host.stderr
+              # Repeated entries are executed separately rather than silently deduplicated.
+              result = execute('Build wasm crates', root / 'fixtures/declared',
+                               {'WASM_CRATES': '["declared", "declared"]'})
+              assert result.returncode == 0, result.stderr
+              assert result.stderr.count('Finished') == 2, result.stderr
+
+          wasm_target_failure_is_detected()
+          print('PASS wasm_target_failure_is_detected')
+
+          def foreign_target_failures_are_detected():
+              target = os.environ.get('TARGET')
+              if target and ('apple-darwin' in target or target.endswith('windows-msvc')):
+                  fixture = 'windows-rejected' if target.endswith('windows-msvc') else 'macos-rejected'
+                  result = execute('Check target', root / 'fixtures' / fixture, {'TARGET': target})
+                  diagnostic = 'fixture rejects windows' if fixture == 'windows-rejected' else 'fixture rejects macos'
+                  assert result.returncode != 0 and diagnostic in result.stderr, result.stdout + result.stderr
+              else:
+                  for fixture in ['windows-rejected', 'macos-rejected']:
+                      command = ['cargo', 'check', '--workspace', '--all-targets', '--locked']
+                      if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                          command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+                      result = subprocess.run(command, cwd=root / 'fixtures' / fixture, capture_output=True, text=True)
+                      assert result.returncode == 0, result.stderr
+
+          foreign_target_failures_are_detected()
+          print('PASS foreign_target_failures_are_detected')
+
+          def browser_recipe_runs_after_wasm():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/declared', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  result = execute('Build wasm crates', directory, {'WASM_CRATES': '["declared"]'})
+                  assert result.returncode == 0, result.stderr
+                  env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(directory / 'github-path')}
+                  bootstrap = execute('Browser tools', directory, env)
+                  assert bootstrap.returncode == 0, bootstrap.stderr
+                  paths = directory / 'github-path'
+                  if paths.exists():
+                      env['PATH'] = ':'.join(paths.read_text().splitlines()) + ':' + os.environ['PATH']
+                  result = execute('Browser recipe', directory, env)
+                  assert result.returncode == 0, result.stderr
+                  assert (directory / 'browser-built').read_text() == 'built-after-wasm'
+                  (directory / 'browser-built').unlink()
+                  # A browser-only declaration must still invoke the recipe.
+                  (directory / 'justfile').write_text('browser-build:\n    @printf browser-only > browser-built\n')
+                  result = execute('Build wasm crates', directory, {'WASM_CRATES': '[]'})
+                  assert result.returncode == 0, result.stderr
+                  result = execute('Browser recipe', directory, env)
+                  assert result.returncode == 0 and (directory / 'browser-built').read_text() == 'browser-only', result.stderr
+              steps = workflow[workflow.index('  browser:'):]
+              assert steps.index('name: Build wasm crates') < steps.index('name: Browser recipe')
+              for name in ['Browser tools', 'Browser recipe']:
+                  step = next(s for s in steps.split('      - name: ')[1:] if s.splitlines()[0] == name)
+                  assert "if: needs.declaration.outputs.browser_build == 'true'" in step
+                  assert 'always()' not in step
+
+          browser_recipe_runs_after_wasm()
+          print('PASS browser_recipe_runs_after_wasm')
+
+          def browser_recipe_errors_fail_check():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/declared', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(directory / 'paths')}
+                  result = execute('Browser tools', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  paths = directory / 'paths'
+                  if paths.exists():
+                      env['PATH'] = ':'.join(paths.read_text().splitlines()) + ':' + os.environ['PATH']
+                  for text in ['another-recipe:\n    @true\n', 'browser-build:\n    @exit 17\n']:
+                      (directory / 'justfile').write_text(text)
+                      result = execute('Browser recipe', directory, env)
+                      assert result.returncode != 0, result.stdout + result.stderr
+                  (directory / 'mise.toml').unlink()
+                  result = execute('Browser tools', directory, {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(directory / 'paths')})
+                  assert result.returncode != 0
+                  (directory / 'mise.toml').write_text('[tools]\n')
+                  result = execute('Browser tools', directory, env)
+                  assert result.returncode != 0, 'Missing caller just pin must fail'
+                  (directory / 'mise.toml').write_text('[tools]\njust="not-a-real-version"\n')
+                  result = execute('Browser tools', directory, {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(directory / 'paths')})
+                  assert result.returncode != 0, result.stdout + result.stderr
+
+          browser_recipe_errors_fail_check()
+          print('PASS browser_recipe_errors_fail_check')
+
+          def browser_tools_follow_caller_pins():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/declared', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / 'justfile').write_text('browser-build:\n    @just --version > browser-version\n')
+                  bin_dir = directory / 'conflict'
+                  bin_dir.mkdir()
+                  fake = bin_dir / 'just'
+                  fake.write_text('#!/bin/sh\nprintf "conflicting just\\n"\nexit 29\n')
+                  fake.chmod(0o755)
+                  env = {'PATH': f'{bin_dir}:' + os.environ['PATH'], 'RUNNER_TEMP': temporary,
+                         'GITHUB_PATH': str(directory / 'github-path')}
+                  result = execute('Browser tools', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  paths = pathlib.Path(env['GITHUB_PATH'])
+                  if paths.exists():
+                      env['PATH'] = ':'.join(paths.read_text().splitlines()) + ':' + env['PATH']
+                  result = execute('Browser recipe', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert (directory / 'browser-version').read_text() == 'just 1.58.0\n'
+
+          browser_tools_follow_caller_pins()
+          print('PASS browser_tools_follow_caller_pins')
+
+          def mise_bootstrap_checks_release_digest():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/declared', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  paths = directory / 'paths'
+                  env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths)}
+                  # Start without mise: production must fetch and verify the official release.
+                  env['PATH'] = '/usr/bin:/bin'
+                  result = execute('Browser tools', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  installed_bin = paths.read_text().splitlines()[-1]
+                  installed = pathlib.Path(installed_bin) / 'mise'
+                  assert subprocess.check_output([str(installed), '--version'], text=True).split()[0] == '2026.10.2'
+                  bin_dir = directory / 'bin'
+                  bin_dir.mkdir()
+                  (bin_dir / 'mise').symlink_to(installed)
+                  curl = bin_dir / 'curl'
+                  curl.write_text('#!/bin/sh\nexit 77\n')
+                  curl.chmod(0o755)
+                  env['PATH'] = f'{bin_dir}:/usr/bin:/bin'
+                  before = paths.read_text()
+                  result = execute('Browser tools', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert paths.read_text() == before  # Matching version is reused, no download.
+                  (bin_dir / 'mise').unlink()
+                  (bin_dir / 'mise').write_text('#!/bin/sh\necho 0.0.0\n')
+                  (bin_dir / 'mise').chmod(0o755)
+                  curl.write_text('#!/bin/sh\nexec /usr/bin/curl "$@"\n')
+                  result = execute('Browser tools', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert paths.read_text() != before  # Wrong version selects verified release.
+                  before = paths.read_text()
+                  # A hostile download is data until the production checksum has passed.
+                  curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\n'
+                                  'printf "#!/bin/sh\\ntouch checksum-bypass-marker\\n" > "$2"\n')
+                  result = execute('Browser tools', directory, env)
+                  assert result.returncode != 0
+                  assert not (directory / 'checksum-bypass-marker').exists()
+                  assert paths.read_text() == before
+
+          mise_bootstrap_checks_release_digest()
+          print('PASS mise_bootstrap_checks_release_digest')
+
+          def workflow_failures_remain_required():
+              internal = (root / '.github/workflows/ci-internal.yml').read_text()
+              assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
+              assert 'needs: [sample, declared]' in internal
+              assert 'needs: [seams, native]' in internal
+              assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
+              assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
+              for name in ['targets', 'browser', 'tests']:
+                  section = workflow.split(f'  {name}:\n')[1]
+                  assert 'needs: declaration' in section
+              assert 'pull_request:' in workflow and 'merge_group:' in workflow
+              assert "if: needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true'" in workflow
+
+          workflow_failures_remain_required()
+          print('PASS workflow_failures_remain_required')
+
+          def reusable_calls_complete_independently():
+              internal = (root / '.github/workflows/ci-internal.yml').read_text()
+              group = re.search(r'^  group: (.+)$', workflow, re.MULTILINE).group(1)
+              assert group == 'rust-ci-$' + '{{ github.ref }}$' + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
+                  'Reusable calls share a concurrency group and can cancel each other'
+              keys = []
+              for job in ['sample', 'declared']:
+                  section = re.split(r'\n  \S', internal.split(f'  {job}:\n', 1)[1], maxsplit=1)[0]
+                  key = re.search(r'^      concurrency-key: (.+)$', section, re.MULTILINE)
+                  assert key, f'{job} must select its own stable concurrency key'
+                  keys.append(key.group(1).casefold())
+              assert len(set(keys)) == 2, 'Concurrency groups are case-insensitive'
+              assert 'needs: [sample, declared]' in internal
+              assert "all(job['result'] == 'success'" in internal
+              assert "cancel-in-progress: $" + "{{ github.event_name == 'pull_request' }}" in workflow
+
+          reusable_calls_complete_independently()
+          print('PASS reusable_calls_complete_independently')
+
+          def workflow_safety_is_unchanged():
+              assert re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) == [
+                  'cargo fmt --all --check',
+                  'cargo clippy --workspace --all-targets --locked -- -D warnings',
+                  'cargo doc --workspace --no-deps --locked',
+                  'cargo test --workspace --locked',
+              ]
+              assert 'continue-on-error' not in workflow and '|| true' not in workflow
+              assert 'permissions:\n  contents: read' in workflow
+              assert "cancel-in-progress: $" + "{{ github.event_name == 'pull_request' }}" in workflow
+              for step in workflow.split('      - name: ')[1:]:
+                  if 'uses:' in step:
+                      assert re.search(r'uses: [^\n]+@[0-9a-f]{40}', step)
+                  if step.startswith('Checkout\n'):
+                      assert 'persist-credentials: false' in step
+              assert 'RUSTDOCFLAGS: -D warnings -D missing_docs' in workflow
+              assert 'cargo test --workspace --locked' in body('Isolated tests')
+              for job in ['quality', 'docs', 'tests', 'targets', 'browser', 'declaration']:
+                  section = workflow.split(f'  {job}:\n', 1)[1]
+                  assert 'run: rustup show' in section or 'rustup show\n' in section
+              internal = (root / '.github/workflows/ci-internal.yml').read_text()
+              assert "('unformatted', 0), ('clippy-warning', 1)" in internal
+              assert "('failing-test', 3), ('undocumented', 2), ('broken-doc-link', 2)" in internal
+              # Only the base-vs-isolated tests branch may condition an original command.
+              for step in workflow.split('      - name: ')[1:]:
+                  if any(f'run: {command}\n' in step for command in [
+                          'cargo fmt --all --check',
+                          'cargo clippy --workspace --all-targets --locked -- -D warnings',
+                          'cargo doc --workspace --no-deps --locked']):
+                      assert not re.search(r'^        if:', step, re.MULTILINE)
+
+          workflow_safety_is_unchanged()
+          print('PASS workflow_safety_is_unchanged')
+
+  native:
+    name: Native compiler proof (${{ matrix.target }})
+    needs: seams
+    strategy:
+      matrix:
+        include: ${{ fromJSON(needs.seams.outputs.targets) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Foreign target failures are detected
+        shell: python
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          import ast
+          import pathlib
+          import textwrap
+          source = pathlib.Path('.github/workflows/ci-internal.yml').read_text()
+          code = source.split('      - name: Caller checks at workflow seam\n', 1)[1]
+          code = code.split('        run: |\n', 1)[1].split('\n  native:', 1)[0]
+          tree = ast.parse(textwrap.dedent(code))
+          # Reuse the same workflow-body helpers and case, not a second command generator.
+          tree.body = [node for node in tree.body if not isinstance(node, ast.Expr)]
+          namespace = {}
+          exec(compile(tree, 'workflow seam', 'exec'), namespace)
+          namespace['foreign_target_failures_are_detected']()
+          print('PASS foreign_target_failures_are_detected')
+
+  consumers:
+    name: Required consumer tests
+    needs: [seams, native]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every workflow proof passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        shell: python
+        run: |
+          import json
+          import os
+          assert all(job['result'] == 'success' for job in json.loads(os.environ['RESULTS']).values())
