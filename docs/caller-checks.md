@@ -10,6 +10,18 @@ check_targets = ["x86_64-pc-windows-msvc"]
 browser_build = false
 ```
 
+## Reusable-call concurrency
+
+The optional workflow input `concurrency-key` defaults to an empty string,
+keeping the existing per-ref concurrency group. If a workflow calls this
+reusable workflow more than once, give each calling job a distinct, stable
+key (case-insensitive), such as `concurrency-key: quality`. Reuse that key on
+later pushes so a new pull-request run cancels the older invocation of the
+same job, not another job in its own run. Do not use a run ID as the key.
+Merge-queue runs never cancel running checks. The caller must not share the
+same concurrency group with its called workflow; see GitHub's
+[reusable workflow concurrency rules](https://docs.github.com/en/actions/reference/reusable-workflows-reference#limitations-of-reusable-workflows).
+
 ## Declaration
 
 Both arrays are required, including when empty. `browser_build` is optional

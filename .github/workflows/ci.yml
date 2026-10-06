@@ -9,9 +9,13 @@ on:
         description: Directory to check (used by the self-test only)
         type: string
         default: .
+      concurrency-key:
+        description: Stable key distinguishing multiple calls in one workflow
+        type: string
+        default: ''
 
 concurrency:
-  group: rust-ci-${{ github.ref }}
+  group: rust-ci-${{ github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

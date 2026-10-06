@@ -15,12 +15,14 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: fixtures/sample
+      concurrency-key: sample
 
   declared:
     name: Declared caller
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: fixtures/declared
+      concurrency-key: declared
 
   quality:
     name: Required repository quality
@@ -529,6 +531,25 @@ jobs:
 
           workflow_failures_remain_required()
           print('PASS workflow_failures_remain_required')
+
+          def reusable_calls_complete_independently():
+              internal = (root / '.github/workflows/ci-internal.yml').read_text()
+              group = re.search(r'^  group: (.+)$', workflow, re.MULTILINE).group(1)
+              assert group == 'rust-ci-$' + '{{ github.ref }}$' + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
+                  'Reusable calls share a concurrency group and can cancel each other'
+              keys = []
+              for job in ['sample', 'declared']:
+                  section = re.split(r'\n  \S', internal.split(f'  {job}:\n', 1)[1], maxsplit=1)[0]
+                  key = re.search(r'^      concurrency-key: (.+)$', section, re.MULTILINE)
+                  assert key, f'{job} must select its own stable concurrency key'
+                  keys.append(key.group(1).casefold())
+              assert len(set(keys)) == 2, 'Concurrency groups are case-insensitive'
+              assert 'needs: [sample, declared]' in internal
+              assert "all(job['result'] == 'success'" in internal
+              assert "cancel-in-progress: $" + "{{ github.event_name == 'pull_request' }}" in workflow
+
+          reusable_calls_complete_independently()
+          print('PASS reusable_calls_complete_independently')
 
           def workflow_safety_is_unchanged():
               assert re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) == [
