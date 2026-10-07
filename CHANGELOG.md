@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.5.0...v0.5.1) (2026-10-07)
+
+
+### Bug Fixes
+
+* **ci:** install search tools from verified releases ([#25](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/25)) ([35943b9](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/35943b9f3d0a25fcedfcfbb058c9898b69b5ca8a))
+
 ## [0.5.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.4.0...v0.5.0) (2026-10-07)
 
 
