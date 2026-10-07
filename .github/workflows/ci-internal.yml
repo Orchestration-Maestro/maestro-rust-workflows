@@ -436,13 +436,106 @@ jobs:
               assert pathlib.Path(env['GITHUB_ENV']).read_text(encoding="utf-8") == before
               print('PASS check_tools_reject_corrupt_release')
 
-      - name: Real search tools
+      - name: Search release installation proofs
+        shell: python
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ripgrep fd-find
-          mkdir -p "$RUNNER_TEMP/maestro-search-bin"
-          ln -s /usr/bin/fdfind "$RUNNER_TEMP/maestro-search-bin/fd"
-          echo "$RUNNER_TEMP/maestro-search-bin" >> "$GITHUB_PATH"
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import tempfile
+          import textwrap
+          import unittest
+
+          workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
+          steps = dict(step.split('\n', 1) for step in workflow.split('      - name: ')[1:])
+          def body(name):
+              step = steps[name]
+              alias = re.search(r'^        run: \*([\w-]+)$', step, re.MULTILINE)
+              if alias:
+                  step = next(value for value in steps.values() if f'run: &{alias[1]} |' in value)
+              match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
+              return textwrap.dedent(match[1])
+
+          class SearchReleases(unittest.TestCase):
+              def test_pinned_archives(self):
+                  self.assertNotIn('apt-get', workflow)
+                  rows = re.findall(r'^https://github.com/\S+ (\w{64}) (rg|fd)$', body('Search tools'), re.MULTILINE)
+                  self.assertEqual(len(rows), 2)
+                  self.assertIn('/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz', body('Search tools'))
+                  self.assertIn('/v10.5.0/fd-v10.5.0-x86_64-unknown-linux-musl.tar.gz', body('Search tools'))
+                  self.assertEqual(body('Search tools'), body('Coverage search tools'))
+
+              def test_real_versions(self):
+                  self.assertIn('sha256sum --check', body('Search tools'))
+                  with tempfile.TemporaryDirectory() as temporary:
+                      env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path'}
+                      result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Search tools')],
+                                              env=env, capture_output=True, text=True, encoding='utf-8')
+                      self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                      self.assertIn('ripgrep 15.2.0', result.stdout)
+                      self.assertIn('fd 10.5.0', result.stdout)
+                      bin_dir = pathlib.Path(env['GITHUB_PATH']).read_text(encoding='utf-8').strip()
+                      self.assertTrue(pathlib.Path(bin_dir).is_absolute())
+                      for binary in ['rg', 'fd']:
+                          self.assertIn('"$bin/' + binary + '" --version', body('Search tools'))
+                          self.assertTrue((pathlib.Path(bin_dir) / binary).is_file())
+
+              def test_install_timeouts(self):
+                  for name in ['Search tools', 'Coverage search tools', 'Mise bootstrap',
+                               'Coverage mise bootstrap', 'Browser mise bootstrap', 'Test tools',
+                               'Coverage test tools', 'Browser tools', 'Check tools']:
+                      with self.subTest(step=name):
+                          self.assertRegex(steps[name], r'(?m)^        timeout-minutes: 10$')
+
+              def test_corrupt_archives(self):
+                  command = body('Search tools')
+                  rows = re.findall(r'^https://github.com/\S+ \w{64} (?:rg|fd)$', command, re.MULTILINE)
+                  self.assertEqual(len(rows), 2)
+                  for row in rows:
+                      with self.subTest(archive=row.split()[0]), tempfile.TemporaryDirectory() as temporary:
+                          directory = pathlib.Path(temporary)
+                          curl = directory / 'curl'
+                          curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\nprintf corrupt > "$2"\n', encoding='utf-8')
+                          curl.chmod(0o755)
+                          tar = directory / 'tar'
+                          tar.write_text('#!/bin/sh\ntouch "$RUNNER_TEMP/extracted"\n', encoding='utf-8')
+                          tar.chmod(0o755)
+                          # Exercise each published digest as the first download.
+                          other = next(value for value in rows if value != row)
+                          env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path',
+                                              'PATH': temporary + ':' + os.environ['PATH']}
+                          result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command.replace(other + '\n', '')],
+                                                  env=env, capture_output=True, text=True, encoding='utf-8')
+                          self.assertNotEqual(result.returncode, 0)
+                          self.assertFalse((directory / 'extracted').exists())
+                          self.assertFalse((directory / 'path').exists())
+                          self.assertFalse(list(directory.glob('maestro-search-bin.*/rg')))
+                          self.assertFalse(list(directory.glob('maestro-search-bin.*/fd')))
+
+              def test_documented_pins(self):
+                  docs = pathlib.Path('docs/caller-checks.md').read_text(encoding='utf-8')
+                  self.assertIn('ripgrep 15.2.0', docs)
+                  self.assertIn('fd 10.5.0', docs)
+                  self.assertIn('10-minute', docs)
+
+          suite = unittest.defaultTestLoader.loadTestsFromTestCase(SearchReleases)
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful():
+              raise SystemExit(1)
+
+      - name: Real search tools
+        timeout-minutes: 10
+        shell: python
+        run: |
+          import pathlib
+          import re
+          import subprocess
+          import textwrap
+          workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
+          step = workflow.split('      - name: Search tools\n', 1)[1]
+          command = re.search(r'        run: &search-tools \|\n((?:          .*\n|\n)+)', step)[1]
+          subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(command)], check=True)
       - name: Caller checks at workflow seam
         id: cases
         shell: python
@@ -882,12 +975,13 @@ jobs:
           print('PASS isolated_tests_ignore_ambient_state')
 
           def real_search_tools_are_exercised():
-              assert 'sudo apt-get install -y ripgrep fd-find' in body('Search tools')
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   bin_dir = directory / 'bin'
                   bin_dir.mkdir()
-                  (bin_dir / 'fd').symlink_to('/usr/bin/fdfind')
+                  import shutil
+                  for binary in ['rg', 'fd']:
+                      (bin_dir / binary).symlink_to(shutil.which(binary))
                   result = execute('Isolated tests', root / 'fixtures/declared',
                                    {'RUNNER_TEMP': temporary, 'PATH': f'{bin_dir}:/usr/bin:' + os.environ['PATH']})
                   assert result.returncode == 0, result.stdout + result.stderr
