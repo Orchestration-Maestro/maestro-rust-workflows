@@ -1,6 +1,6 @@
 # maestro-rust-workflows
 
-One shared Rust CI, with four checks:
+One shared Rust CI. The original checks remain required:
 
 | Check | Command | Systems |
 | --- | --- | --- |
@@ -24,6 +24,18 @@ tools, caller-pinned test tools, listed wasm builds, native foreign-target
 checks and a pinned browser recipe. A repository's `rust-toolchain.toml`
 selects its toolchain through rustup.
 
+Every caller also gets one dependency, source and coverage job: cargo-deny
+(licenses, bans, sources and advisories), cargo-machete (unused dependencies),
+typos (spelling), gitleaks (checked-out secrets), zizmor and actionlint (workflow
+security and correctness when workflows exist), and at least 80% line coverage
+with `cargo llvm-cov --workspace --locked --fail-under-lines 80`. All seven tools
+are exact release pins, verified against embedded SHA-256 checksums before
+execution. Their defaults are embedded in the shared workflow, not loaded from
+consumer files. The caller declaration can add spelling words, exact-version
+license exceptions and exact git sources, or raise coverage; it cannot lower
+the floor or disable a check. Declared callers retain test isolation and their
+opted-in search/developer tools during coverage.
+
 The approved [shared CI spec](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md)
 defines the scope. Organization pins move separately from this repository's
 releases; publishing the first release does not change existing consumers.
@@ -31,12 +43,17 @@ releases; publishing the first release does not change existing consumers.
 ## Self-test
 
 `ci-internal.yml` calls the shared workflow on `fixtures/sample`, which must
-pass every check on Linux. The five broken copies are independent packages,
+pass every check on Linux. The eleven broken copies are independent packages,
 not members of a root workspace. Each fails only its intended command:
 format, lint, tests, an undocumented public item or a broken documentation link.
 The self-test reads the commands and documentation flags from `ci.yml` and
-runs all twenty combinations on Linux, because reusable workflow calls cannot
-mark expected failures with `continue-on-error`.
+runs all twenty original combinations on Linux, because reusable workflow calls cannot
+mark expected failures with `continue-on-error`. Six additional copies each
+fail only license policy, unused dependencies, spelling, secrets, unsafe
+workflows or low coverage; the self-test runs all sixty combinations of their
+new and original checks. Permanent workflow-body tests also exercise caller
+extensions, rejected suppressions, independent workflow correctness failures,
+verified installations and the sample job's added execution time.
 
 The configured `fixtures/declared` caller also passes all declared checks.
 Workflow-body probes cover declarations, isolation, real tools, wasm and

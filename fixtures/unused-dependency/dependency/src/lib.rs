@@ -1,0 +1,1 @@
+//! An intentionally unused dependency.

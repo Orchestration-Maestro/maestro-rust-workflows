@@ -92,7 +92,7 @@ jobs:
           isolated_test = next(step for step in workflow.split('      - name:')[1:]
                                if step.startswith(' Isolated tests\n'))
           assert "if: needs.declaration.outputs.enabled == 'true'" in isolated_test
-          assert 'cargo test --workspace --locked\n' in isolated_test
+          assert 'run_isolated cargo test --workspace --locked\n' in isolated_test
 
           docs_step = next(step for step in workflow.split('      - name:')[1:]
                            if 'run: cargo doc --workspace --no-deps --locked\n' in step)
@@ -114,13 +114,205 @@ jobs:
                   env = os.environ.copy()
                   if check == 2:
                       env['RUSTDOCFLAGS'] = flags.group(1)
-                  result = subprocess.run(shlex.split(command), cwd=f'fixtures/{fixture}', env=env)
+                  argv = shlex.split(command)
+                  if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                      argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
+                      env['CARGO_BUILD_JOBS'] = '3'
+                  result = subprocess.run(argv, cwd=f'fixtures/{fixture}', env=env)
                   expected_failure = check == broken
                   print(f'{fixture}: {command}: exit {result.returncode}; '
                         f'expected {"failure" if expected_failure else "success"}', flush=True)
                   if (result.returncode != 0) != expected_failure:
                       failures.append(f'{fixture}: {command}: exit {result.returncode}')
           assert not failures, '\n'.join(failures)
+      - name: Added checks at workflow seam
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import re
+          import shlex
+          import subprocess
+          import tempfile
+          import textwrap
+          import time
+
+          workflow = pathlib.Path('.github/workflows/ci.yml').read_text()
+          root = pathlib.Path.cwd()
+
+          def body(name):
+              step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == name)
+              match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
+              assert match, name
+              return textwrap.dedent(match.group(1))
+
+          def execute(name, directory, env):
+              argv = ['bash', '-e', '-o', 'pipefail', '-c', body(name)]
+              if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                  argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
+                  env = env | {'CARGO_BUILD_JOBS': '3'}
+              return subprocess.run(argv, cwd=directory, env=env, capture_output=True, text=True)
+
+          checks = ['Licenses and dependencies', 'Unused dependencies', 'Spelling', 'Secrets', 'Workflows', 'Coverage']
+          base = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE)
+          assert len(base) == 4
+          with tempfile.TemporaryDirectory() as temporary:
+              env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/paths',
+                                  'GITHUB_ENV': temporary + '/environment', 'QUALITY_CONFIG': '{}'}
+              start = time.monotonic()
+              installed = execute('Check tools', root, env)
+              assert installed.returncode == 0, installed.stdout + installed.stderr
+              env['PATH'] = ':'.join(pathlib.Path(env['GITHUB_PATH']).read_text().splitlines()) + ':' + env['PATH']
+              component = subprocess.run(['rustup', 'component', 'add', 'llvm-tools-preview'],
+                                         cwd=root / 'fixtures/sample', capture_output=True, text=True)
+              assert component.returncode == 0, component.stderr
+              configured = execute('Embedded check defaults', root, env)
+              assert configured.returncode == 0, configured.stdout + configured.stderr
+              env.update(dict(line.split('=', 1) for line in pathlib.Path(env['GITHUB_ENV']).read_text().splitlines()))
+              for name in checks:
+                  result = execute(name, root / 'fixtures/sample', env)
+                  assert result.returncode == 0, name + '\n' + result.stdout + result.stderr
+                  print(f'sample: {name}: exit {result.returncode}', flush=True)
+              print(f'Added sample CI time including verified installation: {time.monotonic() - start:.2f}s', flush=True)
+              # Root self-calls keep the runner-compatible syntax until actionlint accepts $/.
+              root_config = pathlib.Path(temporary) / 'root-zizmor.yml'
+              root_config.write_text('rules:\n  self-repository:\n    ignore:\n'
+                                     '      - ci-internal.yml:15:11\n'
+                                     '      - ci-internal.yml:22:11\n'
+                                     '      - ci-internal.yml:29:11\n')
+              for argv in [['zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
+                           ['actionlint', '-config-file', env['CHECK_DEFAULTS'] + '/actionlint.yaml', '-shellcheck=', '-pyflakes=',
+                            *map(str, (root / '.github/workflows').glob('*.yml'))]]:
+                  result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
+                  assert result.returncode == 0, result.stdout + result.stderr
+              print('PASS repository_workflow_checks')
+              # Extensions grant only the named spelling word and exact license exception.
+              extension = {'spelling_words': ['teh'], 'license_exceptions': [
+                  {'package': 'sample', 'version': '0.1.0', 'licenses': ['GPL-3.0-only']}]}
+              result = execute('Embedded check defaults', root, env | {'QUALITY_CONFIG': json.dumps(extension)})
+              assert result.returncode == 0, result.stderr
+              for fixture, name in [('misspelling', 'Spelling'), ('disallowed-license', 'Licenses and dependencies')]:
+                  result = execute(name, root / 'fixtures' / fixture, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+              extension['license_exceptions'][0]['version'] = '0.1.1'
+              result = execute('Embedded check defaults', root, env | {'QUALITY_CONFIG': json.dumps(extension)})
+              assert result.returncode == 0, result.stderr
+              result = execute('Licenses and dependencies', root / 'fixtures/disallowed-license', env)
+              assert result.returncode != 0, 'License exception must not match another version'
+              result = execute('Embedded check defaults', root, env)
+              assert result.returncode == 0, result.stderr
+              print('PASS quality_extensions_preserve_defaults')
+              # The workflow seam also proves the correctness command, independently of security findings.
+              workflows = pathlib.Path(temporary) / '.github/workflows'
+              workflows.mkdir(parents=True)
+              workflow_path = workflows / 'proof.yml'
+              workflow_path.write_text('name: Proof\non: push\npermissions:\n  contents: read\njobs:\n'
+                                       '  proof:\n    runs-on: ubuntu-latest\n    steps:\n'
+                                       '      - name: Print\n        run: echo success\n')
+              result = execute('Workflows', pathlib.Path(temporary), env)
+              assert result.returncode == 0, result.stdout + result.stderr
+              workflow_path.write_text(workflow_path.read_text().replace('name: Print', 'if: nonexistent.value\n        name: Print'))
+              result = execute('Workflows', pathlib.Path(temporary), env)
+              assert result.returncode != 0 and 'undefined variable "nonexistent"' in result.stdout + result.stderr, result.stdout + result.stderr
+              print('PASS workflow_correctness_is_required')
+              failures = []
+              for fixture, broken in [('disallowed-license', 0), ('unused-dependency', 1), ('misspelling', 2),
+                                      ('fake-secret', 3), ('unsafe-workflow', 4), ('low-coverage', 5)]:
+                  directory = root / 'fixtures' / fixture
+                  for index, name in enumerate(checks):
+                      result = execute(name, directory, env)
+                      print(f'{fixture}: {name}: exit {result.returncode}', flush=True)
+                      if (result.returncode != 0) != (index == broken):
+                          failures.append(f'{fixture}: {name}: {result.stdout}{result.stderr}')
+                  for command in base:
+                      argv = shlex.split(command)
+                      child = env | {'RUSTDOCFLAGS': '-D warnings -D missing_docs'}
+                      if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                          argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
+                          child['CARGO_BUILD_JOBS'] = '3'
+                      result = subprocess.run(argv, cwd=directory, env=child, capture_output=True, text=True)
+                      print(f'{fixture}: {command}: exit {result.returncode}', flush=True)
+                      if result.returncode:
+                          failures.append(f'{fixture}: {command}: {result.stdout}{result.stderr}')
+              assert not failures, '\n'.join(failures)
+              # Each bypass is a separate temporary broken copy, never a consumer setting.
+              import shutil
+              bypasses = [
+                  ('machete-package', 'unused-dependency', 'Unused dependencies', 'Cargo.toml',
+                   '\n[package.metadata.cargo-machete]\nignored = ["unused"]\n'),
+                  ('machete-workspace', 'unused-dependency', 'Unused dependencies', 'Cargo.toml',
+                   '\n[workspace]\n[workspace.metadata.cargo-machete]\nignored = ["unused"]\n'),
+                  ('machete-renamed-package', 'unused-dependency', 'Unused dependencies', 'Cargo.toml',
+                   '\n[package.metadata.cargo-machete]\nrenamed = { unused = "super" }\n'),
+                  ('machete-renamed-workspace', 'unused-dependency', 'Unused dependencies', 'Cargo.toml',
+                   '\n[workspace]\n[workspace.metadata.cargo-machete]\nrenamed = { unused = "super" }\n'),
+                  ('secret-ignore-file', 'fake-secret', 'Secrets', '.gitleaksignore', 'secret.txt:github-pat:1\n'),
+                  ('secret-config', 'fake-secret', 'Secrets', '.gitleaks.toml',
+                   '[allowlist]\nregexes = [".*"]\n'),
+                  ('secret-inline', 'fake-secret', 'Secrets', 'secret.txt', ' # gitleaks:allow\n'),
+                  ('spelling-config', 'misspelling', 'Spelling', '_typos.toml', '[default]\ncheck-file = false\n'),
+                  ('license-config', 'disallowed-license', 'Licenses and dependencies', 'deny.toml',
+                   '[licenses]\nallow = ["GPL-3.0-only"]\n'),
+                  ('workflow-config', 'unsafe-workflow', 'Workflows', 'zizmor.yml',
+                   'rules:\n  template-injection:\n    disable: true\n'),
+                  ('workflow-inline', 'unsafe-workflow', 'Workflows', '.github/workflows/unsafe.yml',
+                   ' # zizmor: ignore[template-injection]\n'),
+              ]
+              for case, original, name, filename, addition in bypasses:
+                  directory = pathlib.Path(temporary) / case
+                  shutil.copytree(root / 'fixtures' / original, directory, ignore=shutil.ignore_patterns('target'))
+                  path = directory / filename
+                  if case == 'secret-inline':
+                      path.write_text(path.read_text().rstrip() + addition)
+                  elif case == 'workflow-inline':
+                      path.write_text(path.read_text().replace('title }}"', 'title }}"' + addition.rstrip()))
+                  else:
+                      path.write_text((path.read_text() if path.exists() else '') + addition)
+                  result = execute(name, directory, env)
+                  assert result.returncode != 0, f'{case}: bypass accepted\n{result.stdout}{result.stderr}'
+                  print(f'PASS {case}: exit {result.returncode}')
+              # An external coverage tool must not replace the toolchain's verified LLVM.
+              directory = pathlib.Path(temporary) / 'coverage-tool'
+              shutil.copytree(root / 'fixtures/low-coverage', directory, ignore=shutil.ignore_patterns('target'))
+              fake = pathlib.Path(temporary) / 'fake-llvm-cov'
+              fake.write_text('#!/bin/sh\nprintf \'{"data":[{"totals":{"lines":{"percent":100}}}]}\\n\'\n')
+              fake.chmod(0o755)
+              result = execute('Coverage', directory, env | {'LLVM_COV': str(fake)})
+              assert result.returncode != 0, 'Coverage accepted an external LLVM override'
+              print('PASS coverage-tool: external LLVM override rejected')
+              # LLVM flags must not hide the uncovered module from the denominator.
+              source = directory / 'src/lib.rs'
+              text = source.read_text()
+              start = text.index('/// Returns the sum')
+              end = text.index('#[cfg(test)]', start)
+              (directory / 'src/uncovered.rs').write_text('//! Uncovered arithmetic.\n' + text[start:end])
+              source.write_text(text[:start] + 'pub mod uncovered;\n\n' + text[end:])
+              for key in ['LLVM_COV_FLAGS', 'CARGO_LLVM_COV_FLAGS']:
+                  result = execute('Coverage', directory, env | {key: '-ignore-filename-regex=uncovered.rs'})
+                  assert result.returncode != 0, key + ': uncovered file excluded'
+                  print(f'PASS {key}: exclusions rejected')
+              # A caller actionlint runner allowlist cannot suppress correctness errors.
+              workflow_path.write_text('name: Proof\non: push\npermissions:\n  contents: read\njobs:\n'
+                                       '  proof:\n    runs-on: custom-runner\n    steps:\n'
+                                       '      - name: Print\n        run: echo success\n')
+              (pathlib.Path(temporary) / '.github/actionlint.yaml').write_text('self-hosted-runner:\n  labels: [custom-runner]\n')
+              result = execute('Workflows', pathlib.Path(temporary), env)
+              assert result.returncode != 0 and 'label' in result.stdout + result.stderr, result.stdout + result.stderr
+              print('PASS actionlint-config: consumer runner allowlist ignored')
+
+              # A corrupt release must never be extracted or put on PATH.
+              hostile = pathlib.Path(temporary) / 'hostile'
+              hostile.mkdir()
+              curl = hostile / 'curl'
+              curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\nprintf invalid-archive > "$2"\n')
+              curl.chmod(0o755)
+              before = pathlib.Path(env['GITHUB_PATH']).read_text()
+              result = execute('Check tools', root, env | {'PATH': str(hostile) + ':' + env['PATH']})
+              assert result.returncode != 0
+              assert pathlib.Path(env['GITHUB_PATH']).read_text() == before
+              print('PASS check_tools_reject_corrupt_release')
+
       - name: Real search tools
         run: |
           sudo apt-get update
@@ -148,7 +340,7 @@ jobs:
           def body(name):
               steps = workflow.split('      - name: ')
               step = next(s for s in steps[1:] if s.splitlines()[0] == name)
-              match = re.search(r'^        run: (?:&mise-bootstrap )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
+              match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
               assert match, f'Missing executable body: {name}'
               return textwrap.dedent(match.group(1))
 
@@ -191,7 +383,7 @@ jobs:
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'enabled': 'false', 'wasm_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false'}
+              assert values == {'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false'}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
@@ -371,6 +563,47 @@ jobs:
 
           declared_members_are_literal_arguments()
           print('PASS declared_members_are_literal_arguments')
+
+          def quality_extensions_are_validated():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  path = directory / '.github/ci.toml'
+                  base = 'wasm_crates=[]\ncheck_targets=[]\n'
+                  for value in ['79', '101', 'true', '"80"', 'nan', 'inf']:
+                      path.write_text(base + 'coverage_min_lines=' + value)
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and not values, value
+                      assert 'coverage_min_lines' in result.stderr
+                  for text in ['spelling_words="word"', 'spelling_words=[1]', 'spelling_words=[""]',
+                               'git_sources=["*"]', 'git_sources=["https://example.com/repo?prefix=true"]',
+                               'git_sources=["https://example.com/repo#branch"]',
+                               'license_exceptions=[{package="sample", version="*", licenses=["MIT"]}]',
+                               'license_exceptions=[{package="sample", version="0.1.0", licenses=[]}]',
+                               'license_exceptions=[{package="sample", version="0.1.0", licenses=["MIT"], extra=true}]']:
+                      path.write_text(base + text)
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and not values, text
+                  path.write_text(base + 'coverage_min_lines=90\nspelling_words=["Maestro"]\n'
+                                  'git_sources=["https://github.com/example/repo"]\n'
+                                  'license_exceptions=[{package="sample", version="0.1.0", licenses=["GPL-3.0-only"]}]')
+                  result, values = declaration(directory)
+                  assert result.returncode == 0, result.stderr
+                  config = json.loads(values['quality_config'])
+                  assert config['coverage_min_lines'] == 90
+                  assert config['spelling_words'] == ['Maestro']
+                  assert config['license_exceptions'][0]['version'] == '0.1.0'
+                  assert config['git_sources'] == ['https://github.com/example/repo']
+                  # Each consumer call includes the job: its failure propagates to both required results.
+                  checks = workflow.split('  checks:\n', 1)[1].split('  targets:\n', 1)[0]
+                  assert 'needs: declaration' in checks and 'continue-on-error' not in checks
+                  assert 'QUALITY_CONFIG: $' + '{{ needs.declaration.outputs.quality_config }}' in checks
+                  assert 'run: *isolated-tests' in checks
+
+          quality_extensions_are_validated()
+          print('PASS quality_extensions_are_validated')
 
           def credential_names_fail_closed():
               with tempfile.TemporaryDirectory() as temporary:
