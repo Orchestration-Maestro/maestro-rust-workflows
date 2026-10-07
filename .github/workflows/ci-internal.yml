@@ -137,6 +137,7 @@ jobs:
           import tempfile
           import textwrap
           import time
+          import tomllib
 
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text()
           root = pathlib.Path.cwd()
@@ -163,7 +164,7 @@ jobs:
               start = time.monotonic()
               installed = execute('Check tools', root, env)
               assert installed.returncode == 0, installed.stdout + installed.stderr
-              env['PATH'] = ':'.join(pathlib.Path(env['GITHUB_PATH']).read_text().splitlines()) + ':' + env['PATH']
+              env.update(dict(line.split('=', 1) for line in pathlib.Path(env['GITHUB_ENV']).read_text().splitlines()))
               component = subprocess.run(['rustup', 'component', 'add', 'llvm-tools-preview'],
                                          cwd=root / 'fixtures/sample', capture_output=True, text=True)
               assert component.returncode == 0, component.stderr
@@ -181,12 +182,51 @@ jobs:
                                      '      - ci-internal.yml:15:11\n'
                                      '      - ci-internal.yml:22:11\n'
                                      '      - ci-internal.yml:29:11\n')
-              for argv in [['zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
-                           ['actionlint', '-config-file', env['CHECK_DEFAULTS'] + '/actionlint.yaml', '-shellcheck=', '-pyflakes=',
+              for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
+                           [env['TOOLS'] + '/actionlint', '-config-file', env['CHECK_DEFAULTS'] + '/actionlint.yaml', '-shellcheck=', '-pyflakes=',
                             *map(str, (root / '.github/workflows').glob('*.yml'))]]:
                   result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
                   assert result.returncode == 0, result.stdout + result.stderr
               print('PASS repository_workflow_checks')
+              # Caller-installed binaries cannot replace verified coverage in either branch.
+              caller_tools = pathlib.Path(temporary) / 'caller-tools'
+              caller_tools.mkdir()
+              shadow = caller_tools / 'cargo-llvm-cov'
+              shadow.write_text('#!/bin/sh\necho caller-coverage-bypass\nexit 0\n')
+              shadow.chmod(0o755)
+              hostile_env = env | {'PATH': str(caller_tools) + ':' + env['PATH']}
+              for name, command in [('Coverage', body('Coverage')),
+                                    ('Isolated coverage', body('Isolated tests'))]:
+                  # The coverage job reuses the isolated test body with its coverage floor.
+                  argv = ['bash', '-e', '-o', 'pipefail', '-c', command]
+                  if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                      command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
+                      argv = [os.path.expanduser('~/.local/bin/capped'), 'bash', '-e', '-o', 'pipefail', '-c', command]
+                  result = subprocess.run(argv, cwd=root / 'fixtures/low-coverage', env=hostile_env,
+                                          capture_output=True, text=True)
+                  assert result.returncode != 0, name + ': caller coverage bypass accepted\n' + result.stdout + result.stderr
+                  assert 'coverage' in result.stderr.lower(), result.stdout + result.stderr
+                  assert 'caller-coverage-bypass' not in result.stdout + result.stderr
+                  version = subprocess.run([env['TOOLS'] + '/cargo-llvm-cov', 'llvm-cov', '--version'],
+                                           env=hostile_env, capture_output=True, text=True)
+                  assert version.returncode == 0 and '0.9.1' in version.stdout, version.stdout + version.stderr
+                  print(f'PASS verified_coverage_ignores_caller_path: {name}: exit {result.returncode}; {version.stdout.strip()}', flush=True)
+              # Repeated spelling entries remain one valid, effective extension.
+              result = execute('Embedded check defaults', root, env | {'QUALITY_CONFIG': json.dumps({'spelling_words': ['teh', 'teh']})})
+              assert result.returncode == 0, result.stderr
+              with open(env['CHECK_DEFAULTS'] + '/typos.toml', 'rb') as source:
+                  assert tomllib.load(source)['default']['extend-words'] == {'teh': 'teh'}
+              result = execute('Spelling', root / 'fixtures/misspelling', env)
+              assert result.returncode == 0, result.stdout + result.stderr
+              print('PASS repeated_spelling_words_generate_valid_toml', flush=True)
+              # Supplementary Unicode stays valid UTF-8 in the generated configuration.
+              result = execute('Embedded check defaults', root, env | {'QUALITY_CONFIG': json.dumps({'spelling_words': ['𐐀']})})
+              assert result.returncode == 0, result.stderr
+              with open(env['CHECK_DEFAULTS'] + '/typos.toml', 'rb') as source:
+                  assert tomllib.load(source)['default']['extend-words'] == {'𐐀': '𐐀'}
+              result = execute('Spelling', root / 'fixtures/sample', env)
+              assert result.returncode == 0, result.stdout + result.stderr
+              print('PASS supplementary_spelling_words_generate_valid_toml', flush=True)
               # Extensions grant only the named spelling word and exact license exception.
               extension = {'spelling_words': ['teh'], 'license_exceptions': [
                   {'package': 'sample', 'version': '0.1.0', 'licenses': ['GPL-3.0-only']}]}
@@ -307,10 +347,13 @@ jobs:
               curl = hostile / 'curl'
               curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\nprintf invalid-archive > "$2"\n')
               curl.chmod(0o755)
-              before = pathlib.Path(env['GITHUB_PATH']).read_text()
+              pathlib.Path(env['GITHUB_PATH']).touch()
+              before_path = pathlib.Path(env['GITHUB_PATH']).read_text()
+              before = pathlib.Path(env['GITHUB_ENV']).read_text()
               result = execute('Check tools', root, env | {'PATH': str(hostile) + ':' + env['PATH']})
               assert result.returncode != 0
-              assert pathlib.Path(env['GITHUB_PATH']).read_text() == before
+              assert pathlib.Path(env['GITHUB_PATH']).read_text() == before_path
+              assert pathlib.Path(env['GITHUB_ENV']).read_text() == before
               print('PASS check_tools_reject_corrupt_release')
 
       - name: Real search tools
@@ -604,6 +647,34 @@ jobs:
 
           quality_extensions_are_validated()
           print('PASS quality_extensions_are_validated')
+
+          def quality_strings_reject_controls_and_surrogates():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  path = directory / '.github/ci.toml'
+                  base = 'wasm_crates=[]\ncheck_targets=[]\n'
+                  for key, text in [
+                      ('spelling_words', 'spelling_words=["word\\u0001"]'),
+                      ('git_sources', 'git_sources=["https://example.com/repo\\u0001"]'),
+                      ('license_exceptions.package', 'license_exceptions=[{package="sample\\u0001", version="0.1.0", licenses=["MIT"]}]'),
+                      ('license_exceptions.version', 'license_exceptions=[{package="sample", version="0.1.0\\u0001", licenses=["MIT"]}]'),
+                      ('license_exceptions.licenses', 'license_exceptions=[{package="sample", version="0.1.0", licenses=["MIT\\u0001"]}]'),
+                  ]:
+                      path.write_text(base + text)
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and not values, key + ': control accepted'
+                      assert key in result.stderr, result.stderr
+                      print(f'PASS quality_strings_reject_controls: {key}', flush=True)
+                  path.write_text(base + 'spelling_words=["\\uD800"]')
+                  result, values = declaration(directory)
+                  assert result.returncode != 0 and not values
+                  assert '.github/ci.toml' in result.stderr and 'Unicode scalar' in result.stderr, result.stderr
+                  print('PASS quality_strings_reject_surrogates', flush=True)
+
+          quality_strings_reject_controls_and_surrogates()
 
           def credential_names_fail_closed():
               with tempfile.TemporaryDirectory() as temporary:

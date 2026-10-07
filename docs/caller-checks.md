@@ -94,7 +94,9 @@ license_exceptions = [
 
 `coverage_min_lines` must be a number from 80 through 100; boolean, non-finite
 and lower values fail validation. The default is 80. `spelling_words` and
-`git_sources` are arrays of nonempty strings. Git sources must be exact HTTPS
+`git_sources` are arrays of nonempty strings. Repeated spelling words count
+once, and Unicode words are preserved. Quality string values cannot contain
+control characters or surrogate code points. Git sources must be exact HTTPS
 repository URLs without credentials, query strings or fragments, never
 organization-wide or prefix exceptions. License exceptions require exactly
 `package`, an exact `version` (not a range), and a nonempty `licenses` array;

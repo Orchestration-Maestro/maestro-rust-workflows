@@ -84,6 +84,12 @@ jobs:
               for key in ('spelling_words', 'git_sources'):
                   if not isinstance(config.get(key, []), list) or any(type(item) is not str or not item for item in config.get(key, [])):
                       raise SystemExit(f'{path}: {key} must be an array of nonempty strings')
+              def validate_toml_string(key, value):
+                  if any(ord(char) < 32 or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
+                      raise SystemExit(f'{path}: {key} cannot contain control characters or surrogates')
+              for key in ('spelling_words', 'git_sources'):
+                  for value in config.get(key, []):
+                      validate_toml_string(key, value)
               from urllib.parse import urlsplit
               for url in config.get('git_sources', []):
                   parsed = urlsplit(url)
@@ -95,10 +101,16 @@ jobs:
               for entry in exceptions:
                   if not isinstance(entry, dict) or set(entry) != {'package', 'version', 'licenses'}:
                       raise SystemExit(f'{path}: license_exceptions requires package, version and licenses')
-                  if any(type(entry[key]) is not str or not entry[key] for key in ('package', 'version')) or not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', entry['version']):
+                  if any(type(entry[key]) is not str or not entry[key] for key in ('package', 'version')):
                       raise SystemExit(f'{path}: license_exceptions requires an exact package version')
                   if not isinstance(entry['licenses'], list) or not entry['licenses'] or any(type(item) is not str or not item for item in entry['licenses']):
                       raise SystemExit(f'{path}: license_exceptions licenses must be nonempty strings')
+                  for key in ('package', 'version'):
+                      validate_toml_string('license_exceptions.' + key, entry[key])
+                  for value in entry['licenses']:
+                      validate_toml_string('license_exceptions.licenses', value)
+                  if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', entry['version']):
+                      raise SystemExit(f'{path}: license_exceptions requires an exact package version')
               values['quality_config'] = json.dumps({key: config[key] for key in ('coverage_min_lines', 'spelling_words', 'license_exceptions', 'git_sources') if key in config})
               try:
                   packages = {package['name'] for package in json.loads(subprocess.check_output(
@@ -285,7 +297,7 @@ jobs:
             "$@"
           }
           if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
-            run_isolated cargo llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+            run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
           else
             run_isolated cargo test --workspace --locked
           fi
@@ -330,7 +342,7 @@ jobs:
           https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 actionlint
           https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz 3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522 cargo-llvm-cov
           TOOLS
-          echo "$bin" >> "$GITHUB_PATH"
+          echo "TOOLS=$bin" >> "$GITHUB_ENV"
       - name: Embedded check defaults
         run: |
           python3 - <<'PYTHON'
@@ -340,19 +352,21 @@ jobs:
           config = json.loads(os.environ.get('QUALITY_CONFIG') or '{}')
           directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'maestro-checks'
           directory.mkdir(exist_ok=True)
+          def toml_value(value):
+              return json.dumps(value, ensure_ascii=False)
           allow = ['MIT', 'Apache-2.0', 'ISC', 'BSD-2-Clause', 'BSD-3-Clause', 'Zlib',
                    'Apache-2.0 WITH LLVM-exception', 'Unicode-DFS-2016', 'Unicode-3.0',
                    'CC0-1.0', 'CDLA-Permissive-2.0', 'MPL-2.0', 'MIT-0']
-          deny = '[advisories]\nyanked = "deny"\n[licenses]\nallow = ' + json.dumps(allow) + '\n'
+          deny = '[advisories]\nyanked = "deny"\n[licenses]\nallow = ' + toml_value(allow) + '\n'
           for entry in config.get('license_exceptions', []):
-              deny += '\n[[licenses.exceptions]]\nname = ' + json.dumps(entry['package'])
-              deny += '\nversion = ' + json.dumps('=' + entry['version'])
-              deny += '\nallow = ' + json.dumps(entry['licenses']) + '\n'
+              deny += '\n[[licenses.exceptions]]\nname = ' + toml_value(entry['package'])
+              deny += '\nversion = ' + toml_value('=' + entry['version'])
+              deny += '\nallow = ' + toml_value(entry['licenses']) + '\n'
           deny += '\n[bans]\n[sources]\nunknown-registry = "deny"\nunknown-git = "deny"\n'
-          deny += 'allow-git = ' + json.dumps(config.get('git_sources', [])) + '\n'
+          deny += 'allow-git = ' + toml_value(config.get('git_sources', [])) + '\n'
           (directory / 'deny.toml').write_text(deny)
           words = '[default.extend-words]\n'
-          words += ''.join(json.dumps(word) + ' = ' + json.dumps(word) + '\n' for word in config.get('spelling_words', []))
+          words += ''.join(toml_value(word) + ' = ' + toml_value(word) + '\n' for word in dict.fromkeys(config.get('spelling_words', [])))
           (directory / 'typos.toml').write_text(words)
           (directory / 'gitleaks.toml').write_text('[extend]\nuseDefault = true\n')
           (directory / 'gitleaks.ignore').write_text('')
@@ -363,7 +377,7 @@ jobs:
           PYTHON
       - name: Licenses and dependencies
         run: |
-          cargo deny --workspace --locked --all-features --config "$CHECK_DEFAULTS/deny.toml" check licenses bans sources advisories
+          "$TOOLS/cargo-deny" deny --workspace --locked --all-features --config "$CHECK_DEFAULTS/deny.toml" check licenses bans sources advisories
       - name: Unused dependencies
         run: |
           python3 - <<'PYTHON'
@@ -379,24 +393,24 @@ jobs:
                   if metadata.get('ignored') or metadata.get('renamed'):
                       raise SystemExit(f'{path}: cargo-machete suppressions are forbidden; extensions go through the caller declaration')
           PYTHON
-          cargo machete --no-ignore --skip-target-dir
+          "$TOOLS/cargo-machete" --no-ignore --skip-target-dir
       - name: Spelling
         run: |
-          typos --isolated --config "$CHECK_DEFAULTS/typos.toml" .
+          "$TOOLS/typos" --isolated --config "$CHECK_DEFAULTS/typos.toml" .
       - name: Secrets
         run: |
           if [ -s .gitleaksignore ]; then
             echo '.gitleaksignore: suppressions are forbidden; extensions go through the caller declaration' >&2
             exit 1
           fi
-          gitleaks dir --config "$CHECK_DEFAULTS/gitleaks.toml" --gitleaks-ignore-path "$CHECK_DEFAULTS/gitleaks.ignore" --ignore-gitleaks-allow --redact .
+          "$TOOLS/gitleaks" dir --config "$CHECK_DEFAULTS/gitleaks.toml" --gitleaks-ignore-path "$CHECK_DEFAULTS/gitleaks.ignore" --ignore-gitleaks-allow --redact .
       - name: Workflows
         run: |
           shopt -s nullglob
           workflows=(.github/workflows/*.yml .github/workflows/*.yaml)
           if [ "${#workflows[@]}" -gt 0 ]; then
-            zizmor --offline --no-config --no-ignores --strict-collection "${workflows[@]}"
-            actionlint -config-file "$CHECK_DEFAULTS/actionlint.yaml" -shellcheck= -pyflakes= "${workflows[@]}"
+            "$TOOLS/zizmor" --offline --no-config --no-ignores --strict-collection "${workflows[@]}"
+            "$TOOLS/actionlint" -config-file "$CHECK_DEFAULTS/actionlint.yaml" -shellcheck= -pyflakes= "${workflows[@]}"
           fi
       - name: Coverage search tools
         if: needs.declaration.outputs.enabled == 'true'
@@ -414,7 +428,7 @@ jobs:
           for name in ${!LLVM_@}; do
             if [[ "$name" == LLVM_*_FLAGS ]]; then unset "$name"; fi
           done
-          cargo llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+          "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
       - name: Isolated coverage
         if: needs.declaration.outputs.enabled == 'true'
         run: *isolated-tests
