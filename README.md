@@ -32,9 +32,11 @@ with `cargo llvm-cov --workspace --locked --fail-under-lines 80`. All seven tool
 are exact release pins, verified against embedded SHA-256 checksums before
 execution. Their defaults are embedded in the shared workflow, not loaded from
 consumer files. The caller declaration can add spelling words, exact-version
-license exceptions and exact git sources, or raise coverage; it cannot lower
-the floor or disable a check. Declared callers retain test isolation and their
-opted-in search/developer tools during coverage.
+license exceptions and exact git sources, or raise coverage. It can also
+list exact privileged-trigger workflow paths to ignore only the
+`dangerous-triggers` audit for those files; all other workflow audits stay
+active. It cannot lower the floor or disable a check. Declared callers retain
+test isolation and their opted-in search/developer tools during coverage.
 
 The approved [shared CI spec](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md)
 defines the scope. Organization pins move separately from this repository's

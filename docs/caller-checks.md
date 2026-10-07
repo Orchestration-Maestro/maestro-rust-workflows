@@ -67,7 +67,9 @@ component distribution, not a caller-provided executable.
   findings. Consumer secret configs, inline allows and ignore fingerprints
   cannot suppress findings; a nonempty root `.gitleaksignore` is rejected.
 - zizmor and actionlint check the caller's workflow files when any exist.
-  Consumer configurations and inline security suppressions are not loaded.
+  Consumer security configurations are not loaded. Inline zizmor ignore
+  comments are rejected with a file/line diagnostic; declared exceptions go
+  through the caller declaration below.
   actionlint's optional external shellcheck/pyflakes integrations are disabled;
   its built-in correctness checks remain active.
 
@@ -87,6 +89,7 @@ check_targets = []
 coverage_min_lines = 90
 spelling_words = ["Maestro"]
 git_sources = ["https://github.com/example/library"]
+privileged_trigger_workflows = [".github/workflows/review-gate.yml"]
 license_exceptions = [
   { package = "specific-library", version = "1.2.3", licenses = ["BSL-1.0"] },
 ]
@@ -103,7 +106,23 @@ organization-wide or prefix exceptions. License exceptions require exactly
 they add licenses for only that package version. All arrays default to empty.
 Malformed extension values fail declaration validation, and invalid license
 expressions fail cargo-deny. These keys cannot disable advisories, bans, source
-checks, spelling defaults, workflow audits or secret detection.
+checks, spelling defaults, other workflow audits or secret detection.
+
+`privileged_trigger_workflows` is an optional array of unique, exact, existing
+`.github/workflows/<name>.yml` or `.yaml` file paths. It defaults to empty.
+Each listed file ignores only zizmor's `dangerous-triggers` audit, allowing
+reviewed privileged-trigger workflows such as fork-request gates. Every other
+security audit and actionlint correctness check remains active on those files;
+unlisted workflows retain all audits. Review these workflows to ensure they
+never check out or execute contributor code.
+
+Empty entries, globs, `..`, nested or outside paths, colons, backslashes,
+control characters, non-string entries, missing files and duplicates fail
+validation with the key named. Colons are forbidden because zizmor uses them
+for line/column ignore selectors. The shared workflow generates its own
+explicit zizmor config containing only these basenames; repository zizmor
+configs cannot add exceptions. Inline ignore comments are forbidden, including
+on declared files. No declaration means no audit exceptions.
 
 ## Isolated tests
 
