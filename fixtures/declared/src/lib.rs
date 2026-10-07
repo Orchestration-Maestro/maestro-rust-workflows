@@ -49,7 +49,9 @@ mod tests {
         for (tool, version) in [("rg", "ripgrep 15.2.0"), ("fd", "fd 10.5.0")] {
             let output = Command::new(tool).arg("--version").output().unwrap();
             assert!(output.status.success());
-            assert!(String::from_utf8(output.stdout).unwrap().starts_with(version));
+            assert!(String::from_utf8(output.stdout)
+                .unwrap()
+                .starts_with(version));
         }
         let rg = Command::new("rg")
             .args(["--no-config", "shared-search-canary", "needle.txt"])
