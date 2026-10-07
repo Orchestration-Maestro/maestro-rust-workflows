@@ -155,6 +155,83 @@ jobs:
                   env = env | {'CARGO_BUILD_JOBS': '3'}
               return subprocess.run(argv, cwd=directory, env=env, capture_output=True, text=True)
 
+          def privileged_trigger_workflows_ignore_only_declared_audit(env, temporary):
+              import shutil
+              directory = pathlib.Path(temporary) / 'privileged-trigger'
+              shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+              workflows = directory / '.github/workflows'
+              workflows.mkdir(parents=True)
+              gate = workflows / 'gate.yml'
+              safe = ('name: Gate\non: pull_request_target\npermissions:\n  contents: read\njobs:\n'
+                      '  gate:\n    runs-on: ubuntu-latest\n    steps:\n'
+                      '      - name: Label request\n        run: echo reviewed\n')
+              gate.write_text(safe, encoding="utf-8")
+              extension = {'privileged_trigger_workflows': ['.github/workflows/gate.yml']}
+              failures = []
+              for case, config, extra, expected in [
+                  ('declared', extension, '', None),
+                  ('undeclared', {}, '', 'dangerous-triggers'),
+                  ('other-audit', extension, '      - uses: actions/checkout@v7\n', 'unpinned-uses'),
+                  ('unlisted-file', extension, '', 'dangerous-triggers'),
+              ]:
+                  gate.write_text(safe + extra, encoding="utf-8")
+                  other = workflows / 'other.yaml'
+                  if case == 'unlisted-file':
+                      other.write_text(safe, encoding="utf-8")
+                  declaration_path = directory / '.github/ci.toml'
+                  if config:
+                      declaration_path.write_text('wasm_crates=[]\ncheck_targets=[]\nprivileged_trigger_workflows='
+                                                  + json.dumps(config['privileged_trigger_workflows']), encoding="utf-8")
+                  elif declaration_path.exists():
+                      declaration_path.unlink()
+                  output_path = pathlib.Path(temporary) / 'declaration-output'
+                  output_path.write_text('', encoding="utf-8")
+                  result = execute('Read caller declaration', directory, env | {'GITHUB_OUTPUT': str(output_path)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  values = dict(line.split('=', 1) for line in output_path.read_text(encoding="utf-8").splitlines())
+                  result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': values['quality_config']})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  generated = json.loads((pathlib.Path(env['CHECK_DEFAULTS']) / 'zizmor.yaml').read_text(encoding="utf-8"))
+                  assert generated == ({'rules': {'dangerous-triggers': {'ignore': ['gate.yml']}}}
+                                       if config else {'rules': {}})
+                  result = execute('Workflows', directory, env)
+                  output = result.stdout + result.stderr
+                  valid = result.returncode == 0 if expected is None else result.returncode != 0 and expected in output
+                  if case == 'other-audit':
+                      valid = valid and 'dangerous-triggers' not in output
+                  print(f'{"PASS" if valid else "FAIL"} privileged-trigger {case}: exit {result.returncode}', flush=True)
+                  if not valid:
+                      failures.append(case + ': ' + output)
+                  if other.exists():
+                      other.unlink()
+              for location in ['zizmor.yml', '.github/zizmor.yml']:
+                  config_path = directory / location
+                  config_path.write_text('rules:\n  unpinned-uses:\n    disable: true\n', encoding="utf-8")
+              gate.write_text(safe + '      - uses: actions/checkout@v7\n', encoding="utf-8")
+              result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': json.dumps(extension)})
+              assert result.returncode == 0, result.stdout + result.stderr
+              result = execute('Workflows', directory, env)
+              assert result.returncode != 0 and 'unpinned-uses' in result.stdout + result.stderr, result.stdout + result.stderr
+              print('PASS privileged-trigger repository configs ignored', flush=True)
+              gate.write_text(safe + '  # ZiZmOr : IGNORE[dangerous-triggers]\n', encoding="utf-8")
+              result = execute('Workflows', directory, env)
+              output = result.stdout + result.stderr
+              assert result.returncode != 0 and 'gate.yml:11:' in output and 'declaration' in output, output
+              print('PASS privileged-trigger inline ignores rejected', flush=True)
+              # Quoted supplementary Unicode filenames survive the sole value encoder.
+              quoted = workflows / 'gate-𐐀".yaml'
+              gate.rename(quoted)
+              quoted.write_text(safe, encoding="utf-8")
+              config = {'privileged_trigger_workflows': ['.github/workflows/' + quoted.name]}
+              result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': json.dumps(config)})
+              assert result.returncode == 0, result.stdout + result.stderr
+              result = execute('Workflows', directory, env)
+              if result.returncode:
+                  failures.append('quoted Unicode filename: ' + result.stdout + result.stderr)
+              else:
+                  print('PASS privileged-trigger quoted Unicode filename', flush=True)
+              assert not failures, '\n'.join(failures)
+
           checks = ['Licenses and dependencies', 'Unused dependencies', 'Spelling', 'Secrets', 'Workflows', 'Coverage']
           base = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE)
           assert len(base) == 4
@@ -188,6 +265,9 @@ jobs:
                   result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
                   assert result.returncode == 0, result.stdout + result.stderr
               print('PASS repository_workflow_checks')
+              privileged_trigger_workflows_ignore_only_declared_audit(env, temporary)
+              result = execute('Embedded check defaults', root, env)
+              assert result.returncode == 0, result.stdout + result.stderr
               # Caller-installed binaries cannot replace verified coverage in either branch.
               caller_tools = pathlib.Path(temporary) / 'caller-tools'
               caller_tools.mkdir()
@@ -392,12 +472,12 @@ jobs:
               for filename in ['ci.yml', 'ci-internal.yml']:
                   source = (root / '.github/workflows' / filename).read_text(encoding='utf-8')
                   for step in re.split(r'^      - name: ', source, flags=re.MULTILINE)[1:]:
-                      if '        shell: python\n' not in step and "python3 - <<'PYTHON'\n" not in step:
+                      if '        shell: python\n' not in step and "<<'PYTHON'\n" not in step:
                           continue
                       name = step.splitlines()[0]
                       command = body(name, source)
                       scripts = [command] if '        shell: python\n' in step else re.findall(
-                          r"python3 - <<'PYTHON'\n(.*?)\nPYTHON", command, re.DOTALL)
+                          r"python3 [^\n]*<<'PYTHON'\n(.*?)\nPYTHON", command, re.DOTALL)
                       for call in (node for script in scripts for node in ast.walk(ast.parse(script))):
                           if not isinstance(call, ast.Call):
                               continue
@@ -637,6 +717,48 @@ jobs:
 
           declared_members_are_literal_arguments()
           print('PASS declared_members_are_literal_arguments')
+
+          def privileged_trigger_workflows_are_validated():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  workflows = directory / '.github/workflows'
+                  workflows.mkdir(parents=True)
+                  (workflows / 'gate.yml').write_text('name: Gate\n', encoding="utf-8")
+                  (workflows / 'directory.yml').mkdir()
+                  path = directory / '.github/ci.toml'
+                  base = 'wasm_crates=[]\ncheck_targets=[]\nprivileged_trigger_workflows='
+                  failures = []
+                  for case, entries in [
+                      ('missing', ['.github/workflows/missing.yml']),
+                      ('glob', ['.github/workflows/*.yml']),
+                      ('outside', ['gate.yml']),
+                      ('duplicate', ['.github/workflows/gate.yml', '.github/workflows/gate.yml']),
+                      ('empty', ['']), ('parent', ['.github/workflows/../gate.yml']),
+                      ('nested', ['.github/workflows/nested/gate.yml']),
+                      ('colon', ['.github/workflows/gate:2.yml']),
+                      ('backslash', ['.github/workflows/gate\\name.yml']),
+                      ('control', ['.github/workflows/gate\n.yml']),
+                      ('directory', ['.github/workflows/directory.yml']),
+                      ('extension', ['.github/workflows/gate.txt']),
+                      ('scalar', 'gate.yml'), ('non-string', [1]),
+                  ]:
+                      path.write_text(base + json.dumps(entries), encoding="utf-8")
+                      result, values = declaration(directory)
+                      valid = result.returncode != 0 and not values and 'privileged_trigger_workflows' in result.stderr and 'unknown keys' not in result.stderr
+                      print(f'{"PASS" if valid else "FAIL"} privileged-trigger validation {case}: exit {result.returncode}', flush=True)
+                      if not valid:
+                          failures.append(case + ': ' + result.stderr)
+                  for entries in [[], ['.github/workflows/gate.yml']]:
+                      path.write_text(base + json.dumps(entries), encoding="utf-8")
+                      result, values = declaration(directory)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      assert json.loads(values['quality_config']) == {'privileged_trigger_workflows': entries}
+                  print('PASS privileged-trigger declaration round-trip', flush=True)
+                  assert not failures, '\n'.join(failures)
+
+          privileged_trigger_workflows_are_validated()
 
           def quality_extensions_are_validated():
               import shutil

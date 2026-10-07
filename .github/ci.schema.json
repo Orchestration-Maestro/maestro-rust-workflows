@@ -90,6 +90,19 @@
           }
         }
       }
+    },
+    "privileged_trigger_workflows": {
+      "description": "Exact existing caller workflow paths; ignore only dangerous-triggers for these files. No globs, parent components, colons or backslashes.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^\\.github/workflows/[^/\\\\:*?\\[\\]]+\\.ya?ml$",
+        "not": {
+          "pattern": "\\.\\."
+        }
+      },
+      "default": []
     }
   }
 }

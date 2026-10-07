@@ -69,7 +69,7 @@ jobs:
               raise SystemExit(f'{path}: {error}') from error
           values = dict(quality_config='{}', enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false')
           if config is not None:
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'git_sources'}
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'git_sources', 'privileged_trigger_workflows'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -81,15 +81,21 @@ jobs:
               threshold = config.get('coverage_min_lines', 80)
               if type(threshold) not in (int, float) or not 80 <= threshold <= 100:
                   raise SystemExit(f'{path}: coverage_min_lines must be a number from 80 to 100')
-              for key in ('spelling_words', 'git_sources'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows'):
                   if not isinstance(config.get(key, []), list) or any(type(item) is not str or not item for item in config.get(key, [])):
                       raise SystemExit(f'{path}: {key} must be an array of nonempty strings')
               def validate_toml_string(key, value):
                   if any(ord(char) < 32 or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
                       raise SystemExit(f'{path}: {key} cannot contain control characters or surrogates')
-              for key in ('spelling_words', 'git_sources'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows'):
                   for value in config.get(key, []):
                       validate_toml_string(key, value)
+              privileged = config.get('privileged_trigger_workflows', [])
+              if len(set(privileged)) != len(privileged):
+                  raise SystemExit(f'{path}: privileged_trigger_workflows entries must be unique')
+              for value in privileged:
+                  if '..' in value or not re.fullmatch(r'\.github/workflows/[^/\\:*?\[\]]+\.ya?ml', value) or not pathlib.Path(value).is_file():
+                      raise SystemExit(f'{path}: privileged_trigger_workflows requires exact existing .github/workflows/<name>.yml or .yaml files')
               from urllib.parse import urlsplit
               for url in config.get('git_sources', []):
                   parsed = urlsplit(url)
@@ -111,7 +117,7 @@ jobs:
                       validate_toml_string('license_exceptions.licenses', value)
                   if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', entry['version']):
                       raise SystemExit(f'{path}: license_exceptions requires an exact package version')
-              values['quality_config'] = json.dumps({key: config[key] for key in ('coverage_min_lines', 'spelling_words', 'license_exceptions', 'git_sources') if key in config})
+              values['quality_config'] = json.dumps({key: config[key] for key in ('coverage_min_lines', 'spelling_words', 'license_exceptions', 'git_sources', 'privileged_trigger_workflows') if key in config})
               try:
                   packages = {package['name'] for package in json.loads(subprocess.check_output(
                       ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))['packages']}
@@ -371,6 +377,10 @@ jobs:
           (directory / 'gitleaks.toml').write_text('[extend]\nuseDefault = true\n', encoding="utf-8")
           (directory / 'gitleaks.ignore').write_text('', encoding="utf-8")
           (directory / 'actionlint.yaml').write_text('{}\n', encoding="utf-8")
+          privileged = config.get('privileged_trigger_workflows', [])
+          zizmor = {'rules': {'dangerous-triggers': {'ignore': [pathlib.Path(value).name
+                    for value in privileged]}}} if privileged else {'rules': {}}
+          (directory / 'zizmor.yaml').write_text(toml_value(zizmor) + '\n', encoding="utf-8")
           with open(os.environ['GITHUB_ENV'], 'a', encoding="utf-8") as output:
               output.write(f'CHECK_DEFAULTS={directory}\n')
               output.write(f'CARGO_COVERAGE_MIN_LINES={config.get("coverage_min_lines", 80)}\n')
@@ -409,7 +419,16 @@ jobs:
           shopt -s nullglob
           workflows=(.github/workflows/*.yml .github/workflows/*.yaml)
           if [ "${#workflows[@]}" -gt 0 ]; then
-            "$TOOLS/zizmor" --offline --no-config --no-ignores --strict-collection "${workflows[@]}"
+            python3 - "${workflows[@]}" <<'PYTHON'
+          import pathlib
+          import re
+          import sys
+          for filename in sys.argv[1:]:
+              for line, text in enumerate(pathlib.Path(filename).read_text(encoding="utf-8").splitlines(), 1):
+                  if re.search(r'#\s*zizmor\s*:\s*ignore', text, re.IGNORECASE):
+                      raise SystemExit(f'{filename}:{line}: inline zizmor ignores are forbidden; extensions go through the caller declaration')
+          PYTHON
+            "$TOOLS/zizmor" --offline --config "$CHECK_DEFAULTS/zizmor.yaml" --strict-collection "${workflows[@]}"
             "$TOOLS/actionlint" -config-file "$CHECK_DEFAULTS/actionlint.yaml" -shellcheck= -pyflakes= "${workflows[@]}"
           fi
       - name: Coverage search tools
