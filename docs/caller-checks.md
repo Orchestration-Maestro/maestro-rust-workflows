@@ -30,8 +30,8 @@ Both arrays are required, including when empty. `browser_build` and
 [schema](../.github/ci.schema.json) describes the parsed TOML shape; there is no
 version key or older-format reader.
 
-Only an absent file keeps the original four checks without isolation, search
-tool installation or optional jobs. An unreadable file, malformed TOML,
+An absent file runs the original four checks plus the dependency, source and
+coverage job, without isolation, search tool installation or optional jobs. An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
 member or non-boolean tool/build flag fails declaration validation. An empty
 present document is invalid. Integer and string booleans are not accepted.
@@ -43,6 +43,67 @@ package, unknown target or recognized target without a runner fails with a
 file/key diagnostic before optional work is emitted. Metadata or compiler
 inspection failures also fail validation. Array order and repetitions are
 retained; declaration text is never executed as shell syntax.
+
+## Required dependency, source and coverage checks
+
+No consumer file is required. The shared workflow embeds the defaults and
+installs checksum-verified official releases: cargo-deny 0.20.2,
+cargo-machete 0.9.2, typos 1.51.1, gitleaks 8.30.1, zizmor 1.30.1,
+actionlint 1.7.12 and cargo-llvm-cov 0.9.1. Checksums and download URLs are
+pinned together in the workflow. LLVM tools come from the caller's rustup
+component distribution, not a caller-provided executable.
+
+- cargo-deny checks licenses, bans, sources and advisories across the workspace
+  with all features. Known vulnerabilities and yanked crates fail. Registries
+  other than crates.io and undeclared git sources fail. The license allowlist is
+  MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
+  Apache-2.0 WITH LLVM-exception, Unicode-DFS-2016, Unicode-3.0, CC0-1.0,
+  CDLA-Permissive-2.0, MPL-2.0 and MIT-0.
+- cargo-machete fails on unused dependencies. Nonempty `ignored` or `renamed`
+  package/workspace cargo-machete metadata is rejected; ignored source files
+  remain checked, but generated target directories are skipped.
+- typos checks spelling with its defaults and no implicit consumer config.
+- gitleaks scans the checked-out tree with the default rules and redacted
+  findings. Consumer secret configs, inline allows and ignore fingerprints
+  cannot suppress findings; a nonempty root `.gitleaksignore` is rejected.
+- zizmor and actionlint check the caller's workflow files when any exist.
+  Consumer configurations and inline security suppressions are not loaded.
+  actionlint's optional external shellcheck/pyflakes integrations are disabled;
+  its built-in correctness checks remain active.
+
+Coverage runs `cargo llvm-cov --workspace --locked --fail-under-lines 80` by
+default, without consumer coverage exclusions or external LLVM overrides.
+Declared callers use the same isolated environment and opted-in test tools as
+the Tests job. Coverage does not replace the original Tests job.
+
+### Declaration extensions
+
+The following optional root keys extend the defaults. Both existing arrays
+remain required when the declaration is present:
+
+```toml
+wasm_crates = []
+check_targets = []
+coverage_min_lines = 90
+spelling_words = ["Maestro"]
+git_sources = ["https://github.com/example/library"]
+license_exceptions = [
+  { package = "specific-library", version = "1.2.3", licenses = ["BSL-1.0"] },
+]
+```
+
+`coverage_min_lines` must be a number from 80 through 100; boolean, non-finite
+and lower values fail validation. The default is 80. `spelling_words` and
+`git_sources` are arrays of nonempty strings. Repeated spelling words count
+once, and Unicode words are preserved. Quality string values cannot contain
+control characters or surrogate code points. Git sources must be exact HTTPS
+repository URLs without credentials, query strings or fragments, never
+organization-wide or prefix exceptions. License exceptions require exactly
+`package`, an exact `version` (not a range), and a nonempty `licenses` array;
+they add licenses for only that package version. All arrays default to empty.
+Malformed extension values fail declaration validation, and invalid license
+expressions fail cargo-deny. These keys cannot disable advisories, bans, source
+checks, spelling defaults, workflow audits or secret detection.
 
 ## Isolated tests
 
@@ -138,7 +199,7 @@ queue checks. Declaration errors fail CI even when dependent jobs skip.
 
 Keep standard Rust files and the existing organization-managed workflow call;
 no extra workflow or ruleset is needed. The four original quality/docs/tests
-commands remain required. Self-tests exercise production step bodies,
+commands and the dependency, source and coverage job remain required. Self-tests exercise production step bodies,
 isolated positive/negative controls, real tools, wasm success/failure, caller
 pins, bootstrap verification and native platform diagnostics. Both existing
 required results aggregate the new positive caller and workflow proofs.

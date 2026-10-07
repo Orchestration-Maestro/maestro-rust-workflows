@@ -4,17 +4,24 @@
   "description": "The parsed shape of the optional .github/ci.toml document.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["wasm_crates", "check_targets"],
+  "required": [
+    "wasm_crates",
+    "check_targets"
+  ],
   "properties": {
     "wasm_crates": {
       "description": "Exact caller Cargo package names, in execution order. Repetitions are retained.",
       "type": "array",
-      "items": {"type": "string"}
+      "items": {
+        "type": "string"
+      }
     },
     "check_targets": {
       "description": "Exact caller compiler targets with a supported native runner, in execution order.",
       "type": "array",
-      "items": {"type": "string"}
+      "items": {
+        "type": "string"
+      }
     },
     "test_tools": {
       "description": "Install caller mise.toml tools and expose their binaries to isolated tests.",
@@ -25,6 +32,64 @@
       "description": "Run the caller's mise-pinned just browser-build after the listed wasm builds.",
       "type": "boolean",
       "default": false
+    },
+    "coverage_min_lines": {
+      "description": "Required line coverage percentage; callers may only raise the 80% floor.",
+      "type": "number",
+      "minimum": 80,
+      "maximum": 100,
+      "default": 80
+    },
+    "spelling_words": {
+      "description": "Additional accepted spelling words; tool defaults remain active.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "git_sources": {
+      "description": "Exact HTTPS git repository URLs permitted in addition to crates.io.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uri",
+        "pattern": "^https://"
+      },
+      "default": []
+    },
+    "license_exceptions": {
+      "description": "Additional accepted licenses for an exact package version.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "package",
+          "version",
+          "licenses"
+        ],
+        "properties": {
+          "package": {
+            "type": "string",
+            "minLength": 1
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$"
+          },
+          "licenses": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
     }
   }
 }

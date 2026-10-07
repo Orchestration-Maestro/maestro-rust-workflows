@@ -39,6 +39,7 @@ jobs:
       targets: ${{ steps.config.outputs.targets }}
       browser_build: ${{ steps.config.outputs.browser_build }}
       test_tools: ${{ steps.config.outputs.test_tools }}
+      quality_config: ${{ steps.config.outputs.quality_config }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -53,6 +54,7 @@ jobs:
           import json
           import os
           import pathlib
+          import re
           import tomllib
           import subprocess
           path = pathlib.Path('.github/ci.toml')
@@ -65,9 +67,9 @@ jobs:
               config = None
           except (OSError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false')
+          values = dict(quality_config='{}', enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false')
           if config is not None:
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools'}
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'git_sources'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -76,6 +78,40 @@ jobs:
               for key in ('browser_build', 'test_tools'):
                   if type(config.get(key, False)) is not bool:
                       raise SystemExit(f'{path}: {key} must be a boolean')
+              threshold = config.get('coverage_min_lines', 80)
+              if type(threshold) not in (int, float) or not 80 <= threshold <= 100:
+                  raise SystemExit(f'{path}: coverage_min_lines must be a number from 80 to 100')
+              for key in ('spelling_words', 'git_sources'):
+                  if not isinstance(config.get(key, []), list) or any(type(item) is not str or not item for item in config.get(key, [])):
+                      raise SystemExit(f'{path}: {key} must be an array of nonempty strings')
+              def validate_toml_string(key, value):
+                  if any(ord(char) < 32 or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
+                      raise SystemExit(f'{path}: {key} cannot contain control characters or surrogates')
+              for key in ('spelling_words', 'git_sources'):
+                  for value in config.get(key, []):
+                      validate_toml_string(key, value)
+              from urllib.parse import urlsplit
+              for url in config.get('git_sources', []):
+                  parsed = urlsplit(url)
+                  if parsed.scheme != 'https' or not parsed.netloc or parsed.query or parsed.fragment or parsed.username or parsed.password:
+                      raise SystemExit(f'{path}: git_sources must contain exact HTTPS repository URLs')
+              exceptions = config.get('license_exceptions', [])
+              if not isinstance(exceptions, list):
+                  raise SystemExit(f'{path}: license_exceptions must be an array')
+              for entry in exceptions:
+                  if not isinstance(entry, dict) or set(entry) != {'package', 'version', 'licenses'}:
+                      raise SystemExit(f'{path}: license_exceptions requires package, version and licenses')
+                  if any(type(entry[key]) is not str or not entry[key] for key in ('package', 'version')):
+                      raise SystemExit(f'{path}: license_exceptions requires an exact package version')
+                  if not isinstance(entry['licenses'], list) or not entry['licenses'] or any(type(item) is not str or not item for item in entry['licenses']):
+                      raise SystemExit(f'{path}: license_exceptions licenses must be nonempty strings')
+                  for key in ('package', 'version'):
+                      validate_toml_string('license_exceptions.' + key, entry[key])
+                  for value in entry['licenses']:
+                      validate_toml_string('license_exceptions.licenses', value)
+                  if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', entry['version']):
+                      raise SystemExit(f'{path}: license_exceptions requires an exact package version')
+              values['quality_config'] = json.dumps({key: config[key] for key in ('coverage_min_lines', 'spelling_words', 'license_exceptions', 'git_sources') if key in config})
               try:
                   packages = {package['name'] for package in json.loads(subprocess.check_output(
                       ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))['packages']}
@@ -102,7 +138,7 @@ jobs:
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
           PYTHON
@@ -198,7 +234,7 @@ jobs:
         run: cargo test --workspace --locked
       - name: Search tools
         if: needs.declaration.outputs.enabled == 'true'
-        run: |
+        run: &search-tools |
           sudo apt-get update
           sudo apt-get install -y ripgrep fd-find
           mkdir -p "$RUNNER_TEMP/maestro-search-bin"
@@ -222,13 +258,15 @@ jobs:
           fi
       - name: Test tools
         if: needs.declaration.outputs.test_tools == 'true'
-        run: |
+        run: &test-tools |
           test -f mise.toml
           mise install
           mise bin-paths >> "$GITHUB_PATH"
       - name: Isolated tests
         if: needs.declaration.outputs.enabled == 'true'
-        run: |
+        env:
+          CARGO_COVERAGE_MIN_LINES: ''
+        run: &isolated-tests |
           python3 - <<'PYTHON'
           import os
           names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
@@ -249,13 +287,151 @@ jobs:
           isolation=$(mktemp -d "$RUNNER_TEMP/maestro-tests.XXXXXX")
           trap 'rm -rf "$isolation"' EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
+          run_isolated() {
           env -i PATH="$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" \
             HOME="$isolation/home" TMPDIR="$isolation/tmp" TMP="$isolation/tmp" TEMP="$isolation/tmp" \
             XDG_CONFIG_HOME="$isolation/config" XDG_DATA_HOME="$isolation/data" \
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
             XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 \
-            cargo test --workspace --locked
+            "$@"
+          }
+          if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
+            run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+          else
+            run_isolated cargo test --workspace --locked
+          fi
+
+  checks:
+    name: Dependency, source and coverage checks
+    needs: declaration
+    if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory || '.' }}
+    env:
+      QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          rustup show
+          rustup component add llvm-tools-preview
+      - name: Check tools
+        run: |
+          bin=$(mktemp -d "$RUNNER_TEMP/maestro-check-tools.XXXXXX")
+          while read -r url digest binary; do
+            archive=$(mktemp)
+            curl --fail --location "$url" --output "$archive"
+            printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+            unpack=$(mktemp -d)
+            tar -xzf "$archive" -C "$unpack"
+            find "$unpack" -type f -name "$binary" -exec cp '{}' "$bin/$binary" \;
+            test -x "$bin/$binary"
+            rm -rf "$archive" "$unpack"
+          done <<'TOOLS'
+          https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f cargo-deny
+          https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.2/cargo-machete-v0.9.2-x86_64-unknown-linux-musl.tar.gz 48200087f54c55aabcd4db4af1e25742b49846c02a1b1bfa134711945b35b2e9 cargo-machete
+          https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-x86_64-unknown-linux-musl.tar.gz 93c301fd4120ff076e2cc2a6d6a61cab4a4bdb81899287c0938b452e56d1f454 typos
+          https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb gitleaks
+          https://github.com/zizmorcore/zizmor/releases/download/v1.30.1/zizmor-x86_64-unknown-linux-gnu.tar.gz e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a zizmor
+          https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 actionlint
+          https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz 3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522 cargo-llvm-cov
+          TOOLS
+          echo "TOOLS=$bin" >> "$GITHUB_ENV"
+      - name: Embedded check defaults
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          config = json.loads(os.environ.get('QUALITY_CONFIG') or '{}')
+          directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'maestro-checks'
+          directory.mkdir(exist_ok=True)
+          def toml_value(value):
+              return json.dumps(value, ensure_ascii=False)
+          allow = ['MIT', 'Apache-2.0', 'ISC', 'BSD-2-Clause', 'BSD-3-Clause', 'Zlib',
+                   'Apache-2.0 WITH LLVM-exception', 'Unicode-DFS-2016', 'Unicode-3.0',
+                   'CC0-1.0', 'CDLA-Permissive-2.0', 'MPL-2.0', 'MIT-0']
+          deny = '[advisories]\nyanked = "deny"\n[licenses]\nallow = ' + toml_value(allow) + '\n'
+          for entry in config.get('license_exceptions', []):
+              deny += '\n[[licenses.exceptions]]\nname = ' + toml_value(entry['package'])
+              deny += '\nversion = ' + toml_value('=' + entry['version'])
+              deny += '\nallow = ' + toml_value(entry['licenses']) + '\n'
+          deny += '\n[bans]\n[sources]\nunknown-registry = "deny"\nunknown-git = "deny"\n'
+          deny += 'allow-git = ' + toml_value(config.get('git_sources', [])) + '\n'
+          (directory / 'deny.toml').write_text(deny, encoding="utf-8")
+          words = '[default.extend-words]\n'
+          words += ''.join(toml_value(word) + ' = ' + toml_value(word) + '\n' for word in dict.fromkeys(config.get('spelling_words', [])))
+          (directory / 'typos.toml').write_text(words, encoding="utf-8")
+          (directory / 'gitleaks.toml').write_text('[extend]\nuseDefault = true\n', encoding="utf-8")
+          (directory / 'gitleaks.ignore').write_text('', encoding="utf-8")
+          (directory / 'actionlint.yaml').write_text('{}\n', encoding="utf-8")
+          with open(os.environ['GITHUB_ENV'], 'a', encoding="utf-8") as output:
+              output.write(f'CHECK_DEFAULTS={directory}\n')
+              output.write(f'CARGO_COVERAGE_MIN_LINES={config.get("coverage_min_lines", 80)}\n')
+          PYTHON
+      - name: Licenses and dependencies
+        run: |
+          "$TOOLS/cargo-deny" deny --workspace --locked --all-features --config "$CHECK_DEFAULTS/deny.toml" check licenses bans sources advisories
+      - name: Unused dependencies
+        run: |
+          python3 - <<'PYTHON'
+          import pathlib
+          import tomllib
+          for path in pathlib.Path('.').rglob('Cargo.toml'):
+              if 'target' in path.parts or '.git' in path.parts:
+                  continue
+              with path.open('rb') as source:
+                  manifest = tomllib.load(source)
+              for section in ('package', 'workspace'):
+                  metadata = manifest.get(section, {}).get('metadata', {}).get('cargo-machete', {})
+                  if metadata.get('ignored') or metadata.get('renamed'):
+                      raise SystemExit(f'{path}: cargo-machete suppressions are forbidden; extensions go through the caller declaration')
+          PYTHON
+          "$TOOLS/cargo-machete" --no-ignore --skip-target-dir
+      - name: Spelling
+        run: |
+          "$TOOLS/typos" --isolated --config "$CHECK_DEFAULTS/typos.toml" .
+      - name: Secrets
+        run: |
+          if [ -s .gitleaksignore ]; then
+            echo '.gitleaksignore: suppressions are forbidden; extensions go through the caller declaration' >&2
+            exit 1
+          fi
+          "$TOOLS/gitleaks" dir --config "$CHECK_DEFAULTS/gitleaks.toml" --gitleaks-ignore-path "$CHECK_DEFAULTS/gitleaks.ignore" --ignore-gitleaks-allow --redact .
+      - name: Workflows
+        run: |
+          shopt -s nullglob
+          workflows=(.github/workflows/*.yml .github/workflows/*.yaml)
+          if [ "${#workflows[@]}" -gt 0 ]; then
+            "$TOOLS/zizmor" --offline --no-config --no-ignores --strict-collection "${workflows[@]}"
+            "$TOOLS/actionlint" -config-file "$CHECK_DEFAULTS/actionlint.yaml" -shellcheck= -pyflakes= "${workflows[@]}"
+          fi
+      - name: Coverage search tools
+        if: needs.declaration.outputs.enabled == 'true'
+        run: *search-tools
+      - name: Coverage mise bootstrap
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *mise-bootstrap
+      - name: Coverage test tools
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *test-tools
+      - name: Coverage
+        if: needs.declaration.outputs.enabled != 'true'
+        run: |
+          unset LLVM_COV LLVM_PROFDATA CARGO_LLVM_COV_FLAGS CARGO_LLVM_PROFDATA_FLAGS
+          for name in ${!LLVM_@}; do
+            if [[ "$name" == LLVM_*_FLAGS ]]; then unset "$name"; fi
+          done
+          "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+      - name: Isolated coverage
+        if: needs.declaration.outputs.enabled == 'true'
+        run: *isolated-tests
 
   targets:
     name: Check (${{ matrix.target }})

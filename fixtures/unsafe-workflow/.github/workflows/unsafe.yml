@@ -1,0 +1,10 @@
+name: Unsafe fixture
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  unsafe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Unsafe title interpolation
+        run: echo "${{ github.event.pull_request.title }}"

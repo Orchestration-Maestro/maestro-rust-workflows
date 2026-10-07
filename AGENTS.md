@@ -1,7 +1,10 @@
 # maestro-rust-workflows
 
 The shared CI always checks formatting, Clippy warnings, documentation and
-tests. The optional caller declaration adds isolated tests, real search tools,
+tests. One additional required job checks licenses, dependency use, spelling,
+secrets, workflows and at least 80% line coverage, with embedded defaults and
+checksum-verified tool releases. Only the caller declaration may extend those
+defaults or raise coverage. The optional caller declaration adds isolated tests, real search tools,
 caller-pinned test tools, wasm builds, native foreign-target checks and the
 fixed browser recipe hook. Its spec is
 [One shared Rust CI](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md).
