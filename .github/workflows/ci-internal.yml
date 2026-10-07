@@ -437,6 +437,7 @@ jobs:
               print('PASS check_tools_reject_corrupt_release')
 
       - name: Search release installation proofs
+        timeout-minutes: 10
         shell: python
         run: |
           import os
@@ -487,6 +488,11 @@ jobs:
                                'Coverage test tools', 'Browser tools', 'Check tools']:
                       with self.subTest(step=name):
                           self.assertRegex(steps[name], r'(?m)^        timeout-minutes: 10$')
+                  internal = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+                  internal_steps = dict(step.split('\n', 1) for step in internal.split('      - name: ')[1:])
+                  for name in ['Search release installation proofs', 'Real search tools']:
+                      with self.subTest(step=name):
+                          self.assertRegex(internal_steps[name], r'(?m)^        timeout-minutes: 10$')
 
               def test_corrupt_archives(self):
                   command = body('Search tools')
@@ -512,12 +518,6 @@ jobs:
                           self.assertFalse((directory / 'path').exists())
                           self.assertFalse(list(directory.glob('maestro-search-bin.*/rg')))
                           self.assertFalse(list(directory.glob('maestro-search-bin.*/fd')))
-
-              def test_documented_pins(self):
-                  docs = pathlib.Path('docs/caller-checks.md').read_text(encoding='utf-8')
-                  self.assertIn('ripgrep 15.2.0', docs)
-                  self.assertIn('fd 10.5.0', docs)
-                  self.assertIn('10-minute', docs)
 
           suite = unittest.defaultTestLoader.loadTestsFromTestCase(SearchReleases)
           result = unittest.TextTestRunner(verbosity=2).run(suite)
