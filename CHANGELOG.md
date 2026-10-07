@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.4.0...v0.5.0) (2026-10-07)
+
+
+### Features
+
+* **ci:** add supply-chain, spelling, secret, workflow, coverage checks ([#20](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/20)) ([a00bfed](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/a00bfed5cbc17ecf716c703ac2e285155e96b471))
+* **ci:** allow declared privileged-trigger workflows ([#23](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/23)) ([a7c5878](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/a7c58784582aebfcb30de22bb5aea889f223f3fa)), closes [#22](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/22)
+
 ## [0.4.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.3.0...v0.4.0) (2026-10-06)
 
 
