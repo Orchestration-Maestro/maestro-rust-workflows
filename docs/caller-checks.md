@@ -126,8 +126,11 @@ on declared files. No declaration means no audit exceptions.
 
 ## Isolated tests
 
-Opted-in Linux tests install real `ripgrep` and `fd-find`, exposing `fdfind` as
-`fd`. Before tests start, a presence guard rejects exported provider API/OAuth
+Opted-in Linux tests and coverage install ripgrep 15.2.0 and fd 10.5.0 from
+pinned Linux x86_64 musl release archives, verifying their published SHA-256
+digests before extraction. The dedicated binary directory exposes `rg` and
+`fd` directly on `PATH`. Every tool-installation step has a 10-minute timeout
+to fail stalled downloads or installs. Before tests start, a presence guard rejects exported provider API/OAuth
 keys, GitHub/Hugging Face tokens, cloud project/profile/region selectors,
 cloud credential paths/URIs and the extensive-model selector listed in the
 [shared specification](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md).

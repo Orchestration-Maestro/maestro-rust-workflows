@@ -239,14 +239,29 @@ jobs:
         if: needs.declaration.outputs.enabled != 'true'
         run: cargo test --workspace --locked
       - name: Search tools
+        timeout-minutes: 10
         if: needs.declaration.outputs.enabled == 'true'
         run: &search-tools |
-          sudo apt-get update
-          sudo apt-get install -y ripgrep fd-find
-          mkdir -p "$RUNNER_TEMP/maestro-search-bin"
-          ln -s /usr/bin/fdfind "$RUNNER_TEMP/maestro-search-bin/fd"
-          echo "$RUNNER_TEMP/maestro-search-bin" >> "$GITHUB_PATH"
+          # Digests: ripgrep's release .sha256 file and fd's GitHub release asset digest.
+          bin=$(mktemp -d "$RUNNER_TEMP/maestro-search-bin.XXXXXX")
+          while read -r url digest binary; do
+            archive=$(mktemp)
+            curl --fail --location "$url" --output "$archive"
+            printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+            unpack=$(mktemp -d)
+            tar -xzf "$archive" -C "$unpack"
+            find "$unpack" -type f -name "$binary" -exec cp '{}' "$bin/$binary" \;
+            test -x "$bin/$binary"
+            rm -rf "$archive" "$unpack"
+          done <<'TOOLS'
+          https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz 33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c rg
+          https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-unknown-linux-musl.tar.gz 761c72dc8e120d85b22292063be8a796e2eeb20eb3e4f38b8fa2343ccf3514a7 fd
+          TOOLS
+          "$bin/rg" --version
+          "$bin/fd" --version
+          echo "$bin" >> "$GITHUB_PATH"
       - name: Mise bootstrap
+        timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: &mise-bootstrap |
           # https://github.com/jdx/mise/releases/download/v2026.10.2/SHASUMS256.txt
@@ -263,6 +278,7 @@ jobs:
             echo "$bin" >> "$GITHUB_PATH"
           fi
       - name: Test tools
+        timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: &test-tools |
           test -f mise.toml
@@ -328,6 +344,7 @@ jobs:
           rustup show
           rustup component add llvm-tools-preview
       - name: Check tools
+        timeout-minutes: 10
         run: |
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-check-tools.XXXXXX")
           while read -r url digest binary; do
@@ -432,12 +449,15 @@ jobs:
             "$TOOLS/actionlint" -config-file "$CHECK_DEFAULTS/actionlint.yaml" -shellcheck= -pyflakes= "${workflows[@]}"
           fi
       - name: Coverage search tools
+        timeout-minutes: 10
         if: needs.declaration.outputs.enabled == 'true'
         run: *search-tools
       - name: Coverage mise bootstrap
+        timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: *mise-bootstrap
       - name: Coverage test tools
+        timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: *test-tools
       - name: Coverage
@@ -509,9 +529,11 @@ jobs:
               subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
           PYTHON
       - name: Browser mise bootstrap
+        timeout-minutes: 10
         if: needs.declaration.outputs.browser_build == 'true'
         run: *mise-bootstrap
       - name: Browser tools
+        timeout-minutes: 10
         if: needs.declaration.outputs.browser_build == 'true'
         run: |
           test -f mise.toml

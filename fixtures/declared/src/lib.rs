@@ -46,17 +46,12 @@ mod tests {
             .join("search-fixture");
         fs::create_dir(&directory).unwrap();
         fs::write(directory.join("needle.txt"), "shared-search-canary\n").unwrap();
-        for (tool, binary) in [("rg", "/usr/bin/rg"), ("fd", "/usr/bin/fdfind")] {
-            let resolved = Command::new("sh")
-                .args(["-c", &format!("command -v {tool}")])
-                .output()
-                .unwrap();
-            assert!(resolved.status.success());
-            let path = String::from_utf8(resolved.stdout).unwrap();
-            assert_eq!(
-                fs::canonicalize(path.trim()).unwrap(),
-                fs::canonicalize(binary).unwrap()
-            );
+        for (tool, version) in [("rg", "ripgrep 15.2.0"), ("fd", "fd 10.5.0")] {
+            let output = Command::new(tool).arg("--version").output().unwrap();
+            assert!(output.status.success());
+            assert!(String::from_utf8(output.stdout)
+                .unwrap()
+                .starts_with(version));
         }
         let rg = Command::new("rg")
             .args(["--no-config", "shared-search-canary", "needle.txt"])
