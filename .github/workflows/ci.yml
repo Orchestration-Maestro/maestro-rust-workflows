@@ -138,7 +138,7 @@ jobs:
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
           PYTHON
@@ -364,14 +364,14 @@ jobs:
               deny += '\nallow = ' + toml_value(entry['licenses']) + '\n'
           deny += '\n[bans]\n[sources]\nunknown-registry = "deny"\nunknown-git = "deny"\n'
           deny += 'allow-git = ' + toml_value(config.get('git_sources', [])) + '\n'
-          (directory / 'deny.toml').write_text(deny)
+          (directory / 'deny.toml').write_text(deny, encoding="utf-8")
           words = '[default.extend-words]\n'
           words += ''.join(toml_value(word) + ' = ' + toml_value(word) + '\n' for word in dict.fromkeys(config.get('spelling_words', [])))
-          (directory / 'typos.toml').write_text(words)
-          (directory / 'gitleaks.toml').write_text('[extend]\nuseDefault = true\n')
-          (directory / 'gitleaks.ignore').write_text('')
-          (directory / 'actionlint.yaml').write_text('{}\n')
-          with open(os.environ['GITHUB_ENV'], 'a') as output:
+          (directory / 'typos.toml').write_text(words, encoding="utf-8")
+          (directory / 'gitleaks.toml').write_text('[extend]\nuseDefault = true\n', encoding="utf-8")
+          (directory / 'gitleaks.ignore').write_text('', encoding="utf-8")
+          (directory / 'actionlint.yaml').write_text('{}\n', encoding="utf-8")
+          with open(os.environ['GITHUB_ENV'], 'a', encoding="utf-8") as output:
               output.write(f'CHECK_DEFAULTS={directory}\n')
               output.write(f'CARGO_COVERAGE_MIN_LINES={config.get("coverage_min_lines", 80)}\n')
           PYTHON
