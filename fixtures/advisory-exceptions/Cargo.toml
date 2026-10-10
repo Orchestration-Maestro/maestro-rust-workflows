@@ -1,0 +1,8 @@
+[package]
+name = "advisory-exceptions"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+bincode = "=1.3.3"
