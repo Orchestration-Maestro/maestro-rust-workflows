@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.5.1...v0.6.0) (2026-10-10)
+
+
+### Features
+
+* accept exact advisory exceptions in the caller declaration ([#28](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/28)) ([768a8e1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/768a8e1b22d2e1edfa64c1606d235bb38cd915bf))
+
 ## [0.5.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.5.0...v0.5.1) (2026-10-07)
 
 
