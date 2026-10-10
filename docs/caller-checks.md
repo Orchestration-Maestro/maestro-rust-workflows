@@ -54,7 +54,7 @@ pinned together in the workflow. LLVM tools come from the caller's rustup
 component distribution, not a caller-provided executable.
 
 - cargo-deny checks licenses, bans, sources and advisories across the workspace
-  with all features. Known vulnerabilities and yanked crates fail. Registries
+  with all features. Unexcused advisories and yanked crates fail. Registries
   other than crates.io and undeclared git sources fail. The license allowlist is
   MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
   Apache-2.0 WITH LLVM-exception, Unicode-DFS-2016, Unicode-3.0, CC0-1.0,
@@ -93,6 +93,9 @@ privileged_trigger_workflows = [".github/workflows/review-gate.yml"]
 license_exceptions = [
   { package = "specific-library", version = "1.2.3", licenses = ["BSL-1.0"] },
 ]
+advisory_exceptions = [
+  { id = "RUSTSEC-2025-0141", package = "bincode", version = "1.3.3", reason = "Packaged syntax and theme dumps; reviewed exception" },
+]
 ```
 
 `coverage_min_lines` must be a number from 80 through 100; boolean, non-finite
@@ -105,8 +108,20 @@ organization-wide or prefix exceptions. License exceptions require exactly
 `package`, an exact `version` (not a range), and a nonempty `licenses` array;
 they add licenses for only that package version. All arrays default to empty.
 Malformed extension values fail declaration validation, and invalid license
-expressions fail cargo-deny. These keys cannot disable advisories, bans, source
-checks, spelling defaults, other workflow audits or secret detection.
+expressions fail cargo-deny. Advisory exceptions excuse only named advisories;
+no key disables bans, source checks, spelling defaults, other workflow audits or
+secret detection.
+
+`advisory_exceptions` defaults to an empty array. Each entry requires exactly
+`id`, `package`, `version` and `reason`, all nonempty strings subject to the
+quality-string rules above. The ID must match `RUSTSEC-YYYY-NNNN`; the version
+must be an exact semantic version, not a range. The package/version pair must
+remain in the caller's `Cargo.lock`; otherwise the required check fails with a
+stale-exception diagnostic naming the advisory, package and version. If another
+version of the same package is also locked, the check rejects the exception and
+names the locked versions. The shared workflow renders only that ID and reason
+into cargo-deny's advisory ignore list.
+Unlisted advisories and yanked crates remain checked.
 
 `privileged_trigger_workflows` is an optional array of unique, exact, existing
 `.github/workflows/<name>.yml` or `.yaml` file paths. It defaults to empty.

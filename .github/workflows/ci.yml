@@ -69,7 +69,7 @@ jobs:
               raise SystemExit(f'{path}: {error}') from error
           values = dict(quality_config='{}', enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false')
           if config is not None:
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'git_sources', 'privileged_trigger_workflows'}
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'git_sources', 'privileged_trigger_workflows'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -117,7 +117,25 @@ jobs:
                       validate_toml_string('license_exceptions.licenses', value)
                   if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', entry['version']):
                       raise SystemExit(f'{path}: license_exceptions requires an exact package version')
-              values['quality_config'] = json.dumps({key: config[key] for key in ('coverage_min_lines', 'spelling_words', 'license_exceptions', 'git_sources', 'privileged_trigger_workflows') if key in config})
+              exceptions = config.get('advisory_exceptions', [])
+              if not isinstance(exceptions, list):
+                  raise SystemExit(f'{path}: advisory_exceptions must be an array')
+              for entry in exceptions:
+                  if not isinstance(entry, dict) or set(entry) != {'id', 'package', 'version', 'reason'}:
+                      raise SystemExit(f'{path}: advisory_exceptions requires id, package, version and reason')
+                  if any(type(value) is not str or not value for value in entry.values()):
+                      raise SystemExit(f'{path}: advisory_exceptions values must be nonempty strings')
+                  for key, value in entry.items():
+                      validate_toml_string('advisory_exceptions.' + key, value)
+                  if not re.fullmatch(r'RUSTSEC-[0-9]{4}-[0-9]{4}', entry['id']):
+                      raise SystemExit(f'{path}: advisory_exceptions id must match RUSTSEC-YYYY-NNNN')
+                  exact_version = (r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
+                                   r'(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+                                   r'(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?'
+                                   r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?')
+                  if not re.fullmatch(exact_version, entry['version']):
+                      raise SystemExit(f'{path}: advisory_exceptions requires an exact package version')
+              values['quality_config'] = json.dumps({key: config[key] for key in ('coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'git_sources', 'privileged_trigger_workflows') if key in config})
               try:
                   packages = {package['name'] for package in json.loads(subprocess.check_output(
                       ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))['packages']}
@@ -372,6 +390,7 @@ jobs:
           import json
           import os
           import pathlib
+          import tomllib
           config = json.loads(os.environ.get('QUALITY_CONFIG') or '{}')
           directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'maestro-checks'
           directory.mkdir(exist_ok=True)
@@ -380,7 +399,21 @@ jobs:
           allow = ['MIT', 'Apache-2.0', 'ISC', 'BSD-2-Clause', 'BSD-3-Clause', 'Zlib',
                    'Apache-2.0 WITH LLVM-exception', 'Unicode-DFS-2016', 'Unicode-3.0',
                    'CC0-1.0', 'CDLA-Permissive-2.0', 'MPL-2.0', 'MIT-0']
-          deny = '[advisories]\nyanked = "deny"\n[licenses]\nallow = ' + toml_value(allow) + '\n'
+          deny = '[advisories]\nyanked = "deny"\n'
+          if config.get('advisory_exceptions'):
+              with pathlib.Path('Cargo.lock').open('rb') as source:
+                  packages = {(entry['name'], entry['version']) for entry in tomllib.load(source)['package']}
+              for entry in config['advisory_exceptions']:
+                  if (entry['package'], entry['version']) not in packages:
+                      raise SystemExit(f"Cargo.lock: stale advisory exception {entry['id']} for {entry['package']} {entry['version']}")
+                  versions = sorted({version for package, version in packages if package == entry['package']})
+                  if versions != [entry['version']]:
+                      raise SystemExit(f"Cargo.lock: advisory exception {entry['id']} for {entry['package']} {entry['version']} conflicts with locked versions {versions!r}")
+              deny += 'ignore = [\n'
+              for entry in config['advisory_exceptions']:
+                  deny += '  { id = ' + toml_value(entry['id']) + ', reason = ' + toml_value(entry['reason']) + ' },\n'
+              deny += ']\n'
+          deny += '[licenses]\nallow = ' + toml_value(allow) + '\n'
           for entry in config.get('license_exceptions', []):
               deny += '\n[[licenses.exceptions]]\nname = ' + toml_value(entry['package'])
               deny += '\nversion = ' + toml_value('=' + entry['version'])

@@ -155,6 +155,110 @@ jobs:
                   env = env | {'CARGO_BUILD_JOBS': '3'}
               return subprocess.run(argv, cwd=directory, env=env, capture_output=True, text=True)
 
+          def advisory_exception_suppresses_named_advisory(env, temporary):
+              import shutil
+              directory = pathlib.Path(temporary) / 'advisory-exceptions'
+              shutil.copytree(root / 'fixtures/advisory-exceptions', directory)
+              declaration = directory / '.github/ci.toml'
+              declaration.parent.mkdir()
+              entry = {'id': 'RUSTSEC-2025-0141', 'package': 'bincode', 'version': '1.3.3',
+                       'reason': 'Packaged syntax dumps; reviewed exception with "quotes" and 𐐀'}
+              declaration.write_text('wasm_crates=[]\ncheck_targets=[]\nadvisory_exceptions=['
+                                     + '{' + ', '.join(key + '=' + json.dumps(value, ensure_ascii=False)
+                                                      for key, value in entry.items()) + '}]\n', encoding='utf-8')
+              output_path = pathlib.Path(temporary) / 'advisory-output'
+              result = execute('Read caller declaration', directory, env | {'GITHUB_OUTPUT': str(output_path)})
+              assert result.returncode == 0, result.stdout + result.stderr
+              values = dict(line.split('=', 1) for line in output_path.read_text(encoding='utf-8').splitlines())
+              result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': values['quality_config']})
+              assert result.returncode == 0, result.stdout + result.stderr
+              generated = tomllib.loads((pathlib.Path(env['CHECK_DEFAULTS']) / 'deny.toml').read_text(encoding='utf-8'))
+              assert generated['advisories'] == {'yanked': 'deny', 'ignore': [{'id': entry['id'], 'reason': entry['reason']}]}
+              result = execute('Licenses and dependencies', directory, env)
+              assert result.returncode == 0, result.stdout + result.stderr
+              print('PASS advisory_exception_suppresses_named_advisory', flush=True)
+              for key, value in [('package', 'missing-package'), ('version', '1.3.2')]:
+                  stale = entry | {key: value}
+                  result = execute('Embedded check defaults', directory, env | {
+                      'QUALITY_CONFIG': json.dumps({'advisory_exceptions': [stale]})})
+                  output = result.stdout + result.stderr
+                  assert result.returncode != 0 and 'stale advisory exception' in output and stale['id'] in output and stale['package'] in output and stale['version'] in output, output
+              print('PASS advisory_exception_rejects_stale_package_or_version', flush=True)
+              lock = directory / 'Cargo.lock'
+              original_lock = lock.read_text(encoding='utf-8')
+              lock.write_text(original_lock + '\n[[package]]\nname = "bincode"\nversion = "1.3.2"\n', encoding='utf-8')
+              result = execute('Embedded check defaults', directory, env | {
+                  'QUALITY_CONFIG': json.dumps({'advisory_exceptions': [entry]})})
+              output = result.stdout + result.stderr
+              assert result.returncode != 0 and 'advisory exception' in output and 'bincode' in output and '1.3.2' in output and '1.3.3' in output, output
+              lock.write_text(original_lock, encoding='utf-8')
+              print('PASS advisory_exception_rejects_other_locked_version', flush=True)
+              # Omitting the key restores the advisory finding and original defaults.
+              declaration.unlink()
+              output_path.write_text('', encoding='utf-8')
+              result = execute('Read caller declaration', directory, env | {'GITHUB_OUTPUT': str(output_path)})
+              assert result.returncode == 0, result.stdout + result.stderr
+              values = dict(line.split('=', 1) for line in output_path.read_text(encoding='utf-8').splitlines())
+              assert values['quality_config'] == '{}' and values['enabled'] == 'false'
+              result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': values['quality_config']})
+              assert result.returncode == 0, result.stdout + result.stderr
+              generated = tomllib.loads((pathlib.Path(env['CHECK_DEFAULTS']) / 'deny.toml').read_text(encoding='utf-8'))
+              assert generated['advisories'] == {'yanked': 'deny'}
+              result = execute('Licenses and dependencies', directory, env)
+              assert result.returncode != 0 and entry['id'] in result.stdout + result.stderr, result.stdout + result.stderr
+              print('PASS advisory_exception_absent_key_keeps_advisories', flush=True)
+              for case, suffix in [('without-key', ''), ('empty-array', 'advisory_exceptions=[]\n')]:
+                  declaration.write_text('wasm_crates=[]\ncheck_targets=[]\n' + suffix, encoding='utf-8')
+                  output_path.write_text('', encoding='utf-8')
+                  result = execute('Read caller declaration', directory, env | {'GITHUB_OUTPUT': str(output_path)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  values = dict(line.split('=', 1) for line in output_path.read_text(encoding='utf-8').splitlines())
+                  result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': values['quality_config']})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  generated = tomllib.loads((pathlib.Path(env['CHECK_DEFAULTS']) / 'deny.toml').read_text(encoding='utf-8'))
+                  assert generated['advisories'] == {'yanked': 'deny'}
+                  result = execute('Licenses and dependencies', directory, env)
+                  assert result.returncode != 0 and entry['id'] in result.stdout + result.stderr, result.stdout + result.stderr
+                  print('PASS advisory_exception_' + case + '_keeps_advisories', flush=True)
+              # A distinct, unexcused package still fails the same full cargo-deny command.
+              manifest = directory / 'Cargo.toml'
+              manifest.write_text(manifest.read_text(encoding='utf-8') + 'rustc-serialize = "=0.3.25"\n', encoding='utf-8')
+              lock = directory / 'Cargo.lock'
+              lock.write_text(lock.read_text(encoding='utf-8').replace(' "bincode",', ' "bincode",\n "rustc-serialize",')
+                              + '\n[[package]]\nname = "rustc-serialize"\nversion = "0.3.25"\n'
+                              + 'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+                              + 'checksum = "fe834bc780604f4674073badbad26d7219cadfb4a2275802db12cbae17498401"\n', encoding='utf-8')
+              result = execute('Embedded check defaults', directory, env | {
+                  'QUALITY_CONFIG': json.dumps({'advisory_exceptions': [entry]})})
+              assert result.returncode == 0, result.stdout + result.stderr
+              result = execute('Licenses and dependencies', directory, env)
+              assert result.returncode != 0 and 'RUSTSEC-2022-0004' in result.stdout + result.stderr, result.stdout + result.stderr
+              print('PASS advisory_exception_keeps_unexcused_advisory', flush=True)
+              invalid = [
+                  ('missing-reason', {key: value for key, value in entry.items() if key != 'reason'}, 'requires id, package, version and reason'),
+                  ('extra-key', entry | {'extra': 'value'}, 'requires id, package, version and reason'),
+                  ('range-version', entry | {'version': '^1.3.3'}, 'exact package version'),
+                  ('bad-id', entry | {'id': 'CVE-2025-0141'}, 'RUSTSEC-YYYY-NNNN'),
+                  ('empty-reason', entry | {'reason': ''}, 'nonempty strings'),
+                  ('wrong-type', entry | {'version': 133}, 'nonempty strings'),
+                  ('invalid-semver', entry | {'version': '1.3.3-01'}, 'exact package version'),
+              ]
+              invalid += [('control-' + key, entry | {key: value + chr(1)}, 'control characters or surrogates')
+                          for key, value in entry.items()]
+              for case, invalid_entry, diagnostic in invalid:
+                  declaration.write_text('wasm_crates=[]\ncheck_targets=[]\nadvisory_exceptions=['
+                                         + '{' + ', '.join(key + '=' + json.dumps(value, ensure_ascii=False)
+                                                          for key, value in invalid_entry.items()) + '}]\n', encoding='utf-8')
+                  result = execute('Read caller declaration', directory, env | {'GITHUB_OUTPUT': str(output_path)})
+                  output = result.stdout + result.stderr
+                  assert result.returncode != 0 and 'advisory_exceptions' in output and diagnostic in output, case + ': ' + output
+                  print('PASS advisory_exception_rejects_' + case, flush=True)
+              for value in ['"scalar"', '["entry"]']:
+                  declaration.write_text('wasm_crates=[]\ncheck_targets=[]\nadvisory_exceptions=' + value, encoding='utf-8')
+                  result = execute('Read caller declaration', directory, env | {'GITHUB_OUTPUT': str(output_path)})
+                  assert result.returncode != 0 and 'advisory_exceptions' in result.stdout + result.stderr, result.stdout + result.stderr
+              print('PASS advisory_exception_rejects_non_array_or_record', flush=True)
+
           def privileged_trigger_workflows_ignore_only_declared_audit(env, temporary):
               import shutil
               directory = pathlib.Path(temporary) / 'privileged-trigger'
@@ -265,6 +369,7 @@ jobs:
                   result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
                   assert result.returncode == 0, result.stdout + result.stderr
               print('PASS repository_workflow_checks')
+              advisory_exception_suppresses_named_advisory(env, temporary)
               privileged_trigger_workflows_ignore_only_declared_audit(env, temporary)
               result = execute('Embedded check defaults', root, env)
               assert result.returncode == 0, result.stdout + result.stderr
