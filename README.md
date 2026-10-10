@@ -32,7 +32,7 @@ with `cargo llvm-cov --workspace --locked --fail-under-lines 80`. All seven tool
 are exact release pins, verified against embedded SHA-256 checksums before
 execution. Their defaults are embedded in the shared workflow, not loaded from
 consumer files. The caller declaration can add spelling words, exact-version
-license exceptions, named advisory exceptions tied to locked package versions
+license exceptions, named advisory exceptions tied to reported package versions
 and exact git sources, or raise coverage. It can also
 list exact privileged-trigger workflow paths to ignore only the
 `dangerous-triggers` audit for those files; all other workflow audits stay

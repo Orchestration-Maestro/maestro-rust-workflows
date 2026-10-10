@@ -119,7 +119,10 @@ must be an exact semantic version, not a range. The package/version pair must
 remain in the caller's `Cargo.lock`; otherwise the required check fails with a
 stale-exception diagnostic naming the advisory, package and version. If another
 version of the same package is also locked, the check rejects the exception and
-names the locked versions. The shared workflow renders only that ID and reason
+names the locked versions. Before rendering, the pinned cargo-deny reports the
+advisories without any ignore; each declared ID must be reported for exactly the
+declared package and version, otherwise the check fails naming the ID and the
+package and version reported, or "no such finding". The shared workflow renders only that ID and reason
 into cargo-deny's advisory ignore list.
 Unlisted advisories and yanked crates remain checked.
 

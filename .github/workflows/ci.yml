@@ -390,6 +390,7 @@ jobs:
           import json
           import os
           import pathlib
+          import subprocess
           import tomllib
           config = json.loads(os.environ.get('QUALITY_CONFIG') or '{}')
           directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'maestro-checks'
@@ -409,6 +410,20 @@ jobs:
                   versions = sorted({version for package, version in packages if package == entry['package']})
                   if versions != [entry['version']]:
                       raise SystemExit(f"Cargo.lock: advisory exception {entry['id']} for {entry['package']} {entry['version']} conflicts with locked versions {versions!r}")
+              probe = directory / 'probe-deny.toml'
+              probe.write_text('[advisories]\nyanked = "deny"\n', encoding="utf-8")
+              found = subprocess.run([os.environ['TOOLS'] + '/cargo-deny', '--format', 'json', '--workspace', '--locked', '--all-features',
+                                      '--config', str(probe), 'check', 'advisories'], capture_output=True, text=True)
+              reported = {}
+              for line in found.stderr.splitlines():
+                  fields = json.loads(line).get('fields', {}) if line.startswith('{') else {}
+                  if 'advisory' in fields:
+                      reported.setdefault(fields['advisory']['id'], set()).update(
+                          (graph['Krate']['name'], graph['Krate']['version']) for graph in fields['graphs'])
+              for entry in config['advisory_exceptions']:
+                  if (entry['package'], entry['version']) not in reported.get(entry['id'], set()):
+                      actual = ', '.join(f'{name} {version}' for name, version in sorted(reported.get(entry['id'], ()))) or 'no such finding'
+                      raise SystemExit(f"Cargo.lock: advisory exception {entry['id']} is not reported for {entry['package']} {entry['version']}: {actual}")
               deny += 'ignore = [\n'
               for entry in config['advisory_exceptions']:
                   deny += '  { id = ' + toml_value(entry['id']) + ', reason = ' + toml_value(entry['reason']) + ' },\n'
