@@ -77,6 +77,8 @@ Coverage runs `cargo llvm-cov --workspace --locked --fail-under-lines 80` by
 default, without consumer coverage exclusions or external LLVM overrides.
 Declared callers use the same isolated environment and opted-in test tools as
 the Tests job. Coverage does not replace the original Tests job.
+The Tests, Isolated tests, Coverage and Isolated coverage steps each have a
+45-minute timeout to bound hung caller tests.
 
 ### Declaration extensions
 

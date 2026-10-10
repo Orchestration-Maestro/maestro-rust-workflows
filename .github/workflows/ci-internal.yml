@@ -607,6 +607,11 @@ jobs:
                       with self.subTest(step=name):
                           self.assertRegex(internal_steps[name], r'(?m)^        timeout-minutes: 10$')
 
+              def test_caller_test_timeouts(self):
+                  for name in ['Tests', 'Isolated tests', 'Coverage', 'Isolated coverage']:
+                      with self.subTest(step=name):
+                          self.assertRegex(steps[name], r'(?m)^        timeout-minutes: 45$')
+
               def test_corrupt_archives(self):
                   command = body('Search tools')
                   rows = re.findall(r'^https://github.com/\S+ \w{64} (?:rg|fd)$', command, re.MULTILINE)
