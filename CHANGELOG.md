@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.6.0...v0.6.1) (2026-10-11)
+
+
+### Bug Fixes
+
+* **ci:** bound caller test and coverage steps to 45 minutes ([#31](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/31)) ([4463766](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/44637664f36e6357ed1a3ddbab62874a88876925))
+
 ## [0.6.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.5.1...v0.6.0) (2026-10-10)
 
 
