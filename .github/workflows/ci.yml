@@ -254,6 +254,7 @@ jobs:
       - name: Toolchain
         run: rustup show
       - name: Tests
+        timeout-minutes: 45
         if: needs.declaration.outputs.enabled != 'true'
         run: cargo test --workspace --locked
       - name: Search tools
@@ -303,6 +304,7 @@ jobs:
           mise install
           mise bin-paths >> "$GITHUB_PATH"
       - name: Isolated tests
+        timeout-minutes: 45
         if: needs.declaration.outputs.enabled == 'true'
         env:
           CARGO_COVERAGE_MIN_LINES: ''
@@ -509,6 +511,7 @@ jobs:
         if: needs.declaration.outputs.test_tools == 'true'
         run: *test-tools
       - name: Coverage
+        timeout-minutes: 45
         if: needs.declaration.outputs.enabled != 'true'
         run: |
           unset LLVM_COV LLVM_PROFDATA CARGO_LLVM_COV_FLAGS CARGO_LLVM_PROFDATA_FLAGS
@@ -517,6 +520,7 @@ jobs:
           done
           "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
       - name: Isolated coverage
+        timeout-minutes: 45
         if: needs.declaration.outputs.enabled == 'true'
         run: *isolated-tests
 
