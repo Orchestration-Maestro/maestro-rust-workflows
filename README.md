@@ -19,6 +19,11 @@ using automatic count partitions rather than package lists. Doctests run once
 with `cargo test --doc` on shard 1. The aggregate `Tests (ubuntu-latest)`
 requires every shard to succeed, preserving the required-check name.
 
+Pull requests test changed crates and their reverse dependencies, without a
+coverage floor. Each nextest test can retry twice; flaky passes are named in
+job summaries, while permanent failures still fail. Merge groups and main
+pushes run the full suite with coverage.
+
 Declared callers measure coverage in those partitions with `cargo llvm-cov
 nextest`. Each shard uploads LCOV; the aggregate counts a source line as covered
 if any shard covers it and enforces the union's 80% floor (or caller's higher

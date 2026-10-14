@@ -14,7 +14,9 @@ fixed browser recipe hook. Its spec is
   directory input is for the self-test; organization rules use the root.
   The caller's `.config/nextest.toml` is test-suite runner metadata (such as
   resource groups), not shared-CI settings. Shared-CI partitioning and coverage
-  policy stay in the workflow; default test filters are ignored.
+  policy stay in the workflow; default test filters are ignored and CI allows
+  two retries, naming flaky passes in the summary. PRs select changed crates
+  and reverse dependencies; merge groups/main pushes run full coverage.
 - Test changes at the workflow seam in `.github/workflows/ci-internal.yml`.
   Keep the broken fixtures broken, and outside any root workspace.
 - Pin actions by full commit SHA. Do not add a gate program or checks beyond the specification.

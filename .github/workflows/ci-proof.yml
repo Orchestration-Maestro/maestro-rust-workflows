@@ -14,8 +14,31 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: fe95d588b50e753e4bee183cb3f2213f6dc55ace
+      checkout-ref: 6297cfcbb51949e91519e3b8b456c8a27442f60c
       concurrency-key: maestro-proof
+      test-event: merge_group
+
+  upper-crate:
+    name: Maestro upper-crate PR
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: 2508e2eeba186ca50aa05b29865fe1aad595a7cf
+      checkout-base-ref: 1fc64aeb5e196b81ea5d107f64d14657b092b2cd
+      test-event: pull_request
+      concurrency-key: maestro-upper-crate
+
+  changed-crates:
+    name: Maestro actual PR selection
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: 2508e2eeba186ca50aa05b29865fe1aad595a7cf
+      checkout-base-ref: c97c6474b33653f59b16c5170ec65d308a2f33de
+      test-event: pull_request
+      concurrency-key: maestro-changed-crates
 
   comparison:
     name: Maestro single coverage and archive build
@@ -31,7 +54,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Orchestration-Maestro/maestro
-          ref: fe95d588b50e753e4bee183cb3f2213f6dc55ace
+          ref: 6297cfcbb51949e91519e3b8b456c8a27442f60c
           path: maestro
       - name: Extract workflow steps
         shell: python
@@ -114,7 +137,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Orchestration-Maestro/maestro
-          ref: fe95d588b50e753e4bee183cb3f2213f6dc55ace
+          ref: 6297cfcbb51949e91519e3b8b456c8a27442f60c
           path: maestro
       - name: Extract workflow steps
         shell: python

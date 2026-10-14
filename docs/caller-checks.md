@@ -5,6 +5,8 @@ real search tools and optional builds. Organization calls use that root; the
 workflow's directory input exists only for its fixture self-test and pinned
 workspace proof. Optional `checkout-repository` and `checkout-ref` inputs are
 also self-test-only: when unset they check out the caller repository and commit.
+`checkout-base-ref` and `test-event` are proof-only overrides restricted to this
+workflow repository; they default to the real PR base and event.
 
 ```toml
 wasm_crates = ["my-browser-library"]
@@ -62,6 +64,24 @@ with their opted-in tools. Shards upload LCOV without individual thresholds.
 each source line once (covered if any shard hits it), and enforces
 `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job.
+
+### Pull-request selection and retries
+
+On pull requests, tests run only changed workspace crates and their reverse
+dependencies, without the coverage threshold. A crate manifest selects its
+crate; lockfile changes compare the resolved transitive dependency identities
+and features at base and head, selecting affected crates. Root manifest,
+toolchain or CI workflow/schema changes select everything. Non-test declaration
+keys (such as spelling, wasm and foreign-target lists) select no extra tests;
+changes to test tools, coverage policy or declaration presence select everything.
+Docs-only changes outside a crate select no tests. Unowned non-document files
+conservatively select everything. Every shard still fetches locked dependencies.
+Merge groups and main pushes run the whole suite with coverage.
+
+CI allows two retries for each nextest test. A pass on retry remains a flaky
+pass, named in the job summary; permanent failures fail the shard. Caller
+resource groups are retained, but default filters cannot suppress tests and
+caller retry counts cannot override this policy.
 
 ## Required dependency, source and coverage checks
 
