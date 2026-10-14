@@ -28,6 +28,12 @@
       "type": "boolean",
       "default": false
     },
+    "reserved_ports": {
+      "description": "Local ports reserved from the ephemeral range with sysctl before Linux test shards run.",
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1, "maximum": 65535 },
+      "uniqueItems": true
+    },
     "browser_build": {
       "description": "Run the caller's mise-pinned just browser-build after the listed wasm builds.",
       "type": "boolean",

@@ -59,6 +59,7 @@ jobs:
       targets: ${{ steps.config.outputs.targets }}
       browser_build: ${{ steps.config.outputs.browser_build }}
       test_tools: ${{ steps.config.outputs.test_tools }}
+      reserved_ports: ${{ steps.config.outputs.reserved_ports }}
       quality_config: ${{ steps.config.outputs.quality_config }}
     steps:
       - name: Checkout
@@ -91,11 +92,11 @@ jobs:
               config = None
           except (OSError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(quality_config='{}', enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false')
+          values = dict(quality_config='{}', enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'git_sources', 'privileged_trigger_workflows'}
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'git_sources', 'privileged_trigger_workflows'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -104,6 +105,12 @@ jobs:
               for key in ('browser_build', 'test_tools'):
                   if type(config.get(key, False)) is not bool:
                       raise SystemExit(f'{path}: {key} must be a boolean')
+              ports = config.get('reserved_ports', [])
+              if not isinstance(ports, list) or any(type(port) is not int or not 1 <= port <= 65535 for port in ports):
+                  raise SystemExit(f'{path}: reserved_ports must be an array of integers from 1 to 65535')
+              if len(set(ports)) != len(ports):
+                  raise SystemExit(f'{path}: reserved_ports entries must be unique')
+              values['reserved_ports'] = ','.join(map(str, ports))
               threshold = config.get('coverage_min_lines', 80)
               if type(threshold) not in (int, float) or not 80 <= threshold <= 100:
                   raise SystemExit(f'{path}: coverage_min_lines must be a number from 80 to 100')
@@ -238,7 +245,7 @@ jobs:
                       before = {}
                   path = pathlib.Path('.github/ci.toml')
                   after = tomllib.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
-                  if any(before.get(key) != after.get(key) for key in ('test_tools', 'coverage_min_lines')) or bool(before) != bool(after):
+                  if any(before.get(key) != after.get(key) for key in ('test_tools', 'reserved_ports', 'coverage_min_lines')) or bool(before) != bool(after):
                       selected = set(members)
               if 'Cargo.lock' in changed and selected != members:
                   # Resolve both revisions, comparing transitive dependency identities and features.
@@ -488,6 +495,11 @@ jobs:
           test -f mise.toml
           mise install
           mise bin-paths >> "$GITHUB_PATH"
+      - name: Reserved ports
+        if: needs.declaration.outputs.reserved_ports != ''
+        env:
+          RESERVED_PORTS: ${{ needs.declaration.outputs.reserved_ports }}
+        run: sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"
       - name: Isolated tests
         timeout-minutes: 45
         if: needs.declaration.outputs.enabled == 'true'
