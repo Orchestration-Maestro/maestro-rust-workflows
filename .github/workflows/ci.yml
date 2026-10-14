@@ -372,7 +372,8 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
       - name: Cargo cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cargo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -501,12 +502,8 @@ jobs:
           if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
             run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
           elif [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; then
-            args=(--workspace --locked)
-            if [ -n "${ARCHIVE_FILE:-}" ]; then
-              args=(--archive-file "$ARCHIVE_FILE" --workspace-remap "$PWD")
-            fi
             run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-              --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/4" --no-tests pass "${args[@]}" --lcov --output-path "$PWD/shard-$SHARD.lcov" 2>&1 | tee nextest.log
+              --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/4" --no-tests pass --workspace --locked --lcov --output-path "$PWD/shard-$SHARD.lcov" 2>&1 | tee nextest.log
           else
             partition=()
             if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/4"); fi
@@ -530,6 +527,15 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
               output.write('### Flaky tests (passed on retry)\n' + ('\n'.join('- ' + name for name in flaky) if flaky else 'None') + '\n')
           PYTHON
+      - name: Save Cargo cache
+        if: matrix.shard == 1 && steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ inputs.working-directory || '.' }}/target/llvm-cov-target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles(format('{0}/rust-toolchain.toml', inputs.working-directory || '.'), format('{0}/Cargo.lock', inputs.working-directory || '.')) }}
       - name: Upload shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
