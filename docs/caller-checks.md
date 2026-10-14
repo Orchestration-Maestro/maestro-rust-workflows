@@ -2,7 +2,11 @@
 
 Add `.github/ci.toml` at the caller repository root to opt into isolated tests,
 real search tools and optional builds. Organization calls use that root; the
-workflow's directory input exists only for its fixture self-test.
+workflow's directory input exists only for its fixture self-test and pinned
+workspace proof. Optional `checkout-repository` and `checkout-ref` inputs are
+also self-test-only: when unset they check out the caller repository and commit.
+`checkout-base-ref` and `test-event` are proof-only overrides restricted to this
+workflow repository; they default to the real PR base and event.
 
 ```toml
 wasm_crates = ["my-browser-library"]
@@ -46,20 +50,39 @@ retained; declaration text is never executed as shell syntax.
 
 ## Test shards
 
-Tests run on four Linux runners, with sorted workspace members distributed
-round-robin. To balance heavy crates, optionally declare four package groups:
+Tests use checksum-pinned cargo-nextest 0.9.148 with four automatic
+`--partition count:N/4` partitions. The caller's `.config/nextest.toml` supplies
+test-suite runner metadata such as resource groups for fixed-port tests. Shared
+CI controls partitioning and coverage; profile default filters are ignored so
+they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
+with a clear diagnostic. Unit and integration tests run exactly once; doctests
+run once on shard 1 with `cargo test --workspace --locked --doc`.
 
-```toml
-test_shards = [["my-browser-library"], ["my-core"], [], []]
-```
+Declared callers run `cargo llvm-cov nextest` in the same isolated environment
+with their opted-in tools. Shards upload LCOV without individual thresholds.
+`Tests (ubuntu-latest)` requires all shards, downloads all four reports, counts
+each source line once (covered if any shard hits it), and enforces
+`coverage_min_lines` on the union. Missing reports or low coverage fail.
+Undeclared callers use nextest partitions but retain their single coverage job
+for merge groups and main pushes. PRs skip coverage for all callers.
 
-Every workspace member must appear exactly once, even if a group is empty.
-Unknown names, omissions, duplicates or a group count other than four fail
-validation. Each nonempty shard runs `cargo test --workspace --locked` with
-`--exclude` for members belonging to other shards, retaining doctests. The
-isolated environment and credential guard apply unchanged to declared callers.
-The required aggregate remains `Tests (ubuntu-latest)` and fails if any shard
-fails or is cancelled. Coverage runs the whole workspace, not these shards.
+### Pull-request selection and retries
+
+On pull requests, tests run only changed workspace crates and their reverse
+dependencies, without the coverage threshold. A crate manifest selects its
+crate; lockfile changes compare the resolved transitive dependency identities
+and features at base and head, selecting affected crates. Root manifest,
+toolchain or CI workflow/schema changes select everything. Non-test declaration
+keys (such as spelling, wasm and foreign-target lists) select no extra tests;
+changes to test tools, coverage policy or declaration presence select everything.
+Docs-only changes outside a crate select no tests. Unowned non-document files
+conservatively select everything. Every shard still fetches locked dependencies.
+Merge groups and main pushes run the whole suite with coverage.
+
+CI allows two retries for each nextest test. A pass on retry remains a flaky
+pass, named in the job summary; permanent failures fail the shard. Caller
+resource groups are retained, but default filters cannot suppress tests and
+caller retry counts cannot override this policy.
 
 ## Required dependency, source and coverage checks
 
@@ -90,12 +113,12 @@ component distribution, not a caller-provided executable.
   actionlint's optional external shellcheck/pyflakes integrations are disabled;
   its built-in correctness checks remain active.
 
-Coverage runs `cargo llvm-cov --workspace --locked --fail-under-lines 80` by
-default, without consumer coverage exclusions or external LLVM overrides.
-Declared callers use the same isolated environment and opted-in test tools as
-the Tests job. Coverage does not replace the original Tests job.
-The Tests, Isolated tests, Coverage and Isolated coverage steps each have a
-45-minute timeout to bound hung caller tests.
+Undeclared coverage runs `cargo llvm-cov --workspace --locked
+--fail-under-lines 80`. Declared coverage runs within the test partitions and
+its threshold is enforced by `Tests (ubuntu-latest)`, not by the dependency job.
+Neither accepts consumer coverage exclusions or external LLVM overrides.
+The Tests, Isolated tests and undeclared Coverage steps retain their 45-minute
+timeouts to bound hung caller tests.
 
 ### Declaration extensions
 
@@ -180,8 +203,8 @@ The child keeps only `PATH`, resolved `CARGO_HOME` and `RUSTUP_HOME`, fresh
 locations, plus `MAESTRO_NO_LOCAL_LLM=1`. `TMP` and `TEMP` equal `TMPDIR`; the
 other locations are separate, initially empty directories beneath a unique
 runner-temp parent. Unrelated CI state, proxy settings and application/provider
-overrides are not inherited. The test argv stays
-`cargo test --workspace --locked`.
+overrides are not inherited. The partition argv uses `cargo llvm-cov nextest`; doctests use
+`cargo test --workspace --locked --doc`.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
@@ -205,7 +228,7 @@ Tool versions come from the caller, not the shared workflow. Missing
 `mise.toml` or a failed installation fails the job. False or omitted
 `test_tools` skips the bootstrap and tool installation, preserving the existing
 test path. An absent declaration still runs the original unisolated tests.
-The test argv remains `cargo test --workspace --locked`; credential guards,
+The nextest partition and doctest argv, credential guards,
 fresh directories and the child environment allowlist are unchanged. Only the
 installed tools' executable paths are added, not mise's environment settings.
 
