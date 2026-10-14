@@ -36,7 +36,7 @@ jobs:
           path: maestro
       - name: Extract workflow steps
         shell: python
-        run: &extract-steps |
+        run: |
           import os
           import pathlib
           import re
@@ -65,7 +65,7 @@ jobs:
       - name: Caller tools
         timeout-minutes: 10
         working-directory: maestro
-        run: &caller-tools |
+        run: |
           bash -e -o pipefail "$PROOF_STEPS/Search tools"
           bash -e -o pipefail "$PROOF_STEPS/Mise bootstrap"
           while read -r bin; do export PATH="$bin:$PATH"; done < "$GITHUB_PATH"
