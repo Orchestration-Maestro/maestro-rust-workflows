@@ -281,6 +281,22 @@ jobs:
           cargo fetch --locked
           mapfile -d '' -t excludes < <(python3 -c 'import json, os; print("".join("--exclude\0" + name + "\0" for name in json.loads(os.environ.get("TEST_EXCLUDES", "[]"))), end="")')
           cargo test --workspace --locked "${excludes[@]}"
+      - name: Mold linker
+        timeout-minutes: 10
+        run: &mold-linker |
+          # Digest: mold's GitHub release asset digest.
+          bin=$(mktemp -d "$RUNNER_TEMP/maestro-mold-bin.XXXXXX")
+          archive=$(mktemp)
+          curl --fail --location https://github.com/rui314/mold/releases/download/v3.0.0/mold-3.0.0-x86_64-linux.tar.gz --output "$archive"
+          printf '%s  %s\n' 6c90d4a474c7c0409dfb575be03a5345878ac14fdba18de8b40fa58c60121189 "$archive" | sha256sum --check --status
+          unpack=$(mktemp -d)
+          tar -xzf "$archive" -C "$unpack"
+          find "$unpack" -type f -path '*/bin/mold' -exec cp '{}' "$bin/mold" \;
+          test -x "$bin/mold"
+          rm -rf "$archive" "$unpack"
+          "$bin/mold" --version
+          echo "$bin" >> "$GITHUB_PATH"
+
       - name: Search tools
         timeout-minutes: 10
         if: needs.declaration.outputs.enabled == 'true'
@@ -547,6 +563,9 @@ jobs:
             "$TOOLS/zizmor" --offline --config "$CHECK_DEFAULTS/zizmor.yaml" --strict-collection "${workflows[@]}"
             "$TOOLS/actionlint" -config-file "$CHECK_DEFAULTS/actionlint.yaml" -shellcheck= -pyflakes= "${workflows[@]}"
           fi
+      - name: Coverage mold linker
+        timeout-minutes: 10
+        run: *mold-linker
       - name: Coverage search tools
         timeout-minutes: 10
         if: needs.declaration.outputs.enabled == 'true'
@@ -593,6 +612,10 @@ jobs:
           persist-credentials: false
       - name: Toolchain
         run: rustup show
+      - name: Target mold linker
+        timeout-minutes: 10
+        if: runner.os == 'Linux'
+        run: *mold-linker
       - name: Check target
         env:
           TARGET: ${{ matrix.target }}
@@ -615,6 +638,9 @@ jobs:
           persist-credentials: false
       - name: Toolchain
         run: rustup show
+      - name: Browser mold linker
+        timeout-minutes: 10
+        run: *mold-linker
       - name: Build wasm crates
         env:
           WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}

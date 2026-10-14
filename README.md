@@ -36,6 +36,10 @@ tools, caller-pinned test tools, listed wasm builds, native foreign-target
 checks and a pinned browser recipe. A repository's `rust-toolchain.toml`
 selects its toolchain through rustup.
 
+Linux jobs that compile Rust also put a pinned `mold` release (SHA-256 verified)
+on `PATH`. Callers opt in through their own `.cargo/config.toml`; the shared
+workflow sets no linker.
+
 Every caller also gets one dependency, source and coverage job: cargo-deny
 (licenses, bans, sources and advisories), cargo-machete (unused dependencies),
 typos (spelling), gitleaks (checked-out source, before build-cache restore),
