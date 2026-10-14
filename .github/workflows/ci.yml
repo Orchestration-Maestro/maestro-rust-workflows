@@ -293,23 +293,47 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
-      - name: Cargo cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ${{ inputs.working-directory || '.' }}/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles(format('{0}/rust-toolchain.toml', inputs.working-directory || '.'), format('{0}/Cargo.lock', inputs.working-directory || '.')) }}
-          restore-keys: ${{ runner.os }}-cargo-
       - name: Toolchain
         run: |
           rustup show
           rustup component add rustfmt clippy
+      - name: Compile cache credentials
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const name of ['ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
+              if (process.env[name]) core.exportVariable(name, process.env[name]);
+            }
+      - name: Compile cache
+        timeout-minutes: 10
+        run: &sccache-install |
+          version=0.18.0
+          # Digests: GitHub release asset digests of the musl tarballs.
+          case "$(uname -m)" in
+            x86_64) arch=x86_64 digest=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89 ;;
+            aarch64) arch=aarch64 digest=2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a ;;
+          esac
+          name=sccache-v$version-$arch-unknown-linux-musl
+          bin=$(mktemp -d "$RUNNER_TEMP/maestro-sccache.XXXXXX")
+          archive=$(mktemp)
+          curl --fail --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
+          printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$bin" --strip-components=1 "$name/sccache"
+          rm "$archive"
+          test -x "$bin/sccache"
+          echo "$bin" >> "$GITHUB_PATH"
+          { echo RUSTC_WRAPPER=sccache; echo SCCACHE_GHA_ENABLED=true; echo CARGO_INCREMENTAL=0; } >> "$GITHUB_ENV"
+          PATH="$bin:$PATH" SCCACHE_GHA_ENABLED=true sccache --start-server
       - name: Format
         run: cargo fmt --all --check
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Compile cache statistics
+        if: always()
+        run: &sccache-stats |
+          test "$RUSTC_WRAPPER" = sccache
+          test "$CARGO_INCREMENTAL" = 0
+          sccache --show-stats
 
   docs:
     name: Docs
@@ -327,21 +351,25 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
-      - name: Cargo cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ${{ inputs.working-directory || '.' }}/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles(format('{0}/rust-toolchain.toml', inputs.working-directory || '.'), format('{0}/Cargo.lock', inputs.working-directory || '.')) }}
-          restore-keys: ${{ runner.os }}-cargo-
       - name: Toolchain
         run: rustup show
+      - name: Compile cache credentials
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const name of ['ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
+              if (process.env[name]) core.exportVariable(name, process.env[name]);
+            }
+      - name: Compile cache
+        timeout-minutes: 10
+        run: *sccache-install
       - name: Docs
         env:
           RUSTDOCFLAGS: -D warnings -D missing_docs
         run: cargo doc --workspace --no-deps --locked
+      - name: Compile cache statistics
+        if: always()
+        run: *sccache-stats
 
   tests:
     needs: declaration
@@ -371,20 +399,20 @@ jobs:
         if: needs.declaration.outputs.enabled == 'true'
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-      - name: Cargo cache
-        id: cargo-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ${{ inputs.working-directory || '.' }}/target/llvm-cov-target
-          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles(format('{0}/rust-toolchain.toml', inputs.working-directory || '.'), format('{0}/Cargo.lock', inputs.working-directory || '.')) }}
-          restore-keys: ${{ runner.os }}-cargo-coverage-
       - name: Toolchain
         run: |
           rustup show
           rustup component add llvm-tools-preview
+      - name: Compile cache credentials
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const name of ['ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
+              if (process.env[name]) core.exportVariable(name, process.env[name]);
+            }
+      - name: Compile cache
+        timeout-minutes: 10
+        run: *sccache-install
       - name: Coverage tools
         timeout-minutes: 10
         run: |
@@ -493,6 +521,7 @@ jobs:
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
             XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 \
+            RUSTC_WRAPPER="${RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
             "$@"
           }
           cargo fetch --locked
@@ -527,15 +556,9 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
               output.write('### Flaky tests (passed on retry)\n' + ('\n'.join('- ' + name for name in flaky) if flaky else 'None') + '\n')
           PYTHON
-      - name: Save Cargo cache
-        if: matrix.shard == 1 && steps.cargo-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ${{ inputs.working-directory || '.' }}/target/llvm-cov-target
-          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles(format('{0}/rust-toolchain.toml', inputs.working-directory || '.'), format('{0}/Cargo.lock', inputs.working-directory || '.')) }}
+      - name: Compile cache statistics
+        if: always()
+        run: *sccache-stats
       - name: Upload shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -808,6 +831,18 @@ jobs:
             "$TOOLS/zizmor" --offline --config "$CHECK_DEFAULTS/zizmor.yaml" --strict-collection "${workflows[@]}"
             "$TOOLS/actionlint" -config-file "$CHECK_DEFAULTS/actionlint.yaml" -shellcheck= -pyflakes= "${workflows[@]}"
           fi
+      - name: Compile cache credentials
+        if: needs.declaration.outputs.enabled != 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const name of ['ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
+              if (process.env[name]) core.exportVariable(name, process.env[name]);
+            }
+      - name: Compile cache
+        if: needs.declaration.outputs.enabled != 'true'
+        timeout-minutes: 10
+        run: *sccache-install
       - name: Coverage
         timeout-minutes: 45
         if: needs.declaration.outputs.enabled != 'true' && needs.declaration.outputs.coverage == 'true'
@@ -817,6 +852,9 @@ jobs:
             if [[ "$name" == LLVM_*_FLAGS ]]; then unset "$name"; fi
           done
           "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+      - name: Compile cache statistics
+        if: always() && needs.declaration.outputs.enabled != 'true'
+        run: *sccache-stats
 
   targets:
     name: Check (${{ matrix.target }})
@@ -841,12 +879,27 @@ jobs:
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Toolchain
         run: rustup show
+      - name: Compile cache credentials
+        if: runner.os == 'Linux'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const name of ['ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
+              if (process.env[name]) core.exportVariable(name, process.env[name]);
+            }
+      - name: Compile cache
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: *sccache-install
       - name: Check target
         env:
           TARGET: ${{ matrix.target }}
         run: |
           rustup target add "$TARGET"
           cargo check --workspace --all-targets --locked --target "$TARGET"
+      - name: Compile cache statistics
+        if: always() && runner.os == 'Linux'
+        run: *sccache-stats
 
   browser:
     name: Wasm and browser build
@@ -866,6 +919,16 @@ jobs:
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Toolchain
         run: rustup show
+      - name: Compile cache credentials
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const name of ['ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
+              if (process.env[name]) core.exportVariable(name, process.env[name]);
+            }
+      - name: Compile cache
+        timeout-minutes: 10
+        run: *sccache-install
       - name: Build wasm crates
         env:
           WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}
@@ -901,3 +964,6 @@ jobs:
         if: needs.declaration.outputs.browser_build == 'true'
         run: |
           mise exec -- just browser-build
+      - name: Compile cache statistics
+        if: always()
+        run: *sccache-stats

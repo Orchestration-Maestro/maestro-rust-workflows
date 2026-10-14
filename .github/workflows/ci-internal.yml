@@ -75,6 +75,27 @@ jobs:
           step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == 'Coverage tools')
           match = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(match[1])], check=True)
+      - name: Compile cache in every Rust job
+        shell: python
+        run: |
+          import pathlib
+          import re
+          workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
+          assert 'actions/cache' not in workflow, 'sccache replaces target caching'
+          jobs = re.split(r'^  (?=[a-z-]+:\n)', workflow.split('\njobs:\n', 1)[1], flags=re.MULTILINE)
+          rust_jobs = {job.split(':', 1)[0]: job for job in jobs if re.search(r"\bcargo (check|clippy|doc|test|llvm-cov)\b|llvm-cov|cargo-nextest|cargo build|'cargo', 'build'", job)}
+          assert set(rust_jobs) == {'quality', 'docs', 'tests', 'checks', 'targets', 'browser'}, sorted(rust_jobs)
+          for name, job in rust_jobs.items():
+              assert '- name: Compile cache\n' in job or '- name: Compile cache credentials\n' in job, name
+              assert job.rstrip().count('- name: Compile cache statistics\n') == 1, name
+          assert 'version=0.18.0' in workflow
+          assert re.search(r'x86_64\) arch=x86_64 digest=[0-9a-f]{64} ', workflow)
+          assert re.search(r'aarch64\) arch=aarch64 digest=[0-9a-f]{64} ', workflow)
+          assert 'sha256sum --check --status' in workflow.split('name: Compile cache\n', 1)[1].split('- name:', 1)[0]
+          assert workflow.count('test "$RUSTC_WRAPPER" = sccache') == 1
+          assert 'SCCACHE_GHA_ENABLED=true' in workflow and 'CARGO_INCREMENTAL=0' in workflow
+          checks = rust_jobs['checks']
+          assert checks.index('- name: Secrets\n') < checks.index('- name: Compile cache\n'), 'secret scan precedes cache use'
       # Reusable workflow calls cannot use continue-on-error. The broken
       # fixtures run the workflow's own commands and assert all twenty outcomes.
       - name: Each broken fixture fails only its own check
