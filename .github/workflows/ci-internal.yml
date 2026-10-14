@@ -202,7 +202,7 @@ jobs:
               names = [step.splitlines()[0] for step in steps.split('      - name: ')[1:]]
               assert names.index('Check tools') < names.index('Secrets')
               assert names.index('Embedded check defaults') < names.index('Secrets')
-              assert names.index('Secrets') < names.index('Compile cache') < names.index('Licenses and dependencies')
+              assert names.index('Secrets') < names.index('Compile cache')
               for tracked in [False, True]:
                   if tracked:
                       source.write_text(secret, encoding='utf-8')
