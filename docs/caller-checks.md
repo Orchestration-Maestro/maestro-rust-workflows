@@ -88,7 +88,7 @@ caller retry counts cannot override this policy.
 
 No consumer file is required. The shared workflow embeds the defaults and
 installs checksum-verified official releases: cargo-deny 0.20.2,
-cargo-machete 0.9.2, typos 1.51.1, gitleaks 8.30.1, zizmor 1.30.1,
+cargo-machete 0.9.2, cargo-hakari 0.9.39, typos 1.51.1, gitleaks 8.30.1, zizmor 1.30.1,
 actionlint 1.7.12 and cargo-llvm-cov 0.9.1. Checksums and download URLs are
 pinned together in the workflow. LLVM tools come from the caller's rustup
 component distribution, not a caller-provided executable.
@@ -102,6 +102,8 @@ component distribution, not a caller-provided executable.
 - cargo-machete fails on unused dependencies. Nonempty `ignored` or `renamed`
   package/workspace cargo-machete metadata is rejected; ignored source files
   remain checked, but generated target directories are skipped.
+- cargo-hakari runs `cargo hakari verify` only when the caller has
+  `.config/hakari.toml`; a stale generated feature-unification package fails.
 - typos checks spelling with its defaults and no implicit consumer config.
 - gitleaks scans the checked-out tree with the default rules and redacted
   findings. Consumer secret configs, inline allows and ignore fingerprints
