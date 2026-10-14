@@ -535,6 +535,31 @@ jobs:
                   result = execute(name, directory, env)
                   assert result.returncode != 0, f'{case}: bypass accepted\n{result.stdout}{result.stderr}'
                   print(f'PASS {case}: exit {result.returncode}')
+              # A declared hakari package is accepted as an unused member dependency and is not itself checked.
+              def hakari_workspace(name, member_extra='', hack_extra='', config=True):
+                  directory = pathlib.Path(temporary) / name
+                  crates = {'app': ('[dependencies]\nworkspace-hack = { path = "../workspace-hack" }\n' + member_extra),
+                            'workspace-hack': '[dependencies]\n' + hack_extra,
+                            'real': '', 'other': ''}
+                  members = ', '.join(f'"{crate}"' for crate in crates)
+                  directory.mkdir()
+                  (directory / 'Cargo.toml').write_text(f'[workspace]\nresolver = "2"\nmembers = [{members}]\n', encoding="utf-8")
+                  for crate, dependencies in crates.items():
+                      (directory / crate / 'src').mkdir(parents=True)
+                      (directory / crate / 'src/lib.rs').write_text('//! Fixture.\n', encoding="utf-8")
+                      (directory / crate / 'Cargo.toml').write_text(
+                          f'[package]\nname = "{crate}"\nversion = "0.1.0"\nedition = "2021"\nlicense = "MIT"\n\n' + dependencies, encoding="utf-8")
+                  if config:
+                      (directory / '.config').mkdir()
+                      (directory / '.config/hakari.toml').write_text('hakari-package = "workspace-hack"\n', encoding="utf-8")
+                  return directory
+              result = execute('Unused dependencies', hakari_workspace('hakari-ok', hack_extra='other = { path = "../other" }\n'), env)
+              assert result.returncode == 0, 'hakari package edges must pass\n' + result.stdout + result.stderr
+              result = execute('Unused dependencies', hakari_workspace('hakari-real', member_extra='real = { path = "../real" }\n'), env)
+              assert result.returncode != 0 and 'real' in result.stdout + result.stderr, 'a real unused dependency must fail'
+              result = execute('Unused dependencies', hakari_workspace('hakari-none', config=False), env)
+              assert result.returncode != 0, 'without hakari config the unifier edge must fail'
+              print('PASS hakari_package_is_the_only_accepted_unused_dependency')
               # An external coverage tool must not replace the toolchain's verified LLVM.
               directory = pathlib.Path(temporary) / 'coverage-tool'
               shutil.copytree(root / 'fixtures/low-coverage', directory, ignore=shutil.ignore_patterns('target'))
