@@ -55,6 +55,7 @@ selects its toolchain through rustup.
 Every caller also gets the dependency and source checks: cargo-deny
 (licenses, bans, sources and advisories), cargo-machete (unused dependencies; a package named by `hakari-package` in
 `.config/hakari.toml` is not checked and its member dependency edge is accepted),
+cargo-hakari (`cargo hakari verify` when `.config/hakari.toml` exists),
 typos (spelling), gitleaks (checked-out source, before build-cache restore),
 zizmor and actionlint (workflow
 security and correctness when workflows exist), plus at least 80% line coverage on merge groups and main pushes
