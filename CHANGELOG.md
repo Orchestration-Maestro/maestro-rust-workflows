@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.7.1...v0.7.2) (2026-10-14)
+
+
+### Bug Fixes
+
+* scan source secrets before restoring coverage output ([#42](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/42)) ([0f205a4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/0f205a4f5606f2c2f0868184ce9cf804fe4d9bc2)), closes [#41](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/41)
+
 ## [0.7.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.7.0...v0.7.1) (2026-10-14)
 
 
