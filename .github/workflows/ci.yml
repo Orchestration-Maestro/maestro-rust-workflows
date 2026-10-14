@@ -272,6 +272,11 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
       - name: Toolchain
         run: rustup show
+      - name: Fetch every workspace dependency
+        # A shard builds only its own crates; caller tests may read the whole
+        # workspace's metadata offline, so every dependency must be present.
+        timeout-minutes: 10
+        run: cargo fetch --locked
       - name: Tests
         timeout-minutes: 45
         if: needs.declaration.outputs.enabled != 'true' && toJSON(matrix.packages) != '[]'
