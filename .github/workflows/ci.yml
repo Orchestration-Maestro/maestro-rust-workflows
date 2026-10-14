@@ -34,6 +34,7 @@ jobs:
       run:
         working-directory: ${{ inputs.working-directory || '.' }}
     outputs:
+      test_shards: ${{ steps.config.outputs.test_shards }}
       enabled: ${{ steps.config.outputs.enabled }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       targets: ${{ steps.config.outputs.targets }}
@@ -69,7 +70,7 @@ jobs:
               raise SystemExit(f'{path}: {error}') from error
           values = dict(quality_config='{}', enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false')
           if config is not None:
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'git_sources', 'privileged_trigger_workflows'}
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'test_shards', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'git_sources', 'privileged_trigger_workflows'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -137,8 +138,9 @@ jobs:
                       raise SystemExit(f'{path}: advisory_exceptions requires an exact package version')
               values['quality_config'] = json.dumps({key: config[key] for key in ('coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'git_sources', 'privileged_trigger_workflows') if key in config})
               try:
-                  packages = {package['name'] for package in json.loads(subprocess.check_output(
-                      ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))['packages']}
+                  metadata = json.loads(subprocess.check_output(
+                      ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))
+                  packages = {package['name'] for package in metadata['packages']}
                   supported = set(subprocess.check_output(['rustc', '--print', 'target-list'], text=True).splitlines())
               except (subprocess.CalledProcessError, OSError, ValueError) as error:
                   raise SystemExit(f'{path}: caller metadata/toolchain failed') from error
@@ -162,6 +164,20 @@ jobs:
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
+          if config is None:
+              metadata = json.loads(subprocess.check_output(
+                  ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))
+          members = sorted(package['name'] for package in metadata['packages']
+                           if package['id'] in metadata['workspace_members'])
+          groups = (config or {}).get('test_shards', [members[index::4] for index in range(4)])
+          if not isinstance(groups, list) or len(groups) != 4 or any(
+                  not isinstance(group, list) or any(type(name) is not str for name in group) for group in groups):
+              raise SystemExit(f'{path}: test_shards must be four arrays of package names')
+          if sorted(name for group in groups for name in group) != members:
+              raise SystemExit(f'{path}: test_shards must contain every workspace member exactly once')
+          values['test_shards'] = json.dumps([
+              dict(shard=index + 1, packages=group, exclude=[name for name in members if name not in group])
+              for index, group in enumerate(groups)])
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
@@ -228,12 +244,15 @@ jobs:
 
   tests:
     needs: declaration
-    name: Tests (${{ matrix.os }})
+    name: Test shard (${{ matrix.shard }}/4)
     if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+        include: ${{ fromJSON(needs.declaration.outputs.test_shards) }}
+    runs-on: ubuntu-latest
+    env:
+      TEST_EXCLUDES: ${{ toJSON(matrix.exclude) }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory || '.' }}
@@ -255,8 +274,10 @@ jobs:
         run: rustup show
       - name: Tests
         timeout-minutes: 45
-        if: needs.declaration.outputs.enabled != 'true'
-        run: cargo test --workspace --locked
+        if: needs.declaration.outputs.enabled != 'true' && toJSON(matrix.packages) != '[]'
+        run: |
+          mapfile -d '' -t excludes < <(python3 -c 'import json, os; print("".join("--exclude\0" + name + "\0" for name in json.loads(os.environ.get("TEST_EXCLUDES", "[]"))), end="")')
+          cargo test --workspace --locked "${excludes[@]}"
       - name: Search tools
         timeout-minutes: 10
         if: needs.declaration.outputs.enabled == 'true'
@@ -305,7 +326,7 @@ jobs:
           mise bin-paths >> "$GITHUB_PATH"
       - name: Isolated tests
         timeout-minutes: 45
-        if: needs.declaration.outputs.enabled == 'true'
+        if: needs.declaration.outputs.enabled == 'true' && toJSON(matrix.packages) != '[]'
         env:
           CARGO_COVERAGE_MIN_LINES: ''
         run: &isolated-tests |
@@ -341,8 +362,23 @@ jobs:
           if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
             run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
           else
-            run_isolated cargo test --workspace --locked
+            mapfile -d '' -t excludes < <(python3 -c 'import json, os; print("".join("--exclude\0" + name + "\0" for name in json.loads(os.environ.get("TEST_EXCLUDES", "[]"))), end="")')
+            run_isolated cargo test --workspace --locked "${excludes[@]}"
           fi
+
+  tests-result:
+    name: Tests (ubuntu-latest)
+    needs: tests
+    if: ${{ always() && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: All test shards passed
+        env:
+          RESULT: ${{ needs.tests.result }}
+        shell: python
+        run: |
+          import os
+          assert os.environ['RESULT'] == 'success'
 
   checks:
     name: Dependency, source and coverage checks
@@ -359,6 +395,15 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Coverage Cargo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ inputs.working-directory || '.' }}/target/llvm-cov-target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles(format('{0}/rust-toolchain.toml', inputs.working-directory || '.'), format('{0}/Cargo.lock', inputs.working-directory || '.')) }}
+          restore-keys: ${{ runner.os }}-cargo-coverage-
       - name: Toolchain
         run: |
           rustup show
