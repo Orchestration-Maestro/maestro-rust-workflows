@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.3](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.7.2...v0.7.3) (2026-10-14)
+
+
+### Bug Fixes
+
+* let cargo-machete accept a declared hakari package ([#50](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/50)) ([0e920c8](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/0e920c81ad533d4bef8d4d2c6aea0b758d1585fc)), closes [#49](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/49)
+
 ## [0.7.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.7.1...v0.7.2) (2026-10-14)
 
 
