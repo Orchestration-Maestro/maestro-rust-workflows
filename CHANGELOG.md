@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.7.0...v0.7.1) (2026-10-14)
+
+
+### Bug Fixes
+
+* **ci:** fetch every dependency before a test shard ([#37](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/37)) ([a3aa454](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/a3aa454fbe540ed8bb7e6f05394ef61a18ea47d7)), closes [#36](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/36)
+
 ## [0.7.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.6.1...v0.7.0) (2026-10-14)
 
 
