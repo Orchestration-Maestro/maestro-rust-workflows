@@ -48,7 +48,7 @@ The organization rules run `.github/workflows/ci.yml` for repositories with
 `stack=rust`. Consumers need only standard Rust files: no workflow to copy,
 no required settings file and no workflow inputs. The optional
 [caller declaration](docs/caller-checks.md) enables isolated tests, real search
-tools, caller-pinned test tools, listed wasm builds, native foreign-target
+tools, caller-pinned test tools, reserved test ports, listed wasm builds, native foreign-target
 checks and a pinned browser recipe. A repository's `rust-toolchain.toml`
 selects its toolchain through rustup.
 

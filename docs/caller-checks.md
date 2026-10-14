@@ -34,6 +34,12 @@ Both arrays are required, including when empty. `browser_build` and
 [schema](../.github/ci.schema.json) describes the parsed TOML shape; there is no
 version key or older-format reader.
 
+`reserved_ports` is an optional array of unique integers from 1 to 65535. When
+set, every Linux test job runs
+`sudo sysctl -w net.ipv4.ip_local_reserved_ports=<list>` before the tests, so
+tests that must bind a fixed local port are not displaced by an outbound
+connection that the kernel assigned that port. Without it nothing runs.
+
 An absent file runs the original four checks plus the dependency, source and
 coverage job, without isolation, search tool installation or optional jobs. An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
