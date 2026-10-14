@@ -526,7 +526,43 @@ jobs:
                   if metadata.get('ignored') or metadata.get('renamed'):
                       raise SystemExit(f'{path}: cargo-machete suppressions are forbidden; extensions go through the caller declaration')
           PYTHON
-          "$TOOLS/cargo-machete" --no-ignore --skip-target-dir
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import tomllib
+          machete = [os.environ['TOOLS'] + '/cargo-machete', '--no-ignore', '--skip-target-dir']
+          config = pathlib.Path('.config/hakari.toml')
+          if not config.is_file():
+              raise SystemExit(subprocess.run(machete).returncode)
+          with config.open('rb') as source:
+              hakari = tomllib.load(source).get('hakari-package')
+          if not hakari:
+              raise SystemExit(subprocess.run(machete).returncode)
+          metadata = json.loads(subprocess.run(['cargo', 'metadata', '--no-deps', '--format-version', '1'],
+                                               check=True, capture_output=True, text=True).stdout)
+          members = {p['name']: pathlib.Path(p['manifest_path']) for p in metadata['packages']}
+          generated = members.get(hakari)
+          paths = [str(m.parent) for name, m in members.items() if name != hakari]
+          if not paths:
+              raise SystemExit(0)
+          # The generated package is skipped; only the member-to-unifier edge is accepted.
+          result = subprocess.run([*machete, *paths], capture_output=True, text=True)
+          failed = False
+          crate = None
+          for line in result.stdout.splitlines():
+              if line.startswith('\t'):
+                  if crate != generated and line.strip() != hakari:
+                      failed = True
+                      print(f'{crate}: unused dependency {line.strip()}')
+              elif ' -- ' in line:
+                  crate = pathlib.Path(line.rsplit(' -- ', 1)[1].rstrip(':')).resolve()
+          if result.returncode not in (0, 1):
+              raise SystemExit(result.stderr)
+          if failed:
+              raise SystemExit(1)
+          PYTHON
       - name: Spelling
         run: |
           "$TOOLS/typos" --isolated --config "$CHECK_DEFAULTS/typos.toml" .
