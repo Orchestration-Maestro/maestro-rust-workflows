@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.7.3...v0.7.4) (2026-10-14)
+
+
+### Continuous Integration
+
+* list performance changes in the release notes ([#53](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/53)) ([32e7039](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/32e703997ad7b2b86360c27d82645f508db281e6))
+
+
+### Performance
+
+* cache compiled crates with sccache in CI ([#47](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/47)) ([be0b10d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/be0b10dc3e0a179538c4addc25fcaf84ce48ad77))
+* collect coverage in automatic nextest partitions ([#40](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/40)) ([2417378](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/2417378e6a6161a3ab86cf03d73db26ecd3b37e5))
+
 ## [0.7.3](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.7.2...v0.7.3) (2026-10-14)
 
 
