@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.6.1...v0.7.0) (2026-10-14)
+
+
+### Features
+
+* **ci:** cache coverage builds and shard workspace tests ([#34](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/34)) ([b115883](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/b1158831bc620e22bcf52098a3c8e246333d081b)), closes [#33](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/33)
+
 ## [0.6.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.6.0...v0.6.1) (2026-10-11)
 
 
