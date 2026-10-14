@@ -272,15 +272,13 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
       - name: Toolchain
         run: rustup show
-      - name: Fetch every workspace dependency
-        # A shard builds only its own crates; caller tests may read the whole
-        # workspace's metadata offline, so every dependency must be present.
-        timeout-minutes: 10
-        run: cargo fetch --locked
       - name: Tests
         timeout-minutes: 45
         if: needs.declaration.outputs.enabled != 'true' && toJSON(matrix.packages) != '[]'
         run: |
+          # A shard builds only its own crates; caller tests may read the whole
+          # workspace's metadata offline, so fetch every dependency first.
+          cargo fetch --locked
           mapfile -d '' -t excludes < <(python3 -c 'import json, os; print("".join("--exclude\0" + name + "\0" for name in json.loads(os.environ.get("TEST_EXCLUDES", "[]"))), end="")')
           cargo test --workspace --locked "${excludes[@]}"
       - name: Search tools
@@ -364,6 +362,7 @@ jobs:
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 \
             "$@"
           }
+          cargo fetch --locked
           if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
             run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
           else
