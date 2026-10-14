@@ -202,7 +202,7 @@ jobs:
               names = [step.splitlines()[0] for step in steps.split('      - name: ')[1:]]
               assert names.index('Check tools') < names.index('Secrets')
               assert names.index('Embedded check defaults') < names.index('Secrets')
-              assert names.index('Secrets') < names.index('Coverage Cargo cache') < names.index('Licenses and dependencies')
+              assert names.index('Secrets') < names.index('Compile cache') < names.index('Licenses and dependencies')
               for tracked in [False, True]:
                   if tracked:
                       source.write_text(secret, encoding='utf-8')
@@ -214,7 +214,7 @@ jobs:
                           output = result.stdout + result.stderr
                           assert result.returncode == (1 if tracked else 0), output
                           assert ('leaks found: 1' in output) == tracked, output
-                      elif name == 'Coverage Cargo cache':
+                      elif name == 'Compile cache':
                           target.parent.mkdir(parents=True, exist_ok=True)
                           target.write_text(secret, encoding='utf-8')
                   assert target.read_text(encoding='utf-8') == secret
