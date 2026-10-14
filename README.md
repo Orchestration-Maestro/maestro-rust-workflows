@@ -7,12 +7,24 @@ One shared Rust CI. The original checks remain required:
 | Format | `cargo fmt --all --check` | Linux |
 | Lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Linux |
 | Docs | `cargo doc --workspace --no-deps --locked` | Linux |
-| Tests | `cargo test --workspace --locked` | Linux |
+| Tests | `cargo test --workspace --locked` with shard exclusions | Linux |
 
 Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
 be documented, and documentation warnings fail the check. Tests run on Linux
 for now; macOS and Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
+
+Tests run as four parallel crate-group shards, including each package's
+unit, integration and documentation tests. Sorted workspace member names are
+assigned round-robin by default; callers can balance heavy crates with
+[`test_shards`](docs/caller-checks.md#test-shards). Empty shards skip test
+execution. The aggregate `Tests (ubuntu-latest)` succeeds only when every
+shard succeeds, preserving the required-check name.
+
+Coverage caches the Cargo registry, git dependencies and
+`target/llvm-cov-target` separately from ordinary builds. Its cache key includes
+the runner OS, `rust-toolchain.toml` and `Cargo.lock`, with an instrumented-cache
+restore fallback. All coverage tests still run and the 80% floor is unchanged.
 
 ## Adoption
 

@@ -44,6 +44,23 @@ file/key diagnostic before optional work is emitted. Metadata or compiler
 inspection failures also fail validation. Array order and repetitions are
 retained; declaration text is never executed as shell syntax.
 
+## Test shards
+
+Tests run on four Linux runners, with sorted workspace members distributed
+round-robin. To balance heavy crates, optionally declare four package groups:
+
+```toml
+test_shards = [["my-browser-library"], ["my-core"], [], []]
+```
+
+Every workspace member must appear exactly once, even if a group is empty.
+Unknown names, omissions, duplicates or a group count other than four fail
+validation. Each nonempty shard runs `cargo test --workspace --locked` with
+`--exclude` for members belonging to other shards, retaining doctests. The
+isolated environment and credential guard apply unchanged to declared callers.
+The required aggregate remains `Tests (ubuntu-latest)` and fails if any shard
+fails or is cancelled. Coverage runs the whole workspace, not these shards.
+
 ## Required dependency, source and coverage checks
 
 No consumer file is required. The shared workflow embeds the defaults and

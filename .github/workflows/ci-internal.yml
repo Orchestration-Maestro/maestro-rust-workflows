@@ -73,7 +73,7 @@ jobs:
           import subprocess
 
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding="utf-8")
-          commands = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE)
+          commands = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + re.findall(r'^          (cargo test --workspace --locked) ', workflow, re.MULTILINE)
           expected = [
               'cargo fmt --all --check',
               'cargo clippy --workspace --all-targets --locked -- -D warnings',
@@ -87,12 +87,12 @@ jobs:
               if any(f'run: {command}\n' in step for command in commands[:3]):
                   assert not re.search(r'^        if:', step, re.MULTILINE)
           base_test = next(step for step in workflow.split('      - name:')[1:]
-                           if 'run: cargo test --workspace --locked\n' in step)
+                           if step.startswith(' Tests\n'))
           assert "if: needs.declaration.outputs.enabled != 'true'" in base_test
           isolated_test = next(step for step in workflow.split('      - name:')[1:]
                                if step.startswith(' Isolated tests\n'))
           assert "if: needs.declaration.outputs.enabled == 'true'" in isolated_test
-          assert 'run_isolated cargo test --workspace --locked\n' in isolated_test
+          assert 'run_isolated cargo test --workspace --locked "${excludes[@]}"\n' in isolated_test
 
           docs_step = next(step for step in workflow.split('      - name:')[1:]
                            if 'run: cargo doc --workspace --no-deps --locked\n' in step)
@@ -345,7 +345,7 @@ jobs:
               assert not failures, '\n'.join(failures)
 
           checks = ['Licenses and dependencies', 'Unused dependencies', 'Spelling', 'Secrets', 'Workflows', 'Coverage']
-          base = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE)
+          base = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + re.findall(r'^          (cargo test --workspace --locked) ', workflow, re.MULTILINE)
           assert len(base) == 4
           with tempfile.TemporaryDirectory() as temporary:
               env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/paths',
@@ -748,6 +748,7 @@ jobs:
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
+              assert len(json.loads(values.pop('test_shards'))) == 4
               assert values == {'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false'}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
@@ -853,6 +854,84 @@ jobs:
 
           test_tools_follow_only_caller_pins()
           print('PASS test_tools_follow_only_caller_pins')
+
+          def test_shards_cover_workspace_once():
+              result, values = declaration(root / 'fixtures/sample')
+              assert result.returncode == 0, result.stderr
+              shards = json.loads(values['test_shards'])
+              assert len(shards) == 4
+              assert [shard['packages'] for shard in shards] == [['sample'], [], [], []]
+              assert all(shard['exclude'] == ([] if shard['packages'] else ['sample']) for shard in shards)
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  path = directory / '.github/ci.toml'
+                  for groups in [[[], ['sample'], [], []], [['sample'], [], [], []]]:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_shards=' + json.dumps(groups), encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode == 0, result.stderr
+                      assert [shard['packages'] for shard in json.loads(values['test_shards'])] == groups
+                  for groups in [[], [['sample']], [['sample'], ['sample'], [], []],
+                                 [[], [], [], []], [['unknown'], [], [], []],
+                                 [1, [], [], []], [[1], [], [], []], 'sample']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_shards=' + json.dumps(groups), encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and not values and 'test_shards' in result.stderr
+              aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
+              assert 'name: Tests (ubuntu-latest)' in aggregate
+              assert 'needs: tests' in aggregate and 'if: $' + '{{ always()' in aggregate
+              assert "assert os.environ['RESULT'] == 'success'" in aggregate
+
+          test_shards_cover_workspace_once()
+          print('PASS test_shards_cover_workspace_once')
+
+          def shards_run_unit_integration_and_doc_tests():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'Cargo.toml').write_text(
+                      '[workspace]\nresolver="3"\nmembers=["a","b","c","d","e"]\n', encoding='utf-8')
+                  for name in 'abcde':
+                      crate = directory / name
+                      (crate / 'src').mkdir(parents=True)
+                      (crate / 'tests').mkdir()
+                      (crate / 'Cargo.toml').write_text(
+                          f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+                      (crate / 'src/lib.rs').write_text(
+                          f'//! ```\n//! assert_eq!({name}::value(), 1);\n//! ```\n'
+                          f'pub fn value() -> u8 {{ 1 }}\n#[test] fn unit_{name}() {{ assert_eq!(value(), 1); }}\n', encoding='utf-8')
+                      (crate / 'tests/proof.rs').write_text(
+                          f'#[test] fn integration_{name}() {{ assert_eq!({name}::value(), 1); }}\n', encoding='utf-8')
+                  command = ['cargo', 'generate-lockfile']
+                  if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                      command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+                  subprocess.run(command, cwd=directory, check=True)
+                  result, values = declaration(directory)
+                  assert result.returncode == 0, result.stderr
+                  groups = json.loads(values['test_shards'])
+                  assert [group['packages'] for group in groups] == [['a', 'e'], ['b'], ['c'], ['d']]
+                  outputs = []
+                  for group in groups:
+                      result = execute('Tests', directory, {'TEST_EXCLUDES': json.dumps(group['exclude'])})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      outputs.append(result.stdout)
+                  combined = ''.join(outputs)
+                  for name in 'abcde':
+                      assert combined.count(f'test unit_{name} ... ok') == 1
+                      assert combined.count(f'test integration_{name} ... ok') == 1
+                  assert combined.count('src/lib.rs - (line 1) ... ok') == 5
+                  (directory / 'c/tests/proof.rs').write_text(
+                      '#[test] fn failed() { panic!("shard failure"); }\n', encoding='utf-8')
+                  result = execute('Tests', directory, {'TEST_EXCLUDES': json.dumps(groups[2]['exclude'])})
+                  assert result.returncode != 0 and 'shard failure' in result.stdout
+                  for status in ['success', 'failure', 'cancelled', 'skipped']:
+                      result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                                              env=os.environ | {'RESULT': status}, capture_output=True, text=True)
+                      assert (result.returncode == 0) == (status == 'success')
+
+          shards_run_unit_integration_and_doc_tests()
+          print('PASS shards_run_unit_integration_and_doc_tests')
 
           def declaration_types_are_checked():
               with tempfile.TemporaryDirectory() as temporary:
@@ -1340,7 +1419,7 @@ jobs:
           print('PASS reusable_calls_complete_independently')
 
           def workflow_safety_is_unchanged():
-              assert re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) == [
+              assert re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + re.findall(r'^          (cargo test --workspace --locked) ', workflow, re.MULTILINE) == [
                   'cargo fmt --all --check',
                   'cargo clippy --workspace --all-targets --locked -- -D warnings',
                   'cargo doc --workspace --no-deps --locked',
