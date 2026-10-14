@@ -38,7 +38,8 @@ selects its toolchain through rustup.
 
 Every caller also gets one dependency, source and coverage job: cargo-deny
 (licenses, bans, sources and advisories), cargo-machete (unused dependencies),
-typos (spelling), gitleaks (checked-out secrets), zizmor and actionlint (workflow
+typos (spelling), gitleaks (checked-out source, before build-cache restore),
+zizmor and actionlint (workflow
 security and correctness when workflows exist), and at least 80% line coverage
 with `cargo llvm-cov --workspace --locked --fail-under-lines 80`. All seven tools
 are exact release pins, verified against embedded SHA-256 checksums before
@@ -68,7 +69,9 @@ fail only license policy, unused dependencies, spelling, secrets, unsafe
 workflows or low coverage; the self-test runs all sixty combinations of their
 new and original checks. Permanent workflow-body tests also exercise caller
 extensions, rejected suppressions, independent workflow correctness failures,
-verified installations and the sample job's added execution time.
+verified installations and the sample job's added execution time. The secrets
+probe proves restored `target/` output is not scanned while the same secret in
+tracked source is caught.
 
 The configured `fixtures/declared` caller also passes all declared checks.
 Workflow-body probes cover declarations, isolation, real tools, wasm and
