@@ -268,6 +268,10 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Free instrumented build space
+        if: needs.declaration.outputs.enabled == 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
       - name: Cargo cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -303,7 +307,7 @@ jobs:
         if: needs.declaration.outputs.enabled != 'true'
         run: |
           cargo fetch --locked
-          "$TOOLS/cargo-nextest" nextest run --config-file /dev/null --user-config-file none --workspace --locked --partition "count:$SHARD/4" --no-tests pass
+          "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter --workspace --locked --partition "count:$SHARD/4" --no-tests pass
           if [ "$SHARD" = 1 ]; then
             cargo test --workspace --locked --doc
           fi
@@ -396,13 +400,13 @@ jobs:
             if [ -n "${ARCHIVE_FILE:-}" ]; then
               args=(--archive-file "$ARCHIVE_FILE" --workspace-remap "$PWD")
             fi
-            run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --config-file /dev/null --user-config-file none \
+            run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
               --partition "count:$SHARD/4" --no-tests pass "${args[@]}" --lcov --output-path "$PWD/shard-$SHARD.lcov"
             if [ "$SHARD" = 1 ]; then
               run_isolated cargo test --workspace --locked --doc
             fi
           else
-            run_isolated "$TOOLS/cargo-nextest" nextest run --config-file /dev/null --user-config-file none --workspace --locked
+            run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter --workspace --locked
             run_isolated cargo test --workspace --locked --doc
           fi
       - name: Upload shard coverage
@@ -488,6 +492,10 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Free instrumented build space
+        if: needs.declaration.outputs.enabled != 'true'
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
       - name: Toolchain
         run: |
           rustup show
@@ -589,6 +597,7 @@ jobs:
           fi
           "$TOOLS/gitleaks" dir --config "$CHECK_DEFAULTS/gitleaks.toml" --gitleaks-ignore-path "$CHECK_DEFAULTS/gitleaks.ignore" --ignore-gitleaks-allow --redact .
       - name: Coverage Cargo cache
+        if: needs.declaration.outputs.enabled != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

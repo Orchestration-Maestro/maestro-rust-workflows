@@ -49,7 +49,10 @@ retained; declaration text is never executed as shell syntax.
 ## Test shards
 
 Tests use checksum-pinned cargo-nextest 0.9.148 with four automatic
-`--partition count:N/4` partitions. `test_shards` was removed; setting it fails
+`--partition count:N/4` partitions. The caller's `.config/nextest.toml` supplies
+test-suite runner metadata such as resource groups for fixed-port tests. Shared
+CI controls partitioning and coverage; profile default filters are ignored so
+they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
 run once on shard 1 with `cargo test --workspace --locked --doc`.
 
