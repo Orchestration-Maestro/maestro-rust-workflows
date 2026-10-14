@@ -44,13 +44,14 @@ tools, caller-pinned test tools, listed wasm builds, native foreign-target
 checks and a pinned browser recipe. A repository's `rust-toolchain.toml`
 selects its toolchain through rustup.
 
-Every caller also gets one dependency, source and coverage job: cargo-deny
+Every caller also gets the dependency and source checks: cargo-deny
 (licenses, bans, sources and advisories), cargo-machete (unused dependencies; a package named by `hakari-package` in
 `.config/hakari.toml` is not checked and its member dependency edge is accepted),
 typos (spelling), gitleaks (checked-out source, before build-cache restore),
 zizmor and actionlint (workflow
-security and correctness when workflows exist), and at least 80% line coverage
-with `cargo llvm-cov --workspace --locked --fail-under-lines 80`. All check tools
+security and correctness when workflows exist), plus at least 80% line coverage on merge groups and main pushes
+(measured in isolated nextest partitions, or in the single undeclared coverage
+job). All check tools
 are exact release pins, verified against embedded SHA-256 checksums before
 execution. Their defaults are embedded in the shared workflow, not loaded from
 consumer files. The caller declaration can add spelling words, exact-version

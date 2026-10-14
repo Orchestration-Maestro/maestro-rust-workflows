@@ -416,9 +416,7 @@ jobs:
                                      '      - ci-internal.yml:15:11\n'
                                      '      - ci-internal.yml:22:11\n'
                                      '      - ci-internal.yml:30:11\n'
-                                     '      - ci-proof.yml:13:11\n'
-                                     '      - ci-proof.yml:23:11\n'
-                                     '      - ci-proof.yml:34:11\n', encoding="utf-8")
+                                     '      - ci-proof.yml:13:11\n', encoding="utf-8")
               for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
                            [env['TOOLS'] + '/actionlint', '-config-file', env['CHECK_DEFAULTS'] + '/actionlint.yaml', '-shellcheck=', '-pyflakes=',
                             *map(str, (root / '.github/workflows').glob('*.yml'))]]:
