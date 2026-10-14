@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.7.4...v0.8.0) (2026-10-14)
+
+
+### Features
+
+* reserve caller-declared ports on Linux test runners ([#58](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/58)) ([332b0c7](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/332b0c78368951b0266a63bbf3fcb8318e1d45a2))
+
+
+### Bug Fixes
+
+* verify the hakari package in shared CI ([#56](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/56)) ([4029356](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/40293560fd66b5a8701e4e3c5d9f3a17bd64dd36)), closes [#55](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/55)
+
 ## [0.7.4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.7.3...v0.7.4) (2026-10-14)
 
 
