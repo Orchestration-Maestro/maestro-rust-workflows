@@ -6,7 +6,8 @@
   "changelog-sections": [
     { "type": "ci", "section": "Continuous Integration" },
     { "type": "feat", "section": "Features" },
-    { "type": "fix", "section": "Bug Fixes" }
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance" }
   ],
   "packages": { ".": { "version-file": "version.txt" } }
 }
