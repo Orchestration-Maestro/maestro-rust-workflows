@@ -7,24 +7,27 @@ One shared Rust CI. The original checks remain required:
 | Format | `cargo fmt --all --check` | Linux |
 | Lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Linux |
 | Docs | `cargo doc --workspace --no-deps --locked` | Linux |
-| Tests | `cargo test --workspace --locked` with shard exclusions | Linux |
+| Tests | `cargo nextest run` partitions and `cargo test --doc` | Linux |
 
 Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
 be documented, and documentation warnings fail the check. Tests run on Linux
 for now; macOS and Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
 
-Tests run as four parallel crate-group shards, including each package's
-unit, integration and documentation tests. Sorted workspace member names are
-assigned round-robin by default; callers can balance heavy crates with
-[`test_shards`](docs/caller-checks.md#test-shards). Empty shards skip test
-execution. The aggregate `Tests (ubuntu-latest)` succeeds only when every
-shard succeeds, preserving the required-check name.
+Tests run with checksum-pinned cargo-nextest 0.9.148 on four Linux runners,
+using automatic count partitions rather than package lists. Doctests run once
+with `cargo test --doc` on shard 1. The aggregate `Tests (ubuntu-latest)`
+requires every shard to succeed, preserving the required-check name.
 
-Coverage caches the Cargo registry, git dependencies and
-`target/llvm-cov-target` separately from ordinary builds. Its cache key includes
-the runner OS, `rust-toolchain.toml` and `Cargo.lock`, with an instrumented-cache
-restore fallback. All coverage tests still run and the 80% floor is unchanged.
+Declared callers measure coverage in those partitions with `cargo llvm-cov
+nextest`. Each shard uploads LCOV; the aggregate counts a source line as covered
+if any shard covers it and enforces the union's 80% floor (or caller's higher
+threshold). Missing shard reports fail. Undeclared callers retain single-job
+coverage in `Dependency, source and coverage checks`.
+
+The partitions share one instrumented Cargo cache key, including runner OS,
+`rust-toolchain.toml` and `Cargo.lock`, with an instrumented-cache restore
+fallback. They cache `target/llvm-cov-target`, not plain test builds.
 
 ## Adoption
 
@@ -42,7 +45,7 @@ Every caller also gets one dependency, source and coverage job: cargo-deny
 typos (spelling), gitleaks (checked-out source, before build-cache restore),
 zizmor and actionlint (workflow
 security and correctness when workflows exist), and at least 80% line coverage
-with `cargo llvm-cov --workspace --locked --fail-under-lines 80`. All seven tools
+with `cargo llvm-cov --workspace --locked --fail-under-lines 80`. All check tools
 are exact release pins, verified against embedded SHA-256 checksums before
 execution. Their defaults are embedded in the shared workflow, not loaded from
 consumer files. The caller declaration can add spelling words, exact-version

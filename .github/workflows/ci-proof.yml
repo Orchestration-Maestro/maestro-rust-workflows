@@ -1,0 +1,145 @@
+name: Maestro coverage proof
+
+on:
+  pull_request:
+    paths: [.github/workflows/ci.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  maestro:
+    name: Maestro partitioned coverage
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: fe95d588b50e753e4bee183cb3f2213f6dc55ace
+      concurrency-key: maestro-proof
+
+  comparison:
+    name: Maestro single coverage and archive build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflow
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: workflow
+      - name: Checkout Maestro
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: Orchestration-Maestro/maestro
+          ref: fe95d588b50e753e4bee183cb3f2213f6dc55ace
+          path: maestro
+      - name: Extract workflow steps
+        shell: python
+        run: &extract-steps |
+          import os
+          import pathlib
+          import re
+          import textwrap
+          workflow = pathlib.Path('workflow/.github/workflows/ci.yml').read_text(encoding='utf-8')
+          directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'proof-steps'
+          directory.mkdir()
+          for step in workflow.split('      - name: ')[1:]:
+              name = step.splitlines()[0]
+              match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
+              if match:
+                  (directory / name).write_text(textwrap.dedent(match[1]), encoding='utf-8')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write(f'PROOF_STEPS={directory}\n')
+      - name: Toolchain
+        working-directory: maestro
+        run: |
+          rustup show
+          rustup component add llvm-tools-preview
+      - name: Coverage tools
+        timeout-minutes: 10
+        run: bash -e -o pipefail "$PROOF_STEPS/Coverage tools"
+      - name: Caller tools
+        timeout-minutes: 10
+        working-directory: maestro
+        run: &caller-tools |
+          bash -e -o pipefail "$PROOF_STEPS/Search tools"
+          bash -e -o pipefail "$PROOF_STEPS/Mise bootstrap"
+          while read -r bin; do export PATH="$bin:$PATH"; done < "$GITHUB_PATH"
+          bash -e -o pipefail "$PROOF_STEPS/Test tools"
+      - name: Single-job coverage baseline
+        timeout-minutes: 45
+        working-directory: maestro
+        env:
+          CARGO_COVERAGE_MIN_LINES: 80
+        run: |
+          start=$SECONDS
+          bash -e -o pipefail "$PROOF_STEPS/Isolated tests"
+          echo "Single-job coverage seconds: $((SECONDS - start))"
+      - name: Build instrumented archive
+        timeout-minutes: 45
+        working-directory: maestro
+        run: |
+          # Remove the baseline build so this measures a cold instrumented build.
+          "$TOOLS/cargo-llvm-cov" llvm-cov clean --workspace
+          cargo fetch --locked
+          start=$SECONDS
+          PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest-archive --config-file /dev/null --user-config-file none --workspace --locked --archive-file "$RUNNER_TEMP/tests.tar.zst"
+          echo "Cold archive build seconds: $((SECONDS - start))"
+      - name: Upload instrumented archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: maestro-test-archive
+          path: ${{ runner.temp }}/tests.tar.zst
+          if-no-files-found: error
+
+  archive-partitions:
+    name: Maestro archive partition (${{ matrix.shard }}/4)
+    needs: comparison
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout workflow
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: workflow
+      - name: Checkout Maestro
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: Orchestration-Maestro/maestro
+          ref: fe95d588b50e753e4bee183cb3f2213f6dc55ace
+          path: maestro
+      - name: Extract workflow steps
+        shell: python
+        run: *extract-steps
+      - name: Toolchain
+        working-directory: maestro
+        run: |
+          rustup show
+          rustup component add llvm-tools-preview
+      - name: Coverage tools
+        timeout-minutes: 10
+        run: bash -e -o pipefail "$PROOF_STEPS/Coverage tools"
+      - name: Caller tools
+        timeout-minutes: 10
+        working-directory: maestro
+        run: *caller-tools
+      - name: Download instrumented archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: maestro-test-archive
+          path: archive
+      - name: Run archive partition
+        timeout-minutes: 45
+        working-directory: maestro
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          export ARCHIVE_FILE="$GITHUB_WORKSPACE/archive/tests.tar.zst"
+          start=$SECONDS
+          bash -e -o pipefail "$PROOF_STEPS/Isolated tests"
+          echo "Archive partition seconds: $((SECONDS - start))"

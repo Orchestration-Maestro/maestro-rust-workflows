@@ -2,7 +2,9 @@
 
 Add `.github/ci.toml` at the caller repository root to opt into isolated tests,
 real search tools and optional builds. Organization calls use that root; the
-workflow's directory input exists only for its fixture self-test.
+workflow's directory input exists only for its fixture self-test and pinned
+workspace proof. Optional `checkout-repository` and `checkout-ref` inputs are
+also self-test-only: when unset they check out the caller repository and commit.
 
 ```toml
 wasm_crates = ["my-browser-library"]
@@ -46,20 +48,17 @@ retained; declaration text is never executed as shell syntax.
 
 ## Test shards
 
-Tests run on four Linux runners, with sorted workspace members distributed
-round-robin. To balance heavy crates, optionally declare four package groups:
+Tests use checksum-pinned cargo-nextest 0.9.148 with four automatic
+`--partition count:N/4` partitions. `test_shards` was removed; setting it fails
+with a clear diagnostic. Unit and integration tests run exactly once; doctests
+run once on shard 1 with `cargo test --workspace --locked --doc`.
 
-```toml
-test_shards = [["my-browser-library"], ["my-core"], [], []]
-```
-
-Every workspace member must appear exactly once, even if a group is empty.
-Unknown names, omissions, duplicates or a group count other than four fail
-validation. Each nonempty shard runs `cargo test --workspace --locked` with
-`--exclude` for members belonging to other shards, retaining doctests. The
-isolated environment and credential guard apply unchanged to declared callers.
-The required aggregate remains `Tests (ubuntu-latest)` and fails if any shard
-fails or is cancelled. Coverage runs the whole workspace, not these shards.
+Declared callers run `cargo llvm-cov nextest` in the same isolated environment
+with their opted-in tools. Shards upload LCOV without individual thresholds.
+`Tests (ubuntu-latest)` requires all shards, downloads all four reports, counts
+each source line once (covered if any shard hits it), and enforces
+`coverage_min_lines` on the union. Missing reports or low coverage fail.
+Undeclared callers use nextest partitions but retain their single coverage job.
 
 ## Required dependency, source and coverage checks
 
@@ -90,12 +89,12 @@ component distribution, not a caller-provided executable.
   actionlint's optional external shellcheck/pyflakes integrations are disabled;
   its built-in correctness checks remain active.
 
-Coverage runs `cargo llvm-cov --workspace --locked --fail-under-lines 80` by
-default, without consumer coverage exclusions or external LLVM overrides.
-Declared callers use the same isolated environment and opted-in test tools as
-the Tests job. Coverage does not replace the original Tests job.
-The Tests, Isolated tests, Coverage and Isolated coverage steps each have a
-45-minute timeout to bound hung caller tests.
+Undeclared coverage runs `cargo llvm-cov --workspace --locked
+--fail-under-lines 80`. Declared coverage runs within the test partitions and
+its threshold is enforced by `Tests (ubuntu-latest)`, not by the dependency job.
+Neither accepts consumer coverage exclusions or external LLVM overrides.
+The Tests, Isolated tests and undeclared Coverage steps retain their 45-minute
+timeouts to bound hung caller tests.
 
 ### Declaration extensions
 
@@ -180,8 +179,8 @@ The child keeps only `PATH`, resolved `CARGO_HOME` and `RUSTUP_HOME`, fresh
 locations, plus `MAESTRO_NO_LOCAL_LLM=1`. `TMP` and `TEMP` equal `TMPDIR`; the
 other locations are separate, initially empty directories beneath a unique
 runner-temp parent. Unrelated CI state, proxy settings and application/provider
-overrides are not inherited. The test argv stays
-`cargo test --workspace --locked`.
+overrides are not inherited. The partition argv uses `cargo llvm-cov nextest`; doctests use
+`cargo test --workspace --locked --doc`.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
@@ -205,7 +204,7 @@ Tool versions come from the caller, not the shared workflow. Missing
 `mise.toml` or a failed installation fails the job. False or omitted
 `test_tools` skips the bootstrap and tool installation, preserving the existing
 test path. An absent declaration still runs the original unisolated tests.
-The test argv remains `cargo test --workspace --locked`; credential guards,
+The nextest partition and doctest argv, credential guards,
 fresh directories and the child environment allowlist are unchanged. Only the
 installed tools' executable paths are added, not mise's environment settings.
 

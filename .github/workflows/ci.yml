@@ -5,6 +5,14 @@ on:
   merge_group:
   workflow_call:
     inputs:
+      checkout-repository:
+        description: Repository to check out (self-test proof only; defaults to caller)
+        type: string
+        default: ''
+      checkout-ref:
+        description: Checkout ref (self-test proof only; defaults to caller)
+        type: string
+        default: ''
       working-directory:
         description: Directory to check (used by the self-test only)
         type: string
@@ -34,7 +42,6 @@ jobs:
       run:
         working-directory: ${{ inputs.working-directory || '.' }}
     outputs:
-      test_shards: ${{ steps.config.outputs.test_shards }}
       enabled: ${{ steps.config.outputs.enabled }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       targets: ${{ steps.config.outputs.targets }}
@@ -46,6 +53,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Toolchain
         run: rustup show
       - name: Read caller declaration
@@ -70,7 +80,9 @@ jobs:
               raise SystemExit(f'{path}: {error}') from error
           values = dict(quality_config='{}', enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false')
           if config is not None:
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'test_shards', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'git_sources', 'privileged_trigger_workflows'}
+              if 'test_shards' in config:
+                  raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'git_sources', 'privileged_trigger_workflows'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -164,20 +176,6 @@ jobs:
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
-          if config is None:
-              metadata = json.loads(subprocess.check_output(
-                  ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))
-          members = sorted(package['name'] for package in metadata['packages']
-                           if package['id'] in metadata['workspace_members'])
-          groups = (config or {}).get('test_shards', [members[index::4] for index in range(4)])
-          if not isinstance(groups, list) or len(groups) != 4 or any(
-                  not isinstance(group, list) or any(type(name) is not str for name in group) for group in groups):
-              raise SystemExit(f'{path}: test_shards must be four arrays of package names')
-          if sorted(name for group in groups for name in group) != members:
-              raise SystemExit(f'{path}: test_shards must contain every workspace member exactly once')
-          values['test_shards'] = json.dumps([
-              dict(shard=index + 1, packages=group, exclude=[name for name in members if name not in group])
-              for index, group in enumerate(groups)])
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
@@ -195,6 +193,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Cargo cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -226,6 +227,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Cargo cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -249,10 +253,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.declaration.outputs.test_shards) }}
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     env:
-      TEST_EXCLUDES: ${{ toJSON(matrix.exclude) }}
+      SHARD: ${{ matrix.shard }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory || '.' }}
@@ -261,30 +265,52 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Cargo cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            ${{ inputs.working-directory || '.' }}/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles(format('{0}/rust-toolchain.toml', inputs.working-directory || '.'), format('{0}/Cargo.lock', inputs.working-directory || '.')) }}
-          restore-keys: ${{ runner.os }}-cargo-
+            ${{ inputs.working-directory || '.' }}/target/llvm-cov-target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles(format('{0}/rust-toolchain.toml', inputs.working-directory || '.'), format('{0}/Cargo.lock', inputs.working-directory || '.')) }}
+          restore-keys: ${{ runner.os }}-cargo-coverage-
       - name: Toolchain
-        run: rustup show
+        run: |
+          rustup show
+          rustup component add llvm-tools-preview
+      - name: Coverage tools
+        timeout-minutes: 10
+        run: |
+          bin=$(mktemp -d "$RUNNER_TEMP/maestro-coverage-tools.XXXXXX")
+          while read -r url digest binary; do
+            archive=$(mktemp)
+            curl --fail --location "$url" --output "$archive"
+            printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+            tar -xzf "$archive" -C "$bin" "$binary"
+            test -x "$bin/$binary"
+            rm "$archive"
+          done <<'TOOLS'
+          https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz 3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522 cargo-llvm-cov
+          https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-unknown-linux-musl.tar.gz bf92cb81450872d960ffa13857a83084d557ec0cdc141663d263bb23ef756f97 cargo-nextest
+          TOOLS
+          echo "TOOLS=$bin" >> "$GITHUB_ENV"
+          echo "$bin" >> "$GITHUB_PATH"
       - name: Tests
         timeout-minutes: 45
-        if: needs.declaration.outputs.enabled != 'true' && toJSON(matrix.packages) != '[]'
+        if: needs.declaration.outputs.enabled != 'true'
         run: |
-          # A shard builds only its own crates; caller tests may read the whole
-          # workspace's metadata offline, so fetch every dependency first.
           cargo fetch --locked
-          mapfile -d '' -t excludes < <(python3 -c 'import json, os; print("".join("--exclude\0" + name + "\0" for name in json.loads(os.environ.get("TEST_EXCLUDES", "[]"))), end="")')
-          cargo test --workspace --locked "${excludes[@]}"
+          "$TOOLS/cargo-nextest" nextest run --config-file /dev/null --user-config-file none --workspace --locked --partition "count:$SHARD/4" --no-tests pass
+          if [ "$SHARD" = 1 ]; then
+            cargo test --workspace --locked --doc
+          fi
       - name: Search tools
         timeout-minutes: 10
         if: needs.declaration.outputs.enabled == 'true'
-        run: &search-tools |
+        run: |
           # Digests: ripgrep's release .sha256 file and fd's GitHub release asset digest.
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-search-bin.XXXXXX")
           while read -r url digest binary; do
@@ -323,16 +349,16 @@ jobs:
       - name: Test tools
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
-        run: &test-tools |
+        run: |
           test -f mise.toml
           mise install
           mise bin-paths >> "$GITHUB_PATH"
       - name: Isolated tests
         timeout-minutes: 45
-        if: needs.declaration.outputs.enabled == 'true' && toJSON(matrix.packages) != '[]'
+        if: needs.declaration.outputs.enabled == 'true'
         env:
           CARGO_COVERAGE_MIN_LINES: ''
-        run: &isolated-tests |
+        run: |
           python3 - <<'PYTHON'
           import os
           names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
@@ -354,7 +380,7 @@ jobs:
           trap 'rm -rf "$isolation"' EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
           run_isolated() {
-          env -i PATH="$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" \
+          env -i PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" \
             HOME="$isolation/home" TMPDIR="$isolation/tmp" TMP="$isolation/tmp" TEMP="$isolation/tmp" \
             XDG_CONFIG_HOME="$isolation/config" XDG_DATA_HOME="$isolation/data" \
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
@@ -365,14 +391,31 @@ jobs:
           cargo fetch --locked
           if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
             run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+          elif [ -n "${SHARD:-}" ]; then
+            args=(--workspace --locked)
+            if [ -n "${ARCHIVE_FILE:-}" ]; then
+              args=(--archive-file "$ARCHIVE_FILE" --workspace-remap "$PWD")
+            fi
+            run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --config-file /dev/null --user-config-file none \
+              --partition "count:$SHARD/4" --no-tests pass "${args[@]}" --lcov --output-path "$PWD/shard-$SHARD.lcov"
+            if [ "$SHARD" = 1 ]; then
+              run_isolated cargo test --workspace --locked --doc
+            fi
           else
-            mapfile -d '' -t excludes < <(python3 -c 'import json, os; print("".join("--exclude\0" + name + "\0" for name in json.loads(os.environ.get("TEST_EXCLUDES", "[]"))), end="")')
-            run_isolated cargo test --workspace --locked "${excludes[@]}"
+            run_isolated "$TOOLS/cargo-nextest" nextest run --config-file /dev/null --user-config-file none --workspace --locked
+            run_isolated cargo test --workspace --locked --doc
           fi
+      - name: Upload shard coverage
+        if: needs.declaration.outputs.enabled == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-${{ inputs.concurrency-key || 'root' }}-${{ matrix.shard }}
+          path: ${{ inputs.working-directory || '.' }}/shard-${{ matrix.shard }}.lcov
+          if-no-files-found: error
 
   tests-result:
     name: Tests (ubuntu-latest)
-    needs: tests
+    needs: [tests, declaration]
     if: ${{ always() && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     steps:
@@ -383,6 +426,49 @@ jobs:
         run: |
           import os
           assert os.environ['RESULT'] == 'success'
+      - name: Download shard coverage
+        if: needs.declaration.outputs.enabled == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: coverage-${{ inputs.concurrency-key || 'root' }}-*
+          path: coverage
+          merge-multiple: true
+      - name: Merge coverage
+        if: needs.declaration.outputs.enabled == 'true'
+        env:
+          QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          lines = {}
+          reports = pathlib.Path('coverage')
+          expected = {f'shard-{shard}.lcov' for shard in range(1, 5)}
+          if {path.name for path in reports.glob('*.lcov')} != expected:
+              raise SystemExit('Missing or unexpected shard coverage reports')
+          for name in sorted(expected):
+              source = None
+              for record in (reports / name).read_text(encoding='utf-8').splitlines():
+                  if record.startswith('SF:'):
+                      source = record[3:]
+                  elif record.startswith('DA:'):
+                      if source is None:
+                          raise SystemExit(f'{name}: line without source file')
+                      line, hits, *_ = record[3:].split(',')
+                      key = (source, int(line))
+                      lines[key] = lines.get(key, False) or int(hits) > 0
+                  elif record == 'end_of_record':
+                      source = None
+          if not lines:
+              raise SystemExit('No instrumented lines in shard coverage')
+          covered = sum(lines.values())
+          percentage = covered * 100 / len(lines)
+          threshold = json.loads(os.environ.get('QUALITY_CONFIG') or '{}').get('coverage_min_lines', 80)
+          print(f'Merged line coverage: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')
+          if percentage < threshold:
+              raise SystemExit('Merged line coverage is below threshold')
+          PYTHON
 
   checks:
     name: Dependency, source and coverage checks
@@ -399,6 +485,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Toolchain
         run: |
           rustup show
@@ -583,18 +672,6 @@ jobs:
             "$TOOLS/zizmor" --offline --config "$CHECK_DEFAULTS/zizmor.yaml" --strict-collection "${workflows[@]}"
             "$TOOLS/actionlint" -config-file "$CHECK_DEFAULTS/actionlint.yaml" -shellcheck= -pyflakes= "${workflows[@]}"
           fi
-      - name: Coverage search tools
-        timeout-minutes: 10
-        if: needs.declaration.outputs.enabled == 'true'
-        run: *search-tools
-      - name: Coverage mise bootstrap
-        timeout-minutes: 10
-        if: needs.declaration.outputs.test_tools == 'true'
-        run: *mise-bootstrap
-      - name: Coverage test tools
-        timeout-minutes: 10
-        if: needs.declaration.outputs.test_tools == 'true'
-        run: *test-tools
       - name: Coverage
         timeout-minutes: 45
         if: needs.declaration.outputs.enabled != 'true'
@@ -604,10 +681,6 @@ jobs:
             if [[ "$name" == LLVM_*_FLAGS ]]; then unset "$name"; fi
           done
           "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
-      - name: Isolated coverage
-        timeout-minutes: 45
-        if: needs.declaration.outputs.enabled == 'true'
-        run: *isolated-tests
 
   targets:
     name: Check (${{ matrix.target }})
@@ -627,6 +700,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Toolchain
         run: rustup show
       - name: Check target
@@ -649,6 +725,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Toolchain
         run: rustup show
       - name: Build wasm crates

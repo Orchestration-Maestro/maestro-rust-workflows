@@ -136,19 +136,6 @@
           }
         }
       }
-    },
-    "test_shards": {
-      "description": "Four test shard groups containing every workspace member exactly once. Defaults to sorted round-robin groups.",
-      "type": "array",
-      "minItems": 4,
-      "maxItems": 4,
-      "items": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        },
-        "uniqueItems": true
-      }
     }
   }
 }
