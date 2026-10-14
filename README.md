@@ -30,9 +30,17 @@ if any shard covers it and enforces the union's 80% floor (or caller's higher
 threshold). Missing shard reports fail. Undeclared callers retain single-job
 coverage in `Dependency, source and coverage checks`.
 
-The partitions share one instrumented Cargo cache key, including runner OS,
-`rust-toolchain.toml` and `Cargo.lock`, with an instrumented-cache restore
-fallback. They cache `target/llvm-cov-target`, not plain test builds.
+## Compile cache
+
+Every Linux job that compiles Rust runs rustc through checksum-pinned sccache
+0.18.0 backed by the GitHub Actions cache (`RUSTC_WRAPPER=sccache`,
+`SCCACHE_GHA_ENABLED=true`, `CARGO_INCREMENTAL=0`) and prints `sccache
+--show-stats` at the end. Crates a change did not touch come from the cache,
+shared across jobs and runs of the same repository. The sccache server holds the
+cache credentials, so the isolated test environment never sees them. The
+`target/` and registry `actions/cache` entries were removed: sccache replaces
+them and keeps the repository inside GitHub's 10 GB cache limit. The secret scan
+in `Dependency, source and coverage checks` runs before its cache is used.
 
 ## Adoption
 
