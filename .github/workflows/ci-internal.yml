@@ -155,6 +155,35 @@ jobs:
                   env = env | {'CARGO_BUILD_JOBS': '3'}
               return subprocess.run(argv, cwd=directory, env=env, capture_output=True, text=True)
 
+          def secrets_scan_before_restored_build_output(env, temporary):
+              directory = pathlib.Path(temporary) / 'source-only'
+              directory.mkdir()
+              subprocess.run(['git', 'init', '--quiet', str(directory)], check=True)
+              secret = (root / 'fixtures/fake-secret/secret.txt').read_text(encoding='utf-8')
+              source = directory / 'secret.txt'
+              target = directory / 'target/llvm-cov-target/compiled-test'
+              steps = workflow.split('  checks:\n', 1)[1].split('\n  targets:', 1)[0]
+              names = [step.splitlines()[0] for step in steps.split('      - name: ')[1:]]
+              assert names.index('Check tools') < names.index('Secrets')
+              assert names.index('Embedded check defaults') < names.index('Secrets')
+              assert names.index('Secrets') < names.index('Coverage Cargo cache') < names.index('Licenses and dependencies')
+              for tracked in [False, True]:
+                  if tracked:
+                      source.write_text(secret, encoding='utf-8')
+                      subprocess.run(['git', 'add', 'secret.txt'], cwd=directory, check=True)
+                      target.unlink()
+                  for name in names:
+                      if name == 'Secrets':
+                          result = execute(name, directory, env)
+                          output = result.stdout + result.stderr
+                          assert result.returncode == (1 if tracked else 0), output
+                          assert ('leaks found: 1' in output) == tracked, output
+                      elif name == 'Coverage Cargo cache':
+                          target.parent.mkdir(parents=True, exist_ok=True)
+                          target.write_text(secret, encoding='utf-8')
+                  assert target.read_text(encoding='utf-8') == secret
+              print('PASS secrets_scan_before_restored_build_output: target ignored; tracked source caught', flush=True)
+
           def advisory_exception_suppresses_named_advisory(env, temporary):
               import shutil
               directory = pathlib.Path(temporary) / 'advisory-exceptions'
@@ -360,6 +389,7 @@ jobs:
               configured = execute('Embedded check defaults', root, env)
               assert configured.returncode == 0, configured.stdout + configured.stderr
               env.update(dict(line.split('=', 1) for line in pathlib.Path(env['GITHUB_ENV']).read_text(encoding="utf-8").splitlines()))
+              secrets_scan_before_restored_build_output(env, temporary)
               for name in checks:
                   result = execute(name, root / 'fixtures/sample', env)
                   assert result.returncode == 0, name + '\n' + result.stdout + result.stderr

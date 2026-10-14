@@ -399,15 +399,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Coverage Cargo cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ${{ inputs.working-directory || '.' }}/target/llvm-cov-target
-          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles(format('{0}/rust-toolchain.toml', inputs.working-directory || '.'), format('{0}/Cargo.lock', inputs.working-directory || '.')) }}
-          restore-keys: ${{ runner.os }}-cargo-coverage-
       - name: Toolchain
         run: |
           rustup show
@@ -501,6 +492,22 @@ jobs:
               output.write(f'CHECK_DEFAULTS={directory}\n')
               output.write(f'CARGO_COVERAGE_MIN_LINES={config.get("coverage_min_lines", 80)}\n')
           PYTHON
+      - name: Secrets
+        run: |
+          if [ -s .gitleaksignore ]; then
+            echo '.gitleaksignore: suppressions are forbidden; extensions go through the caller declaration' >&2
+            exit 1
+          fi
+          "$TOOLS/gitleaks" dir --config "$CHECK_DEFAULTS/gitleaks.toml" --gitleaks-ignore-path "$CHECK_DEFAULTS/gitleaks.ignore" --ignore-gitleaks-allow --redact .
+      - name: Coverage Cargo cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ${{ inputs.working-directory || '.' }}/target/llvm-cov-target
+          key: ${{ runner.os }}-cargo-coverage-${{ hashFiles(format('{0}/rust-toolchain.toml', inputs.working-directory || '.'), format('{0}/Cargo.lock', inputs.working-directory || '.')) }}
+          restore-keys: ${{ runner.os }}-cargo-coverage-
       - name: Licenses and dependencies
         run: |
           "$TOOLS/cargo-deny" deny --workspace --locked --all-features --config "$CHECK_DEFAULTS/deny.toml" check licenses bans sources advisories
@@ -523,13 +530,6 @@ jobs:
       - name: Spelling
         run: |
           "$TOOLS/typos" --isolated --config "$CHECK_DEFAULTS/typos.toml" .
-      - name: Secrets
-        run: |
-          if [ -s .gitleaksignore ]; then
-            echo '.gitleaksignore: suppressions are forbidden; extensions go through the caller declaration' >&2
-            exit 1
-          fi
-          "$TOOLS/gitleaks" dir --config "$CHECK_DEFAULTS/gitleaks.toml" --gitleaks-ignore-path "$CHECK_DEFAULTS/gitleaks.ignore" --ignore-gitleaks-allow --redact .
       - name: Workflows
         run: |
           shopt -s nullglob
