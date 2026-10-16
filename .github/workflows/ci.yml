@@ -713,9 +713,13 @@ jobs:
                    'Apache-2.0 WITH LLVM-exception', 'Unicode-DFS-2016', 'Unicode-3.0',
                    'CC0-1.0', 'CDLA-Permissive-2.0', 'MPL-2.0', 'MIT-0']
           deny = '[advisories]\nyanked = "deny"\n'
-          if config.get('advisory_exceptions'):
+          if config.get('advisory_exceptions') or config.get('yanked_crate_exceptions'):
               with pathlib.Path('Cargo.lock').open('rb') as source:
                   packages = {(entry['name'], entry['version']) for entry in tomllib.load(source)['package']}
+              for entry in config.get('yanked_crate_exceptions', []):
+                  if (entry['package'], entry['version']) not in packages:
+                      raise SystemExit(f"Cargo.lock: stale yanked-crate exception for {entry['package']} {entry['version']}")
+          if config.get('advisory_exceptions'):
               for entry in config['advisory_exceptions']:
                   if (entry['package'], entry['version']) not in packages:
                       raise SystemExit(f"Cargo.lock: stale advisory exception {entry['id']} for {entry['package']} {entry['version']}")

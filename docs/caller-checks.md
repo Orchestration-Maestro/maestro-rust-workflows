@@ -185,7 +185,10 @@ reviewed, time-boxed use while an upgrade is prepared. Each entry requires
 exactly `package` and `version`, both strings: an exact ASCII crate name
 (letters, digits, hyphens and underscores, starting with a letter or digit)
 and a complete semantic version. Bare names, ranges, unknown fields and
-malformed entries fail declaration validation. The workflow renders each pair
+malformed entries fail declaration validation. Before rendering, each package
+and complete version string, including any build metadata, must match a pair
+in the caller's `Cargo.lock`; otherwise the check fails with a stale-exception
+diagnostic naming the package and version. The workflow renders each pair
 only as a cargo-deny yanked-crate ignore (`crate@=version`); another version
 of the same crate or an unlisted yanked crate still fails. Advisory, license,
 ban and source policies are unchanged. Track the removal deadline and upgrade

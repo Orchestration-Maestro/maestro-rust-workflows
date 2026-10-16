@@ -148,7 +148,7 @@
       }
     },
     "yanked_crate_exceptions": {
-      "description": "Time-boxed exceptions for only the yank finding on exact crate versions.",
+      "description": "Time-boxed exceptions for only the yank finding. Before rendering, the workflow requires each package and complete version string, including build metadata, to match Cargo.lock; unmatched pairs fail the check.",
       "type": "array",
       "default": [],
       "items": {
