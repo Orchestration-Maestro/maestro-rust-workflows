@@ -978,13 +978,350 @@ jobs:
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': ''}
+              assert values == {'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': ''}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
 
           absent_keeps_base_checks()
           print('PASS absent_keeps_base_checks')
+
+          def install_recording_runner(directory, real_cargo=None, manifest=None):
+              import shutil
+              tools = directory / 'runner-tools'
+              tools.mkdir()
+              log = directory / 'commands.jsonl'
+              source = directory / 'runner-source'
+              source.write_text('#!/usr/bin/env python3\n' + textwrap.dedent(f'''
+                  import json, os, pathlib, subprocess, sys
+                  args = sys.argv[1:]
+                  with open({str(log)!r}, 'a', encoding='utf-8') as output:
+                      output.write(json.dumps(dict(tool=pathlib.Path(sys.argv[0]).name, args=args,
+                                                   home=os.environ.get('HOME'), cargo_home=os.environ.get('CARGO_HOME'),
+                                                   ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'))) + '\\n')
+                  if args[:1] == ['fetch'] and {real_cargo!r}:
+                      sys.exit(subprocess.run([{real_cargo!r}] + args).returncode)
+                  if args[:1] != ['fetch'] and {manifest!r}:
+                      subprocess.run([{real_cargo!r}, 'metadata', '--offline', '--locked', '--format-version', '1',
+                                      '--manifest-path', {manifest!r}], check=True, stdout=subprocess.DEVNULL)
+              '''), encoding='utf-8')
+              for name in ['cargo', 'cargo-nextest', 'cargo-llvm-cov']:
+                  subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
+              return tools, log
+
+          def locked_manifests_default_to_no_extra_fetch():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  tools, log = install_recording_runner(directory)
+                  for suffix in ['', 'additional_locked_manifests=[]\n']:
+                      (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n' + suffix, encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode == 0, result.stderr
+                      assert values['additional_locked_manifests'] == '[]'
+                      assert values['quality_config'] == '{}' and values['enabled'] == 'true'
+                      result = execute('Fetch additional locked manifests', directory, {
+                          'PATH': str(tools) + os.pathsep + os.environ['PATH'],
+                          'ADDITIONAL_LOCKED_MANIFESTS': values['additional_locked_manifests']})
+                      assert result.returncode == 0 and not log.exists(), result.stderr
+                  step = next(s for s in workflow.split('      - name: ')[1:] if s.startswith('Fetch additional locked manifests\n'))
+                  assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in step
+                  assert 'always()' not in step
+
+          locked_manifests_default_to_no_extra_fetch()
+
+          def locked_manifests_reject_malformed_values():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  base = 'wasm_crates=[]\ncheck_targets=[]\nadditional_locked_manifests='
+                  cases = [(value, 'must be an array of nonempty strings') for value in
+                           ['"Cargo.toml"', '1', '1.5', 'true', '{}', '[1]', '[true]', '[{}]', '[[]]', '[""]']]
+                  cases += [(json.dumps(['fixture' + chr(code) + '/Cargo.toml']),
+                             'cannot contain control characters or surrogates') for code in [0, 31, 127, 159]]
+                  cases += [('broken [', None), ('[]\nadditional_locked_manifests=[]', None), ('["\\uD800"]', None)]
+                  for value, diagnostic in cases:
+                      (directory / '.github/ci.toml').write_text(base + value, encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and not values, value
+                      assert '.github/ci.toml' in result.stderr, result.stderr
+                      if diagnostic:
+                          assert result.stderr.strip() == '.github/ci.toml: additional_locked_manifests ' + diagnostic, result.stderr
+
+          locked_manifests_reject_malformed_values()
+
+          def locked_manifests_reject_missing_or_outside_paths():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  parent = pathlib.Path(temporary)
+                  directory = parent / 'caller'
+                  shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  outside = parent / 'caller-sibling'
+                  outside.mkdir()
+                  (outside / 'Cargo.toml').write_text('[workspace]\n', encoding='utf-8')
+                  (directory / 'directory/Cargo.toml').mkdir(parents=True)
+                  (directory / 'Other.toml').write_text('[workspace]\n', encoding='utf-8')
+                  (directory / 'dangling').symlink_to(parent / 'missing', target_is_directory=True)
+                  (directory / 'escape').symlink_to(outside, target_is_directory=True)
+                  (directory / 'Cargo-link').mkdir()
+                  (directory / 'Cargo-link/Cargo.toml').symlink_to(outside / 'Cargo.toml')
+                  for value in ['missing/Cargo.toml', 'directory/Cargo.toml', 'Other.toml', 'dangling/Cargo.toml',
+                                str(directory / 'Cargo.toml'), str(outside / 'Cargo.toml'), '../caller-sibling/Cargo.toml',
+                                'escape/Cargo.toml', 'Cargo-link/Cargo.toml']:
+                      (directory / '.github/ci.toml').write_text(
+                          'wasm_crates=[]\ncheck_targets=[]\nadditional_locked_manifests=' + json.dumps([value]), encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and not values, value
+                      assert result.stderr.strip() == ('.github/ci.toml: additional_locked_manifests requires existing '
+                                                       'repository-contained relative Cargo.toml files'), result.stderr
+
+          locked_manifests_reject_missing_or_outside_paths()
+
+          def locked_manifests_accept_literal_contained_paths():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  paths = ['z author build/Cargo.toml', 'a café/Cargo.toml', ' /Cargo.toml', '\u00a0/Cargo.toml']
+                  for value in paths:
+                      path = directory / value
+                      path.parent.mkdir()
+                      path.write_text('[workspace]\n', encoding='utf-8')
+                  (directory / 'link').symlink_to(directory / 'a café', target_is_directory=True)
+                  paths += ['link/Cargo.toml', './a café/Cargo.toml', 'z author build/../a café/Cargo.toml', paths[0]]
+                  for entries in [[paths[0]], paths]:
+                      (directory / '.github/ci.toml').write_text(
+                          'wasm_crates=[]\ncheck_targets=[]\nadditional_locked_manifests=' + json.dumps(entries, ensure_ascii=False), encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode == 0, result.stderr
+                      assert json.loads(values['additional_locked_manifests']) == entries
+                      assert values['quality_config'] == '{}'
+
+          locked_manifests_accept_literal_contained_paths()
+
+          def locked_manifests_schema_matches_contract():
+              schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
+              entry = schema['properties']['additional_locked_manifests']
+              assert entry['type'] == 'array' and entry['default'] == []
+              assert entry['items'] == {'type': 'string', 'minLength': 1}
+              assert not entry.get('uniqueItems', False)
+              assert 'additional_locked_manifests' not in schema['required']
+              assert 'runtime' in entry['description'] and 'containment' in entry['description']
+
+          locked_manifests_schema_matches_contract()
+
+          def locked_manifests_forward_ordered_literal_arguments():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  tools, log = install_recording_runner(directory)
+                  entries = ['z space \'" $(touch marker) `touch marker`; café/Cargo.toml', 'a/Cargo.toml']
+                  for entry in entries:
+                      path = directory / entry
+                      path.parent.mkdir()
+                      path.write_text('[workspace]\n', encoding='utf-8')
+                  entries.append(entries[0])
+                  result = execute('Fetch additional locked manifests', directory, {
+                      'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'ADDITIONAL_LOCKED_MANIFESTS': json.dumps(entries)})
+                  assert result.returncode == 0, result.stderr
+                  commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                  assert [c['args'] for c in commands] == [['fetch', '--locked', '--manifest-path', entry] for entry in entries]
+                  assert result.stderr.splitlines() == ['Fetching locked dependencies: ' + entry for entry in entries]
+                  assert not (directory / 'marker').exists()
+
+          locked_manifests_forward_ordered_literal_arguments()
+
+          def locked_manifests_fail_without_rewriting_inputs():
+              import hashlib
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  entries = ['first missing/Cargo.toml', 'second matching/Cargo.toml']
+                  for entry in entries:
+                      package = directory / entry
+                      package.parent.mkdir()
+                      (package.parent / 'src').mkdir()
+                      (package.parent / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+                      package.write_text('[workspace]\n[package]\nname="proof"\nversion="0.1.0"\nedition="2021"\n', encoding='utf-8')
+                  real_cargo = shutil.which('cargo')
+                  tools, log = install_recording_runner(directory, real_cargo)
+                  env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'ADDITIONAL_LOCKED_MANIFESTS': json.dumps(entries)}
+                  def cargo(*args):
+                      result = subprocess.run([real_cargo, *args], cwd=directory, capture_output=True, text=True)
+                      assert result.returncode == 0, result.stderr
+                  cargo('generate-lockfile', '--manifest-path', entries[1])
+                  def hashes():
+                      return {str(p.relative_to(directory)): hashlib.sha256(p.read_bytes()).hexdigest()
+                              for p in directory.rglob('Cargo.*')}
+                  for case in ['missing', 'stale', 'matching']:
+                      if case == 'stale':
+                          cargo('generate-lockfile', '--manifest-path', entries[0])
+                          path = directory / entries[0]
+                          path.write_text(path.read_text(encoding='utf-8').replace('0.1.0', '0.2.0'), encoding='utf-8')
+                      elif case == 'matching':
+                          cargo('generate-lockfile', '--manifest-path', entries[0])
+                      before = hashes()
+                      if log.exists():
+                          log.unlink()
+                      result = execute('Fetch additional locked manifests', directory, env)
+                      assert result.returncode == (0 if case == 'matching' else 101), result.stderr
+                      commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                      reached = entries if case == 'matching' else entries[:1]
+                      assert commands == [['fetch', '--locked', '--manifest-path', entry] for entry in reached]
+                      assert [line for line in result.stderr.splitlines() if line.startswith('Fetching locked dependencies: ')] == [
+                          'Fetching locked dependencies: ' + entry for entry in reached]
+                      assert hashes() == before
+                      if case != 'matching':
+                          assert '--locked' in result.stderr and 'lock' in result.stderr.lower(), result.stderr
+                      if case == 'missing':
+                          assert not (directory / 'first missing/Cargo.lock').exists()
+                      print(f'PASS locked manifests {case}: exit {result.returncode}; source/lock SHA-256 {before}', flush=True)
+
+          locked_manifests_fail_without_rewriting_inputs()
+
+          def independent_manifest_fixture(directory):
+              import shutil
+              shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+              source = directory / 'acquisition-source'
+              (source / 'src').mkdir(parents=True)
+              (source / 'Cargo.toml').write_text('[package]\nname="locked-dependency"\nversion="0.1.0"\nedition="2021"\n', encoding='utf-8')
+              (source / 'src/lib.rs').write_text('pub fn value() -> u32 { 42 }\n', encoding='utf-8')
+              subprocess.run(['git', 'init', '--quiet', str(source)], check=True)
+              subprocess.run(['git', '-C', str(source), 'add', '.'], check=True)
+              subprocess.run(['git', '-C', str(source), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com',
+                              '-c', 'commit.gpgsign=false', 'commit', '-qm', 'dependency'], check=True)
+              revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
+              manifest = 'fixtures/author build/Cargo.toml'
+              nested = directory / manifest
+              (nested.parent / 'src').mkdir(parents=True)
+              nested.write_text('[workspace]\n[package]\nname="offline-consumer"\nversion="0.1.0"\nedition="2021"\n'
+                                '[dependencies]\nlocked-dependency={git=' + json.dumps(source.as_uri()) + ',rev=' + json.dumps(revision) + '}\n', encoding='utf-8')
+              (nested.parent / 'src/lib.rs').write_text('pub fn value() -> u32 { locked_dependency::value() }\n', encoding='utf-8')
+              prepare = directory / 'prepare-cache'
+              prepare.mkdir()
+              result = subprocess.run(['cargo', 'generate-lockfile', '--manifest-path', manifest], cwd=directory,
+                                      env=os.environ | {'CARGO_HOME': str(prepare)}, text=True, capture_output=True)
+              assert result.returncode == 0, result.stderr
+              shutil.rmtree(prepare)
+              return manifest, source
+
+          def locked_manifests_enable_cold_offline_build():
+              import hashlib
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  manifest, source = independent_manifest_fixture(directory)
+                  inputs = [directory / name for name in ['Cargo.toml', 'Cargo.lock', manifest,
+                                                         'fixtures/author build/Cargo.lock']]
+                  def hashes():
+                      return {str(path.relative_to(directory)): hashlib.sha256(path.read_bytes()).hexdigest() for path in inputs}
+                  before = hashes()
+                  acquisition = directory / 'acquired-cache'
+                  acquisition.mkdir()
+                  env = os.environ | {'CARGO_HOME': str(acquisition), 'CARGO_TARGET_DIR': str(directory / 'acquisition-target')}
+                  def cargo(*args, environment=env):
+                      return subprocess.run(['cargo', *args], cwd=directory, env=environment, capture_output=True, text=True)
+                  result = cargo('fetch', '--locked')
+                  assert result.returncode == 0, result.stderr
+                  result = cargo('build', '--offline', '--locked', '--manifest-path', manifest)
+                  assert result.returncode == 101 and 'locked-dependency' in result.stderr, result.stderr
+                  print('PASS root-only provisioning: offline build exit 101', flush=True)
+                  result = execute('Fetch additional locked manifests', directory, env | {'ADDITIONAL_LOCKED_MANIFESTS': json.dumps([manifest])})
+                  assert result.returncode == 0, result.stderr
+                  vendor = directory / 'vendor'
+                  result = cargo('vendor', '--offline', '--locked', '--manifest-path', manifest, str(vendor))
+                  assert result.returncode == 0, result.stderr
+                  configuration = result.stdout
+                  assert 'directory =' in configuration
+                  source.rename(directory / 'unavailable-source')
+                  cold = directory / 'cold-cargo-home'
+                  cold.mkdir()
+                  assert not list(cold.iterdir()) and not (directory / 'cold-target').exists()
+                  # Cargo's emitted source replacement is configuration, not a cached package.
+                  (cold / 'config.toml').write_text(configuration, encoding='utf-8')
+                  result = cargo('build', '--offline', '--locked', '--manifest-path', manifest,
+                                 environment=env | {'CARGO_HOME': str(cold), 'CARGO_TARGET_DIR': str(directory / 'cold-target')})
+                  assert result.returncode == 0 and 'offline-consumer' in result.stderr, result.stderr
+                  assert not (cold / 'git').exists() and not (cold / 'registry').exists()
+                  assert hashes() == before
+                  print(f'PASS cold vendored offline build: exit {result.returncode}; source/lock SHA-256 {before}', flush=True)
+
+          locked_manifests_enable_cold_offline_build()
+
+          def locked_manifests_precede_all_test_routes():
+              import shutil
+              tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
+              fetch = next(s for s in tests.split('      - name: ')[1:] if s.startswith('Fetch additional locked manifests\n'))
+              assert tests.index('name: Fetch additional locked manifests') < tests.index('name: Tests\n') < tests.index('name: Isolated tests\n')
+              assert fetch.split('        run:', 1)[0].count('if:') == 1
+              assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
+              assert 'ADDITIONAL_LOCKED_MANIFESTS: $' + '{{ needs.declaration.outputs.additional_locked_manifests }}' in tests
+              declaration_job = workflow.split('  declaration:\n', 1)[1].split('\n  quality:', 1)[0]
+              assert 'additional_locked_manifests: $' + '{{ steps.config.outputs.additional_locked_manifests }}' in declaration_job
+              assert 'shard: [1, 2, 3, 4]' in tests
+              for name in ['Tests', 'Isolated tests']:
+                  assert 'cargo fetch --locked\n' in body(name)
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  manifest, _ = independent_manifest_fixture(directory)
+                  tools, log = install_recording_runner(directory, shutil.which('cargo'), manifest)
+                  original_home = directory / 'ambient-home'
+                  original_home.mkdir()
+                  routes = [('Tests', shard, 'false', None, ['sample']) for shard in range(1, 5)]
+                  routes += [('Isolated tests', 1, 'false', None, ['sample']),
+                             ('Isolated tests', 1, 'true', None, ['sample']),
+                             ('Isolated tests', 2, 'true', None, ['sample']),
+                             ('Isolated tests', 1, 'true', '80', ['sample']),
+                             ('Tests', 4, 'false', None, []), ('Isolated tests', 4, 'true', None, [])]
+                  for index, (route, shard, coverage, threshold, packages) in enumerate(routes):
+                      acquisition = directory / f'cache-{index}'
+                      acquisition.mkdir()
+                      env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                             'ADDITIONAL_LOCKED_MANIFESTS': json.dumps([manifest]), 'HOME': str(original_home),
+                             'CARGO_HOME': str(acquisition), 'RUSTUP_HOME': os.environ.get('RUSTUP_HOME', str(pathlib.Path.home() / '.rustup')),
+                             'RUNNER_TEMP': temporary, 'SHARD': str(shard), 'COLLECT_COVERAGE': coverage,
+                             'TEST_PACKAGES': json.dumps(packages), 'CARGO_COVERAGE_MIN_LINES': threshold or '',
+                             'UNRELATED_AMBIENT_CANARY': 'must-not-inherit'}
+                      if log.exists():
+                          log.unlink()
+                      result = execute('Fetch additional locked manifests', directory, env)
+                      assert result.returncode == 0, result.stderr
+                      result = execute(route, directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      assert [c['args'] for c in commands[:2]] == [['fetch', '--locked', '--manifest-path', manifest], ['fetch', '--locked']]
+                      runners = commands[2:]
+                      if not packages:
+                          assert not runners
+                          continue
+                      assert runners and all(c['cargo_home'] == str(acquisition) for c in runners)
+                      if route == 'Isolated tests':
+                          assert all(c['home'] != str(original_home) and c['ambient'] is None for c in runners)
+                      else:
+                          assert all(c['home'] == str(original_home) for c in runners)
+                      if threshold:
+                          expected = ['llvm-cov', '--workspace', '--locked', '--fail-under-lines', '80']
+                      elif route == 'Isolated tests' and coverage == 'true':
+                          expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
+                                      '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
+                                      '--partition', f'count:{shard}/4', '--no-tests', 'pass', '--workspace', '--locked',
+                                      '--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
+                      else:
+                          expected = ['nextest', 'run', '--user-config-file', 'none', '--ignore-default-filter', '--locked',
+                                      '-p', 'sample', '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky']
+                          if route == 'Tests':
+                              expected += ['--partition', f'count:{shard}/4', '--no-tests', 'pass']
+                          else:
+                              expected += ['--no-tests', 'pass', '--partition', f'count:{shard}/4']
+                      assert runners[0]['args'] == expected, runners[0]['args']
+                      assert [c['args'] for c in runners[1:]] == ([['test', '--locked', '--doc', '-p', 'sample']] if shard == 1 and not threshold else [])
+                      print(f'PASS provisioning route {index}: {route}, shard {shard}, coverage {coverage}, threshold {threshold}', flush=True)
+
+          locked_manifests_precede_all_test_routes()
 
           def test_tools_defaults_preserve_behavior():
               import shutil
@@ -1249,6 +1586,19 @@ jobs:
                   git('add', '.')
                   git('commit', '-qm', 'non-test settings')
                   assert json.loads(select()['packages']) == []
+                  for entries in [['b/Cargo.toml'], ['c/Cargo.toml'], ['b/Cargo.toml', 'a/Cargo.toml'],
+                                  ['a/Cargo.toml', 'b/Cargo.toml'], ['a/Cargo.toml', 'b/Cargo.toml', 'a/Cargo.toml'], []]:
+                      base = git('rev-parse', 'HEAD')
+                      (directory / '.github/ci.toml').write_text(
+                          'wasm_crates=[]\ncheck_targets=[]\nadditional_locked_manifests=' + json.dumps(entries), encoding='utf-8')
+                      git('add', '.')
+                      git('commit', '-qm', 'additional manifests')
+                      assert json.loads(select()['packages']) == ['a', 'b', 'c', 'd']
+                  base = git('rev-parse', 'HEAD')
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
+                  git('add', '.')
+                  git('commit', '-qm', 'remove additional manifests')
+                  assert json.loads(select()['packages']) == ['a', 'b', 'c', 'd']
                   (directory / '.github/workflows').mkdir()
                   (directory / '.github/workflows/ci.yml').write_text('name: changed\n', encoding='utf-8')
                   git('add', '.')

@@ -60,6 +60,7 @@ jobs:
       browser_build: ${{ steps.config.outputs.browser_build }}
       test_tools: ${{ steps.config.outputs.test_tools }}
       reserved_ports: ${{ steps.config.outputs.reserved_ports }}
+      additional_locked_manifests: ${{ steps.config.outputs.additional_locked_manifests }}
       quality_config: ${{ steps.config.outputs.quality_config }}
     steps:
       - name: Checkout
@@ -92,11 +93,11 @@ jobs:
               config = None
           except (OSError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(quality_config='{}', enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='')
+          values = dict(additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows'}
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -111,18 +112,29 @@ jobs:
               if len(set(ports)) != len(ports):
                   raise SystemExit(f'{path}: reserved_ports entries must be unique')
               values['reserved_ports'] = ','.join(map(str, ports))
+              values['additional_locked_manifests'] = json.dumps(config.get('additional_locked_manifests', []))
               threshold = config.get('coverage_min_lines', 80)
               if type(threshold) not in (int, float) or not 80 <= threshold <= 100:
                   raise SystemExit(f'{path}: coverage_min_lines must be a number from 80 to 100')
-              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests'):
                   if not isinstance(config.get(key, []), list) or any(type(item) is not str or not item for item in config.get(key, [])):
                       raise SystemExit(f'{path}: {key} must be an array of nonempty strings')
               def validate_toml_string(key, value):
                   if any(ord(char) < 32 or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
                       raise SystemExit(f'{path}: {key} cannot contain control characters or surrogates')
-              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests'):
                   for value in config.get(key, []):
                       validate_toml_string(key, value)
+              for value in config.get('additional_locked_manifests', []):
+                  manifest = pathlib.Path(value)
+                  try:
+                      valid = (not manifest.is_absolute() and manifest.name == 'Cargo.toml'
+                               and manifest.resolve().is_relative_to(pathlib.Path.cwd().resolve())
+                               and manifest.is_file())
+                  except (OSError, RuntimeError):
+                      valid = False
+                  if not valid:
+                      raise SystemExit(f'{path}: additional_locked_manifests requires existing repository-contained relative Cargo.toml files')
               privileged = config.get('privileged_trigger_workflows', [])
               if len(set(privileged)) != len(privileged):
                   raise SystemExit(f'{path}: privileged_trigger_workflows entries must be unique')
@@ -255,7 +267,7 @@ jobs:
                       before = {}
                   path = pathlib.Path('.github/ci.toml')
                   after = tomllib.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
-                  if any(before.get(key) != after.get(key) for key in ('test_tools', 'reserved_ports', 'coverage_min_lines')) or bool(before) != bool(after):
+                  if any(before.get(key) != after.get(key) for key in ('test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests')) or bool(before) != bool(after):
                       selected = set(members)
               if 'Cargo.lock' in changed and selected != members:
                   # Resolve both revisions, comparing transitive dependency identities and features.
@@ -398,6 +410,7 @@ jobs:
         shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     env:
+      ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
@@ -447,6 +460,20 @@ jobs:
           TOOLS
           echo "TOOLS=$bin" >> "$GITHUB_ENV"
           echo "$bin" >> "$GITHUB_PATH"
+      - name: Fetch additional locked manifests
+        if: needs.declaration.outputs.additional_locked_manifests != '[]'
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+          import sys
+          for manifest in json.loads(os.environ['ADDITIONAL_LOCKED_MANIFESTS']):
+              print(f'Fetching locked dependencies: {manifest}', file=sys.stderr, flush=True)
+              result = subprocess.run(['cargo', 'fetch', '--locked', '--manifest-path', manifest])
+              if result.returncode:
+                  sys.exit(result.returncode)
+          PYTHON
       - name: Tests
         timeout-minutes: 45
         if: needs.declaration.outputs.enabled != 'true'
