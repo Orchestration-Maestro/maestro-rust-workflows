@@ -88,7 +88,7 @@ crate; lockfile changes compare the resolved transitive dependency identities
 and features at base and head, selecting affected crates. Root manifest,
 toolchain or CI workflow/schema changes select everything. Non-test declaration
 keys (such as spelling, wasm and foreign-target lists) select no extra tests;
-changes to test tools, coverage policy or declaration presence select everything.
+changes to test tools, coverage policy, additional locked manifests or declaration presence select everything.
 Docs-only changes outside a crate select no tests. Unowned non-document files
 conservatively select everything. Every shard still fetches locked dependencies.
 Merge groups and main pushes run the whole suite with coverage.
@@ -138,12 +138,16 @@ timeouts to bound hung caller tests.
 
 ### Declaration extensions
 
+See [Additional locked manifests](#additional-locked-manifests) for independent
+workspace dependency provisioning.
+
 The following optional root keys extend the defaults. Both existing arrays
 remain required when the declaration is present:
 
 ```toml
 wasm_crates = []
 check_targets = []
+additional_locked_manifests = ["fixtures/author build/Cargo.toml"]
 coverage_min_lines = 90
 spelling_words = ["Maestro"]
 git_sources = ["https://github.com/example/library"]
@@ -217,6 +221,22 @@ for line/column ignore selectors. The shared workflow generates its own
 explicit zizmor config containing only these basenames; repository zizmor
 configs cannot add exceptions. Inline ignore comments are forbidden, including
 on declared files. No declaration means no audit exceptions.
+
+### Additional locked manifests
+
+`additional_locked_manifests` is an optional array of nonempty strings, defaulting to `[]`. Use it when tests build an independent Cargo workspace whose dependencies are not covered by the repository root's lockfile. For example:
+
+```toml
+wasm_crates = []
+check_targets = []
+additional_locked_manifests = ["fixtures/author build/Cargo.toml"]
+```
+
+Each value must name an existing `Cargo.toml` file by a relative path from the caller directory. Absolute paths, missing files, directories, control characters and paths that resolve outside that directory, including through symlinks, fail declaration validation. Internal symlinks and relative components that still resolve inside the directory are allowed. Paths are literal: whitespace, Unicode and shell punctuation are not expanded or normalized. Declaration order and repeated entries are retained.
+
+Every test shard fetches each declared manifest with `cargo fetch --locked --manifest-path <path>` before starting its tests or declared coverage. Existing root-workspace fetching remains unchanged. The step is skipped when the list is omitted or empty. Cargo chooses the manifest's workspace and lockfile; a missing or stale lock fails provisioning with the manifest identified, Cargo's diagnostics visible and its nonzero status preserved. Provisioning may use the network and write Cargo's dependency cache; it does not generate, update or repair source manifests or lockfiles. Tests can subsequently build offline from the acquired sources, including by staging a temporary directory-source bundle; a cold, empty Cargo home alone does not contain that cache.
+
+Changes to this input select all workspace test packages on pull requests, like other test-affecting declaration changes. Merge groups and main pushes retain full tests and coverage. Adoption requires a release containing this input and the organization rules' version pin to that release.
 
 ## Isolated tests
 
