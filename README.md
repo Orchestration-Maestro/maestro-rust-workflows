@@ -30,6 +30,17 @@ if any shard covers it and enforces the union's 80% floor (or caller's higher
 threshold). Missing shard reports fail. Undeclared callers retain single-job
 coverage in `Dependency, source and coverage checks`.
 
+For an independent workspace built by tests, extend the optional declaration:
+
+```toml
+wasm_crates = []
+check_targets = []
+additional_locked_manifests = ["fixtures/author build/Cargo.toml"]
+```
+
+The additional locked fetch runs before tests; missing or stale locks fail rather
+than being repaired. Adoption needs a workflows release and organization re-pin.
+
 ## Compile cache
 
 Every Linux job that compiles Rust runs rustc through checksum-pinned sccache
@@ -49,7 +60,8 @@ The organization rules run `.github/workflows/ci.yml` for repositories with
 no required settings file and no workflow inputs. The optional
 [caller declaration](docs/caller-checks.md) enables isolated tests, real search
 tools, caller-pinned test tools, reserved test ports, listed wasm builds, native foreign-target
-checks and a pinned browser recipe. A repository's `rust-toolchain.toml`
+checks, [additional locked manifests](docs/caller-checks.md#additional-locked-manifests)
+for independent workspace dependencies, and a pinned browser recipe. A repository's `rust-toolchain.toml`
 selects its toolchain through rustup.
 
 Every caller also gets the dependency and source checks: cargo-deny

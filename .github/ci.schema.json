@@ -169,6 +169,15 @@
           }
         }
       }
+    },
+    "additional_locked_manifests": {
+      "description": "Literal relative Cargo.toml paths for independent locked workspaces, in execution order with repetitions. File existence and resolved containment are checked at runtime.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
     }
   }
 }
