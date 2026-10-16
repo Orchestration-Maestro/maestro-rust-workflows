@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.9.0...v0.10.0) (2026-10-16)
+
+
+### Features
+
+* **ci:** provision additional locked manifests ([#68](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/68)) ([1021c93](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/1021c93e64f5dad585c578193f2471cb02bc11f4))
+
+
+### Bug Fixes
+
+* advance the coverage proof snapshot ([#71](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/71)) ([da85a43](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/da85a43c862325a24a49b33fea2f5763edd78e0e))
+
 ## [0.9.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.8.0...v0.9.0) (2026-10-16)
 
 
