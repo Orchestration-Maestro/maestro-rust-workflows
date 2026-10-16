@@ -220,6 +220,109 @@ jobs:
                   assert target.read_text(encoding='utf-8') == secret
               print('PASS secrets_scan_before_restored_build_output: target ignored; tracked source caught', flush=True)
 
+          def yanked_exceptions_accept_exact_pairs(env, temporary):
+              import shutil
+              directory = pathlib.Path(temporary) / 'yanked-declaration'
+              shutil.copytree(root / 'fixtures/yanked-crates', directory, ignore=shutil.ignore_patterns('target'))
+              declaration = directory / '.github/ci.toml'
+              declaration.parent.mkdir()
+              declaration.write_text('wasm_crates=[]\ncheck_targets=[]\nyanked_crate_exceptions=[{package="once_cell", version="0.0.1"}]\n', encoding='utf-8')
+              output = pathlib.Path(temporary) / 'yanked-output'
+              result = execute('Read caller declaration', directory, env | {'GITHUB_OUTPUT': str(output)})
+              assert result.returncode == 0, result.stdout + result.stderr
+              values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+              assert json.loads(values['quality_config']) == {'yanked_crate_exceptions': [{'package': 'once_cell', 'version': '0.0.1'}]}
+              result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': values['quality_config']})
+              assert result.returncode == 0, result.stdout + result.stderr
+              generated = tomllib.loads((pathlib.Path(env['CHECK_DEFAULTS']) / 'deny.toml').read_text(encoding='utf-8'))
+              assert generated['advisories'] == {'yanked': 'deny', 'ignore': [{'crate': 'once_cell@=0.0.1'}]}
+              print('PASS yanked_exceptions_accept_exact_pairs', flush=True)
+
+          def yanked_exceptions_reject_unlocked_identity(env, temporary):
+              import shutil
+              directory = pathlib.Path(temporary) / 'yanked-identity'
+              shutil.copytree(root / 'fixtures/yanked-crates', directory, ignore=shutil.ignore_patterns('target'))
+              for package, version in [('once_cell', '0.0.1+reviewed'), ('once_cell', '0.0.3'), ('missing-package', '0.0.1')]:
+                  result = execute('Embedded check defaults', directory, env | {
+                      'QUALITY_CONFIG': json.dumps({'yanked_crate_exceptions': [{'package': package, 'version': version}]})})
+                  assert result.returncode != 0, result.stdout + result.stderr
+                  assert f'Cargo.lock: stale yanked-crate exception for {package} {version}' in result.stderr, result.stdout + result.stderr
+              print('PASS yanked_exceptions_reject_unlocked_identity: 3 cases', flush=True)
+
+          def yanked_exceptions_reject_malformed_entries(env, temporary):
+              import shutil
+              directory = pathlib.Path(temporary) / 'yanked-invalid'
+              shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+              declaration = directory / '.github/ci.toml'
+              declaration.parent.mkdir()
+              output = pathlib.Path(temporary) / 'invalid-output'
+              invalid = ['"once_cell"', '["once_cell"]', '["once_cell@0.0.1"]', '[1]',
+                            '[{package="once_cell"}]', '[{package="once_cell",version="0.0.1",extra=true}]',
+                            '[{package="once_cell",version=1}]'] + [
+                            '[{package="once_cell",version=' + json.dumps(version) + '}]'
+                            for version in ['', '*', '^0.0.1', '>=0.0.1', '0.0', '00.0.1', '0.0.1-01', '0.0.1\n']
+                            ] + ['[{package=' + json.dumps(package) + ',version="0.0.1"}]'
+                                 for package in ['', '*', 'once_cell@0.0.1', 'once_cell:0.0.1', 'once_cell\n']]
+              for value in invalid:
+                  declaration.write_text('wasm_crates=[]\ncheck_targets=[]\nyanked_crate_exceptions=' + value, encoding='utf-8')
+                  output.write_text('', encoding='utf-8')
+                  result = execute('Read caller declaration', directory, env | {'GITHUB_OUTPUT': str(output)})
+                  assert result.returncode != 0 and 'yanked_crate_exceptions' in result.stderr, result.stdout + result.stderr
+                  assert not output.read_text(encoding='utf-8')
+              print(f'PASS yanked_exceptions_reject_malformed_entries: {len(invalid)} cases', flush=True)
+
+          def yanked_exceptions_keep_other_findings(env, temporary):
+              import shutil
+              directory = pathlib.Path(temporary) / 'yanked-crates'
+              shutil.copytree(root / 'fixtures/yanked-crates', directory, ignore=shutil.ignore_patterns('target'))
+              entries = [{'package': 'once_cell', 'version': version} for version in ['0.0.1', '0.0.2']]
+              for case, config, expected in [
+                  ('exact-versions', {'yanked_crate_exceptions': entries}, None),
+                  ('different-version', {'yanked_crate_exceptions': entries[:1]}, '0.0.2'),
+                  ('no-exception', {}, '0.0.1'),
+                  ('empty-exceptions', {'yanked_crate_exceptions': []}, '0.0.1'),
+              ]:
+                  result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': json.dumps(config)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  result = execute('Licenses and dependencies', directory, env)
+                  output = result.stdout + result.stderr
+                  if expected is None:
+                      assert result.returncode == 0, output
+                  else:
+                      assert result.returncode != 0 and 'error[yanked]' in output and expected in output, output
+                  print(f'PASS yanked_exceptions_{case}: exit {result.returncode}', flush=True)
+              # The yank exception does not excuse a security advisory or a license.
+              for fixture, package, version, finding in [('advisory-exceptions', 'bincode', '1.3.3', 'RUSTSEC-2025-0141'),
+                                                         ('disallowed-license', 'sample', '0.1.0', 'error[rejected]')]:
+                  result = execute('Embedded check defaults', root / 'fixtures' / fixture, env | {
+                      'QUALITY_CONFIG': json.dumps({'yanked_crate_exceptions': [{'package': package, 'version': version}]})})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  result = execute('Licenses and dependencies', root / 'fixtures' / fixture, env)
+                  assert result.returncode != 0 and finding in result.stdout + result.stderr, result.stdout + result.stderr
+                  print(f'PASS yanked_exceptions_keep_{fixture}: exit {result.returncode}', flush=True)
+              generated = tomllib.loads((pathlib.Path(env['CHECK_DEFAULTS']) / 'deny.toml').read_text(encoding='utf-8'))
+              assert generated['sources'] == {'unknown-registry': 'deny', 'unknown-git': 'deny', 'allow-git': []}
+              # An undeclared local git source still fails the native source check.
+              upstream = pathlib.Path(temporary) / 'upstream'
+              shutil.copytree(root / 'fixtures/sample', upstream, ignore=shutil.ignore_patterns('target'))
+              subprocess.run(['git', 'init', '--quiet', str(upstream)], check=True)
+              subprocess.run(['git', 'add', '.'], cwd=upstream, check=True)
+              subprocess.run(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com',
+                              '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture'], cwd=upstream, check=True)
+              consumer = pathlib.Path(temporary) / 'source-consumer'
+              shutil.copytree(root / 'fixtures/sample', consumer, ignore=shutil.ignore_patterns('target'))
+              manifest = consumer / 'Cargo.toml'
+              manifest.write_text(manifest.read_text(encoding='utf-8').replace('name = "sample"', 'name = "source-consumer"')
+                                  + '\n[dependencies]\nsample = {git = ' + json.dumps(upstream.as_uri()) + '}\n', encoding='utf-8')
+              command = ['cargo', 'generate-lockfile']
+              if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                  command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+              result = subprocess.run(command, cwd=consumer, env=env, capture_output=True, text=True)
+              assert result.returncode == 0, result.stdout + result.stderr
+              result = execute('Licenses and dependencies', consumer, env)
+              assert result.returncode != 0 and 'error[source-not-allowed]' in result.stdout + result.stderr, result.stdout + result.stderr
+              print(f'PASS yanked_exceptions_keep_sources: exit {result.returncode}', flush=True)
+
           def advisory_exception_suppresses_named_advisory(env, temporary):
               import shutil
               directory = pathlib.Path(temporary) / 'advisory-exceptions'
@@ -242,6 +345,14 @@ jobs:
               result = execute('Licenses and dependencies', directory, env)
               assert result.returncode == 0, result.stdout + result.stderr
               print('PASS advisory_exception_suppresses_named_advisory', flush=True)
+              result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': json.dumps({
+                  'advisory_exceptions': [entry], 'yanked_crate_exceptions': [{'package': 'bincode', 'version': '1.3.3'}]})})
+              assert result.returncode == 0, result.stdout + result.stderr
+              generated = tomllib.loads((pathlib.Path(env['CHECK_DEFAULTS']) / 'deny.toml').read_text(encoding='utf-8'))
+              assert generated['advisories']['ignore'] == [{'id': entry['id'], 'reason': entry['reason']}, {'crate': 'bincode@=1.3.3'}]
+              result = execute('Licenses and dependencies', directory, env)
+              assert result.returncode == 0, result.stdout + result.stderr
+              print('PASS advisory_and_yanked_exceptions_coexist', flush=True)
               for key, value in [('package', 'missing-package'), ('version', '1.3.2')]:
                   stale = entry | {key: value}
                   result = execute('Embedded check defaults', directory, env | {
@@ -444,6 +555,10 @@ jobs:
                   result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
                   assert result.returncode == 0, result.stdout + result.stderr
               print('PASS repository_workflow_checks')
+              yanked_exceptions_accept_exact_pairs(env, temporary)
+              yanked_exceptions_reject_unlocked_identity(env, temporary)
+              yanked_exceptions_reject_malformed_entries(env, temporary)
+              yanked_exceptions_keep_other_findings(env, temporary)
               advisory_exception_suppresses_named_advisory(env, temporary)
               privileged_trigger_workflows_ignore_only_declared_audit(env, temporary)
               result = execute('Embedded check defaults', root, env)
