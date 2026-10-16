@@ -1,0 +1,9 @@
+[package]
+name = "yanked-crates"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[dependencies]
+once_cell = "=0.0.1"
+once_cell_other = { package = "once_cell", version = "=0.0.2" }

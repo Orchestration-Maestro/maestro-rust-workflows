@@ -64,8 +64,9 @@ job). All check tools
 are exact release pins, verified against embedded SHA-256 checksums before
 execution. Their defaults are embedded in the shared workflow, not loaded from
 consumer files. The caller declaration can add spelling words, exact-version
-license exceptions, named advisory exceptions tied to reported package versions
-and exact git sources, or raise coverage. It can also
+license exceptions, named advisory exceptions tied to reported package versions,
+[time-boxed yanked-crate exceptions](docs/caller-checks.md#declaration-extensions)
+for exact crate versions and exact git sources, or raise coverage. It can also
 list exact privileged-trigger workflow paths to ignore only the
 `dangerous-triggers` audit for those files; all other workflow audits stay
 active. It cannot lower the floor or disable a check. Declared callers retain

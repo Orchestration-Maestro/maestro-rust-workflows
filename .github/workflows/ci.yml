@@ -96,7 +96,7 @@ jobs:
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'git_sources', 'privileged_trigger_workflows'}
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -150,6 +150,10 @@ jobs:
                       validate_toml_string('license_exceptions.licenses', value)
                   if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?', entry['version']):
                       raise SystemExit(f'{path}: license_exceptions requires an exact package version')
+              exact_version = (r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
+                               r'(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+                               r'(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?'
+                               r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?')
               exceptions = config.get('advisory_exceptions', [])
               if not isinstance(exceptions, list):
                   raise SystemExit(f'{path}: advisory_exceptions must be an array')
@@ -162,13 +166,19 @@ jobs:
                       validate_toml_string('advisory_exceptions.' + key, value)
                   if not re.fullmatch(r'RUSTSEC-[0-9]{4}-[0-9]{4}', entry['id']):
                       raise SystemExit(f'{path}: advisory_exceptions id must match RUSTSEC-YYYY-NNNN')
-                  exact_version = (r'(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)'
-                                   r'(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
-                                   r'(?:\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?'
-                                   r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?')
                   if not re.fullmatch(exact_version, entry['version']):
                       raise SystemExit(f'{path}: advisory_exceptions requires an exact package version')
-              values['quality_config'] = json.dumps({key: config[key] for key in ('coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'git_sources', 'privileged_trigger_workflows') if key in config})
+              exceptions = config.get('yanked_crate_exceptions', [])
+              if not isinstance(exceptions, list):
+                  raise SystemExit(f'{path}: yanked_crate_exceptions must be an array')
+              for entry in exceptions:
+                  if not isinstance(entry, dict) or set(entry) != {'package', 'version'}:
+                      raise SystemExit(f'{path}: yanked_crate_exceptions requires exactly package and version')
+                  if any(type(value) is not str for value in entry.values()):
+                      raise SystemExit(f'{path}: yanked_crate_exceptions values must be strings')
+                  if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', entry['package']) or not re.fullmatch(exact_version, entry['version']):
+                      raise SystemExit(f'{path}: yanked_crate_exceptions requires an exact crate name and semantic version')
+              values['quality_config'] = json.dumps({key: config[key] for key in ('coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows') if key in config})
               try:
                   metadata = json.loads(subprocess.check_output(
                       ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))
@@ -726,9 +736,12 @@ jobs:
                   if (entry['package'], entry['version']) not in reported.get(entry['id'], set()):
                       actual = ', '.join(f'{name} {version}' for name, version in sorted(reported.get(entry['id'], ()))) or 'no such finding'
                       raise SystemExit(f"Cargo.lock: advisory exception {entry['id']} is not reported for {entry['package']} {entry['version']}: {actual}")
+          if config.get('advisory_exceptions') or config.get('yanked_crate_exceptions'):
               deny += 'ignore = [\n'
-              for entry in config['advisory_exceptions']:
+              for entry in config.get('advisory_exceptions', []):
                   deny += '  { id = ' + toml_value(entry['id']) + ', reason = ' + toml_value(entry['reason']) + ' },\n'
+              for entry in config.get('yanked_crate_exceptions', []):
+                  deny += '  { crate = ' + toml_value(entry['package'] + '@=' + entry['version']) + ' },\n'
               deny += ']\n'
           deny += '[licenses]\nallow = ' + toml_value(allow) + '\n'
           for entry in config.get('license_exceptions', []):

@@ -31,7 +31,11 @@
     "reserved_ports": {
       "description": "Local ports reserved from the ephemeral range with sysctl before Linux test shards run.",
       "type": "array",
-      "items": { "type": "integer", "minimum": 1, "maximum": 65535 },
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535
+      },
       "uniqueItems": true
     },
     "browser_build": {
@@ -139,6 +143,29 @@
           "reason": {
             "type": "string",
             "minLength": 1
+          }
+        }
+      }
+    },
+    "yanked_crate_exceptions": {
+      "description": "Time-boxed exceptions for only the yank finding on exact crate versions.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "package",
+          "version"
+        ],
+        "properties": {
+          "package": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
           }
         }
       }

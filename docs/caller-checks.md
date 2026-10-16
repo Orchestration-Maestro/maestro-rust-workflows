@@ -100,7 +100,7 @@ pinned together in the workflow. LLVM tools come from the caller's rustup
 component distribution, not a caller-provided executable.
 
 - cargo-deny checks licenses, bans, sources and advisories across the workspace
-  with all features. Unexcused advisories and yanked crates fail. Registries
+  with all features. Advisories and yanked crates without declared exceptions fail. Registries
   other than crates.io and undeclared git sources fail. The license allowlist is
   MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
   Apache-2.0 WITH LLVM-exception, Unicode-DFS-2016, Unicode-3.0, CC0-1.0,
@@ -146,6 +146,10 @@ license_exceptions = [
 advisory_exceptions = [
   { id = "RUSTSEC-2025-0141", package = "bincode", version = "1.3.3", reason = "Packaged syntax and theme dumps; reviewed exception" },
 ]
+# Time-boxed; remove when the dependency is upgraded.
+yanked_crate_exceptions = [
+  { package = "specific-library", version = "1.2.3" },
+]
 ```
 
 `coverage_min_lines` must be a number from 80 through 100; boolean, non-finite
@@ -174,7 +178,18 @@ advisories without any ignore; each declared ID must be reported for exactly the
 declared package and version, otherwise the check fails naming the ID and the
 package and version reported, or "no such finding". The shared workflow renders only that ID and reason
 into cargo-deny's advisory ignore list.
-Unlisted advisories and yanked crates remain checked.
+Unlisted advisories remain checked; yanked crates require their own exceptions below.
+
+`yanked_crate_exceptions` defaults to an empty array and is intended for
+reviewed, time-boxed use while an upgrade is prepared. Each entry requires
+exactly `package` and `version`, both strings: an exact ASCII crate name
+(letters, digits, hyphens and underscores, starting with a letter or digit)
+and a complete semantic version. Bare names, ranges, unknown fields and
+malformed entries fail declaration validation. The workflow renders each pair
+only as a cargo-deny yanked-crate ignore (`crate@=version`); another version
+of the same crate or an unlisted yanked crate still fails. Advisory, license,
+ban and source policies are unchanged. Track the removal deadline and upgrade
+in the consuming repository's declaration comment and issue.
 
 `privileged_trigger_workflows` is an optional array of unique, exact, existing
 `.github/workflows/<name>.yml` or `.yaml` file paths. It defaults to empty.
