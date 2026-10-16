@@ -9,9 +9,12 @@ also self-test-only: when unset they check out the caller repository and commit.
 workflow repository; they default to the real PR base and event.
 
 Both coverage proof jobs use one immutable Maestro snapshot for comparable runs.
-Advance both checkout references together to a current main commit after checking
-its locked dependencies. Changes to either `.github/workflows/ci.yml` or
-`.github/workflows/ci-proof.yml` schedule the proof; check its results before landing.
+Advance both checkout references together to the smallest main commit that resolves
+the reason for the move, after checking its locked dependencies. For example,
+`85dc98f2c993437238168528dc081b828048a3f1` updates wasmtime and wasmtime-wasi to
+49.0.3 to resolve the advisories without taking unrelated later changes.
+Changes to either `.github/workflows/ci.yml` or `.github/workflows/ci-proof.yml`
+schedule the proof; check its results before landing.
 
 ```toml
 wasm_crates = ["my-browser-library"]
