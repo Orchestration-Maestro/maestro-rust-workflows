@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.8.0...v0.9.0) (2026-10-16)
+
+
+### Features
+
+* **ci:** allow exact yanked-crate exceptions ([#64](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/64)) ([3fe29f8](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/3fe29f8589817a607f674e14aaa6f9f0c1842203))
+
 ## [0.8.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.7.4...v0.8.0) (2026-10-14)
 
 
