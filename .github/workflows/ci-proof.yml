@@ -2,7 +2,7 @@ name: Maestro coverage proof
 
 on:
   pull_request:
-    paths: [.github/workflows/ci.yml]
+    paths: [.github/workflows/ci.yml, .github/workflows/ci-proof.yml]
 
 permissions:
   contents: read
@@ -14,7 +14,7 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: c0767d62b8ecef0d2df6538cf39d7e705dfe3c2e
+      checkout-ref: 85dc98f2c993437238168528dc081b828048a3f1
       concurrency-key: maestro-proof
       test-event: merge_group
 
@@ -32,7 +32,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Orchestration-Maestro/maestro
-          ref: c0767d62b8ecef0d2df6538cf39d7e705dfe3c2e
+          ref: 85dc98f2c993437238168528dc081b828048a3f1
           path: maestro
       - name: Extract workflow steps
         shell: python
