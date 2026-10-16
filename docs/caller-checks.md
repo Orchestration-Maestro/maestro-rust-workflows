@@ -8,6 +8,11 @@ also self-test-only: when unset they check out the caller repository and commit.
 `checkout-base-ref` and `test-event` are proof-only overrides restricted to this
 workflow repository; they default to the real PR base and event.
 
+Both coverage proof jobs use one immutable Maestro snapshot for comparable runs.
+Advance both checkout references together to a current main commit after checking
+its locked dependencies. Changes to either `.github/workflows/ci.yml` or
+`.github/workflows/ci-proof.yml` schedule the proof; check its results before landing.
+
 ```toml
 wasm_crates = ["my-browser-library"]
 check_targets = ["x86_64-pc-windows-msvc"]
