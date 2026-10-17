@@ -870,13 +870,13 @@ jobs:
 
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
           steps = dict(step.split('\n', 1) for step in workflow.split('      - name: ')[1:])
-          def body(name):
-              step = steps[name]
-              alias = re.search(r'^        run: \*([\w-]+)$', step, re.MULTILINE)
-              if alias:
-                  step = next(value for value in steps.values() if f'run: &{alias[1]} |' in value)
-              match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
-              return textwrap.dedent(match[1])
+          import ast
+          source = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+          code = source.split('      - name: Caller checks at workflow seam\n', 1)[1]
+          code = code.split('        run: |\n', 1)[1].split('\n  native:', 1)[0]
+          tree = ast.parse(textwrap.dedent(code))
+          tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
+          exec(compile(tree, 'workflow body resolver', 'exec'))
 
           class SearchReleases(unittest.TestCase):
               def test_pinned_archives(self):
@@ -980,9 +980,15 @@ jobs:
           def body(name, source=workflow):
               steps = re.split(r'^      - name: ', source, flags=re.MULTILINE)
               step = next(s for s in steps[1:] if s.splitlines()[0] == name)
+              alias = re.search(r'^        run: \*([\w-]+)$', step, re.MULTILINE)
+              if alias:
+                  step = next(s for s in source.split('      - name: ')[1:] if f'run: &{alias[1]} |' in s)
               match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
-              assert match, f'Missing executable body: {name}'
-              return textwrap.dedent(match.group(1))
+              if match:
+                  return textwrap.dedent(match.group(1))
+              inline = re.search(r'^        run: ([^|&*].*)$', step, re.MULTILINE)
+              assert inline, f'Missing executable body: {name}'
+              return inline[1] + '\n'
 
           def job_run_defaults_preserve_pipeline_failures():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
@@ -1041,13 +1047,16 @@ jobs:
               env = {key: value for key, value in env.items() if value is not None}
               command = body(name)
               if name in ['Browser tools', 'Test tools']:
-                  command = body('Mise bootstrap') + command
+                  command = body('Mise bootstrap') + (body('Browser tool pin') if name == 'Browser tools' else '') + command
               bash = 'bash'
               if os.name == 'nt':
                   import shutil
                   # Match the runner's Bash shell, not the Windows WSL launcher.
                   bash = str(pathlib.Path(shutil.which('git')).parent.parent / 'bin/bash.exe')
                   assert pathlib.Path(bash).is_file(), f'Git Bash not found: {bash}'
+                  # Git Bash prepends its own utilities during startup; restore the caller's order.
+                  env['MAESTRO_SEAM_PATH'] = env['PATH']
+                  command = 'export PATH="$(cygpath -u -p "$MAESTRO_SEAM_PATH")"\n' + command
               argv = [bash, '-e', '-o', 'pipefail', '-c', command]
               if os.environ.get('MAESTRO_LOCAL_CAPPED'):
                   command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
@@ -1548,6 +1557,185 @@ jobs:
 
           locked_manifests_precede_all_test_routes()
 
+          def caller_tools_precede_compiling_operations():
+              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
+                                     workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+              for job, consumer in [('quality', 'Lint'), ('docs', 'Docs'), ('tests', 'Isolated tests'),
+                                    ('targets', 'Check target'), ('browser', 'Build wasm crates')]:
+                  section = jobs[job]
+                  assert 'needs: declaration' in section, job
+                  bootstrap = next(s for s in section.split('      - name: ')[1:] if 'run: *mise-bootstrap' in s or 'run: &mise-bootstrap' in s)
+                  install = next(s for s in section.split('      - name: ')[1:] if 'run: *caller-tools' in s or 'run: &caller-tools' in s)
+                  assert section.index(bootstrap) < section.index(install) < section.index('- name: ' + consumer), job
+                  condition = "needs.declaration.outputs.test_tools == 'true'"
+                  if job == 'browser':
+                      condition += " || needs.declaration.outputs.browser_build == 'true'"
+                  for step in [bootstrap, install]:
+                      assert 'if: ' + condition + '\n' in step, job
+                      assert 'timeout-minutes: 10' in step, job
+                  assert section.count('mise-bootstrap') == 1 and section.count('caller-tools') == 1, job
+              for job in ['declaration', 'checks', 'advisories', 'tests-result']:
+                  assert 'mise-bootstrap' not in jobs[job] and 'caller-tools' not in jobs[job], job
+              assert workflow.count('mise install') == 1
+              assert body('Test tools') == body('Browser tools')
+              assert 'tools.just' not in body('Test tools')
+              assert "needs.declaration.outputs.browser_build == 'true'" in jobs['browser'].split('- name: Browser tool pin', 1)[1].split('- name:', 1)[0]
+
+          caller_tools_precede_compiling_operations()
+          print('PASS caller_tools_precede_compiling_operations')
+
+          def caller_build_tools_reach_compilers():
+              import shutil
+              import time
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/test-tools', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  assert (directory / 'build.rs').is_file(), 'compiler fixture needs a build script'
+                  paths = directory / 'paths'
+                  env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths)}
+                  result = execute('Test tools', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  bins = paths.read_text(encoding='utf-8').splitlines()
+                  env['PATH'] = os.pathsep.join(bins + [os.environ['PATH']])
+                  routes = [('Check target', {'TARGET': os.environ['TARGET']})] if 'TARGET' in os.environ else [
+                      ('Lint', {}), ('Docs', {'RUSTDOCFLAGS': '-D warnings -D missing_docs'}),
+                      ('Build wasm crates', {'WASM_CRATES': '["test-tools"]'}), ('Isolated tests', {})]
+                  for index, (route, extra) in enumerate(routes):
+                      child = env | extra | {'CARGO_TARGET_DIR': str(directory / f'cold-{index}')}
+                      start = time.monotonic()
+                      result = execute(route, directory, child)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      assert 'Compiling test-tools' in result.stdout + result.stderr or 'Checking test-tools' in result.stdout + result.stderr, result.stdout + result.stderr
+                      if route == 'Isolated tests':
+                          assert 'caller_pinned_tools_are_available' in result.stdout + result.stderr
+                      print(f'PASS caller compiler {route}: {time.monotonic() - start:.2f}s; jobs={os.environ.get("CARGO_BUILD_JOBS", "runner default")}; '
+                            f'lock wait reported={"Blocking waiting" in result.stderr}', flush=True)
+
+          caller_build_tools_reach_compilers()
+          print('PASS caller_build_tools_reach_compilers')
+
+          def caller_build_tools_require_pins():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/test-tools', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  paths = directory / 'paths'
+                  env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths)}
+                  (directory / 'mise.toml').unlink()
+                  result = execute('Test tools', directory, env)
+                  assert result.returncode != 0
+                  assert 'mise.toml: caller tools require a pinned tool configuration' in result.stderr, result.stderr
+                  (directory / 'mise.toml').write_text('[tools]\n', encoding='utf-8')
+                  result = execute('Test tools', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  # Compile without any ambient developer tools, retaining only Rust proxies and host utilities.
+                  proxies = directory / 'rust-bin'
+                  proxies.mkdir()
+                  (proxies / 'rustup').symlink_to(shutil.which('rustup'))
+                  for tool in ['cargo', 'rustc', 'rustdoc']:
+                      physical = subprocess.check_output(['rustup', 'which', tool], text=True).strip()
+                      (proxies / tool).symlink_to(physical)
+                  child = env | {'PATH': f'{proxies}:/usr/bin:/bin', 'CARGO_TARGET_DIR': str(directory / 'cold-unavailable')}
+                  result = execute('Docs', directory, child)
+                  assert result.returncode != 0 and 'caller build tool just is unavailable:' in result.stderr, result.stderr
+                  result = execute('Build wasm crates', directory, child | {'WASM_CRATES': '["test-tools"]',
+                                   'CARGO_TARGET_DIR': str(directory / 'cold-unavailable-wasm')})
+                  assert result.returncode != 0 and 'caller build tool just is unavailable:' in result.stderr, result.stderr
+                  # This finite child exits once; it never re-executes a shell.
+                  missing = proxies / 'just'
+                  subprocess.run(['install', '-m', '0700', '/dev/stdin', str(missing)],
+                                 input='#!/bin/sh\nexit 127\n', text=True, check=True)
+                  result = execute('Docs', directory, child | {'CARGO_TARGET_DIR': str(directory / 'cold-failed')})
+                  assert result.returncode != 0 and 'caller build tool just --version failed' in result.stderr, result.stderr
+                  (directory / 'mise.toml').write_text('[tools]\njust="not-a-real-version"\n', encoding='utf-8')
+                  result = execute('Test tools', directory, env)
+                  assert result.returncode != 0 and 'not-a-real-version' in result.stderr, result.stderr
+                  (directory / 'mise.toml').write_text('[tools]\njust="1.58.0"\n', encoding='utf-8')
+                  result = execute('Test tools', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  bins = paths.read_text(encoding='utf-8').splitlines()
+                  # GitHub prepends published paths even if a caller path was already present farther back.
+                  for inherited in [child['PATH'], child['PATH'] + ':' + ':'.join(bins)]:
+                      result = execute('Docs', directory, child | {'PATH': ':'.join(bins) + ':' + inherited,
+                                       'CARGO_TARGET_DIR': str(directory / ('cold-restored-' + str(len(inherited))))})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                  outputs = list(directory.glob('cold-restored-*/debug/build/test-tools-*/output'))
+                  assert outputs and all('cargo::rerun-if-changed=mise.toml' in output.read_text(encoding='utf-8') for output in outputs)
+
+          caller_build_tools_require_pins()
+          print('PASS caller_build_tools_require_pins')
+
+          def mise_bootstrap_uses_runner_platform():
+              import hashlib
+              import platform
+              import shutil
+              host = (platform.system(), platform.machine().lower())
+              expected = {
+                  ('Linux', 'x86_64'): 'linux-x64', ('Linux', 'aarch64'): 'linux-arm64',
+                  ('Darwin', 'arm64'): 'macos-arm64', ('Darwin', 'x86_64'): 'macos-x64',
+                  ('Windows', 'amd64'): 'windows-x64.exe',
+              }[host]
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  paths = directory / 'paths'
+                  env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths)}
+                  # Keep the host utilities, but not an ambient mise installation.
+                  env['PATH'] = os.pathsep.join(p for p in os.environ['PATH'].split(os.pathsep)
+                                              if not any((pathlib.Path(p) / name).is_file() for name in ['mise', 'mise.exe']))
+                  result = execute('Mise bootstrap', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  published = paths.read_text(encoding='utf-8').splitlines()
+                  assert len(published) == 1
+                  binary = pathlib.Path(published[0]) / ('mise.exe' if os.name == 'nt' else 'mise')
+                  assert binary.is_file(), published
+                  digest = hashlib.sha256(binary.read_bytes()).hexdigest()
+                  assert f'platform={expected} ' in body('Mise bootstrap')
+                  assert f'digest={digest} ;;' in body('Mise bootstrap')
+                  version = subprocess.check_output([str(binary), '--version'], text=True).split()[0]
+                  assert version == '2026.10.2'
+                  clean_path = env['PATH']
+                  env['PATH'] = os.pathsep.join(published + [clean_path])
+                  before = paths.read_text(encoding='utf-8')
+                  result = execute('Mise bootstrap', directory, env)
+                  assert result.returncode == 0 and paths.read_text(encoding='utf-8') == before, result.stderr
+                  (directory / 'mise.toml').write_text('[tools]\njust="1.58.0"\n', encoding='utf-8')
+                  result = execute('Test tools', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  bins = paths.read_text(encoding='utf-8').splitlines()
+                  tool = shutil.which('just', path=os.pathsep.join(bins + [env['PATH']]))
+                  assert tool is not None
+                  command = [tool, '--version']
+                  result = subprocess.run(command, env=os.environ | env | {'PATH': os.pathsep.join(bins + [env['PATH']])},
+                                          capture_output=True, text=True, check=True)
+                  assert result.stdout.strip() == 'just 1.58.0', result.stderr
+                  fake = directory / 'fake'
+                  fake.mkdir()
+                  # A child closes the executable's write descriptor before Bash can launch it.
+                  import sys
+                  def executable(name, contents):
+                      subprocess.run([sys.executable, '-c',
+                                      'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text(sys.argv[2], encoding="utf-8", newline="\\n"); p.chmod(0o755)',
+                                      str(fake / name), contents], check=True)
+                  executable('mise', '#!/bin/sh\necho 0.0.0\n')
+                  wrong = env | {'PATH': os.pathsep.join([str(fake), clean_path])}
+                  result = execute('Mise bootstrap', directory, wrong)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  before = paths.read_text(encoding='utf-8')
+                  executable('curl', '#!/bin/sh\ntouch corrupt-download-marker\nwhile [ "$1" != --output ]; do shift; done\n'
+                             'printf "#!/bin/sh\\ntouch checksum-bypass-marker\\n" > "$2"\n')
+                  previous = set(directory.glob('maestro-mise.*/*'))
+                  result = execute('Mise bootstrap', directory, wrong)
+                  assert (directory / 'corrupt-download-marker').is_file(), result.stdout + result.stderr
+                  assert result.returncode != 0, result.stdout + result.stderr
+                  downloads = set(directory.glob('maestro-mise.*/*')) - previous
+                  assert len(downloads) == 1 and next(iter(downloads)).read_bytes() == b'#!/bin/sh\ntouch checksum-bypass-marker\n'
+                  assert not (directory / 'checksum-bypass-marker').exists()
+                  assert paths.read_text(encoding='utf-8') == before
+                  print(f'PASS native bootstrap {expected}: {version}; installed just 1.58.0', flush=True)
+
+          mise_bootstrap_uses_runner_platform()
+          print('PASS mise_bootstrap_uses_runner_platform')
+
           def test_tools_defaults_preserve_behavior():
               import shutil
               with tempfile.TemporaryDirectory() as temporary:
@@ -1568,7 +1756,7 @@ jobs:
                       assert result.returncode != 0 and 'test_tools must be a boolean' in result.stderr
                   assert workflow.count('digest=8f5f6660') == 1
                   browser = workflow.split('  browser:\n', 1)[1]
-                  assert "if: needs.declaration.outputs.browser_build == 'true'\n        run: *mise-bootstrap" in browser
+                  assert "if: needs.declaration.outputs.test_tools == 'true' || needs.declaration.outputs.browser_build == 'true'\n        run: *mise-bootstrap" in browser
                   tests = workflow.split('  tests:\n', 1)[1].split('  targets:', 1)[0]
                   for name in ['Mise bootstrap', 'Test tools']:
                       step = next(s for s in tests.split('      - name: ')[1:] if s.splitlines()[0] == name)
@@ -1625,7 +1813,7 @@ jobs:
                       result, values = declaration(directory)
                       assert result.returncode == 0 and values['test_tools'] == 'false', result.stderr
                       result = execute('Isolated tests', directory, env)
-                      assert result.returncode != 0 and 'FAIL' in result.stdout + result.stderr, result.stderr
+                      assert result.returncode != 0 and 'caller build tool just --version failed' in result.stdout + result.stderr, result.stderr
                   path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_tools=true', encoding="utf-8")
                   result, values = declaration(directory)
                   assert result.returncode == 0 and values['test_tools'] == 'true', result.stderr
@@ -2135,7 +2323,7 @@ jobs:
               assert 'cargo check --workspace --all-targets --locked --target "$TARGET"' in body('Check target')
               if 'GITHUB_OUTPUT' in os.environ:
                   with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
-                      output.write('targets=' + json.dumps(expected) + '\n')
+                      output.write('targets=' + json.dumps(expected + [{'target': 'x86_64-apple-darwin', 'runner': 'macos-15-intel'}]) + '\n')
 
           supported_targets_use_native_runners()
           print('PASS supported_targets_use_native_runners')
@@ -2185,18 +2373,26 @@ jobs:
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   shutil.copytree(root / 'fixtures/declared', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
-                  result = execute('Build wasm crates', directory, {'WASM_CRATES': '["declared"]'})
-                  assert result.returncode == 0, result.stderr
                   env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(directory / 'github-path')}
                   bootstrap = execute('Browser tools', directory, env)
                   assert bootstrap.returncode == 0, bootstrap.stderr
                   paths = directory / 'github-path'
                   if paths.exists():
                       env['PATH'] = ':'.join(paths.read_text(encoding="utf-8").splitlines()) + ':' + os.environ['PATH']
+                  result = execute('Build wasm crates', directory, env | {'WASM_CRATES': '["declared"]'})
+                  assert result.returncode == 0, result.stderr
                   result = execute('Browser recipe', directory, env)
                   assert result.returncode == 0, result.stderr
                   assert (directory / 'browser-built').read_text(encoding="utf-8") == 'built-after-wasm'
                   (directory / 'browser-built').unlink()
+                  command = body('Build wasm crates') + body('Browser recipe')
+                  argv = ['bash', '-e', '-o', 'pipefail', '-c', command]
+                  if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                      argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
+                  result = subprocess.run(argv, cwd=directory, env=os.environ | env | {'WASM_CRATES': '["missing-package"]'},
+                                          capture_output=True, text=True)
+                  assert result.returncode != 0 and 'missing-package' in result.stderr, result.stderr
+                  assert not (directory / 'browser-built').exists()
                   # A browser-only declaration must still invoke the recipe.
                   (directory / 'justfile').write_text('browser-build:\n    @printf browser-only > browser-built\n', encoding="utf-8")
                   result = execute('Build wasm crates', directory, {'WASM_CRATES': '[]'})
@@ -2205,7 +2401,7 @@ jobs:
                   assert result.returncode == 0 and (directory / 'browser-built').read_text(encoding="utf-8") == 'browser-only', result.stderr
               steps = workflow[workflow.index('  browser:'):]
               assert steps.index('name: Build wasm crates') < steps.index('name: Browser recipe')
-              for name in ['Browser tools', 'Browser recipe']:
+              for name in ['Browser tool pin', 'Browser recipe']:
                   step = next(s for s in steps.split('      - name: ')[1:] if s.splitlines()[0] == name)
                   assert "if: needs.declaration.outputs.browser_build == 'true'" in step
                   assert 'always()' not in step
@@ -2275,7 +2471,7 @@ jobs:
                   env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths)}
                   # Start without mise: production must fetch and verify the official release.
                   env['PATH'] = '/usr/bin:/bin'
-                  result = execute('Browser tools', directory, env)
+                  result = execute('Mise bootstrap', directory, env)
                   assert result.returncode == 0, result.stdout + result.stderr
                   installed_bin = paths.read_text(encoding="utf-8").splitlines()[-1]
                   installed = pathlib.Path(installed_bin) / 'mise'
@@ -2288,21 +2484,21 @@ jobs:
                   curl.chmod(0o755)
                   env['PATH'] = f'{bin_dir}:/usr/bin:/bin'
                   before = paths.read_text(encoding="utf-8")
-                  result = execute('Browser tools', directory, env)
+                  result = execute('Mise bootstrap', directory, env)
                   assert result.returncode == 0, result.stdout + result.stderr
                   assert paths.read_text(encoding="utf-8") == before  # Matching version is reused, no download.
                   (bin_dir / 'mise').unlink()
                   (bin_dir / 'mise').write_text('#!/bin/sh\necho 0.0.0\n', encoding="utf-8")
                   (bin_dir / 'mise').chmod(0o755)
                   curl.write_text('#!/bin/sh\nexec /usr/bin/curl "$@"\n', encoding="utf-8")
-                  result = execute('Browser tools', directory, env)
+                  result = execute('Mise bootstrap', directory, env)
                   assert result.returncode == 0, result.stdout + result.stderr
                   assert paths.read_text(encoding="utf-8") != before  # Wrong version selects verified release.
                   before = paths.read_text(encoding="utf-8")
                   # A hostile download is data until the production checksum has passed.
                   curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\n'
                                   'printf "#!/bin/sh\\ntouch checksum-bypass-marker\\n" > "$2"\n', encoding="utf-8")
-                  result = execute('Browser tools', directory, env)
+                  result = execute('Mise bootstrap', directory, env)
                   assert result.returncode != 0
                   assert not (directory / 'checksum-bypass-marker').exists()
                   assert paths.read_text(encoding="utf-8") == before
@@ -2412,6 +2608,8 @@ jobs:
           tree.body = [node for node in tree.body if not isinstance(node, ast.Expr)]
           namespace = {}
           exec(compile(tree, 'workflow seam', 'exec'), namespace)
+          namespace['mise_bootstrap_uses_runner_platform']()
+          namespace['caller_build_tools_reach_compilers']()
           namespace['foreign_target_failures_are_detected']()
           print('PASS foreign_target_failures_are_detected')
 

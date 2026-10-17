@@ -285,13 +285,14 @@ The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
 retain the runner's normal home and cache access.
 
-## Caller-pinned test tools
+## Caller-pinned build and test tools
 
-With `test_tools = true`, the Tests job reuses the browser build's
-checksum-verified mise 2026.10.2 bootstrap, runs `mise install` from the caller
-directory, and adds the installed tool bin directories to `PATH` before
-isolated tests. Provide a `mise.toml` pinning the tools your tests spawn, for
-example:
+With `test_tools = true`, every enabled caller-compiling job installs the
+caller's `mise.toml` tools before lint, documentation, test/coverage partitions,
+foreign-target checks and wasm builds, including their build scripts. The shared
+checksum-verified mise 2026.10.2 bootstrap selects the actual runner host: Linux
+x64/ARM64, macOS x64/ARM64 or Windows x64, independently of the Rust target.
+Provide pins for the tools your builds and tests spawn, for example:
 
 ```toml
 [tools]
@@ -300,12 +301,14 @@ prek = "0.5.3"
 ```
 
 Tool versions come from the caller, not the shared workflow. Missing
-`mise.toml` or a failed installation fails the job. False or omitted
-`test_tools` skips the bootstrap and tool installation, preserving the existing
-test path. An absent declaration still runs the original unisolated tests.
+`mise.toml` or a failed installation fails the job. Installing pins does not
+supply undeclared build tools. False or omitted `test_tools` skips this opt-in;
+a `mise.toml` alone does not enable it. Noncompiling jobs install no caller tools.
+An absent declaration still runs the original unisolated tests.
 The nextest partition and doctest argv, credential guards,
 fresh directories and the child environment allowlist are unchanged. Only the
 installed tools' executable paths are added, not mise's environment settings.
+Windows paths are published in native format for later steps.
 
 ## Wasm and browser builds
 
@@ -316,16 +319,19 @@ cargo build --locked --target wasm32-unknown-unknown -p "$CRATE"
 ```
 
 The caller toolchain installs wasm support only when there are listed
-packages. With `browser_build = true`, the workflow subsequently runs
-`mise install`, then `mise exec -- just browser-build` from the caller directory,
-including when the wasm array is empty. A failed wasm build prevents the
-recipe. False or omitted flags skip the browser tooling and recipe.
+packages. Either `test_tools = true` or `browser_build = true` installs caller
+tools once before wasm compilation. The browser flag is independent: it does
+not enable tools in other jobs. With `browser_build = true`, the workflow runs
+`mise exec -- just browser-build` after successful wasm builds, including when
+the wasm array is empty. A failed wasm build prevents the recipe. False or
+omitted `browser_build` skips the recipe and its `just`-pin validation, even
+when tools are enabled for wasm compilation.
 
 Provide a `mise.toml` pinning the recipe's tools, including `just`, and a
 `justfile` with `browser-build`. A missing tool configuration, installation
 failure, missing recipe or nonzero recipe result fails CI. The shared workflow
 bootstraps mise 2026.10.2, reusing that exact installed version or verifying the
-published SHA-256 of its official Linux x64 binary before execution. It does
+published SHA-256 of its official runner-host binary before execution. It does
 not override the caller's tool versions; the self-test uses just 1.58.0.
 
 The caller owns the browser application, entry, temporary bundles and

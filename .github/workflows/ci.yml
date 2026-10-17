@@ -322,6 +322,7 @@ jobs:
           PYTHON
 
   quality:
+    needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
     if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
@@ -369,6 +370,51 @@ jobs:
           echo "$bin" >> "$GITHUB_PATH"
           { echo RUSTC_WRAPPER=sccache; echo SCCACHE_GHA_ENABLED=true; echo SCCACHE_GHA_VERSION=2; echo CARGO_INCREMENTAL=0; } >> "$GITHUB_ENV"
           PATH="$bin:$PATH" SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION=2 sccache --start-server
+      - name: Mise bootstrap
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: &mise-bootstrap |
+          # https://github.com/jdx/mise/releases/download/v2026.10.2/SHASUMS256.txt
+          version=2026.10.2
+          executable=mise
+          case "$(uname -s):$(uname -m)" in
+            Linux:x86_64) platform=linux-x64 digest=8f5f6660336f572830e33cd9b378d3131e529a0d4c4f0c553776be90a1ba302a ;;
+            Linux:aarch64) platform=linux-arm64 digest=8d230a5a23ac559ea24ec65280867f437000b37473d967a9bb954837592490a8 ;;
+            Darwin:arm64) platform=macos-arm64 digest=66d49acecca413c8b334922584982a4907a10588912829873d6c55d0c6d42612 ;;
+            Darwin:x86_64) platform=macos-x64 digest=1c6b3d4aaeba8d3b8b57e2d06e4b7825a5134b7aa6e97313bd99db6f22bac21f ;;
+            MINGW*:x86_64) platform=windows-x64.exe executable=mise.exe digest=15901d0b8e0cfe76c1c3b7de4194f929244f331ca3fdf183c2e3aa17ba31634c ;;
+            *) echo 'Unsupported mise runner host' >&2; exit 1 ;;
+          esac
+          url=https://github.com/jdx/mise/releases/download/v$version/mise-v$version-$platform
+          installed=$(mise --version 2>/dev/null | cut -d ' ' -f 1) || installed=
+          if [ "$installed" != "$version" ]; then
+            bin=$(mktemp -d "$RUNNER_TEMP/maestro-mise.XXXXXX")
+            curl --fail --location "$url" --output "$bin/$executable"
+            python3 - "$digest" "$bin/$executable" <<'PYTHON'
+          import hashlib
+          import sys
+          with open(sys.argv[2], 'rb') as source:
+              raise SystemExit(hashlib.file_digest(source, 'sha256').hexdigest() != sys.argv[1])
+          PYTHON
+            chmod +x "$bin/$executable"
+            "$bin/$executable" --version | grep "^$version "
+            export PATH="$bin:$PATH"
+            if [ "$executable" = mise.exe ]; then bin=$(cygpath -w "$bin"); fi
+            echo "$bin" >> "$GITHUB_PATH"
+          fi
+      - name: Test tools
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: &caller-tools |
+          if [ ! -f mise.toml ]; then
+            echo 'mise.toml: caller tools require a pinned tool configuration' >&2
+            exit 1
+          fi
+          mise install
+          mise bin-paths | while IFS= read -r bin; do
+            if [ "${OS:-}" = Windows_NT ]; then bin=$(cygpath -w "$bin"); fi
+            echo "$bin" >> "$GITHUB_PATH"
+          done
       - name: Format
         run: cargo fmt --all --check
       - name: Lint
@@ -381,6 +427,7 @@ jobs:
           sccache --show-stats
 
   docs:
+    needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
     if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
@@ -409,6 +456,14 @@ jobs:
       - name: Compile cache
         timeout-minutes: 10
         run: *sccache-install
+      - name: Mise bootstrap
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *mise-bootstrap
+      - name: Test tools
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *caller-tools
       - name: Docs
         env:
           RUSTDOCFLAGS: -D warnings -D missing_docs
@@ -532,27 +587,11 @@ jobs:
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
-        run: &mise-bootstrap |
-          # https://github.com/jdx/mise/releases/download/v2026.10.2/SHASUMS256.txt
-          version=2026.10.2
-          url=https://github.com/jdx/mise/releases/download/v2026.10.2/mise-v2026.10.2-linux-x64
-          digest=8f5f6660336f572830e33cd9b378d3131e529a0d4c4f0c553776be90a1ba302a
-          installed=$(mise --version 2>/dev/null | cut -d ' ' -f 1) || installed=
-          if [ "$installed" != "$version" ]; then
-            bin=$(mktemp -d "$RUNNER_TEMP/maestro-mise.XXXXXX")
-            curl --fail --location "$url" --output "$bin/mise"
-            printf '%s  %s\n' "$digest" "$bin/mise" | sha256sum --check --status
-            chmod +x "$bin/mise"
-            export PATH="$bin:$PATH"
-            echo "$bin" >> "$GITHUB_PATH"
-          fi
+        run: *mise-bootstrap
       - name: Test tools
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
-        run: |
-          test -f mise.toml
-          mise install
-          mise bin-paths >> "$GITHUB_PATH"
+        run: *caller-tools
       - name: Reserved ports
         if: needs.declaration.outputs.reserved_ports != ''
         env:
@@ -1031,6 +1070,14 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 10
         run: *sccache-install
+      - name: Mise bootstrap
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *mise-bootstrap
+      - name: Test tools
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *caller-tools
       - name: Check target
         env:
           TARGET: ${{ matrix.target }}
@@ -1070,6 +1117,25 @@ jobs:
       - name: Compile cache
         timeout-minutes: 10
         run: *sccache-install
+      - name: Browser tool pin
+        if: needs.declaration.outputs.browser_build == 'true'
+        run: |
+          test -f mise.toml
+          python3 - <<'PYTHON'
+          import tomllib
+          with open('mise.toml', 'rb') as source:
+              config = tomllib.load(source)
+          if 'just' not in config.get('tools', {}):
+              raise SystemExit('mise.toml: tools.just must select the caller browser tool')
+          PYTHON
+      - name: Browser mise bootstrap
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true' || needs.declaration.outputs.browser_build == 'true'
+        run: *mise-bootstrap
+      - name: Browser tools
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true' || needs.declaration.outputs.browser_build == 'true'
+        run: *caller-tools
       - name: Build wasm crates
         env:
           WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}
@@ -1084,23 +1150,6 @@ jobs:
           for crate in crates:
               subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
           PYTHON
-      - name: Browser mise bootstrap
-        timeout-minutes: 10
-        if: needs.declaration.outputs.browser_build == 'true'
-        run: *mise-bootstrap
-      - name: Browser tools
-        timeout-minutes: 10
-        if: needs.declaration.outputs.browser_build == 'true'
-        run: |
-          test -f mise.toml
-          python3 - <<'PYTHON'
-          import tomllib
-          with open('mise.toml', 'rb') as source:
-              config = tomllib.load(source)
-          if 'just' not in config.get('tools', {}):
-              raise SystemExit('mise.toml: tools.just must select the caller browser tool')
-          PYTHON
-          mise install
       - name: Browser recipe
         if: needs.declaration.outputs.browser_build == 'true'
         run: |

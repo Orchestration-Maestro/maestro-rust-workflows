@@ -59,7 +59,7 @@ The organization rules run `.github/workflows/ci.yml` for repositories with
 `stack=rust`. Consumers need only standard Rust files: no workflow to copy,
 no required settings file and no workflow inputs. The optional
 [caller declaration](docs/caller-checks.md) enables isolated tests, real search
-tools, caller-pinned test tools, reserved test ports, listed wasm builds, native foreign-target
+tools, caller-pinned build and test tools, reserved test ports, listed wasm builds, native foreign-target
 checks, [additional locked manifests](docs/caller-checks.md#additional-locked-manifests)
 for independent workspace dependencies, and a pinned browser recipe. A repository's `rust-toolchain.toml`
 selects its toolchain through rustup.
@@ -110,8 +110,9 @@ tracked source is caught.
 
 The configured `fixtures/declared` caller also passes all declared checks.
 Workflow-body probes cover declarations, isolation, real tools, wasm and
-browser failures and pinned tooling. A developer-tool fixture proves isolated
-tests can spawn caller-pinned `just` and `prek` only when opted in. Native
+browser failures and pinned tooling. A developer-tool fixture proves build-script
+tool availability across compiling jobs. Isolated tests spawn caller-pinned
+`just` and `prek` only when opted in. Native
 runner proofs detect deliberate Windows/macOS-only failures. These feed the same required results.
 
 The final checks are `Required repository quality` and
