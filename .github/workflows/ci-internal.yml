@@ -1722,7 +1722,7 @@ jobs:
                              'printf "#!/bin/sh\\ntouch checksum-bypass-marker\\n" > "$2"\n')
                   previous = set(directory.glob('maestro-mise.*/*'))
                   result = execute('Mise bootstrap', directory, wrong)
-                  assert result.returncode != 0
+                  assert result.returncode != 0, result.stdout + result.stderr
                   downloads = set(directory.glob('maestro-mise.*/*')) - previous
                   assert len(downloads) == 1 and next(iter(downloads)).read_bytes() == b'#!/bin/sh\ntouch checksum-bypass-marker\n'
                   assert not (directory / 'checksum-bypass-marker').exists()
