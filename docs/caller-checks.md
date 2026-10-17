@@ -109,7 +109,16 @@ component distribution, not a caller-provided executable.
 
 - cargo-deny checks licenses, bans, sources and advisories across the workspace
   with all features. Advisories and yanked crates without declared exceptions fail. Registries
-  other than crates.io and undeclared git sources fail. The license allowlist is
+  other than crates.io and undeclared git sources fail. Licenses, bans and sources run on
+  every event. A pull request or merge group checks advisories only when it changes
+  `Cargo.lock` or `.github/ci.toml`; otherwise the step prints that advisories were not
+  checked. Pushes and other events always check them.
+- The scheduled advisory scan (`.github/workflows/advisories.yml`) runs this workflow in
+  advisory-scan mode against Maestro's `main` every hour and on manual dispatch: only the
+  declaration and the advisory check run, with the declared exceptions. Each undeclared
+  advisory or yanked crate opens one issue in that repository, titled with its identifier,
+  unless an open issue already starts with that identifier; the run fails while any remains.
+  Pull requests that change the workflow run the scan without opening issues. The license allowlist is
   MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
   Apache-2.0 WITH LLVM-exception, Unicode-DFS-2016, Unicode-3.0, CC0-1.0,
   CDLA-Permissive-2.0, MPL-2.0 and MIT-0.

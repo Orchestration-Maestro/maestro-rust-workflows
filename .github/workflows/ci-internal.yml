@@ -443,6 +443,69 @@ jobs:
                   assert result.returncode != 0 and 'advisory_exceptions' in result.stdout + result.stderr, result.stdout + result.stderr
               print('PASS advisory_exception_rejects_non_array_or_record', flush=True)
 
+          def advisories_follow_dependency_changes(env, temporary):
+              import shutil
+              advisory = pathlib.Path(temporary) / 'gated-advisory'
+              shutil.copytree(root / 'fixtures/advisory-exceptions', advisory)
+              result = execute('Embedded check defaults', advisory, env | {'QUALITY_CONFIG': '{}'})
+              assert result.returncode == 0, result.stdout + result.stderr
+              result = execute('Licenses and dependencies', advisory, env | {'CHECK_ADVISORIES': 'false'})
+              assert result.returncode == 0 and 'advisories: not checked' in result.stdout, result.stdout + result.stderr
+              for value in ['true', '']:
+                  result = execute('Licenses and dependencies', advisory, env | {'CHECK_ADVISORIES': value})
+                  assert result.returncode != 0 and 'RUSTSEC-2025-0141' in result.stdout + result.stderr, result.stdout + result.stderr
+              result = execute('Licenses and dependencies', root / 'fixtures/disallowed-license', env | {'CHECK_ADVISORIES': 'false'})
+              assert result.returncode != 0 and 'error[rejected]' in result.stdout + result.stderr, result.stdout + result.stderr
+              print('PASS advisories_follow_dependency_changes: unchanged lockfile skips only advisories', flush=True)
+              def scan(directory, config):
+                  result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': json.dumps(config)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  output = pathlib.Path(temporary) / 'scan-output'
+                  output.write_text('', encoding='utf-8')
+                  result = execute('Undeclared advisories', directory, env | {'GITHUB_OUTPUT': str(output)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  return json.loads(output.read_text(encoding='utf-8').removeprefix('findings='))
+              assert scan(advisory, {}) == [{'id': 'RUSTSEC-2025-0141', 'title': 'Bincode is unmaintained', 'crates': ['bincode 1.3.3']}]
+              entry = {'id': 'RUSTSEC-2025-0141', 'package': 'bincode', 'version': '1.3.3', 'reason': 'reviewed'}
+              assert scan(advisory, {'advisory_exceptions': [entry]}) == []
+              yanked = pathlib.Path(temporary) / 'scanned-yanks'
+              shutil.copytree(root / 'fixtures/yanked-crates', yanked, ignore=shutil.ignore_patterns('target'))
+              assert [finding['id'] for finding in scan(yanked, {})] == ['yanked once_cell 0.0.1', 'yanked once_cell 0.0.2']
+              print('PASS advisory_scan_reports_undeclared_findings_only', flush=True)
+
+          def advisory_issues_open_once(temporary):
+              source = pathlib.Path('.github/workflows/advisories.yml').read_text(encoding='utf-8')
+              step = next(s for s in source.split('      - name: ')[1:] if s.splitlines()[0] == 'Open advisory issues')
+              code = textwrap.dedent(re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE).group(1))
+              fake = pathlib.Path(temporary) / 'fake-gh'
+              fake.mkdir()
+              calls = fake / 'calls'
+              (fake / 'gh').write_text('#!/usr/bin/env python3\nimport json, os, sys\n'
+                                       'open(os.environ["CALLS"], "a").write(json.dumps(sys.argv[1:]) + "\\n")\n'
+                                       'print(os.environ["OPEN"] if sys.argv[1:3] == ["issue", "list"] else "https://example.invalid/1")\n', encoding='utf-8')
+              (fake / 'gh').chmod(0o755)
+              findings = [{'id': 'RUSTSEC-2025-0141', 'title': 'Bincode is unmaintained', 'crates': ['bincode 1.3.3']},
+                          {'id': 'yanked once_cell 0.0.1', 'title': 'detected yanked crate', 'crates': ['once_cell 0.0.1']}]
+              def report(scan='success', found=findings, dry='false'):
+                  calls.write_text('', encoding='utf-8')
+                  result = subprocess.run(['python3', '-c', code], capture_output=True, text=True, env=os.environ | {
+                      'PATH': f"{fake}:{os.environ['PATH']}", 'CALLS': str(calls), 'SCAN': scan, 'FINDINGS': json.dumps(found),
+                      'DRY_RUN': dry, 'RUN_URL': 'https://example.invalid/run', 'REPOSITORY': 'owner/repo', 'GH_TOKEN': 'token',
+                      'OPEN': json.dumps([{'title': 'RUSTSEC-2025-0141 on main: bincode 1.3.3'}])})
+                  return result, [json.loads(line) for line in calls.read_text(encoding='utf-8').splitlines()]
+              result, made = report()
+              assert result.returncode != 0 and '2 undeclared advisories on main' in result.stderr, result.stdout + result.stderr
+              created = [call for call in made if call[:2] == ['issue', 'create']]
+              assert len(created) == 1 and created[0][created[0].index('--title') + 1] == 'yanked once_cell 0.0.1 on main: once_cell 0.0.1', made
+              assert ['--label', 'bug', '--label', 'needs-triage'] == created[0][-6:-2] and created[0][-2:] == ['-R', 'owner/repo'], made
+              result, made = report(found=[])
+              assert result.returncode == 0 and made == [], result.stdout + result.stderr
+              result, made = report(scan='failure')
+              assert result.returncode != 0 and 'advisory scan failure' in result.stderr and made == [], result.stdout + result.stderr
+              result, made = report(dry='true')
+              assert result.returncode != 0 and made == [] and result.stdout.count('dry run: ') == 2, result.stdout + result.stderr
+              print('PASS advisory_issues_open_once', flush=True)
+
           def privileged_trigger_workflows_ignore_only_declared_audit(env, temporary):
               import shutil
               directory = pathlib.Path(temporary) / 'privileged-trigger'
@@ -548,7 +611,8 @@ jobs:
                                      '      - ci-internal.yml:15:11\n'
                                      '      - ci-internal.yml:22:11\n'
                                      '      - ci-internal.yml:30:11\n'
-                                     '      - ci-proof.yml:13:11\n', encoding="utf-8")
+                                     '      - ci-proof.yml:13:11\n'
+                                     '      - advisories.yml:16:11\n', encoding="utf-8")
               for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
                            [env['TOOLS'] + '/actionlint', '-config-file', env['CHECK_DEFAULTS'] + '/actionlint.yaml', '-shellcheck=', '-pyflakes=',
                             *map(str, (root / '.github/workflows').glob('*.yml'))]]:
@@ -560,6 +624,8 @@ jobs:
               yanked_exceptions_reject_malformed_entries(env, temporary)
               yanked_exceptions_keep_other_findings(env, temporary)
               advisory_exception_suppresses_named_advisory(env, temporary)
+              advisories_follow_dependency_changes(env, temporary)
+              advisory_issues_open_once(temporary)
               privileged_trigger_workflows_ignore_only_declared_audit(env, temporary)
               result = execute('Embedded check defaults', root, env)
               assert result.returncode == 0, result.stdout + result.stderr
@@ -1570,12 +1636,18 @@ jobs:
                   assert json.loads(values['packages']) == ['a', 'b', 'c'] and values['coverage'] == 'false'
                   assert json.loads(select('merge_group')['packages']) == ['a', 'b', 'c', 'd']
                   assert select('push')['coverage'] == 'true'
+                  # Advisories follow the lockfile and declaration only on pull requests and merge groups.
+                  assert [select(event)['check_advisories'] for event in ['pull_request', 'merge_group', 'push', 'schedule']] == ['false', 'false', 'true', 'true']
+                  output = directory / '.git/no-base'
+                  result = execute('Select test packages', directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
+                  assert result.returncode == 0 and 'check_advisories=true' in output.read_text(encoding='utf-8'), result.stdout + result.stderr
                   git('reset', '--hard', base)
                   (directory / 'a/Cargo.toml').write_text((directory / 'a/Cargo.toml').read_text(encoding='utf-8').replace('0.1.0', '0.2.0'), encoding='utf-8')
                   subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
                   git('add', '.')
                   git('commit', '-qm', 'dependency identity')
                   assert json.loads(select()['packages']) == ['a', 'b', 'c']
+                  assert select()['check_advisories'] == select('merge_group')['check_advisories'] == 'true'
                   git('reset', '--hard', base)
                   (directory / '.github').mkdir()
                   (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\nspelling_words=["word"]\n', encoding='utf-8')
@@ -1586,6 +1658,7 @@ jobs:
                   git('add', '.')
                   git('commit', '-qm', 'non-test settings')
                   assert json.loads(select()['packages']) == []
+                  assert select()['check_advisories'] == 'true'
                   for entries in [['b/Cargo.toml'], ['c/Cargo.toml'], ['b/Cargo.toml', 'a/Cargo.toml'],
                                   ['a/Cargo.toml', 'b/Cargo.toml'], ['a/Cargo.toml', 'b/Cargo.toml', 'a/Cargo.toml'], []]:
                       base = git('rev-parse', 'HEAD')

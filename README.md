@@ -65,7 +65,10 @@ for independent workspace dependencies, and a pinned browser recipe. A repositor
 selects its toolchain through rustup.
 
 Every caller also gets the dependency and source checks: cargo-deny
-(licenses, bans, sources and advisories), cargo-machete (unused dependencies; a package named by `hakari-package` in
+(licenses, bans, sources and advisories; pull requests and merge groups check
+advisories only when they change `Cargo.lock` or `.github/ci.toml`, while an
+[hourly advisory scan](docs/caller-checks.md#required-dependency-source-and-coverage-checks)
+of `main` opens an issue per new finding), cargo-machete (unused dependencies; a package named by `hakari-package` in
 `.config/hakari.toml` is not checked and its member dependency edge is accepted),
 cargo-hakari (`cargo hakari verify` when `.config/hakari.toml` exists),
 typos (spelling), gitleaks (checked-out source, before build-cache restore),

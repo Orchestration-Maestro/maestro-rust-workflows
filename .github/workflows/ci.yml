@@ -31,6 +31,14 @@ on:
         description: Stable key distinguishing multiple calls in one workflow
         type: string
         default: ''
+      advisory-scan:
+        description: Run only the advisory scan of the checked-out caller (scheduled advisory workflow)
+        type: boolean
+        default: false
+    outputs:
+      advisories:
+        description: Undeclared advisories from the advisory scan, as a JSON list
+        value: ${{ jobs.advisories.outputs.findings }}
 
 concurrency:
   group: rust-ci-${{ github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
@@ -54,6 +62,7 @@ jobs:
     outputs:
       enabled: ${{ steps.config.outputs.enabled }}
       packages: ${{ steps.selection.outputs.packages }}
+      check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       targets: ${{ steps.config.outputs.targets }}
@@ -226,7 +235,7 @@ jobs:
         id: selection
         env:
           TEST_EVENT: ${{ github.repository_id == '1404598722' && inputs.test-event || github.event_name }}
-          BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           python3 - <<'PYTHON'
           import json
@@ -301,15 +310,20 @@ jobs:
                   selected.update(reverse)
           names = sorted(packages[p]['name'] for p in selected)
           print(f'Selected test packages ({event}): {names}')
+          # A change can introduce an advisory only through the lockfile or the declared exceptions.
+          check_advisories = event not in ('pull_request', 'merge_group') or not base or subprocess.run(
+              ['git', 'diff', '--quiet', base, 'HEAD', '--', 'Cargo.lock', '.github/ci.toml']).returncode != 0
+          print(f'Advisory check ({event}): {"required" if check_advisories else "skipped, Cargo.lock and .github/ci.toml unchanged"}')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('packages=' + json.dumps(names) + '\n')
               output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
+              output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
 
   quality:
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
+    if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -367,7 +381,7 @@ jobs:
   docs:
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
+    if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -403,7 +417,7 @@ jobs:
   tests:
     needs: declaration
     name: Test shard (${{ matrix.shard }}/4)
-    if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
+    if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -619,7 +633,7 @@ jobs:
   tests-result:
     name: Tests (ubuntu-latest)
     needs: [tests, declaration]
-    if: ${{ always() && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ always() && !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     steps:
       - name: All test shards passed
@@ -676,13 +690,14 @@ jobs:
   checks:
     name: Dependency, source and coverage checks
     needs: declaration
-    if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
+    if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ${{ inputs.working-directory || '.' }}
     env:
       QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
+      CHECK_ADVISORIES: ${{ needs.declaration.outputs.check_advisories }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -701,7 +716,7 @@ jobs:
           rustup component add llvm-tools-preview
       - name: Check tools
         timeout-minutes: 10
-        run: |
+        run: &check-tools |
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-check-tools.XXXXXX")
           while read -r url digest binary; do
             archive=$(mktemp)
@@ -724,7 +739,7 @@ jobs:
           TOOLS
           echo "TOOLS=$bin" >> "$GITHUB_ENV"
       - name: Embedded check defaults
-        run: |
+        run: &check-defaults |
           python3 - <<'PYTHON'
           import json
           import os
@@ -805,7 +820,13 @@ jobs:
           "$TOOLS/gitleaks" dir --config "$CHECK_DEFAULTS/gitleaks.toml" --gitleaks-ignore-path "$CHECK_DEFAULTS/gitleaks.ignore" --ignore-gitleaks-allow --redact .
       - name: Licenses and dependencies
         run: |
-          "$TOOLS/cargo-deny" deny --workspace --locked --all-features --config "$CHECK_DEFAULTS/deny.toml" check licenses bans sources advisories
+          checks=(licenses bans sources)
+          if [ "${CHECK_ADVISORIES:-true}" = false ]; then
+            echo 'advisories: not checked; Cargo.lock and .github/ci.toml are unchanged, and the scheduled advisory scan watches main'
+          else
+            checks+=(advisories)
+          fi
+          "$TOOLS/cargo-deny" deny --workspace --locked --all-features --config "$CHECK_DEFAULTS/deny.toml" check "${checks[@]}"
       - name: Unused dependencies
         run: |
           python3 - <<'PYTHON'
@@ -908,10 +929,69 @@ jobs:
         if: always() && needs.declaration.outputs.enabled != 'true'
         run: *sccache-stats
 
+  advisories:
+    name: Advisory scan
+    needs: declaration
+    if: ${{ inputs.advisory-scan }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory || '.' }}
+    env:
+      QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
+    outputs:
+      findings: ${{ steps.scan.outputs.findings }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Toolchain
+        run: rustup show
+      - name: Check tools
+        timeout-minutes: 10
+        run: *check-tools
+      - name: Embedded check defaults
+        run: *check-defaults
+      - name: Undeclared advisories
+        id: scan
+        run: |
+          set +e
+          "$TOOLS/cargo-deny" --format json --workspace --locked --all-features --config "$CHECK_DEFAULTS/deny.toml" check advisories 2> "$RUNNER_TEMP/advisories.jsonl"
+          status=$?
+          set -e
+          STATUS=$status python3 - <<'PYTHON'
+          import json
+          import os
+          findings = {}
+          for line in open(os.path.join(os.environ['RUNNER_TEMP'], 'advisories.jsonl'), encoding='utf-8'):
+              fields = json.loads(line).get('fields', {}) if line.startswith('{') else {}
+              if fields.get('severity') != 'error':
+                  continue
+              crates = sorted({f"{graph['Krate']['name']} {graph['Krate']['version']}" for graph in fields.get('graphs', [])})
+              advisory = fields.get('advisory')
+              # Yanked crates carry no advisory; their code and crates identify them.
+              key = advisory['id'] if advisory else f"{fields.get('code')} {', '.join(crates)}"
+              finding = findings.setdefault(key, {'id': key, 'title': advisory.get('title', '') if advisory else fields.get('message', ''), 'crates': set()})
+              finding['crates'].update(crates)
+          if os.environ['STATUS'] != '0' and not findings:
+              raise SystemExit(f"cargo-deny exited {os.environ['STATUS']} without an advisory finding")
+          result = [dict(finding, crates=sorted(finding['crates'])) for finding in sorted(findings.values(), key=lambda finding: finding['id'])]
+          for finding in result:
+              print(f"{finding['id']}: {', '.join(finding['crates'])}: {finding['title']}")
+          print(f'{len(result)} undeclared advisories')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('findings=' + json.dumps(result) + '\n')
+          PYTHON
+
   targets:
     name: Check (${{ matrix.target }})
     needs: declaration
-    if: needs.declaration.outputs.targets != '[]'
+    if: ${{ !inputs.advisory-scan && needs.declaration.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
       matrix:
@@ -956,7 +1036,7 @@ jobs:
   browser:
     name: Wasm and browser build
     needs: declaration
-    if: needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true'
+    if: ${{ !inputs.advisory-scan && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
