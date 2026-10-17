@@ -24,7 +24,7 @@
       }
     },
     "test_tools": {
-      "description": "Install caller mise.toml tools and expose their binaries to isolated tests.",
+      "description": "Install caller mise.toml tools before every enabled caller-compiling operation, including isolated tests.",
       "type": "boolean",
       "default": false
     },
