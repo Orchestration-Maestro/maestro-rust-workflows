@@ -52,8 +52,7 @@ jobs:
           with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
               output.write(f'PROOF_STEPS={directory}\n')
       - name: Free instrumented build space
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        run: bash -e -o pipefail "$PROOF_STEPS/Free instrumented build space"
       - name: Toolchain
         working-directory: maestro
         run: |

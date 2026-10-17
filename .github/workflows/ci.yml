@@ -427,7 +427,7 @@ jobs:
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
         if: needs.declaration.outputs.enabled == 'true'
-        run: |
+        run: &free-build-space |
           # The deletion overlaps the toolchain, tools and compilation; the build needs the space minutes later.
           sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc >/dev/null 2>&1 &
       - name: Toolchain
@@ -694,9 +694,7 @@ jobs:
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
         if: needs.declaration.outputs.enabled != 'true'
-        run: |
-          # The deletion overlaps the toolchain, tools and compilation; the build needs the space minutes later.
-          sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc >/dev/null 2>&1 &
+        run: *free-build-space
       - name: Toolchain
         run: |
           rustup show
