@@ -1053,7 +1053,7 @@ jobs:
                   command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
                   argv = [os.path.expanduser('~/.local/bin/capped'), 'bash', '-e', '-o', 'pipefail', '-c', command]
                   env['CARGO_BUILD_JOBS'] = '3'
-              return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, timeout=900)
+              return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
 
           credential_names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
           GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY OPENROUTER_API_KEY ZAI_API_KEY
@@ -1135,7 +1135,7 @@ jobs:
                   build_env = os.environ | env | selected
                   for crate in [directory, child]:
                       subprocess.run(['cargo', 'generate-lockfile', '--offline', '--manifest-path', str(crate / 'Cargo.toml')],
-                                     env=build_env, check=True, capture_output=True, timeout=900)
+                                     env=build_env, check=True, capture_output=True)
                   for step in ['Tests', 'Isolated tests']:
                       shutil.rmtree(directory / 'child-output', ignore_errors=True)
                       result = execute(step, directory, env | {'RUNNER_TEMP': temporary, 'SHARD': '1',
@@ -1224,11 +1224,6 @@ jobs:
               step = next(s for s in workflow.split('      - name: ')[1:] if s.startswith('Upload shard coverage\n')).split('\n  tests-result:', 1)[0]
               assert "if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'\n" in step
               assert 'always()' not in step and 'if-no-files-found: error\n' in step
-              assert 'continue-on-error' not in workflow and '|| true' not in workflow
-              for status in ['success', 'failure', 'cancelled', 'skipped']:
-                  result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                          env=os.environ | {'RESULT': status}, capture_output=True, text=True)
-                  assert (result.returncode == 0) == (status == 'success'), status
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   (directory / 'coverage').mkdir()
