@@ -14,7 +14,7 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 7c0157ec7f57b86df19d1cf5f091b8714ab041e0
+      checkout-ref: 98b41a9149ebf1d5cfffdc343194cfc0555467d9
       concurrency-key: maestro-proof
       test-event: merge_group
 
@@ -32,7 +32,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Orchestration-Maestro/maestro
-          ref: 7c0157ec7f57b86df19d1cf5f091b8714ab041e0
+          ref: 98b41a9149ebf1d5cfffdc343194cfc0555467d9
           path: maestro
       - name: Extract workflow steps
         shell: python
