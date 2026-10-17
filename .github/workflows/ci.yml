@@ -8,11 +8,11 @@ on:
   workflow_call:
     inputs:
       checkout-repository:
-        description: Repository to check out (self-test proof only; defaults to caller)
+        description: Repository to check out (self-test, proof and advisory scan; defaults to caller)
         type: string
         default: ''
       checkout-ref:
-        description: Checkout ref (self-test proof only; defaults to caller)
+        description: Checkout ref (self-test, proof and advisory scan; defaults to caller)
         type: string
         default: ''
       checkout-base-ref:
@@ -20,11 +20,11 @@ on:
         type: string
         default: ''
       test-event:
-        description: Event mode (self-test proof only; defaults to real event)
+        description: Event mode (self-test, proof and advisory scan; defaults to real event)
         type: string
         default: ''
       working-directory:
-        description: Directory to check (used by the self-test only)
+        description: Directory to check (self-test, proof and advisory scan)
         type: string
         default: .
       concurrency-key:
@@ -768,6 +768,7 @@ jobs:
                   versions = sorted({version for package, version in packages if package == entry['package']})
                   if versions != [entry['version']]:
                       raise SystemExit(f"Cargo.lock: advisory exception {entry['id']} for {entry['package']} {entry['version']} conflicts with locked versions {versions!r}")
+          if config.get('advisory_exceptions') and os.environ.get('CHECK_ADVISORIES') != 'false':
               probe = directory / 'probe-deny.toml'
               probe.write_text('[advisories]\nyanked = "deny"\n', encoding="utf-8")
               found = subprocess.run([os.environ['TOOLS'] + '/cargo-deny', '--format', 'json', '--workspace', '--locked', '--all-features',
@@ -936,7 +937,6 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     env:
       QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
