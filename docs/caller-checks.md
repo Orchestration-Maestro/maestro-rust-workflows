@@ -11,8 +11,11 @@ restricted to this workflow repository; they default to the real PR base and eve
 Both coverage proof jobs use one immutable Maestro snapshot for comparable runs.
 Advance both checkout references together to the smallest main commit that resolves
 the reason for the move, after checking its locked dependencies. For example,
-`85dc98f2c993437238168528dc081b828048a3f1` updates wasmtime and wasmtime-wasi to
-49.0.3 to resolve the advisories without taking unrelated later changes.
+`98b41a9149ebf1d5cfffdc343194cfc0555467d9` locks the updated ZIP closure
+(resolving the archive-extraction advisories), isolates the agent tests' synthetic
+model fixtures, serializes the output-routing child launches that one-process coverage
+runs share, and gives each new agent its own default model so one-process test runs
+no longer leak one test's model edits into another.
 Changes to either `.github/workflows/ci.yml` or `.github/workflows/ci-proof.yml`
 schedule the proof; check its results before landing.
 
