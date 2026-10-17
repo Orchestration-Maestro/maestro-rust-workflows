@@ -115,7 +115,7 @@
       "default": []
     },
     "advisory_exceptions": {
-      "description": "Ignore a named advisory while Cargo.lock holds the exact package version and no other version of that package, and cargo-deny reports that advisory for exactly that package version.",
+      "description": "Ignore a named advisory only when every package/version pair cargo-deny reports for it has its own exact, reasoned entry. Each entry must remain locked and, wherever advisories are checked, reported for that ID.",
       "type": "array",
       "default": [],
       "items": {
