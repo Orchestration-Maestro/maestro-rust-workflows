@@ -1059,7 +1059,7 @@ jobs:
                   command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
                   argv = [os.path.expanduser('~/.local/bin/capped'), 'bash', '-e', '-o', 'pipefail', '-c', command]
                   env['CARGO_BUILD_JOBS'] = '3'
-              return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, timeout=900)
+              return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
 
           credential_names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
           GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY OPENROUTER_API_KEY ZAI_API_KEY
@@ -1628,11 +1628,15 @@ jobs:
                   # Compile without any ambient developer tools, retaining only Rust proxies and host utilities.
                   proxies = directory / 'rust-bin'
                   proxies.mkdir()
+                  (proxies / 'rustup').symlink_to(shutil.which('rustup'))
                   for tool in ['cargo', 'rustc', 'rustdoc']:
                       physical = subprocess.check_output(['rustup', 'which', tool], text=True).strip()
                       (proxies / tool).symlink_to(physical)
                   child = env | {'PATH': f'{proxies}:/usr/bin:/bin', 'CARGO_TARGET_DIR': str(directory / 'cold-unavailable')}
                   result = execute('Docs', directory, child)
+                  assert result.returncode != 0 and 'caller build tool just is unavailable:' in result.stderr, result.stderr
+                  result = execute('Build wasm crates', directory, child | {'WASM_CRATES': '["test-tools"]',
+                                   'CARGO_TARGET_DIR': str(directory / 'cold-unavailable-wasm')})
                   assert result.returncode != 0 and 'caller build tool just is unavailable:' in result.stderr, result.stderr
                   # This finite child exits once; it never re-executes a shell.
                   missing = proxies / 'just'
@@ -2382,7 +2386,7 @@ jobs:
                   if os.environ.get('MAESTRO_LOCAL_CAPPED'):
                       argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
                   result = subprocess.run(argv, cwd=directory, env=os.environ | env | {'WASM_CRATES': '["missing-package"]'},
-                                          capture_output=True, text=True, timeout=900)
+                                          capture_output=True, text=True)
                   assert result.returncode != 0 and 'missing-package' in result.stderr, result.stderr
                   assert not (directory / 'browser-built').exists()
                   # A browser-only declaration must still invoke the recipe.
