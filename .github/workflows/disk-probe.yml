@@ -1,0 +1,47 @@
+name: Disk probe (temporary, night agent)
+
+on:
+  push:
+    branches: [chore/night-disk-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Instrumented build disk curve
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Maestro
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: Orchestration-Maestro/maestro
+          ref: main
+      - name: Probe
+        run: |
+          df -BM --output=target,size,used,avail / /mnt 2>/dev/null || df -BM /
+          for d in /usr/share/dotnet /usr/local/lib/android /opt/ghc; do echo "$d $(sudo du -sm "$d" 2>/dev/null | cut -f1) MB"; done
+          start=$(date +%s)
+          (while :; do echo "$(( $(date +%s) - start )) $(df -BM --output=avail / | tail -1 | tr -dc 0-9)"; sleep 5; done) > "$RUNNER_TEMP/df.log" &
+          sampler=$!
+          (sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc; echo "rm done at $(( $(date +%s) - start )) s" > "$RUNNER_TEMP/rm.log") &
+          rustup show >/dev/null
+          rustup component add llvm-tools-preview >/dev/null
+          bin=$(mktemp -d)
+          curl -sfL https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz -o "$bin/a.tgz"
+          echo "3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522  $bin/a.tgz" | sha256sum -c
+          tar -xzf "$bin/a.tgz" -C "$bin" cargo-llvm-cov
+          curl -sfL https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-unknown-linux-musl.tar.gz -o "$bin/n.tgz"
+          echo "bf92cb81450872d960ffa13857a83084d557ec0cdc141663d263bb23ef756f97  $bin/n.tgz" | sha256sum -c
+          tar -xzf "$bin/n.tgz" -C "$bin" cargo-nextest
+          export PATH="$bin:$PATH"
+          echo "build starts at $(( $(date +%s) - start )) s"
+          cargo llvm-cov nextest --workspace --locked --no-report --partition count:1/4 --no-tests pass > "$RUNNER_TEMP/build.log" 2>&1 || echo "nextest exit $? (ignored)"
+          echo "build+run done at $(( $(date +%s) - start )) s"
+          grep -E 'Finished|Starting' "$RUNNER_TEMP/build.log" | head -3
+          kill "$sampler"
+          cat "$RUNNER_TEMP/rm.log"
+          echo "min free MB: $(sort -k2 -n "$RUNNER_TEMP/df.log" | head -1)"
+          awk 'NR % 6 == 1' "$RUNNER_TEMP/df.log"
+          du -sm target 2>/dev/null
