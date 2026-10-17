@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.11.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.10.0...v0.11.0) (2026-10-17)
+
+
+### Features
+
+* **ci:** gate advisories on dependency changes and scan main ([#75](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/75)) ([9832a4a](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/9832a4a1f8aacc51b42e7fc5008251fed24fb385))
+
+
+### Bug Fixes
+
+* advance the coverage proof snapshot past the zip advisories ([#79](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/79)) ([a7c00bc](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/a7c00bc4848f7a9b949c2abbc760d8af035f1de7))
+* **ci:** preserve test toolchains and shard failures ([#85](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/85)) ([28fd419](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/28fd4195ef75c0e4ffc15ef63535865078e42f98))
+
+
+### Performance
+
+* **ci:** free instrumented build space in the background ([#77](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/77)) ([1c55da2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/1c55da26302b04ccc5736567894d421e524708e1)), closes [#76](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/76)
+
 ## [0.10.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.9.0...v0.10.0) (2026-10-16)
 
 
