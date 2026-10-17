@@ -19,6 +19,7 @@ jobs:
       checkout-repository: Orchestration-Maestro/maestro
       checkout-ref: main
       concurrency-key: advisories
+      test-event: schedule
       advisory-scan: true
 
   report:
