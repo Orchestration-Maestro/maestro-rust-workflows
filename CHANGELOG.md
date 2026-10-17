@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.11.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.11.0...v0.11.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* accept exact advisory exceptions for multiple versions ([#88](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/88)) ([f597f0c](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/f597f0c684520f3c0642fa0c11f0f324425d2b2e))
+* **ci:** provide caller tools before native compilation ([#89](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/89)) ([59ed124](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/59ed124385020db98e2760d72de00e23b3bb040f))
+
 ## [0.11.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.10.0...v0.11.0) (2026-10-17)
 
 
