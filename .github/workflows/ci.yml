@@ -58,6 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     outputs:
       enabled: ${{ steps.config.outputs.enabled }}
@@ -327,6 +328,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
       - name: Checkout
@@ -385,6 +387,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
       - name: Checkout
@@ -430,6 +433,7 @@ jobs:
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
     defaults:
       run:
+        shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
       - name: Checkout
@@ -444,9 +448,11 @@ jobs:
         run: &free-build-space |
           # The deletion overlaps the toolchain, tools and compilation; the build needs the space minutes later.
           sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc >/dev/null 2>&1 &
-      - name: Toolchain
+      - name: Test toolchain
         run: |
           rustup show
+          toolchain=$(rustup show active-toolchain)
+          echo "RUSTUP_TOOLCHAIN=${toolchain%% *}" >> "$GITHUB_ENV"
           rustup component add llvm-tools-preview
       - name: Compile cache credentials
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -579,7 +585,7 @@ jobs:
           trap 'rm -rf "$isolation"' EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
           run_isolated() {
-          env -i PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" \
+          env -i PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
             HOME="$isolation/home" TMPDIR="$isolation/tmp" TMP="$isolation/tmp" TEMP="$isolation/tmp" \
             XDG_CONFIG_HOME="$isolation/config" XDG_DATA_HOME="$isolation/data" \
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
@@ -695,6 +701,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     env:
       QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
@@ -937,6 +944,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     env:
       QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
@@ -1040,6 +1048,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
+        shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
       - name: Checkout
