@@ -772,10 +772,8 @@ jobs:
               for entry in config['advisory_exceptions']:
                   if (entry['package'], entry['version']) not in packages:
                       raise SystemExit(f"Cargo.lock: stale advisory exception {entry['id']} for {entry['package']} {entry['version']}")
-                  versions = sorted({version for package, version in packages if package == entry['package']})
-                  if versions != [entry['version']]:
-                      raise SystemExit(f"Cargo.lock: advisory exception {entry['id']} for {entry['package']} {entry['version']} conflicts with locked versions {versions!r}")
           if config.get('advisory_exceptions') and os.environ.get('CHECK_ADVISORIES') != 'false':
+              declared = {(entry['id'], entry['package'], entry['version']) for entry in config['advisory_exceptions']}
               probe = directory / 'probe-deny.toml'
               probe.write_text('[advisories]\nyanked = "deny"\n', encoding="utf-8")
               found = subprocess.run([os.environ['TOOLS'] + '/cargo-deny', '--format', 'json', '--workspace', '--locked', '--all-features',
@@ -790,6 +788,11 @@ jobs:
                   if (entry['package'], entry['version']) not in reported.get(entry['id'], set()):
                       actual = ', '.join(f'{name} {version}' for name, version in sorted(reported.get(entry['id'], ()))) or 'no such finding'
                       raise SystemExit(f"Cargo.lock: advisory exception {entry['id']} is not reported for {entry['package']} {entry['version']}: {actual}")
+              missing = {(advisory, package, version) for advisory in {entry['id'] for entry in config['advisory_exceptions']}
+                         for package, version in reported.get(advisory, set())} - declared
+              if missing:
+                  advisory, package, version = sorted(missing)[0]
+                  raise SystemExit(f"Cargo.lock: advisory exception {advisory} is missing for {package} {version}")
           if config.get('advisory_exceptions') or config.get('yanked_crate_exceptions'):
               deny += 'ignore = [\n'
               for entry in config.get('advisory_exceptions', []):

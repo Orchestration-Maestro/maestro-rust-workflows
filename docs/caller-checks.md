@@ -170,6 +170,7 @@ license_exceptions = [
 ]
 advisory_exceptions = [
   { id = "RUSTSEC-2025-0141", package = "bincode", version = "1.3.3", reason = "Packaged syntax and theme dumps; reviewed exception" },
+  { id = "RUSTSEC-2025-0141", package = "bincode", version = "2.0.1", reason = "Protocol encoding; separately reviewed exception" },
 ]
 # Time-boxed; remove when the dependency is upgraded.
 yanked_crate_exceptions = [
@@ -196,13 +197,18 @@ secret detection.
 quality-string rules above. The ID must match `RUSTSEC-YYYY-NNNN`; the version
 must be an exact semantic version, not a range. The package/version pair must
 remain in the caller's `Cargo.lock`; otherwise the required check fails with a
-stale-exception diagnostic naming the advisory, package and version. If another
-version of the same package is also locked, the check rejects the exception and
-names the locked versions. Wherever advisories are checked, the pinned cargo-deny
-first reports the advisories without any ignore; each declared ID must be reported for exactly the
-declared package and version, otherwise the check fails naming the ID and the
-package and version reported, or "no such finding". The shared workflow renders only that ID and reason
-into cargo-deny's advisory ignore list.
+stale-exception diagnostic naming the advisory, package and version. Wherever
+advisories are checked, the pinned cargo-deny first reports the advisories without
+any ignore. Each declared ID must be reported for its exact declared package and
+version; otherwise the check fails naming the ID and the package and version
+reported, or "no such finding". Every package/version pair reported for an ignored
+ID needs its own exact, reasoned entry, including separate entries when multiple
+versions of the same package are affected. Missing entries fail naming the
+advisory, package and version; unaffected locked versions need no exception.
+When advisories are skipped because dependencies are unchanged, the workflow does
+not probe or require reported-pair coverage, but still rejects stale entries.
+The shared workflow renders each declared ID and reason into cargo-deny's advisory
+ignore list.
 Unlisted advisories remain checked wherever advisories are checked, including the
 scheduled scan; yanked crates require their own exceptions below.
 

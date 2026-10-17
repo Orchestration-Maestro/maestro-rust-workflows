@@ -356,20 +356,12 @@ jobs:
               print('PASS advisory_and_yanked_exceptions_coexist', flush=True)
               for key, value in [('package', 'missing-package'), ('version', '1.3.2')]:
                   stale = entry | {key: value}
-                  result = execute('Embedded check defaults', directory, env | {
-                      'QUALITY_CONFIG': json.dumps({'advisory_exceptions': [stale]})})
-                  output = result.stdout + result.stderr
-                  assert result.returncode != 0 and 'stale advisory exception' in output and stale['id'] in output and stale['package'] in output and stale['version'] in output, output
+                  for checked in ['true', 'false']:
+                      result = execute('Embedded check defaults', directory, env | {
+                          'CHECK_ADVISORIES': checked, 'QUALITY_CONFIG': json.dumps({'advisory_exceptions': [stale]})})
+                      assert result.returncode != 0 and result.stderr.splitlines() == [
+                          f"Cargo.lock: stale advisory exception {stale['id']} for {stale['package']} {stale['version']}"], result.stdout + result.stderr
               print('PASS advisory_exception_rejects_stale_package_or_version', flush=True)
-              lock = directory / 'Cargo.lock'
-              original_lock = lock.read_text(encoding='utf-8')
-              lock.write_text(original_lock + '\n[[package]]\nname = "bincode"\nversion = "1.3.2"\n', encoding='utf-8')
-              result = execute('Embedded check defaults', directory, env | {
-                  'QUALITY_CONFIG': json.dumps({'advisory_exceptions': [entry]})})
-              output = result.stdout + result.stderr
-              assert result.returncode != 0 and 'advisory exception' in output and 'bincode' in output and '1.3.2' in output and '1.3.3' in output, output
-              lock.write_text(original_lock, encoding='utf-8')
-              print('PASS advisory_exception_rejects_other_locked_version', flush=True)
               for case, mismatch, expected in [
                   ('other_package', entry | {'package': 'serde', 'version': '1.0.152'}, ['bincode', '1.3.3']),
                   ('no_finding', entry | {'id': 'RUSTSEC-2022-0004'}, ['no such finding'])]:
@@ -443,6 +435,88 @@ jobs:
                   result = execute('Read caller declaration', directory, env | {'GITHUB_OUTPUT': str(output_path)})
                   assert result.returncode != 0 and 'advisory_exceptions' in result.stdout + result.stderr, result.stdout + result.stderr
               print('PASS advisory_exception_rejects_non_array_or_record', flush=True)
+
+          def advisory_exceptions_cover_all_reported_versions(env, temporary):
+              global workflow
+              import shutil
+              directory = pathlib.Path(temporary) / 'dual-advisory-exceptions'
+              shutil.copytree(root / 'fixtures/advisory-exceptions', directory)
+              manifest = directory / 'Cargo.toml'
+              manifest.write_text(manifest.read_text(encoding='utf-8')
+                                  + 'bincode_next = {package="bincode", version="=2.0.1"}\n', encoding='utf-8')
+              command = ['cargo', 'generate-lockfile']
+              if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                  command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+              result = subprocess.run(command, cwd=directory, env=env, capture_output=True, text=True)
+              assert result.returncode == 0, result.stdout + result.stderr
+              entries = [{'id': 'RUSTSEC-2025-0141', 'package': 'bincode', 'version': version,
+                          'reason': 'Reviewed exact version ' + version} for version in ['1.3.3', '2.0.1']]
+              declaration = directory / '.github/ci.toml'
+              declaration.parent.mkdir()
+              output_path = pathlib.Path(temporary) / 'dual-advisory-output'
+              for ordered in [entries, entries[::-1]]:
+                  declaration.write_text('wasm_crates=[]\ncheck_targets=[]\nadvisory_exceptions=[' + ','.join(
+                      '{' + ','.join(key + '=' + json.dumps(value) for key, value in entry.items()) + '}'
+                      for entry in ordered) + ']\n', encoding='utf-8')
+                  output_path.write_text('', encoding='utf-8')
+                  result = execute('Read caller declaration', directory, env | {'GITHUB_OUTPUT': str(output_path)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  values = dict(line.split('=', 1) for line in output_path.read_text(encoding='utf-8').splitlines())
+                  assert json.loads(values['quality_config'])['advisory_exceptions'] == ordered
+                  result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': values['quality_config']})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  generated = tomllib.loads((pathlib.Path(env['CHECK_DEFAULTS']) / 'deny.toml').read_text(encoding='utf-8'))
+                  assert generated['advisories']['ignore'] == [{'id': entry['id'], 'reason': entry['reason']} for entry in ordered]
+                  result = execute('Licenses and dependencies', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+              print('PASS advisory_exceptions_cover_all_reported_versions', flush=True)
+
+              for present, missing in [(entries[0], entries[1]), (entries[1], entries[0])]:
+                  partial = env | {'QUALITY_CONFIG': json.dumps({'advisory_exceptions': [present]})}
+                  for checked in ['true', 'false', 'true']:
+                      generated_path = pathlib.Path(env['CHECK_DEFAULTS']) / 'deny.toml'
+                      generated_path.unlink(missing_ok=True)
+                      (pathlib.Path(env['CHECK_DEFAULTS']) / 'probe-deny.toml').unlink(missing_ok=True)
+                      result = execute('Embedded check defaults', directory, partial | {'CHECK_ADVISORIES': checked})
+                      if checked == 'true':
+                          assert result.returncode != 0, result.stdout + result.stderr
+                          assert result.stderr.splitlines() == [
+                              f"Cargo.lock: advisory exception {missing['id']} is missing for {missing['package']} {missing['version']}"], result.stderr
+                          assert not generated_path.exists()
+                      else:
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          assert not (pathlib.Path(env['CHECK_DEFAULTS']) / 'probe-deny.toml').exists()
+                          result = execute('Licenses and dependencies', directory, env | {'CHECK_ADVISORIES': 'false'})
+                          assert result.returncode == 0 and 'advisories: not checked' in result.stdout, result.stdout + result.stderr
+                      (pathlib.Path(env['CHECK_DEFAULTS']) / 'probe-deny.toml').unlink(missing_ok=True)
+              print('PASS advisory_exceptions_reject_missing_version', flush=True)
+
+              # A private database fixture makes the newer locked version unaffected, without changing the real database.
+              database = pathlib.Path(temporary) / 'selective-advisory-db'
+              cargo_home = pathlib.Path(env.get('CARGO_HOME', pathlib.Path.home() / '.cargo'))
+              shutil.copytree(cargo_home / 'advisory-dbs', database)
+              advisory = next(database.glob('*/crates/bincode/RUSTSEC-2025-0141.md'))
+              original = advisory.read_text(encoding='utf-8')
+              assert 'patched = []' in original
+              advisory.write_text(original.replace('patched = []', 'patched = [">=2.0.1"]'), encoding='utf-8')
+              original_workflow = workflow
+              try:
+                  # Change only the native producer's database configuration and disable fetching this controlled copy.
+                  workflow = workflow.replace("probe.write_text('[advisories]\\nyanked = ",
+                                              "probe.write_text('[advisories]\\ndb-path = " + json.dumps(str(database)) + "\\nyanked = ")
+                  workflow = workflow.replace("'/cargo-deny', '--format'", "'/cargo-deny', '--offline', '--format'")
+                  assert workflow != original_workflow
+                  result = execute('Embedded check defaults', directory, env | {
+                      'QUALITY_CONFIG': json.dumps({'advisory_exceptions': [entries[0]]})})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  result = execute('Embedded check defaults', directory, env | {
+                      'QUALITY_CONFIG': json.dumps({'advisory_exceptions': [entries[1]]})})
+                  assert result.returncode != 0 and result.stderr.splitlines() == [
+                      'Cargo.lock: advisory exception RUSTSEC-2025-0141 is not reported for bincode 2.0.1: bincode 1.3.3'], result.stdout + result.stderr
+              finally:
+                  workflow = original_workflow
+                  shutil.rmtree(database)
+              print('PASS advisory_exceptions_require_only_reported_versions', flush=True)
 
           def advisories_follow_dependency_changes(env, temporary):
               import shutil
@@ -633,6 +707,7 @@ jobs:
               yanked_exceptions_reject_malformed_entries(env, temporary)
               yanked_exceptions_keep_other_findings(env, temporary)
               advisory_exception_suppresses_named_advisory(env, temporary)
+              advisory_exceptions_cover_all_reported_versions(env, temporary)
               advisories_follow_dependency_changes(env, temporary)
               advisory_issues_open_once(temporary)
               privileged_trigger_workflows_ignore_only_declared_audit(env, temporary)
