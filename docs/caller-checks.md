@@ -11,9 +11,10 @@ workflow repository; they default to the real PR base and event.
 Both coverage proof jobs use one immutable Maestro snapshot for comparable runs.
 Advance both checkout references together to the smallest main commit that resolves
 the reason for the move, after checking its locked dependencies. For example,
-`a18874da68cbdd07321c0d35fe4d5460fc508dc9` is the first main commit that both locks the
-updated ZIP closure (resolving the archive-extraction advisories) and isolates the agent
-tests' synthetic model fixtures.
+`7c0157ec7f57b86df19d1cf5f091b8714ab041e0` is the first main commit that locks the
+updated ZIP closure (resolving the archive-extraction advisories), isolates the agent
+tests' synthetic model fixtures, and serializes the output-routing child launches that
+one-process coverage runs share.
 Changes to either `.github/workflows/ci.yml` or `.github/workflows/ci-proof.yml`
 schedule the proof; check its results before landing.
 
