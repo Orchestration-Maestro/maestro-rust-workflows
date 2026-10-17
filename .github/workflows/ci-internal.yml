@@ -1054,6 +1054,9 @@ jobs:
                   # Match the runner's Bash shell, not the Windows WSL launcher.
                   bash = str(pathlib.Path(shutil.which('git')).parent.parent / 'bin/bash.exe')
                   assert pathlib.Path(bash).is_file(), f'Git Bash not found: {bash}'
+                  # Git Bash prepends its own utilities during startup; restore the caller's order.
+                  env['MAESTRO_SEAM_PATH'] = env['PATH']
+                  command = 'export PATH="$(cygpath -u -p "$MAESTRO_SEAM_PATH")"\n' + command
               argv = [bash, '-e', '-o', 'pipefail', '-c', command]
               if os.environ.get('MAESTRO_LOCAL_CAPPED'):
                   command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
@@ -1718,10 +1721,11 @@ jobs:
                   result = execute('Mise bootstrap', directory, wrong)
                   assert result.returncode == 0, result.stdout + result.stderr
                   before = paths.read_text(encoding='utf-8')
-                  executable('curl', '#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\n'
+                  executable('curl', '#!/bin/sh\ntouch corrupt-download-marker\nwhile [ "$1" != --output ]; do shift; done\n'
                              'printf "#!/bin/sh\\ntouch checksum-bypass-marker\\n" > "$2"\n')
                   previous = set(directory.glob('maestro-mise.*/*'))
                   result = execute('Mise bootstrap', directory, wrong)
+                  assert (directory / 'corrupt-download-marker').is_file(), result.stdout + result.stderr
                   assert result.returncode != 0, result.stdout + result.stderr
                   downloads = set(directory.glob('maestro-mise.*/*')) - previous
                   assert len(downloads) == 1 and next(iter(downloads)).read_bytes() == b'#!/bin/sh\ntouch checksum-bypass-marker\n'

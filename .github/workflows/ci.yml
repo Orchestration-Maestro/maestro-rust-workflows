@@ -390,15 +390,11 @@ jobs:
           if [ "$installed" != "$version" ]; then
             bin=$(mktemp -d "$RUNNER_TEMP/maestro-mise.XXXXXX")
             curl --fail --location "$url" --output "$bin/$executable"
-            command -v python3
-            python3 --version
             python3 - "$digest" "$bin/$executable" <<'PYTHON'
           import hashlib
           import sys
           with open(sys.argv[2], 'rb') as source:
-              actual = hashlib.file_digest(source, 'sha256').hexdigest()
-              print(f'Checksum comparison ran: actual={actual} expected={sys.argv[1]}', flush=True)
-              raise SystemExit(actual != sys.argv[1])
+              raise SystemExit(hashlib.file_digest(source, 'sha256').hexdigest() != sys.argv[1])
           PYTHON
             chmod +x "$bin/$executable"
             "$bin/$executable" --version | grep "^$version "
