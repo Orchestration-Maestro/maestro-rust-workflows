@@ -1,0 +1,82 @@
+name: Advisory scan
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+  pull_request:
+    paths: [.github/workflows/ci.yml, .github/workflows/advisories.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Maestro main
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: main
+      concurrency-key: advisories
+      test-event: schedule
+      advisory-scan: true
+
+  report:
+    name: Advisory issues
+    needs: scan
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      REPOSITORY: Orchestration-Maestro/maestro
+    steps:
+      - name: Mint the issue token
+        id: token
+        if: github.event_name != 'pull_request' && needs.scan.outputs.advisories != '[]'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: Orchestration-Maestro
+          repositories: maestro
+          permission-issues: write
+      - name: Open advisory issues
+        env:
+          SCAN: ${{ needs.scan.result }}
+          FINDINGS: ${{ needs.scan.outputs.advisories }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          DRY_RUN: ${{ github.event_name == 'pull_request' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: python
+        run: |
+          import json
+          import os
+          import subprocess
+          if os.environ['SCAN'] != 'success':
+              raise SystemExit(f"advisory scan {os.environ['SCAN']}: {os.environ['RUN_URL']}")
+          repository = os.environ['REPOSITORY']
+          findings = json.loads(os.environ['FINDINGS'] or '[]')
+          def gh(*args):
+              return subprocess.run(['gh', *args, '-R', repository], check=True, capture_output=True, text=True).stdout
+          for finding in findings:
+              prefix = f"Priority: {finding['id']} on main"
+              title = f"{prefix}: {', '.join(finding['crates'])}"
+              if os.environ['DRY_RUN'] == 'true':
+                  print(f'dry run: {title}')
+                  continue
+              open_titles = json.loads(gh('issue', 'list', '--state', 'open', '--search', f'"{prefix}" in:title', '--json', 'title'))
+              if any(issue['title'].startswith(prefix) for issue in open_titles):
+                  print(f'already open: {title}')
+                  continue
+              details = f"https://rustsec.org/advisories/{finding['id']}.html" if finding['id'].startswith('RUSTSEC-') else 'the scan log'
+              body = (f"The scheduled advisory scan found an undeclared finding on `main`.\n\n"
+                      f"- Finding: {finding['id']}: {finding['title']}\n"
+                      f"- Locked crates: {', '.join(finding['crates'])}\n"
+                      f"- Details: {details}\n- Scan run: {os.environ['RUN_URL']}\n\n"
+                      "Pull requests that leave `Cargo.lock` and `.github/ci.toml` unchanged skip this check, "
+                      "so unrelated work keeps landing. Update the affected crate, or declare an approved "
+                      "exception in `.github/ci.toml`.\n")
+              print(gh('issue', 'create', '--title', title, '--body', body, '--label', 'bug', '--label', 'needs-triage').strip())
+          if findings:
+              raise SystemExit(f'{len(findings)} undeclared advisories on main')
+          print('no undeclared advisories on main')

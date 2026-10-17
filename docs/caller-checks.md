@@ -2,11 +2,11 @@
 
 Add `.github/ci.toml` at the caller repository root to opt into isolated tests,
 real search tools and optional builds. Organization calls use that root; the
-workflow's directory input exists only for its fixture self-test and pinned
-workspace proof. Optional `checkout-repository` and `checkout-ref` inputs are
-also self-test-only: when unset they check out the caller repository and commit.
-`checkout-base-ref` and `test-event` are proof-only overrides restricted to this
-workflow repository; they default to the real PR base and event.
+workflow's directory input exists only for its fixture self-test, pinned
+workspace proof and advisory scan. Optional `checkout-repository` and
+`checkout-ref` inputs serve the same three: when unset they check out the caller
+repository and commit. `checkout-base-ref` and `test-event` are overrides
+restricted to this workflow repository; they default to the real PR base and event.
 
 Both coverage proof jobs use one immutable Maestro snapshot for comparable runs.
 Advance both checkout references together to the smallest main commit that resolves
@@ -109,8 +109,18 @@ component distribution, not a caller-provided executable.
 
 - cargo-deny checks licenses, bans, sources and advisories across the workspace
   with all features. Advisories and yanked crates without declared exceptions fail. Registries
-  other than crates.io and undeclared git sources fail. The license allowlist is
-  MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
+  other than crates.io and undeclared git sources fail. Licenses, bans and sources run on
+  every event. A pull request or merge group checks advisories and yanked crates only when it changes
+  `Cargo.lock` or `.github/ci.toml`; otherwise the step prints that advisories were not
+  checked. Pushes and other events always check them.
+- The scheduled advisory scan (`.github/workflows/advisories.yml`) runs this workflow in
+  advisory-scan mode against Maestro's `main` every hour and on manual dispatch: only the
+  declaration and the advisory check run, with the declared exceptions. Each undeclared
+  advisory or yanked crate opens one issue in that repository, titled `Priority: <identifier> on main`
+  and its crates, unless an open issue title already starts with `Priority: <identifier> on main`; the
+  run fails while any remains. Pull requests that change the workflow run the scan without
+  opening issues.
+- The cargo-deny license allowlist is MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
   Apache-2.0 WITH LLVM-exception, Unicode-DFS-2016, Unicode-3.0, CC0-1.0,
   CDLA-Permissive-2.0, MPL-2.0 and MIT-0.
 - cargo-machete fails on unused dependencies. Nonempty `ignored` or `renamed`
@@ -185,12 +195,13 @@ must be an exact semantic version, not a range. The package/version pair must
 remain in the caller's `Cargo.lock`; otherwise the required check fails with a
 stale-exception diagnostic naming the advisory, package and version. If another
 version of the same package is also locked, the check rejects the exception and
-names the locked versions. Before rendering, the pinned cargo-deny reports the
-advisories without any ignore; each declared ID must be reported for exactly the
+names the locked versions. Wherever advisories are checked, the pinned cargo-deny
+first reports the advisories without any ignore; each declared ID must be reported for exactly the
 declared package and version, otherwise the check fails naming the ID and the
 package and version reported, or "no such finding". The shared workflow renders only that ID and reason
 into cargo-deny's advisory ignore list.
-Unlisted advisories remain checked; yanked crates require their own exceptions below.
+Unlisted advisories remain checked wherever advisories are checked, including the
+scheduled scan; yanked crates require their own exceptions below.
 
 `yanked_crate_exceptions` defaults to an empty array and is intended for
 reviewed, time-boxed use while an upgrade is prepared. Each entry requires
@@ -202,7 +213,7 @@ and complete version string, including any build metadata, must match a pair
 in the caller's `Cargo.lock`; otherwise the check fails with a stale-exception
 diagnostic naming the package and version. The workflow renders each pair
 only as a cargo-deny yanked-crate ignore (`crate@=version`); another version
-of the same crate or an unlisted yanked crate still fails. Advisory, license,
+of the same crate or an unlisted yanked crate still fails wherever advisories are checked. Advisory, license,
 ban and source policies are unchanged. Track the removal deadline and upgrade
 in the consuming repository's declaration comment and issue.
 
