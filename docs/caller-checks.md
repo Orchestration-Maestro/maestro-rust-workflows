@@ -266,13 +266,20 @@ It additionally rejects every exported name ending in `_API_KEY`, including
 empty values. Diagnostics identify variable names, never credential values.
 The exact guarded list is in the shared workflow's isolated-test step.
 
-The child keeps only `PATH`, resolved `CARGO_HOME` and `RUSTUP_HOME`, fresh
-`HOME`, `TMPDIR`, `TMP`, `TEMP` and all XDG configuration/data/cache/state/runtime
+The child keeps only `PATH`, resolved `CARGO_HOME` and `RUSTUP_HOME`, the
+checkout-selected `RUSTUP_TOOLCHAIN`, fresh `HOME`, `TMPDIR`, `TMP`, `TEMP` and all XDG configuration/data/cache/state/runtime
 locations, plus `MAESTRO_NO_LOCAL_LLM=1`. `TMP` and `TEMP` equal `TMPDIR`; the
 other locations are separate, initially empty directories beneath a unique
 runner-temp parent. Unrelated CI state, proxy settings and application/provider
 overrides are not inherited. The partition argv uses `cargo llvm-cov nextest`; doctests use
 `cargo test --workspace --locked --doc`.
+
+The test setup exports Rustup's active toolchain before compilation; both test
+routes pass it to child builds, including dependencies outside the checkout.
+Explicit Bash run defaults preserve runner failures through log capture. A failed
+runner fails its test step, so coverage uploads run only after success; a missing
+report after success fails the upload separately. The required aggregate accepts
+only successful shards and requires all four reports when merging coverage.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps

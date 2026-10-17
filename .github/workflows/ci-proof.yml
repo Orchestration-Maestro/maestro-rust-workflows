@@ -55,9 +55,7 @@ jobs:
         run: bash -e -o pipefail "$PROOF_STEPS/Free instrumented build space"
       - name: Toolchain
         working-directory: maestro
-        run: |
-          rustup show
-          rustup component add llvm-tools-preview
+        run: bash -e -o pipefail "$PROOF_STEPS/Test toolchain"
       - name: Coverage tools
         timeout-minutes: 10
         run: bash -e -o pipefail "$PROOF_STEPS/Coverage tools"
