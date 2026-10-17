@@ -13,7 +13,7 @@ Advance both checkout references together to the smallest main commit that resol
 the reason for the move, after checking its locked dependencies. For example,
 `a18874da68cbdd07321c0d35fe4d5460fc508dc9` is the first main commit that both locks the
 updated ZIP closure (resolving the archive-extraction advisories) and isolates the agent
-tests' synthetic model fixtures, which the single-job coverage run needs.
+tests' synthetic model fixtures.
 Changes to either `.github/workflows/ci.yml` or `.github/workflows/ci-proof.yml`
 schedule the proof; check its results before landing.
 
