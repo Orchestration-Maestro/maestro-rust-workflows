@@ -110,14 +110,14 @@ component distribution, not a caller-provided executable.
 - cargo-deny checks licenses, bans, sources and advisories across the workspace
   with all features. Advisories and yanked crates without declared exceptions fail. Registries
   other than crates.io and undeclared git sources fail. Licenses, bans and sources run on
-  every event. A pull request or merge group checks advisories only when it changes
+  every event. A pull request or merge group checks advisories and yanked crates only when it changes
   `Cargo.lock` or `.github/ci.toml`; otherwise the step prints that advisories were not
   checked. Pushes and other events always check them.
 - The scheduled advisory scan (`.github/workflows/advisories.yml`) runs this workflow in
   advisory-scan mode against Maestro's `main` every hour and on manual dispatch: only the
   declaration and the advisory check run, with the declared exceptions. Each undeclared
-  advisory or yanked crate opens one issue in that repository, titled `<identifier> on main`
-  and its crates, unless an open issue title already starts with `<identifier> on main`; the
+  advisory or yanked crate opens one issue in that repository, titled `Priority: <identifier> on main`
+  and its crates, unless an open issue title already starts with `Priority: <identifier> on main`; the
   run fails while any remains. Pull requests that change the workflow run the scan without
   opening issues.
 - The cargo-deny license allowlist is MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
@@ -213,7 +213,7 @@ and complete version string, including any build metadata, must match a pair
 in the caller's `Cargo.lock`; otherwise the check fails with a stale-exception
 diagnostic naming the package and version. The workflow renders each pair
 only as a cargo-deny yanked-crate ignore (`crate@=version`); another version
-of the same crate or an unlisted yanked crate still fails. Advisory, license,
+of the same crate or an unlisted yanked crate still fails wherever advisories are checked. Advisory, license,
 ban and source policies are unchanged. Track the removal deadline and upgrade
 in the consuming repository's declaration comment and issue.
 
