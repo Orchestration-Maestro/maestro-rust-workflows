@@ -96,6 +96,256 @@ jobs:
           assert 'SCCACHE_GHA_ENABLED=true' in workflow and 'CARGO_INCREMENTAL=0' in workflow
           checks = rust_jobs['checks']
           assert checks.index('- name: Secrets\n') < checks.index('- name: Compile cache\n'), 'secret scan precedes cache use'
+      - name: Cache storage failures keep builds running
+        shell: python
+        run: |
+          import contextlib
+          import hashlib
+          import http.server
+          import json
+          import os
+          import pathlib
+          import re
+          import shutil
+          import subprocess
+          import tempfile
+          import textwrap
+          import threading
+          import time
+
+          root = pathlib.Path.cwd()
+          workflow = (root / '.github/workflows/ci.yml').read_text(encoding='utf-8')
+
+          def body(name):
+              step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == name)
+              return textwrap.dedent(re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.M)[1])
+
+          install, startup = body('Compile cache').rsplit('PATH="$bin:$PATH"', 1)
+          startup = 'PATH="$bin:$PATH"' + startup
+          exports = install[install.index('{ echo RUSTC_WRAPPER='):]
+
+          def run(command, env, cwd=root):
+              return subprocess.run(command, env=env, cwd=cwd, capture_output=True, text=True, timeout=60)
+
+          def shell(source, env):
+              return run(['bash', '-e', '-o', 'pipefail', '-c', source], env)
+
+          class Storage(http.server.BaseHTTPRequestHandler):
+              def do_POST(self):
+                  payload = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                  self.server.requests.append(self.path)
+                  if self.server.outage:
+                      response = json.dumps({'code': 'unavailable', 'msg': 'Egress is over the account limit'}).encode()
+                      status = 503
+                  else:
+                      assert self.path.endswith('/GetCacheEntryDownloadURL'), self.path
+                      assert payload[0] == 0x12 and payload[1] < 128
+                      key = payload[2:2 + payload[1]].decode()
+                      response = b''
+                      if key != 'sccache/.sccache_check':
+                          assert key in self.server.entries, key
+                          url = f'http://127.0.0.1:{self.server.server_port}/entry/{key}'.encode()
+                          assert len(url) < 128
+                          response = b'\x08\x01\x12' + bytes([len(url)]) + url
+                      status = 200
+                  self.send_response(status)
+                  self.send_header('Content-Type', 'application/x-protobuf' if status == 200 else 'application/json')
+                  self.send_header('Content-Length', str(len(response)))
+                  self.end_headers()
+                  self.wfile.write(response)
+
+              def do_GET(self):
+                  key = self.path.removeprefix('/entry/')
+                  response = self.server.entries[key]
+                  self.server.downloads.append(key)
+                  self.send_response(200)
+                  self.send_header('Content-Length', str(len(response)))
+                  self.end_headers()
+                  self.wfile.write(response)
+
+              def log_message(self, *args):
+                  pass
+
+          @contextlib.contextmanager
+          def storage(outage=True, entries=None):
+              server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Storage)
+              server.outage, server.entries = outage, entries or {}
+              server.requests, server.downloads = [], []
+              thread = threading.Thread(target=server.serve_forever)
+              thread.start()
+              try:
+                  yield server
+              finally:
+                  server.shutdown()
+                  thread.join()
+                  server.server_close()
+
+          def environment(directory):
+              env = {k: v for k, v in os.environ.items()
+                     if not k.startswith(('SCCACHE_', 'ACTIONS_', 'RUSTC_', 'CARGO_'))
+                     and k not in ('GITHUB_API_URL', 'GITHUB_SERVER_URL')}
+              return env | {'RUNNER_TEMP': str(directory), 'GITHUB_ENV': str(directory / 'env'),
+                            'GITHUB_PATH': str(directory / 'paths'), 'SCCACHE_SERVER_UDS': str(directory / 'daemon.sock'),
+                            'SCCACHE_CONF': str(directory / 'no-config'), 'SCCACHE_CACHED_CONF': str(directory / 'cached-config'),
+                            'SCCACHE_DIR': str(directory / 'cache'), 'CARGO_TARGET_DIR': str(directory / 'target'),
+                            'CARGO_INCREMENTAL': '0', 'CARGO_BUILD_JOBS': '3'}
+
+          def remote(env, server, mode):
+              return env | {'ACTIONS_RESULTS_URL': f'http://127.0.0.1:{server.server_port}/',
+                            'ACTIONS_RUNTIME_TOKEN': 'loopback-test-only', 'ACTIONS_CACHE_SERVICE_V2': 'true',
+                            'SCCACHE_GHA_RW_MODE': mode}
+
+          @contextlib.contextmanager
+          def daemon(directory, server=None, mode='READ_WRITE', source=startup):
+              env = environment(directory) | {'bin': str(binary.parent), 'PATH': str(binary.parent) + os.pathsep + os.environ['PATH'],
+                                              'RUSTC_WRAPPER': 'sccache'}
+              if server:
+                  env = remote(env, server, mode)
+              try:
+                  started = shell((exports if source == startup else '') + source, env)
+                  assert started.returncode == 0, (started.returncode, started.stdout, started.stderr)
+                  if source == startup:
+                      env.update(line.split('=', 1) for line in (directory / 'env').read_text(encoding='utf-8').splitlines())
+                  yield env
+              finally:
+                  run([str(binary), '--stop-server'], env)
+
+          def compile_sample(env, fixture='sample', lint=False):
+              command = ['cargo', 'clippy' if lint else 'build', '--locked', '--manifest-path', str(root / f'fixtures/{fixture}/Cargo.toml')]
+              if lint:
+                  command += ['--', '-D', 'warnings']
+              if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                  command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+              return run(command, env)
+
+          def stats(env, hits, misses):
+              result = shell(body('Compile cache statistics'), env)
+              assert result.returncode == 0, result.stdout + result.stderr
+              assert re.search(rf'^Cache hits\s+{hits}$', result.stdout, re.M), result.stdout
+              assert re.search(rf'^Cache misses\s+{misses}$', result.stdout, re.M), result.stdout
+              return result.stdout
+
+          def printed_log(env, output):
+              log = pathlib.Path(env['RUNNER_TEMP'], 'sccache-error.log').read_text(encoding='utf-8')
+              assert '503' in log and 'Egress is over the account limit' in log
+              marker = re.search(r'^::stop-commands::([0-9a-f]{64})$', output, re.M)
+              assert marker, 'Missing Actions command-suppression marker'
+              token = marker[1]
+              assert f'::stop-commands::{token}\n{log}\n::{token}::\n' in output
+
+          def cache_storage_outage_builds_uncached():
+              for mode, restart in [('READ_WRITE', False), ('READ_ONLY', False),
+                                    ('READ_WRITE', True), ('READ_ONLY', True)]:
+                  with tempfile.TemporaryDirectory() as temporary, storage() as server:
+                      directory = pathlib.Path(temporary)
+                      with daemon(directory, server, mode) as env:
+                          assert not server.requests, server.requests
+                          if restart:
+                              stopped = run([str(binary), '--stop-server'], env)
+                              assert stopped.returncode == 0, stopped.stderr
+                              pathlib.Path(directory / 'sccache-error.log').unlink(missing_ok=True)
+                              print('Restart policy: ' + repr({key: env.get(key) for key in
+                                    ['SCCACHE_SKIP_CACHE_CHECK', 'SCCACHE_ERROR_LOG', 'SCCACHE_LOG']}), flush=True)
+                          built = compile_sample(env)
+                          assert built.returncode == 0, built.stdout + built.stderr
+                          assert list((directory / 'target/debug/deps').glob('libsample-*.rlib'))
+                          output = stats(env, '0', '[1-9][0-9]*')
+                          assert any(p.endswith('/GetCacheEntryDownloadURL') for p in server.requests)
+                          if mode == 'READ_WRITE':
+                              assert any(p.endswith('/CreateCacheEntry') for p in server.requests)
+                              assert re.search(r'^Cache write errors\s+[1-9]', output, re.M)
+                          else:
+                              assert not any(p.endswith('/CreateCacheEntry') for p in server.requests)
+                          printed_log(env, output)
+                          print(f'PASS outage {mode} restart={restart}: real artifact, hit=0, miss>0', flush=True)
+
+          def cache_reachable_entries_still_hit():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  with daemon(directory, source='PATH="$bin:$PATH" sccache --start-server') as env:
+                      result = compile_sample(env)
+                      assert result.returncode == 0, result.stderr
+                  entries = {f'sccache/{p.name[0]}/{p.name[1]}/{p.name[2]}/{p.name}': p.read_bytes()
+                             for p in (directory / 'cache').rglob('*') if p.is_file()}
+                  assert entries
+                  with storage(False, entries) as server:
+                      observations = []
+                      baseline = 'PATH="$bin:$PATH" SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION=2 sccache --start-server'
+                      for source in [baseline, startup]:
+                          shutil.rmtree(directory / 'target')
+                          server.requests.clear()
+                          server.downloads.clear()
+                          with daemon(directory, server, 'READ_ONLY', source) as env:
+                              start = time.monotonic()
+                              result = compile_sample(env)
+                              elapsed = time.monotonic() - start
+                              assert result.returncode == 0, result.stderr
+                              stats(env, '1', '0')
+                              artifact = next((directory / 'target/debug/deps').glob('libsample-*.rlib'))
+                              observations.append((hashlib.sha256(artifact.read_bytes()).hexdigest(), list(server.downloads)))
+                              assert server.downloads
+                              print(f'PASS reachable cache: hit=1 miss=0 seconds={elapsed:.3f}', flush=True)
+                      assert observations[0] == observations[1]
+
+          def cache_statistics_print_error_log():
+              for exists, status in [(True, 0), (False, 0), (True, 7)]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      source = directory / 'source'
+                      source.write_text('#!/bin/sh\nprintf "Cache hits 1\\n"\nexit "$STATS_STATUS"\n', encoding='utf-8')
+                      subprocess.run(['install', '-m', '0700', str(source), str(directory / 'sccache')], check=True)
+                      log = '503 Egress is over the account limit\n::error::literal cache response'
+                      if exists:
+                          (directory / 'sccache-error.log').write_text(log, encoding='utf-8')
+                      env = environment(directory) | {'PATH': str(directory) + os.pathsep + os.environ['PATH'],
+                                                       'RUSTC_WRAPPER': 'sccache', 'STATS_STATUS': str(status)}
+                      result = shell(body('Compile cache statistics'), env)
+                      assert result.returncode == status, result.stderr
+                      assert result.stdout.startswith('Cache hits 1\n')
+                      if exists and status == 0:
+                          printed_log(env, result.stdout)
+                      else:
+                          assert 'stop-commands' not in result.stdout and 'Egress' not in result.stdout
+
+          def cache_outage_keeps_compiler_failure():
+              with tempfile.TemporaryDirectory() as temporary, storage() as server:
+                  directory = pathlib.Path(temporary)
+                  with daemon(directory, server) as env:
+                      result = compile_sample(env, 'clippy-warning', lint=True)
+                      assert result.returncode != 0 and 'error:' in result.stderr, result.stdout + result.stderr
+                      # Clippy can reject the crate before a cacheable compilation occurs.
+                      built = compile_sample(env)
+                      assert built.returncode == 0, built.stderr
+                      printed_log(env, stats(env, '0', '[1-9][0-9]*'))
+
+          def cache_installation_failure_stays_fatal():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shim = directory / 'shim'
+                  shim.mkdir()
+                  source = directory / 'source'
+                  trace = directory / 'extracted'
+                  for tool, content in [('curl', '#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\nprintf corrupt > "$2"\n'),
+                                        ('tar', '#!/bin/sh\ntouch ' + str(trace) + '\nexit 99\n')]:
+                      source.write_text(content, encoding='utf-8')
+                      subprocess.run(['install', '-m', '0700', str(source), str(shim / tool)], check=True)
+                  env = environment(directory) | {'PATH': str(shim) + os.pathsep + os.environ['PATH']}
+                  result = shell(body('Compile cache'), env)
+                  assert result.returncode != 0
+                  assert not trace.exists() and not (directory / 'daemon.sock').exists()
+                  assert not (directory / 'env').exists() and not (directory / 'paths').exists()
+
+          with tempfile.TemporaryDirectory() as temporary:
+              directory = pathlib.Path(temporary)
+              result = shell(install, environment(directory))
+              assert result.returncode == 0, result.stdout + result.stderr
+              binary = pathlib.Path((directory / 'paths').read_text(encoding='utf-8').strip()) / 'sccache'
+              assert run([str(binary), '--version'], environment(directory)).stdout.strip() == 'sccache 0.18.0'
+              for test in [cache_storage_outage_builds_uncached, cache_statistics_print_error_log,
+                           cache_reachable_entries_still_hit, cache_outage_keeps_compiler_failure,
+                           cache_installation_failure_stays_fatal]:
+                  test()
+                  print('PASS ' + test.__name__, flush=True)
       # Reusable workflow calls cannot use continue-on-error. The broken
       # fixtures run the workflow's own commands and assert all twenty outcomes.
       - name: Each broken fixture fails only its own check

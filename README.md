@@ -57,6 +57,13 @@ cache credentials, so the isolated test environment never sees them. The
 them and keeps the repository inside GitHub's 10 GB cache limit. The secret scan
 in `Dependency, source and coverage checks` runs before its cache is used.
 
+The server skips the startup storage capability check. The job exports this
+setting and diagnostic logging settings so automatic server restarts keep them.
+If storage reads or writes fail during compilation, Rust still builds without
+cached artifacts. The final statistics step prints the cache error log with
+Actions command processing disabled. Compiler, test and checksum-verified installation failures still fail
+CI; cache requests may continue during an outage.
+
 ## Adoption
 
 The organization rules run `.github/workflows/ci.yml` for repositories with
