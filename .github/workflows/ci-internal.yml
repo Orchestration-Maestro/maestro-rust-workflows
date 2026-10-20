@@ -89,21 +89,35 @@ jobs:
           import pathlib
           import re
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
-          assert 'actions/cache' not in workflow, 'sccache replaces target caching'
-          jobs = re.split(r'^  (?=[a-z-]+:\n)', workflow.split('\njobs:\n', 1)[1], flags=re.MULTILINE)
-          rust_jobs = {job.split(':', 1)[0]: job for job in jobs if re.search(r"\bcargo (check|clippy|doc|test|llvm-cov)\b|llvm-cov|cargo-nextest|cargo build|'cargo', 'build'|just browser-test", job)}
-          assert set(rust_jobs) == {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}, sorted(rust_jobs)
-          for name, job in rust_jobs.items():
-              assert '- name: Compile cache\n' in job or '- name: Compile cache credentials\n' in job, name
-              assert job.rstrip().count('- name: Compile cache statistics\n') == 1, name
-          assert 'version=0.18.0' in workflow
-          assert re.search(r'x86_64\) arch=x86_64 digest=[0-9a-f]{64} ', workflow)
-          assert re.search(r'aarch64\) arch=aarch64 digest=[0-9a-f]{64} ', workflow)
-          assert 'sha256sum --check --status' in workflow.split('name: Compile cache\n', 1)[1].split('- name:', 1)[0]
-          assert workflow.count('test "$RUSTC_WRAPPER" = sccache') == 1
-          assert 'SCCACHE_GHA_ENABLED=true' in workflow and 'CARGO_INCREMENTAL=0' in workflow
-          checks = rust_jobs['checks']
-          assert checks.index('- name: Secrets\n') < checks.index('- name: Compile cache\n'), 'secret scan precedes cache use'
+          def snapshot_jobs_share_one_owner():
+              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
+                                     workflow.split('\njobs:\n', 1)[1], re.M | re.S))
+              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              stages = ['Compile cache identity', 'Restore compile cache', 'Compile cache',
+                        'Compile cache statistics', 'Seal compile cache', 'Save compile cache']
+              for name in owners:
+                  job = jobs[name]
+                  offsets = [job.index('- name: ' + stage + '\n') for stage in stages]
+                  assert offsets == sorted(offsets), name
+                  assert all(job.count('- name: ' + stage + '\n') == 1 for stage in stages), name
+                  if name == 'targets':
+                      for stage in stages:
+                          step = job.split('- name: ' + stage + '\n', 1)[1].split('      - name:', 1)[0]
+                          assert "runner.os == 'Linux'" in step, stage
+              for name in owners - {'quality'}:
+                  assert 'env: *sccache-identity-env' in jobs[name]
+                  for alias in ['sccache-identity', 'sccache-restore', 'sccache-install', 'sccache-stats', 'sccache-seal', 'sccache-save']:
+                      assert '*' + alias in jobs[name], (name, alias)
+              assert 'CACHE_TARGET: $' + '{{ matrix.target }}' in jobs['targets']
+              assert jobs['checks'].index('- name: Secrets\n') < jobs['checks'].index('- name: Restore compile cache\n')
+              for obsolete in ['Compile cache credentials', 'SCCACHE_GHA_VERSION', 'SCCACHE_GHA_RW_MODE',
+                               'SCCACHE_GHA_ENABLED=true', 'cache-proof-bulk', 'ACTIONS_RUNTIME_TOKEN']:
+                  assert obsolete not in workflow, obsolete
+              assert 'version=0.18.0' in workflow and 'sha256sum --check --status' in workflow
+              assert 'SCCACHE_GHA_ENABLED=false' in workflow and 'CARGO_INCREMENTAL=0' in workflow
+
+          snapshot_jobs_share_one_owner()
+          print('PASS snapshot_jobs_share_one_owner')
       - name: Cache storage failures keep builds running
         shell: python
         run: |
@@ -119,7 +133,6 @@ jobs:
           import tempfile
           import textwrap
           import threading
-          import time
 
           root = pathlib.Path.cwd()
           workflow = (root / '.github/workflows/ci.yml').read_text(encoding='utf-8')
@@ -128,9 +141,8 @@ jobs:
               step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == name)
               return textwrap.dedent(re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.M)[1])
 
-          install, startup = body('Compile cache').rsplit('PATH="$bin:$PATH"', 1)
-          startup = 'PATH="$bin:$PATH"' + startup
-          exports = install[install.index('{ echo RUSTC_WRAPPER='):]
+          install, startup = body('Compile cache').split('if [ "$CACHE_RESTORE_OUTCOME"', 1)
+          startup = 'if [ "$CACHE_RESTORE_OUTCOME"' + startup
 
           def run(command, env, cwd=root):
               return subprocess.run(command, env=env, cwd=cwd, capture_output=True, text=True, timeout=60)
@@ -140,33 +152,11 @@ jobs:
 
           class Storage(http.server.BaseHTTPRequestHandler):
               def do_POST(self):
-                  payload = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+                  self.rfile.read(int(self.headers.get('Content-Length', '0')))
                   self.server.requests.append(self.path)
-                  if self.server.outage:
-                      response = json.dumps({'code': 'unavailable', 'msg': 'Egress is over the account limit'}).encode()
-                      status = 503
-                  else:
-                      assert self.path.endswith('/GetCacheEntryDownloadURL'), self.path
-                      assert payload[0] == 0x12 and payload[1] < 128
-                      key = payload[2:2 + payload[1]].decode()
-                      response = b''
-                      if key != 'sccache/.sccache_check':
-                          assert key in self.server.entries, key
-                          url = f'http://127.0.0.1:{self.server.server_port}/entry/{key}'.encode()
-                          assert len(url) < 128
-                          response = b'\x08\x01\x12' + bytes([len(url)]) + url
-                      status = 200
-                  self.send_response(status)
-                  self.send_header('Content-Type', 'application/x-protobuf' if status == 200 else 'application/json')
-                  self.send_header('Content-Length', str(len(response)))
-                  self.end_headers()
-                  self.wfile.write(response)
-
-              def do_GET(self):
-                  key = self.path.removeprefix('/entry/')
-                  response = self.server.entries[key]
-                  self.server.downloads.append(key)
-                  self.send_response(200)
+                  response = b'{"code":"unavailable","msg":"Egress is over the account limit"}'
+                  self.send_response(503)
+                  self.send_header('Content-Type', 'application/json')
                   self.send_header('Content-Length', str(len(response)))
                   self.end_headers()
                   self.wfile.write(response)
@@ -175,10 +165,9 @@ jobs:
                   pass
 
           @contextlib.contextmanager
-          def storage(outage=True, entries=None):
+          def storage():
               server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Storage)
-              server.outage, server.entries = outage, entries or {}
-              server.requests, server.downloads = [], []
+              server.requests = []
               thread = threading.Thread(target=server.serve_forever)
               thread.start()
               try:
@@ -195,25 +184,19 @@ jobs:
               return env | {'RUNNER_TEMP': str(directory), 'GITHUB_ENV': str(directory / 'env'),
                             'GITHUB_PATH': str(directory / 'paths'), 'SCCACHE_SERVER_UDS': str(directory / 'daemon.sock'),
                             'SCCACHE_CONF': str(directory / 'no-config'), 'SCCACHE_CACHED_CONF': str(directory / 'cached-config'),
-                            'SCCACHE_DIR': str(directory / 'cache'), 'CARGO_TARGET_DIR': str(directory / 'target'),
+                            'SCCACHE_DIR': str(directory / 'maestro-sccache'), 'CARGO_TARGET_DIR': str(directory / 'target'),
+                            'GITHUB_OUTPUT': str(directory / 'outputs'), 'CACHE_RESTORE_OUTCOME': 'success',
                             'CARGO_INCREMENTAL': '0', 'CARGO_BUILD_JOBS': '3'}
 
-          def remote(env, server, mode):
-              return env | {'ACTIONS_RESULTS_URL': f'http://127.0.0.1:{server.server_port}/',
-                            'ACTIONS_RUNTIME_TOKEN': 'loopback-test-only', 'ACTIONS_CACHE_SERVICE_V2': 'true',
-                            'SCCACHE_GHA_RW_MODE': mode}
-
           @contextlib.contextmanager
-          def daemon(directory, server=None, mode='READ_WRITE', source=startup):
+          def daemon(directory, outcome='success', matched='false'):
               env = environment(directory) | {'bin': str(binary.parent), 'PATH': str(binary.parent) + os.pathsep + os.environ['PATH'],
-                                              'RUSTC_WRAPPER': 'sccache'}
-              if server:
-                  env = remote(env, server, mode)
+                                              'RUSTC_WRAPPER': 'sccache', 'CACHE_RESTORE_OUTCOME': outcome, 'CACHE_RESTORE_MATCHED': matched}
               try:
-                  started = shell((exports if source == startup else '') + source, env)
+                  started = shell(startup, env)
                   assert started.returncode == 0, (started.returncode, started.stdout, started.stderr)
-                  if source == startup:
-                      env.update(line.split('=', 1) for line in (directory / 'env').read_text(encoding='utf-8').splitlines())
+                  (directory / 'restore-message').write_text(started.stdout, encoding='utf-8')
+                  env.update(line.split('=', 1) for line in (directory / 'env').read_text(encoding='utf-8').splitlines())
                   yield env
               finally:
                   run([str(binary), '--stop-server'], env)
@@ -241,90 +224,272 @@ jobs:
               token = marker[1]
               assert f'::stop-commands::{token}\n{log}\n::{token}::\n' in output
 
-          def cache_storage_outage_builds_uncached():
-              for mode, restart in [('READ_WRITE', False), ('READ_ONLY', False),
-                                    ('READ_WRITE', True), ('READ_ONLY', True)]:
-                  with tempfile.TemporaryDirectory() as temporary, storage() as server:
-                      directory = pathlib.Path(temporary)
-                      with daemon(directory, server, mode) as env:
-                          assert not server.requests, server.requests
-                          if restart:
-                              stopped = run([str(binary), '--stop-server'], env)
-                              assert stopped.returncode == 0, stopped.stderr
-                              pathlib.Path(directory / 'sccache-error.log').unlink(missing_ok=True)
-                              print('Restart policy: ' + repr({key: env.get(key) for key in
-                                    ['SCCACHE_SKIP_CACHE_CHECK', 'SCCACHE_ERROR_LOG', 'SCCACHE_LOG']}), flush=True)
-                          built = compile_sample(env)
-                          assert built.returncode == 0, built.stdout + built.stderr
-                          assert list((directory / 'target/debug/deps').glob('libsample-*.rlib'))
-                          output = stats(env, '0', '[1-9][0-9]*')
-                          assert any(p.endswith('/GetCacheEntryDownloadURL') for p in server.requests)
-                          if mode == 'READ_WRITE':
-                              assert any(p.endswith('/CreateCacheEntry') for p in server.requests)
-                              assert re.search(r'^Cache write errors\s+[1-9]', output, re.M)
-                          else:
-                              assert not any(p.endswith('/CreateCacheEntry') for p in server.requests)
-                          printed_log(env, output)
-                          print(f'PASS outage {mode} restart={restart}: real artifact, hit=0, miss>0', flush=True)
-
-          def cache_reachable_entries_still_hit():
+          def snapshot_keys(**changes):
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
-                  with daemon(directory, source='PATH="$bin:$PATH" sccache --start-server') as env:
-                      result = compile_sample(env)
-                      assert result.returncode == 0, result.stderr
-                  entries = {f'sccache/{p.name[0]}/{p.name[1]}/{p.name[2]}/{p.name}': p.read_bytes()
-                             for p in (directory / 'cache').rglob('*') if p.is_file()}
-                  assert entries
-                  with storage(False, entries) as server:
-                      observations = []
-                      baseline = 'PATH="$bin:$PATH" SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION=2 sccache --start-server'
-                      for source in [baseline, startup]:
-                          shutil.rmtree(directory / 'target')
-                          server.requests.clear()
-                          server.downloads.clear()
-                          with daemon(directory, server, 'READ_ONLY', source) as env:
-                              start = time.monotonic()
-                              result = compile_sample(env)
-                              elapsed = time.monotonic() - start
-                              assert result.returncode == 0, result.stderr
-                              stats(env, '1', '0')
-                              artifact = next((directory / 'target/debug/deps').glob('libsample-*.rlib'))
-                              observations.append((hashlib.sha256(artifact.read_bytes()).hexdigest(), list(server.downloads)))
-                              assert server.downloads
-                              print(f'PASS reachable cache: hit=1 miss=0 seconds={elapsed:.3f}', flush=True)
-                      assert observations[0] == observations[1]
+                  env = environment(directory) | {
+                      'CALLER_REPOSITORY': 'example/caller', 'CALLER_DIRECTORY': '.',
+                      'HOST_OS': 'Linux', 'HOST_ARCH': 'X64', 'CACHE_JOB': 'tests', 'CACHE_INDEX': '0',
+                      'CACHE_CALL': 'consumer', 'CACHE_COVERAGE': 'true', 'CACHE_WARM': 'false',
+                      'SHARD': '1', 'GITHUB_RUN_ID': '10', 'GITHUB_RUN_ATTEMPT': '1', 'CACHE_TARGET': ''}
+                  compiler = changes.pop('compiler', None)
+                  if compiler:
+                      source = directory / 'source'
+                      source.write_text('#!/bin/sh\nprintf "%s\\n" "different compiler"\n', encoding='utf-8')
+                      subprocess.run(['install', '-m', '0700', str(source), str(directory / 'rustc')], check=True)
+                      env['PATH'] = str(directory) + os.pathsep + os.environ['PATH']
+                  result = shell(body('Compile cache identity'), env | changes)
+                  assert result.returncode == 0, result.stderr
+                  return dict(line.split('=', 1) for line in (directory / 'outputs').read_text(encoding='utf-8').splitlines())
 
-          def cache_statistics_print_error_log():
-              for exists, status in [(True, 0), (False, 0), (True, 7)]:
+          def snapshot_key_matches_consuming_shape():
+              coverage = snapshot_keys()['prefix']
+              assert snapshot_keys(CACHE_WARM='true', SHARD='warm', CACHE_COVERAGE='false')['prefix'] == coverage
+              for shard in ['1', '2', '3', '4']:
+                  assert snapshot_keys(SHARD=shard)['prefix'] == coverage
+              plain = snapshot_keys(CACHE_COVERAGE='false')['prefix']
+              assert plain != coverage and snapshot_keys(SHARD='doctests')['prefix'] == plain
+              assert snapshot_keys(CACHE_COVERAGE='', SHARD='')['prefix'] == plain
+              shapes = [snapshot_keys(CACHE_JOB=job)['prefix'] for job in
+                        ['quality', 'docs', 'checks', 'browser', 'browser-tests']]
+              assert len(set(shapes + [plain, coverage])) == 7
+              assert snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-unknown-linux-gnu')['prefix'] != snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='x86_64-unknown-linux-gnu')['prefix']
+
+          def snapshot_key_preserves_caller_isolation():
+              base = snapshot_keys()['prefix']
+              for change in [dict(CALLER_REPOSITORY='other/caller'), dict(CALLER_DIRECTORY='nested'),
+                             dict(HOST_OS='Windows'), dict(HOST_ARCH='ARM64'), dict(compiler=True)]:
+                  assert snapshot_keys(**change)['prefix'] != base, change
+              for change in [dict(CACHE_CALL='warm'), dict(TEST_PACKAGES='["other"]'), dict(SHARD='4')]:
+                  assert snapshot_keys(**change)['prefix'] == base, change
+              key = snapshot_keys(CALLER_DIRECTORY='space and é/child')['key']
+              assert key.isascii() and len(key) < 512 and 'space' not in key
+
+          def snapshot_save_keys_are_run_unique():
+              base = snapshot_keys()
+              for change in [dict(GITHUB_RUN_ID='11'), dict(GITHUB_RUN_ATTEMPT='2'), dict(CACHE_INDEX='1'), dict(CACHE_CALL='warm')]:
+                  observed = snapshot_keys(**change)
+                  assert observed['key'] != base['key'] and observed['prefix'] == base['prefix'], change
+              warm = snapshot_keys(CACHE_WARM='true', SHARD='warm', CACHE_CALL='warm')
+              assert warm['prefix'] == base['prefix'] and warm['key'] != base['key']
+              assert len({snapshot_keys(CACHE_INDEX=str(index))['key'] for index in range(4)}) == 4
+              # Independent canonical-JSON digest pins field order and ASCII encoding.
+              compiler = subprocess.check_output(['rustc', '-vV'], text=True)
+              identity = json.dumps(['example/caller', '.', 'Linux', 'X64', compiler, 'tests-coverage'], separators=(',', ':'), ensure_ascii=True)
+              assert base['prefix'] == 'maestro-compile-v1-' + hashlib.sha256(identity.encode('utf-8')).hexdigest() + '-'
+
+          def snapshot_size_bound_skips_only_ineligible_saves():
+              for size in [0, 1073741823, 1073741824, 1073741825, None]:
                   with tempfile.TemporaryDirectory() as temporary:
                       directory = pathlib.Path(temporary)
                       source = directory / 'source'
-                      source.write_text('#!/bin/sh\nprintf "Cache hits 1\\n"\nexit "$STATS_STATUS"\n', encoding='utf-8')
+                      source.write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+                      subprocess.run(['install', '-m', '0700', str(source), str(directory / 'sccache')], check=True)
+                      cache = directory / 'cache'
+                      cache.mkdir()
+                      if size:
+                          with (cache / 'payload').open('wb') as payload:
+                              payload.truncate(size)
+                      if size is None:
+                          cache.rmdir()
+                          cache.write_text('not a directory', encoding='utf-8')
+                      env = environment(directory) | {'PATH': str(directory) + os.pathsep + os.environ['PATH'], 'SCCACHE_DIR': str(cache)}
+                      result = shell(body('Seal compile cache'), env)
+                      assert result.returncode == 0, result.stderr
+                      output = (directory / 'outputs').read_text(encoding='utf-8') if (directory / 'outputs').exists() else ''
+                      assert ('eligible=true' in output) == (size in [1073741823, 1073741824])
+                      if size is None:
+                          assert result.stdout == 'Compile cache snapshot save skipped: cache inspection failed\n', result.stdout
+                      else:
+                          expected = f'Compile cache snapshot: {int(bool(size))} files, {size} bytes\n'
+                          if size == 0:
+                              expected += 'Compile cache snapshot save skipped: empty cache\n'
+                          elif size > 1073741824:
+                              expected += 'Compile cache snapshot save skipped: exceeds 1073741824 bytes\n'
+                          assert result.stdout == expected, result.stdout
+              # Instrument the actual inspection body, not a second size implementation.
+              script = body('Seal compile cache').split("<<'PYTHON'\n", 1)[1].rsplit('\nPYTHON', 1)[0]
+              from unittest import mock
+              for count in [16, 32, 64]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      cache = pathlib.Path(temporary)
+                      for index in range(count):
+                          (cache / str(index)).write_bytes(b'x')
+                      original = pathlib.Path.lstat
+                      visits = []
+                      def tracked(path):
+                          visits.append(path)
+                          return original(path)
+                      with mock.patch.dict(os.environ, {'SCCACHE_DIR': temporary, 'GITHUB_OUTPUT': str(cache.parent / (cache.name + '.output'))}), mock.patch.object(pathlib.Path, 'lstat', tracked):
+                          exec(compile(script, 'snapshot inspection', 'exec'), {})
+                      assert len(visits) <= count * 2
+                      repeated_scan = sum(1 for _ in range(count) for _ in cache.iterdir())
+                      assert repeated_scan > count * 2
+                      pathlib.Path(cache.parent, cache.name + '.output').unlink()
+
+          def snapshot_seal_stops_before_measurement():
+              for status in [0, 7]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      source = directory / 'source'
+                      # Successful stop creates the payload, so enumeration must follow it.
+                      source.write_text('#!/bin/sh\ntest "$1" = --stop-server\nif [ "$STOP_STATUS" = 0 ]; then mkdir "$SCCACHE_DIR"; printf sealed > "$SCCACHE_DIR/payload"; fi\nexit "$STOP_STATUS"\n', encoding='utf-8')
+                      subprocess.run(['install', '-m', '0700', str(source), str(directory / 'sccache')], check=True)
+                      env = environment(directory) | {'PATH': str(directory) + os.pathsep + os.environ['PATH'], 'STOP_STATUS': str(status)}
+                      result = shell(body('Seal compile cache'), env)
+                      assert result.returncode == 0, result.stderr
+                      if status:
+                          assert result.stdout == 'Compile cache snapshot save skipped: server stop failed\n'
+                          assert not (directory / 'outputs').exists()
+                      else:
+                          assert result.stdout == 'Compile cache snapshot: 1 files, 6 bytes\n'
+                          assert (directory / 'outputs').read_text(encoding='utf-8') == 'eligible=true\n'
+
+          def artifact(env):
+              return next(pathlib.Path(env['CARGO_TARGET_DIR'], 'debug/deps').glob('libsample-*.rlib')).read_bytes()
+
+          def snapshot_native_entries_are_reused():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  with daemon(directory) as env:
+                      result = compile_sample(env)
+                      assert result.returncode == 0, result.stderr
+                      expected = artifact(env)
+                      stats(env, '0', '1')
+                      sealed = shell(body('Seal compile cache'), env)
+                      assert sealed.returncode == 0 and 'eligible=true' in (directory / 'outputs').read_text(encoding='utf-8')
+                  cache = pathlib.Path(env['SCCACHE_DIR'])
+                  snapshot = directory / 'snapshot'
+                  shutil.copytree(cache, snapshot)
+                  shutil.rmtree(cache)
+                  shutil.rmtree(directory / 'target')
+                  shutil.copytree(snapshot, cache)
+                  with daemon(directory) as env:
+                      result = compile_sample(env)
+                      assert result.returncode == 0, result.stderr
+                      assert artifact(env) == expected
+                      assert 'Local disk:' in stats(env, '1', '0')
+                      assert 'service=ghac' not in (directory / 'sccache-error.log').read_text(encoding='utf-8')
+                  return expected
+
+          def snapshot_missing_entries_build_uncached():
+              with tempfile.TemporaryDirectory() as temporary:
+                  with daemon(pathlib.Path(temporary)) as env:
+                      result = compile_sample(env)
+                      assert result.returncode == 0 and artifact(env) == warm_artifact, result.stderr
+                      stats(env, '0', '1')
+
+          def snapshot_partial_restore_is_discarded():
+              for outcome, matched in [('success', 'false'), ('success', 'true'), ('failure', 'false'), ('success', '')]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      with daemon(directory) as env:
+                          assert compile_sample(env).returncode == 0
+                      shutil.rmtree(directory / 'target')
+                      with daemon(directory, outcome, matched) as env:
+                          result = compile_sample(env)
+                          assert result.returncode == 0 and artifact(env) == warm_artifact, result.stderr
+                          kept = outcome == 'success' and matched in ['true', 'false']
+                          stats(env, '1' if kept else '0', '0' if kept else '1')
+                          if not kept:
+                              assert 'Compile cache snapshot restore failed; using an empty local cache' in (directory / 'restore-message').read_text(encoding='utf-8')
+
+          def action(role, directory, server):
+              env = environment(directory) | {
+                  'ACTIONS_CACHE_URL': f'http://127.0.0.1:{server.server_port}/',
+                  'ACTIONS_RESULTS_URL': f'http://127.0.0.1:{server.server_port}/',
+                  'ACTIONS_CACHE_SERVICE_V2': 'true', 'ACTIONS_RUNTIME_TOKEN': 'loopback-test-only',
+                  'GITHUB_REF': 'refs/heads/main', 'GITHUB_REPOSITORY': 'example/caller',
+                  'GITHUB_WORKSPACE': str(directory), 'INPUT_KEY': 'snapshot-outage',
+                  'INPUT_PATH': str(directory / 'maestro-sccache'), 'INPUT_FAIL-ON-CACHE-MISS': 'false'}
+              (directory / 'outputs').touch()
+              result = run(['node', str(action_directory / (role + '.js'))], env)
+              assert result.returncode == 0 and '503' in result.stdout + result.stderr, result.stdout + result.stderr
+              print(f'{role}: ' + result.stdout, flush=True)
+              endpoint = 'GetCacheEntryDownloadURL' if role == 'restore' else 'CreateCacheEntry'
+              assert any(path.endswith('/' + endpoint) for path in server.requests), server.requests
+              return dict(line.split('=', 1) for line in (directory / 'outputs').read_text(encoding='utf-8').splitlines() if '=' in line)
+
+          def snapshot_restore_outage_builds_uncached():
+              with tempfile.TemporaryDirectory() as temporary, storage() as server:
+                  directory = pathlib.Path(temporary)
+                  outputs = action('restore', directory, server)
+                  with daemon(directory, matched=outputs.get('cache-hit', '')) as env:
+                      result = compile_sample(env)
+                      assert result.returncode == 0 and artifact(env) == warm_artifact, result.stderr
+                      assert 'Local disk:' in stats(env, '0', '1')
+                      assert 'service=ghac' not in (directory / 'sccache-error.log').read_text(encoding='utf-8')
+
+          def snapshot_save_outage_keeps_build_success():
+              with tempfile.TemporaryDirectory() as temporary, storage() as server:
+                  directory = pathlib.Path(temporary)
+                  with daemon(directory) as env:
+                      built = compile_sample(env)
+                      assert built.returncode == 0, built.stderr
+                      before = artifact(env)
+                      assert shell(body('Seal compile cache'), env).returncode == 0
+                  action('save', directory, server)
+                  assert built.returncode == 0 and artifact(env) == before == warm_artifact
+
+          def snapshot_restart_preserves_isolated_local_policy():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  with daemon(directory) as env:
+                      isolated = body('Isolated tests')
+                      setup = isolated[isolated.index('cargo_home='):isolated.index('cargo fetch --locked')]
+                      # Only the test daemon address is injected after isolation, never cache policy.
+                      command = setup + '\nrun_isolated env\nrun_isolated env SCCACHE_SERVER_UDS="$SCCACHE_SERVER_UDS" cargo build --locked --manifest-path "$SAMPLE_MANIFEST" --target-dir "$CARGO_TARGET_DIR"\n'
+                      isolated_env = env | {'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0],
+                                            'SAMPLE_MANIFEST': str(root / 'fixtures/sample/Cargo.toml'),
+                                            'OPENAI_API_KEY': 'not-a-credential-canary'}
+                      warm = shell(command, isolated_env)
+                      assert warm.returncode == 0, warm.stderr
+                      assert run([str(binary), '--stop-server'], env).returncode == 0
+                      shutil.rmtree(directory / 'target')
+                      result = shell(command, isolated_env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      assert 'OPENAI_API_KEY=' not in result.stdout and 'ACTIONS_RUNTIME_TOKEN=' not in result.stdout
+                      for key in ['SCCACHE_DIR', 'SCCACHE_CACHE_SIZE', 'SCCACHE_LOCAL_RW_MODE', 'SCCACHE_GHA_ENABLED',
+                                  'SCCACHE_SKIP_CACHE_CHECK', 'SCCACHE_ERROR_LOG', 'SCCACHE_LOG']:
+                          assert f'{key}={env[key]}\n' in result.stdout, key
+                      assert artifact(env) == warm_artifact
+                      stats(env, '1', '0')
+                      assert 'service=ghac' not in (directory / 'sccache-error.log').read_text(encoding='utf-8')
+
+          def cache_statistics_print_error_log():
+              for exists, status, errors in [(True, 0, 0), (False, 0, 1), (True, 7, 120), (True, 0, 120)]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      source = directory / 'source'
+                      source.write_text('#!/bin/sh\nprintf "Cache hits 1\\nCache write errors %s\\n" "$WRITE_ERRORS"\nexit "$STATS_STATUS"\n', encoding='utf-8')
                       subprocess.run(['install', '-m', '0700', str(source), str(directory / 'sccache')], check=True)
                       log = '503 Egress is over the account limit\n::error::literal cache response'
                       if exists:
                           (directory / 'sccache-error.log').write_text(log, encoding='utf-8')
                       env = environment(directory) | {'PATH': str(directory) + os.pathsep + os.environ['PATH'],
-                                                       'RUSTC_WRAPPER': 'sccache', 'STATS_STATUS': str(status)}
+                                                       'RUSTC_WRAPPER': 'sccache', 'STATS_STATUS': str(status), 'WRITE_ERRORS': str(errors)}
                       result = shell(body('Compile cache statistics'), env)
                       assert result.returncode == status, result.stderr
                       assert result.stdout.startswith('Cache hits 1\n')
+                      if status == 0:
+                          assert (directory / 'outputs').read_text(encoding='utf-8') == f'write_errors={str(errors > 0).lower()}\n'
+                      else:
+                          assert not (directory / 'outputs').exists()
                       if exists and status == 0:
                           printed_log(env, result.stdout)
                       else:
                           assert 'stop-commands' not in result.stdout and 'Egress' not in result.stdout
 
           def cache_outage_keeps_compiler_failure():
-              with tempfile.TemporaryDirectory() as temporary, storage() as server:
+              with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
-                  with daemon(directory, server) as env:
+                  with daemon(directory) as env:
                       result = compile_sample(env, 'clippy-warning', lint=True)
                       assert result.returncode != 0 and 'error:' in result.stderr, result.stdout + result.stderr
                       # Clippy can reject the crate before a cacheable compilation occurs.
                       built = compile_sample(env)
                       assert built.returncode == 0, built.stderr
-                      printed_log(env, stats(env, '0', '[1-9][0-9]*'))
+                      stats(env, '0', '[1-9][0-9]*')
 
           def cache_installation_failure_stays_fatal():
               with tempfile.TemporaryDirectory() as temporary:
@@ -343,14 +508,30 @@ jobs:
                   assert not trace.exists() and not (directory / 'daemon.sock').exists()
                   assert not (directory / 'env').exists() and not (directory / 'paths').exists()
 
+          for test in [snapshot_key_matches_consuming_shape, snapshot_key_preserves_caller_isolation,
+                       snapshot_save_keys_are_run_unique, snapshot_size_bound_skips_only_ineligible_saves,
+                       snapshot_seal_stops_before_measurement, cache_statistics_print_error_log]:
+              test()
+              print('PASS ' + test.__name__, flush=True)
+
           with tempfile.TemporaryDirectory() as temporary:
               directory = pathlib.Path(temporary)
               result = shell(install, environment(directory))
               assert result.returncode == 0, result.stdout + result.stderr
               binary = pathlib.Path((directory / 'paths').read_text(encoding='utf-8').strip()) / 'sccache'
               assert run([str(binary), '--version'], environment(directory)).stdout.strip() == 'sccache 0.18.0'
-              for test in [cache_storage_outage_builds_uncached, cache_statistics_print_error_log,
-                           cache_reachable_entries_still_hit, cache_outage_keeps_compiler_failure,
+              action_directory = directory / 'actions'
+              action_directory.mkdir()
+              for role in ['restore', 'save']:
+                  result = run(['curl', '--fail', '--location',
+                                f'https://raw.githubusercontent.com/actions/cache/0400d5f644dc74513175e3cd8d07132dd4860809/dist/{role}-only/index.js',
+                                '--output', str(action_directory / (role + '.js'))], environment(directory))
+                  assert result.returncode == 0, result.stderr
+              warm_artifact = snapshot_native_entries_are_reused()
+              print('PASS snapshot_native_entries_are_reused', flush=True)
+              for test in [snapshot_missing_entries_build_uncached, snapshot_partial_restore_is_discarded,
+                           snapshot_restore_outage_builds_uncached, snapshot_save_outage_keeps_build_success,
+                           snapshot_restart_preserves_isolated_local_policy, cache_outage_keeps_compiler_failure,
                            cache_installation_failure_stays_fatal]:
                   test()
                   print('PASS ' + test.__name__, flush=True)
@@ -374,17 +555,29 @@ jobs:
               'cargo test --workspace --locked',
           ]
           assert commands == expected, f'Unexpected check commands: {commands}'
-          assert 'continue-on-error' not in workflow
+          def snapshot_only_transfers_fail_open():
+              count = 0
+              for step in re.split(r'^      - name: ', workflow, flags=re.M)[1:]:
+                  if re.search(r'^        continue-on-error:', step, re.M):
+                      assert step.splitlines()[0] in ['Restore compile cache', 'Save compile cache']
+                      assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M)
+                      assert '        continue-on-error: true\n' in step
+                      count += 1
+              assert count == 14
+              assert not re.search(r'^    continue-on-error:', workflow, re.M)
+
+          snapshot_only_transfers_fail_open()
+          print('PASS snapshot_only_transfers_fail_open')
           assert '|| true' not in workflow
           for step in workflow.split('      - name:')[1:]:
               if any(f'run: {command}\n' in step for command in commands[:3]):
                   assert not re.search(r'^        if:', step, re.MULTILINE)
           base_test = next(step for step in workflow.split('      - name:')[1:]
                            if step.startswith(' Tests\n'))
-          assert "if: needs.declaration.outputs.enabled != 'true'" in base_test
+          assert "if: $" + "{{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}" in base_test
           isolated_test = next(step for step in workflow.split('      - name:')[1:]
                                if step.startswith(' Isolated tests\n'))
-          assert "if: needs.declaration.outputs.enabled == 'true'" in isolated_test
+          assert "if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'" in isolated_test
           assert 'run_isolated cargo test --locked --doc' in isolated_test
           assert 'llvm-cov nextest' in isolated_test
 
@@ -1611,7 +1804,7 @@ jobs:
           def browser_test_job_is_single_and_optional():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               job = jobs['browser-tests']
-              assert "!inputs.advisory-scan && !inputs.fuzz-scan && needs.declaration.outputs.browser_tests == 'true'" in job
+              assert "!inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true'" in job
               assert 'runs-on: ubuntu-latest' in job and 'matrix:' not in job
               assert body('Browser test recipe').strip() == 'just browser-test'
               assert 'mise exec' not in body('Browser test recipe')
@@ -1667,11 +1860,61 @@ jobs:
                   subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
               return tools, log
 
+          def warm_cache_keeps_one_writer():
+              assert "TEST_EVENT: $" + "{{ inputs.warm-cache && 'push' ||" in workflow
+              with tempfile.TemporaryDirectory() as temporary:
+                  output = pathlib.Path(temporary) / 'selection'
+                  result = execute('Select test packages', root / 'fixtures/sample', {
+                      'TEST_EVENT': 'push', 'BASE_REF': 'unrelated-workflow-base', 'GITHUB_OUTPUT': str(output)})
+                  assert result.returncode == 0, result.stderr
+                  values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                  assert json.loads(values['packages']) == ['sample'] and values['coverage'] == 'true'
+              assert "warm-cache:\n        description:" in workflow
+              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
+                                     workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+              for name, job in jobs.items():
+                  if name not in ('declaration', 'tests'):
+                      assert '!inputs.warm-cache' in re.search(r'^    if: (.*)', job, re.MULTILINE)[1], name
+              tests = jobs['tests']
+              assert 'WARM_CACHE: $' + '{{ inputs.warm-cache }}' in tests
+              assert "inputs.warm-cache && '[\"warm\"]'" in tests
+              assert "if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'" in tests
+              proof = (root / '.github/workflows/ci-proof.yml').read_text(encoding='utf-8')
+              assert '  maestro:\n    needs: warm\n' in proof
+              assert '      warm-cache: true\n' in proof
+
+          warm_cache_keeps_one_writer()
+          print('PASS warm_cache_keeps_one_writer')
+
+          def warm_cache_builds_without_tests_or_reports():
+              for status in (0, 17):
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory, status=status)
+                      result = execute('Isolated tests', directory, {
+                          'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                          'RUNNER_TEMP': temporary, 'SHARD': 'warm', 'COLLECT_COVERAGE': 'false',
+                          'WARM_CACHE': 'true', 'TEST_PACKAGES': '[]', 'CARGO_COVERAGE_MIN_LINES': ''})
+                      assert result.returncode == status, result.stdout + result.stderr
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      assert len(commands) == 2, commands
+                      assert commands[0]['args'] == ['fetch', '--locked']
+                      assert commands[1]['tool'] == 'cargo-llvm-cov'
+                      assert commands[1]['args'] == [
+                          'llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
+                          '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
+                          '-E', 'none()', '--no-tests', 'pass', '--workspace', '--locked', '--no-report']
+                      assert commands[1]['home'] != os.environ.get('HOME')
+                      assert not list(directory.glob('*.lcov'))
+
+          warm_cache_builds_without_tests_or_reports()
+          print('PASS warm_cache_builds_without_tests_or_reports')
+
           def coverage_matrix_splits_doctests_from_partitions():
               tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
               matrix = re.search(r'        shard: (.*)', tests)[1]
-              assert matrix == "$" + "{{ fromJSON(needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,\"doctests\"]' || '[1,2,3,4]') }}"
-              assert "name: $" + "{{ matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}" in tests
+              assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,\"doctests\"]' || '[1,2,3,4]') }}"
+              assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}" in tests
               assert '    needs: declaration\n' in tests and '      fail-fast: false\n' in tests
               assert 'advisory-scan' in tests and "inputs.working-directory != '.'" in tests
               with tempfile.TemporaryDirectory() as temporary:
@@ -1690,10 +1933,10 @@ jobs:
                           assert result.returncode == 0, result.stderr
                           selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                           choices = re.findall(r"'(\[.*?\])'", matrix)
-                          legs = json.loads(choices[0 if selected['coverage'] == 'true' else 1])
+                          legs = json.loads(choices[1 if selected['coverage'] == 'true' else 2])
                           assert legs == ([1, 2, 3, 4] if event == 'pull_request' else [1, 2, 3, 4, 'doctests'])
               upload = next(s for s in workflow.split('      - name: ')[1:] if s.startswith('Upload shard coverage\n'))
-              assert "if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests'\n" in upload
+              assert "if: $" + "{{ !inputs.warm-cache && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}\n" in upload
 
           coverage_matrix_splits_doctests_from_partitions()
           print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -1825,7 +2068,7 @@ jobs:
                   "$" + "{{ inputs.working-directory || '.' }}/nextest.log"]
               assert 'name: $' + '{{ steps.diagnostics.outputs.artifact_name }}\n' in upload
               assert 'timeout-minutes: 45\n' in steps['Isolated tests']
-              assert "if: needs.declaration.outputs.enabled != 'true'\n" in steps['Tests']
+              assert "if: $" + "{{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}\n" in steps['Tests']
               assert "assert os.environ['RESULT'] == 'success'" in body('All test shards passed')
 
           diagnostic_upload_is_unconditional_and_scoped()
@@ -1894,7 +2137,7 @@ jobs:
 
           def failed_shard_and_missing_coverage_stay_distinct():
               step = next(s for s in workflow.split('      - name: ')[1:] if s.startswith('Upload shard coverage\n')).split('\n  tests-result:', 1)[0]
-              assert "if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests'\n" in step
+              assert "if: $" + "{{ !inputs.warm-cache && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}\n" in step
               assert 'always()' not in step and 'if-no-files-found: error\n' in step
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -2102,7 +2345,7 @@ jobs:
           def fuzz_scan_runs_only_declaration_and_fuzz():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               job = jobs['fuzz']
-              assert "    if: $" + "{{ inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}\n" in job
+              assert "    if: $" + "{{ !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}\n" in job
               assert 'fuzz-scan' not in jobs['declaration'] and 'fuzz-scan' not in jobs['advisories']
               assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: nightly-2026-09-15\n' in job
               assert workflow.count('nightly-') == 1 and workflow.count('/cargo-fuzz/') == 1
@@ -2264,7 +2507,7 @@ jobs:
               assert 'ADDITIONAL_LOCKED_MANIFESTS: $' + '{{ needs.declaration.outputs.additional_locked_manifests }}' in tests
               declaration_job = workflow.split('  declaration:\n', 1)[1].split('\n  quality:', 1)[0]
               assert 'additional_locked_manifests: $' + '{{ steps.config.outputs.additional_locked_manifests }}' in declaration_job
-              assert 'fromJSON(needs.declaration.outputs.coverage' in tests
+              assert "fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.coverage" in tests
               for name in ['Tests', 'Isolated tests']:
                   assert 'cargo fetch --locked\n' in body(name)
               with tempfile.TemporaryDirectory() as temporary:
@@ -3003,7 +3246,7 @@ jobs:
                   assert config['git_sources'] == ['https://github.com/example/repo']
                   # Each consumer call includes the job: its failure propagates to both required results.
                   checks = workflow.split('  checks:\n', 1)[1].split('  targets:\n', 1)[0]
-                  assert 'needs: declaration' in checks and 'continue-on-error' not in checks
+                  assert 'needs: declaration' in checks and not re.search(r'^    continue-on-error:', checks, re.MULTILINE)
                   assert 'QUALITY_CONFIG: $' + '{{ needs.declaration.outputs.quality_config }}' in checks
                   assert 'Isolated coverage' not in checks
                   aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:\n', 1)[0]
@@ -3382,10 +3625,10 @@ jobs:
                   section = workflow.split(f'  {name}:\n')[1]
                   assert 'needs: declaration' in section
               assert 'pull_request:' in workflow and 'merge_group:' in workflow
-              assert "if: $" + "{{ !inputs.advisory-scan && !inputs.fuzz-scan && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
+              assert "if: $" + "{{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
               # Each scan mode runs only the declaration and its own job.
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              assert "    if: $" + "{{ inputs.advisory-scan }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
+              assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
               assert all('!inputs.advisory-scan && !inputs.fuzz-scan' in job.split('\n    steps:', 1)[0]
                          for name, job in jobs.items() if name not in ('declaration', 'advisories', 'fuzz')), sorted(jobs)
 
@@ -3393,7 +3636,7 @@ jobs:
               internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
               assert 'needs: [sample, declared, test-tools]' in internal
               assert "all(job['result'] == 'success'" in internal
-              assert 'continue-on-error' not in workflow
+              assert not re.search(r'^    continue-on-error:', workflow, re.MULTILINE)
               job = workflow.split('  browser-tests:\n', 1)[1]
               assert "needs.declaration.outputs.browser_tests == 'true'" in job
               assert 'persist-credentials: false' in job
@@ -3476,7 +3719,7 @@ jobs:
                   'cargo doc --workspace --no-deps --locked',
                   'cargo test --workspace --locked',
               ]
-              assert 'continue-on-error' not in workflow and '|| true' not in workflow
+              assert not re.search(r'^    continue-on-error:', workflow, re.MULTILINE) and '|| true' not in workflow
               assert 'permissions:\n  contents: read' in workflow
               assert "cancel-in-progress: $" + "{{ github.event_name == 'pull_request' }}" in workflow
               for step in workflow.split('      - name: ')[1:]:
