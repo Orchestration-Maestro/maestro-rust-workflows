@@ -385,7 +385,9 @@ jobs:
           test -x "$bin/sccache"
           echo "$bin" >> "$GITHUB_PATH"
           { echo RUSTC_WRAPPER=sccache; echo SCCACHE_GHA_ENABLED=true; echo SCCACHE_GHA_VERSION=2; echo CARGO_INCREMENTAL=0; } >> "$GITHUB_ENV"
-          PATH="$bin:$PATH" SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION=2 sccache --start-server
+          PATH="$bin:$PATH" SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION=2 \
+            SCCACHE_SKIP_CACHE_CHECK=true SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-error.log" \
+            SCCACHE_LOG=debug sccache --start-server
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
@@ -441,6 +443,12 @@ jobs:
           test "$RUSTC_WRAPPER" = sccache
           test "$CARGO_INCREMENTAL" = 0
           sccache --show-stats
+          if [ -f "$RUNNER_TEMP/sccache-error.log" ]; then
+            token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
+            echo "::stop-commands::$token"
+            cat "$RUNNER_TEMP/sccache-error.log"
+            printf '\n::%s::\n' "$token"
+          fi
 
   docs:
     needs: declaration
