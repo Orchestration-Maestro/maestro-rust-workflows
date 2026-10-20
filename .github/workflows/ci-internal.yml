@@ -205,7 +205,7 @@ jobs:
                   started = shell((exports if source == startup else '') + source, env)
                   assert started.returncode == 0, (started.returncode, started.stdout, started.stderr)
                   if source == startup:
-                      env.update(line.split('=', 1) for line in (directory / 'env').read_text().splitlines())
+                      env.update(line.split('=', 1) for line in (directory / 'env').read_text(encoding='utf-8').splitlines())
                   yield env
               finally:
                   run([str(binary), '--stop-server'], env)
