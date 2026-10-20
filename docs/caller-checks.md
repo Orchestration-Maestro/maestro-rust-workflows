@@ -563,9 +563,10 @@ the other targets' findings.
 
 The `libfuzzer-sys` crate that cargo-fuzz uses is licensed
 `(MIT OR Apache-2.0) AND NCSA`. The shared CI accepts NCSA only for that
-crate, in a test-only fuzz crate outside the caller workspace. The workspace
-license check never sees the fuzz crate and still rejects NCSA in anything the
-caller ships.
+crate, in a test-only fuzz crate outside the caller workspace. That fuzz crate
+keeps the NCSA notice, and nothing the caller ships may depend on it. The
+workspace license check never sees the fuzz crate and still rejects NCSA in
+anything the caller ships.
 
 ## Adoption and verification
 
