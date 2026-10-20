@@ -73,8 +73,9 @@ no required settings file and no workflow inputs. The optional
 tools, caller-pinned build and test tools, reserved test ports, listed wasm builds, native foreign-target
 checks, [additional locked manifests](docs/caller-checks.md#additional-locked-manifests)
 for independent workspace dependencies, a caller-pinned browser build recipe,
-and optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
-with shared verified runtime pins. A repository's `rust-toolchain.toml`
+optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
+with shared verified runtime pins, and a [nightly fuzz job](docs/caller-checks.md#nightly-fuzz-job)
+that files one issue per distinct finding. A repository's `rust-toolchain.toml`
 selects its toolchain through rustup.
 
 Every caller also gets the dependency and source checks: cargo-deny
@@ -126,7 +127,11 @@ Workflow-body probes cover declarations, isolation, real tools, wasm and
 browser failures and pinned tooling. A developer-tool fixture proves build-script
 tool availability across compiling jobs. Isolated tests spawn caller-pinned
 `just` and `prek` only when opted in. Native
-runner proofs detect deliberate Windows/macOS-only failures. These feed the same required results.
+runner proofs detect deliberate Windows/macOS-only failures. The `fixtures/fuzz`
+caller runs the fuzz job on hosted runners: its planted crash, stall and large
+allocation each give one finding, its clean target gives none, and the report
+code files them through a fake `gh`, so the self-test never opens a real issue.
+These feed the same required results.
 
 The final checks are `Required repository quality` and
 `Required consumer tests`.

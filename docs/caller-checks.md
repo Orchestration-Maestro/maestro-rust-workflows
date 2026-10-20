@@ -3,8 +3,8 @@
 Add `.github/ci.toml` at the caller repository root to opt into isolated tests,
 real search tools and optional builds. Organization calls use that root; the
 workflow's directory input exists only for its fixture self-test, pinned
-workspace proof and advisory scan. Optional `checkout-repository` and
-`checkout-ref` inputs serve the same three: when unset they check out the caller
+workspace proof, and advisory and fuzz scans. Optional `checkout-repository` and
+`checkout-ref` inputs serve the same four: when unset they check out the caller
 repository and commit. `checkout-base-ref` and `test-event` are overrides
 restricted to this workflow repository; they default to the real PR base and event.
 
@@ -506,6 +506,66 @@ There is no Linux fallback for Apple/MSVC targets. These compile checks do not
 restore macOS/Windows runtime tests, which remain a before-first-release
 requirement. All opted-in jobs run in both ordinary pull requests and merge
 queue checks. Declaration errors fail CI even when dependent jobs skip.
+
+## Nightly fuzz job
+
+A caller declares its cargo-fuzz targets with two keys that go together;
+declaring one without the other fails validation:
+
+```toml
+fuzz_manifest = "fuzz/Cargo.toml"
+fuzz_targets = [
+  { name = "parse", seconds = 600, max_len = 4096, timeout = 10, rss_limit_mb = 2048 },
+]
+```
+
+`fuzz_manifest` is the literal relative path of the fuzz crate's `Cargo.toml`.
+The declaration checks it like an additional locked manifest: it must be an
+existing file inside the repository. Keep that crate outside the caller
+workspace, with its own empty `[workspace]` table as cargo-fuzz lays it out, so
+no pull-request job builds it. Every `fuzz_targets` entry needs all five fields, and each number is
+a positive integer:
+
+| Field | libFuzzer flag | Meaning |
+| --- | --- | --- |
+| `name` | | Fuzz target (`[[bin]]`) name: letters, digits, `_` and `-`, unique |
+| `seconds` | `-max_total_time` | Total fuzzing time in seconds |
+| `max_len` | `-max_len` | Largest generated input in bytes |
+| `timeout` | `-timeout` | Seconds one input may run before it counts as a timeout |
+| `rss_limit_mb` | `-rss_limit_mb` | Memory in megabytes before an input counts as out of memory |
+
+Targets run in declared order, each in its own job, and an empty array runs
+none. The committed `<fuzz dir>/corpus/<name>/` directory seeds each run; the
+job does not keep the corpus between nights.
+
+The keys change nothing in pull requests, merge groups or pushes. Only the
+workflow's fuzz-scan mode runs the fuzz job, next to the declaration, and the
+organization's required workflow never sets that mode.
+`.github/workflows/fuzz.yml` calls it for Maestro's `main` every night at 04:41
+UTC and on manual dispatch. Each target job installs cargo-fuzz 0.13.2, a
+checksum-verified release like the other check tools, and the
+`nightly-2026-09-15` toolchain, which replaces the caller's
+`rust-toolchain.toml` for that job only. It fuzzes on Linux x86_64
+(`--target x86_64-unknown-linux-gnu`).
+
+A crash, timeout, out-of-memory result or leak is a finding. The job minimizes
+its input with `cargo fuzz tmin` under the same time and memory limits, then
+uploads the raw and minimized inputs, both logs and `finding.json` as the
+artifact `fuzz-<concurrency key>-<name>`. The report job files one issue in the
+caller repository per distinct finding, titled `Fuzz <kind> in <target>`, with
+` at <file>:<line>:<column>` added for a Rust panic. The body holds the run
+link, the artifact name, the minimized input in base64 and the stack, within
+GitHub's 65,536-character limit; an input too large for the body stays in the
+artifact. When an open issue has exactly that title, the job comments on it
+instead of opening another. Any finding or failed scan turns the run red. A tool
+or build error fails only that target's job, and the report job still files
+the other targets' findings.
+
+The `libfuzzer-sys` crate that cargo-fuzz uses is licensed
+`(MIT OR Apache-2.0) AND NCSA`. The shared CI accepts NCSA only for that
+crate, in a test-only fuzz crate outside the caller workspace. The workspace
+license check never sees the fuzz crate and still rejects NCSA in anything the
+caller ships.
 
 ## Adoption and verification
 
