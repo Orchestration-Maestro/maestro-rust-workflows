@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.11.1...v0.11.2) (2026-10-20)
+
+
+### Bug Fixes
+
+* retain timed-out shard diagnostics ([#100](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/100)) ([1c3cee5](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/1c3cee5be34ad38540af093000d052879e9f5f55))
+
 ## [0.11.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.11.0...v0.11.1) (2026-10-17)
 
 
