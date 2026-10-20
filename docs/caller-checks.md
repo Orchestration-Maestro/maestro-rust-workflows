@@ -23,6 +23,7 @@ schedule the proof; check its results before landing.
 wasm_crates = ["my-browser-library"]
 check_targets = ["x86_64-pc-windows-msvc"]
 browser_build = false
+browser_test_crates = []
 test_tools = false
 ```
 
@@ -40,7 +41,7 @@ same concurrency group with its called workflow; see GitHub's
 
 ## Declaration
 
-Both arrays are required, including when empty. `browser_build` and
+The `wasm_crates` and `check_targets` arrays are required, including when empty. `browser_build` and
 `test_tools` are optional booleans that default to `false`. The
 [schema](../.github/ci.schema.json) describes the parsed TOML shape; there is no
 version key or older-format reader.
@@ -62,7 +63,7 @@ must match a package in the caller's locked Cargo metadata. Each target must
 match the caller compiler's target list and the runner table below. An unknown
 package, unknown target or recognized target without a runner fails with a
 file/key diagnostic before optional work is emitted. Metadata or compiler
-inspection failures also fail validation. Array order and repetitions are
+inspection failures also fail validation. Wasm and target array order and repetitions are
 retained; declaration text is never executed as shell syntax.
 
 ## Test shards
@@ -353,7 +354,8 @@ just = "1.58.0"
 prek = "0.5.3"
 ```
 
-Tool versions come from the caller, not the shared workflow. Missing
+Build-tool versions come from the caller. The optional
+[browser runtime tools](#chromium-browser-tests) have shared pins instead. Missing
 `mise.toml` or a failed installation fails the job. Installing pins does not
 supply undeclared build tools. False or omitted `test_tools` skips this opt-in;
 a `mise.toml` alone does not enable it. Noncompiling jobs install no caller tools.
@@ -390,6 +392,100 @@ not override the caller's tool versions; the self-test uses just 1.58.0.
 The caller owns the browser application, entry, temporary bundles and
 application-specific diagnostics. A wasm build or recipe invocation alone is
 not proof of browser runtime behavior.
+
+## Chromium browser tests
+
+`browser_test_crates` is an optional array of exact locked workspace package
+names, defaulting to `[]`. Repeated names request one job, not repeated recipe
+invocations. An absent declaration, omitted key or empty array schedules no
+browser runtime job. Wrong types and unknown names fail declaration validation.
+The existing `wasm_crates` and `check_targets` arrays remain required.
+
+One Linux `browser-tests` job invokes `just browser-test` when a requested
+package is in the existing changed-package/reverse-dependency selection. A
+change to a nonempty browser request also selects this job without widening
+native package selection. Removing the request skips it. Merge groups and main
+pushes select the full requested suite; advisory-only runs never start Chromium.
+`browser_build` and `test_tools` remain independent opt-ins. Native coverage
+selection and its floor do not change.
+
+The caller supplies a `mise.toml` just pin and a `browser-test` recipe. The job
+installs caller tools first, then these shared runtime tools:
+
+| Tool | Pin | Archive verification |
+| --- | --- | --- |
+| Chromium Linux x64 | 156.0.8078.4, revision 1248 | SHA-256 `43fd31766c7533a02dda2ded5ad50c2f861cd5400be7509c0abad71129f79d79` |
+| Playwright | 1.64.1 | SHA-512 `HCrVhHr5QQuwYoswEUGTb7gGp522yflbv/ST8nF4sFWGuLjQCt17Q/EubpGGSNKYn1tsTCPZxqHhHCfVURu7UA==` |
+| Playwright core | 1.64.1 | SHA-512 `BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ==` |
+| wasm-bindgen CLI | 0.2.129 | SHA-256 `82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e` |
+
+The [production installer](../.github/workflows/ci.yml) contains the exact
+archive URLs. It verifies each archive before unpacking, installs no npm
+lifecycle scripts or second browser, and checks the two-package JavaScript
+runtime closure. Node must be at least 20; the job logs its actual version,
+Playwright, Chromium and binding CLI versions. Playwright's public `install-deps
+chromium` command installs Linux system libraries and may require sudo.
+
+The recipe receives absolute `PLAYWRIGHT_MODULE` and `CHROMIUM_PATH` values.
+The verified binding CLI directory precedes caller tools on PATH. The job runs
+`just browser-test` directly, without a later mise PATH rewrite. The consumer
+must check its resolved binding crate against CLI 0.2.129, reject missing or
+empty export selections, await each export and report completed/expected counts.
+Download, installation, missing just pin/recipe, version mismatch and nonzero
+recipe results fail the job and its required caller result.
+
+### Local build and runtime command
+
+From the consumer checkout on Linux, set `WORKFLOW_CHECKOUT` to a checkout of
+the workflow release being qualified. This runs the same verified installer
+(including system-library setup), then the same fixed recipe. It requires
+Python, Node >=20, curl, unzip, tar and the caller-pinned just on PATH:
+
+```bash
+export WORKFLOW_CHECKOUT="$HOME/src/maestro-rust-workflows"
+python3 - <<'PYTHON'
+import os
+import pathlib
+import re
+import subprocess
+import tempfile
+import textwrap
+source = (pathlib.Path(os.environ['WORKFLOW_CHECKOUT']) / '.github/workflows/ci.yml').read_text(encoding='utf-8')
+step = source.split('      - name: Browser runtime tools\n', 1)[1]
+command = textwrap.dedent(re.search(r'        run: \|\n((?:          .*\n|\n)+)', step)[1])
+with tempfile.TemporaryDirectory() as temporary:
+    paths, values = pathlib.Path(temporary) / 'paths', pathlib.Path(temporary) / 'env'
+    env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths), 'GITHUB_ENV': str(values)}
+    subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command], env=env, check=True)
+    env.update(line.split('=', 1) for line in values.read_text(encoding='utf-8').splitlines())
+    env['PATH'] = os.pathsep.join(reversed(paths.read_text(encoding='utf-8').splitlines())) + os.pathsep + env['PATH']
+    env['CARGO_BUILD_JOBS'] = '3'
+    subprocess.run(['capped', 'just', 'browser-test'], env=env, check=True)
+PYTHON
+```
+
+In Maestro, the recipe builds an unregistered scratch cdylib from unchanged
+sandbox test sources with root-only test configuration and locked external
+dependency identities. It packages web bindings with `--split-linked-modules`
+to preserve relative fixture imports, then awaits 26 execution and 19 loading
+exports with a fresh page per export. The registered integration target remains
+compile/lint proof only: its libtest initialization starts native cases before
+browser exports. Offline-card exports are excluded while their dependency graph
+contains egui/epaint; session-header canvas tests are excluded. Transcript
+execution waits for [the transcript delivery](https://github.com/Orchestration-Maestro/maestro/issues/801).
+See [Maestro's consumer harness](https://github.com/Orchestration-Maestro/maestro/issues/1809)
+for the build/package/driver owner and its development documentation.
+
+The declared fixture proves reusable-job wiring with a real browser assertion,
+not the consumer's Rust assertions. Real-consumer shared-job-body qualification
+uses the immutable main commit containing the harness, all 45 exports, seeded
+failures in both families, missing/zero exports and asynchronous rejection,
+followed by restored sources. Release waits for that hosted qualification.
+Caller activation is separate: release, re-pin, opt in, then observe the first
+actual Chromium job pass. Workflow landing or a job-body proof is not activation;
+[the delivery issue](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/98)
+stays open until that observation. Record cold/warm cost from hosted runs rather
+than treating estimates as deadlines.
 
 ## Foreign-target checks
 

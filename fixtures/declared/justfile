@@ -1,3 +1,20 @@
 browser-build:
     test -f target/wasm32-unknown-unknown/debug/libdeclared.rlib
     @printf built-after-wasm > browser-built
+
+browser-test:
+    #!/usr/bin/env node
+    const assert = require('node:assert/strict');
+    const {chromium} = require(process.env.PLAYWRIGHT_MODULE);
+    (async () => {
+        const browser = await chromium.launch({executablePath: process.env.CHROMIUM_PATH, headless: true});
+        try {
+            const page = await browser.newPage();
+            await page.setContent('<button>Ready</button>');
+            await page.locator('button').click();
+            assert.equal(await page.locator('button').textContent(), 'Ready');
+            console.log('PASS browser runtime fixture');
+        } finally {
+            await browser.close();
+        }
+    })().catch(error => { console.error(error); process.exitCode = 1; });

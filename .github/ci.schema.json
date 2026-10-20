@@ -178,6 +178,14 @@
         "minLength": 1
       },
       "default": []
+    },
+    "browser_test_crates": {
+      "description": "Exact locked workspace package names requesting the fixed browser-test recipe. Duplicates run once.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
     }
   }
 }
