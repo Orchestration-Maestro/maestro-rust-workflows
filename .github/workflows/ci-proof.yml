@@ -44,66 +44,11 @@ jobs:
       test-event: pull_request
 
   comparison:
-    name: Maestro single coverage
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout workflow
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          path: workflow
-      - name: Checkout Maestro
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          repository: Orchestration-Maestro/maestro
-          ref: 98b41a9149ebf1d5cfffdc343194cfc0555467d9
-          path: maestro
-      - name: Extract workflow steps
-        shell: python
-        run: |
-          import ast
-          import os
-          import pathlib
-          import re
-          import textwrap
-          workflow = pathlib.Path('workflow/.github/workflows/ci.yml').read_text(encoding='utf-8')
-          directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'proof-steps'
-          directory.mkdir()
-          source = pathlib.Path('workflow/.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
-          code = source.split('      - name: Caller checks at workflow seam\n', 1)[1]
-          code = code.split('        run: |\n', 1)[1].split('\n  native:', 1)[0]
-          tree = ast.parse(textwrap.dedent(code))
-          tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
-          exec(compile(tree, 'workflow body resolver', 'exec'))
-          for step in workflow.split('      - name: ')[1:]:
-              name = step.splitlines()[0]
-              if re.search(r'^        run:', step, re.MULTILINE):
-                  (directory / name).write_text(body(name), encoding='utf-8')
-          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
-              output.write(f'PROOF_STEPS={directory}\n')
-      - name: Free instrumented build space
-        run: bash -e -o pipefail "$PROOF_STEPS/Free instrumented build space"
-      - name: Toolchain
-        working-directory: maestro
-        run: bash -e -o pipefail "$PROOF_STEPS/Test toolchain"
-      - name: Coverage tools
-        timeout-minutes: 10
-        run: bash -e -o pipefail "$PROOF_STEPS/Coverage tools"
-      - name: Caller tools
-        timeout-minutes: 10
-        working-directory: maestro
-        run: |
-          bash -e -o pipefail "$PROOF_STEPS/Search tools"
-          bash -e -o pipefail "$PROOF_STEPS/Mise bootstrap"
-          while read -r bin; do export PATH="$bin:$PATH"; done < "$GITHUB_PATH"
-          bash -e -o pipefail "$PROOF_STEPS/Test tools"
-      - name: Single-job coverage baseline
-        timeout-minutes: 45
-        working-directory: maestro
-        env:
-          CARGO_COVERAGE_MIN_LINES: 80
-        run: |
-          start=$SECONDS
-          bash -e -o pipefail "$PROOF_STEPS/Isolated tests"
-          echo "Single-job coverage seconds: $((SECONDS - start))"
+    name: Unchanged main cache comparison
+    uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@c46e80e87caa235a78b79cc064e56eeb435e19d6
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: 98b41a9149ebf1d5cfffdc343194cfc0555467d9
+      concurrency-key: maestro-baseline
+      test-event: merge_group
