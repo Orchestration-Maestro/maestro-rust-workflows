@@ -73,11 +73,14 @@ test-suite runner metadata such as resource groups for fixed-port tests. Shared
 CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
-run once on shard 1 with `cargo test --workspace --locked --doc`.
+run once with `cargo test --locked --doc`: on shard 1 for pull requests, or in
+a parallel `Doctests` matrix leg for merge groups and main pushes. Package
+selection is unchanged; full runs use `--workspace`.
 
 Declared callers run `cargo llvm-cov nextest` in the same isolated environment
-with their opted-in tools. Shards upload LCOV without individual thresholds.
-`Tests (ubuntu-latest)` requires all shards, downloads all four reports, counts
+with their opted-in tools. Only the four numeric shards upload LCOV, without
+individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
+including full-run `Doctests`, to succeed. It downloads all four reports, counts
 each source line once (covered if any shard hits it), and enforces
 `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
@@ -88,7 +91,8 @@ for merge groups and main pushes. PRs skip coverage for all callers.
 Declared callers receive `MAESTRO_TEST_DIAGNOSTICS_DIR`, an absolute path to
 `target/browser-author-diagnostics` under the caller's working directory. The
 workflow creates it outside disposable HOME/TMP isolation and forwards it to
-partition runners and shard-1 doctests. An inherited value is not used.
+partition runners and the doctest owner described in [Test shards](#test-shards).
+An inherited value is not used.
 
 Caller tests own transcript production: write regular files there, flush each
 phase before waiting on a child, and exclude credentials and other sensitive
@@ -106,7 +110,9 @@ from running.
 
 Artifact names are
 `test-diagnostics-<repository-id>-<caller-digest>-shard-<shard>-run-<run-id>-attempt-<run-attempt>`.
-The caller digest is the full lowercase SHA-256 of the UTF-8 compact JSON array
+The shard field is `1` through `4`, or `doctests` for the parallel doctest leg
+(`shard-doctests`). That leg normally has no `nextest.log`; the same missing-file
+tolerance applies. The caller digest is the full lowercase SHA-256 of the UTF-8 compact JSON array
 `[checkout-repository-or-github.repository, working-directory-or-".", concurrency-key-or-""]`,
 with Unicode unescaped. It distinguishes repositories, caller directories and
 reusable call keys without exposing path characters in artifact names.
@@ -325,7 +331,8 @@ routes pass it to child builds, including dependencies outside the checkout.
 Explicit Bash run defaults preserve runner failures through log capture. A failed
 runner fails its test step, so coverage uploads run only after success; a missing
 report after success fails the upload separately. The required aggregate accepts
-only successful shards and requires all four reports when merging coverage.
+only successful matrix legs, including `Doctests`, and requires the four numeric
+reports when merging coverage.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps

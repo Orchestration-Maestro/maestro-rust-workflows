@@ -474,12 +474,12 @@ jobs:
 
   tests:
     needs: declaration
-    name: Test shard (${{ matrix.shard }}/4)
+    name: ${{ matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}
     if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: ${{ fromJSON(needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,"doctests"]' || '[1,2,3,4]') }}
     runs-on: ubuntu-latest
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -558,8 +558,10 @@ jobs:
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
-          "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/4" --no-tests pass 2>&1 | tee nextest.log
-          if [ "$SHARD" = 1 ]; then
+          if [ "${SHARD:-}" != doctests ]; then
+            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/4" --no-tests pass 2>&1 | tee nextest.log
+          fi
+          if [[ "$SHARD" == doctests || ( "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
             cargo test --locked --doc "${packages[@]}"
           fi
       - name: Search tools
@@ -639,18 +641,20 @@ jobs:
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
-          if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
-            run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
-          elif [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; then
-            run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-              --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/4" --no-tests pass --workspace --locked --lcov --output-path "$PWD/shard-$SHARD.lcov" 2>&1 | tee nextest.log
-          else
-            partition=()
-            if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/4"); fi
-            run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
-              --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
+          if [ "${SHARD:-}" != doctests ]; then
+            if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
+              run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+            elif [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; then
+              run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
+                --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/4" --no-tests pass --workspace --locked --lcov --output-path "$PWD/shard-$SHARD.lcov" 2>&1 | tee nextest.log
+            else
+              partition=()
+              if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/4"); fi
+              run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
+                --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
+            fi
           fi
-          if [ -z "${CARGO_COVERAGE_MIN_LINES:-}" ] && [ "${SHARD:-1}" = 1 ]; then
+          if [[ -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
             run_isolated cargo test --locked --doc "${packages[@]}"
           fi
       - name: Print test diagnostics
@@ -709,7 +713,7 @@ jobs:
         if: always()
         run: *sccache-stats
       - name: Upload shard coverage
-        if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
+        if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ inputs.concurrency-key || 'root' }}-${{ matrix.shard }}

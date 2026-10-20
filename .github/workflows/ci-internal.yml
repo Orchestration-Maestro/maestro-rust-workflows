@@ -1203,30 +1203,31 @@ jobs:
                       if crate == child:
                           manifest += '[dependencies]\nlauncher-external={path="../../external"}\n'
                       (crate / 'Cargo.toml').write_text(manifest, encoding='utf-8')
-                  (directory / 'src/lib.rs').write_text(textwrap.dedent('''
-                      #[test]
-                      fn external_child_build_keeps_selected_compiler() {
+                  child_command = textwrap.dedent('''
                           let output = std::process::Command::new(env!("CARGO"))
                               .args(["check", "--offline", "--locked", "--manifest-path", "child/Cargo.toml",
                                      "--target-dir", "child-output"])
                               .output().unwrap();
                           assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-                      }
-                  '''), encoding='utf-8')
+                  ''')
                   (child / 'src/lib.rs').write_text('pub fn child() { launcher_external::external(); }\n', encoding='utf-8')
                   (external / 'src/lib.rs').write_text('pub fn external() {}\n', encoding='utf-8')
+                  (directory / 'src/lib.rs').write_text('', encoding='utf-8')
                   selected = toolchain_environment(directory, env)
                   build_env = os.environ | env | selected
                   for crate in [directory, child]:
                       subprocess.run(['cargo', 'generate-lockfile', '--offline', '--manifest-path', str(crate / 'Cargo.toml')],
                                      env=build_env, check=True, capture_output=True)
-                  for step in ['Tests', 'Isolated tests']:
+                  for step, role in [(step, role) for step in ['Tests', 'Isolated tests'] for role in ['1', 'doctests']]:
+                      source = ('#[test]\nfn external_child_build_keeps_selected_compiler() {\n' + child_command + '}\n'
+                                if role == '1' else '//! ```\n' + ''.join('//! ' + line + '\n' for line in child_command.splitlines()) + '//! ```\n')
+                      (directory / 'src/lib.rs').write_text(source, encoding='utf-8')
                       shutil.rmtree(directory / 'child-output', ignore_errors=True)
-                      result = execute(step, directory, env | {'RUNNER_TEMP': temporary, 'SHARD': '1',
+                      result = execute(step, directory, env | {'RUNNER_TEMP': temporary, 'SHARD': role,
                                                               'COLLECT_COVERAGE': 'false', 'CARGO_NET_OFFLINE': 'true', 'RUSTC_WRAPPER': ''})
                       output = result.stdout + result.stderr
                       assert result.returncode == 0, output
-                      assert 'PASS' in output and 'external_child_build_keeps_selected_compiler' in output, output
+                      assert ('external_child_build_keeps_selected_compiler' in output and 'PASS' in output) if role == '1' else 'test result: ok. 1 passed' in output, output
                       assert 'syncing channel updates' not in output, output
                       assert (directory / 'child-output/debug/deps').is_dir()
 
@@ -1284,10 +1285,88 @@ jobs:
                   subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
               return tools, log
 
+          def coverage_matrix_splits_doctests_from_partitions():
+              tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
+              matrix = re.search(r'        shard: (.*)', tests)[1]
+              assert matrix == "$" + "{{ fromJSON(needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,\"doctests\"]' || '[1,2,3,4]') }}"
+              assert "name: $" + "{{ matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}" in tests
+              assert '    needs: declaration\n' in tests and '      fail-fast: false\n' in tests
+              assert 'advisory-scan' in tests and "inputs.working-directory != '.'" in tests
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  import shutil
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  for declared in [False, True]:
+                      if declared:
+                          (directory / '.github').mkdir()
+                          (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode == 0 and values['enabled'] == str(declared).lower(), result.stderr
+                      for event in ['pull_request', 'merge_group', 'push']:
+                          output = directory / 'output'
+                          result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
+                          assert result.returncode == 0, result.stderr
+                          selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                          choices = re.findall(r"'(\[.*?\])'", matrix)
+                          legs = json.loads(choices[0 if selected['coverage'] == 'true' else 1])
+                          assert legs == ([1, 2, 3, 4] if event == 'pull_request' else [1, 2, 3, 4, 'doctests'])
+              upload = next(s for s in workflow.split('      - name: ')[1:] if s.startswith('Upload shard coverage\n'))
+              assert "if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests'\n" in upload
+
+          coverage_matrix_splits_doctests_from_partitions()
+          print('PASS coverage_matrix_splits_doctests_from_partitions')
+
+          def doctest_leg_runs_only_selected_docs():
+              for step in ['Tests', 'Isolated tests']:
+                  for selected, expected in [(None, ['--workspace']), ('["alpha","beta"]', ['-p', 'alpha', '-p', 'beta']), ('[]', [])]:
+                      with tempfile.TemporaryDirectory() as temporary:
+                          directory = pathlib.Path(temporary)
+                          tools, log = install_recording_runner(directory)
+                          result = execute(step, directory, {
+                              'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                              'RUNNER_TEMP': temporary, 'SHARD': 'doctests', 'COLLECT_COVERAGE': 'true',
+                              'TEST_PACKAGES': selected, 'MAESTRO_TEST_DIAGNOSTICS_DIR': None})
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                          assert [c['args'] for c in commands] == [['fetch', '--locked']] + (
+                              [['test', '--locked', '--doc'] + expected] if expected else [])
+                          assert not (directory / 'nextest.log').exists()
+                          assert not list(directory.glob('*.lcov'))
+
+          doctest_leg_runs_only_selected_docs()
+          print('PASS doctest_leg_runs_only_selected_docs')
+
+          def doctest_failure_keeps_required_result_red():
+              for step in ['Tests', 'Isolated tests']:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      (directory / 'src').mkdir()
+                      (directory / 'Cargo.toml').write_text('[package]\nname="doc-control"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+                      (directory / 'Cargo.lock').write_text('version = 4\n\n[[package]]\nname = "doc-control"\nversion = "0.1.0"\n', encoding='utf-8')
+                      for value, status in [(2, 101), (1, 0)]:
+                          (directory / 'src/lib.rs').write_text(f'//! ```\n//! assert_eq!(1, {value});\n//! ```\n', encoding='utf-8')
+                          result = execute(step, directory, {'RUNNER_TEMP': temporary, 'SHARD': 'doctests',
+                              'COLLECT_COVERAGE': 'true', 'TEST_PACKAGES': None, 'CARGO_TARGET_DIR': str(directory / 'target')})
+                          output = result.stdout + result.stderr
+                          assert result.returncode == status, output
+                          assert ('test result: FAILED' if status else 'test result: ok. 1 passed') in output, output
+                          assert not (directory / 'nextest.log').exists()
+                          print(f'PASS real doctest {step}: exit {status}', flush=True)
+              aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
+              assert 'needs: [tests, declaration]' in aggregate
+              assert 'continue-on-error' not in aggregate
+              for status in ['success', 'failure', 'cancelled', 'skipped']:
+                  result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                                          env=os.environ | {'RESULT': status}, capture_output=True, text=True)
+                  assert (result.returncode == 0) == (status == 'success')
+
+          doctest_failure_keeps_required_result_red()
+          print('PASS doctest_failure_keeps_required_result_red')
+
           def diagnostic_directory_reaches_isolated_runner():
               for caller in ['.', 'nested space/雪']:
                   for coverage in ['false', 'true']:
-                      for shard in ['1', '2']:
+                      for shard in ['1', '2', 'doctests']:
                           with tempfile.TemporaryDirectory() as temporary:
                               directory = pathlib.Path(temporary) / caller
                               directory.mkdir(parents=True, exist_ok=True)
@@ -1303,11 +1382,14 @@ jobs:
                               expected = str(directory.resolve() / 'target/browser-author-diagnostics')
                               assert children and all(c['diagnostics'] == expected for c in children), children
                               assert all(c['ambient'] is None for c in children)
-                              assert len(children) == (2 if shard == '1' else 1), children
-                              assert children[0]['tool'] == ('cargo-llvm-cov' if coverage == 'true' else 'cargo-nextest')
-                              assert children[0]['args'][children[0]['args'].index('--partition') + 1] == f'count:{shard}/4'
-                              if shard == '1':
-                                  assert children[1]['args'] == ['test', '--locked', '--doc', '--workspace']
+                              assert len(children) == (2 if shard == '1' and coverage == 'false' else 1), children
+                              if shard == 'doctests':
+                                  assert children[0]['args'] == ['test', '--locked', '--doc', '--workspace']
+                              else:
+                                  assert children[0]['tool'] == ('cargo-llvm-cov' if coverage == 'true' else 'cargo-nextest')
+                                  assert children[0]['args'][children[0]['args'].index('--partition') + 1] == f'count:{shard}/4'
+                                  if shard == '1' and coverage == 'false':
+                                      assert children[1]['args'] == ['test', '--locked', '--doc', '--workspace']
                               assert (pathlib.Path(expected) / 'runner.txt').read_text(encoding='utf-8') == 'child marker'
                               assert all(not pathlib.Path(c['home']).exists() for c in children)
                               assert not (pathlib.Path(temporary) / 'decoy').exists()
@@ -1378,7 +1460,7 @@ jobs:
                       result = execute('Print test diagnostics', directory, base | changes | {'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stderr
                       value = output.read_text(encoding='utf-8').removeprefix('artifact_name=').strip()
-                      assert re.fullmatch(r'test-diagnostics-123-[0-9a-f]{64}-shard-[12]-run-45[67]-attempt-[12]', value), value
+                      assert re.fullmatch(r'test-diagnostics-123-[0-9a-f]{64}-shard-(?:[12]|doctests)-run-45[67]-attempt-[12]', value), value
                       return value
                   original = name({})
                   assert original == 'test-diagnostics-123-f6d6a7cff3ca148497eb84888c4fd22a9de927c2e9fda6aa267078943c10ea14-shard-1-run-456-attempt-1'
@@ -1388,6 +1470,7 @@ jobs:
                       names = [original] + [name({field: value}) for value in values]
                       assert len(set(names)) == len(names), (field, names)
                   for field, value, suffix in [('SHARD', '2', '-shard-2-run-456-attempt-1'),
+                                               ('SHARD', 'doctests', '-shard-doctests-run-456-attempt-1'),
                                                ('GITHUB_RUN_ID', '457', '-shard-1-run-457-attempt-1'),
                                                ('GITHUB_RUN_ATTEMPT', '2', '-shard-1-run-456-attempt-2')]:
                       changed = name({field: value})
@@ -1405,7 +1488,7 @@ jobs:
 
           def shard_runner_status_survives_log_capture():
               job_run_defaults_preserve_pipeline_failures()
-              for step, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
+              for step, coverage in [(step, coverage) for step in ['Tests', 'Isolated tests'] for coverage in ['false', 'true']]:
                   for shard in range(1, 5):
                       for status in [0, 42]:
                           with tempfile.TemporaryDirectory() as temporary:
@@ -1418,9 +1501,9 @@ jobs:
                               assert (directory / 'nextest.log').read_text(encoding='utf-8') == 'runner stdout\nrunner stderr\n'
                               commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
                               doctests = [command for command in commands if command['args'][:1] == ['test']]
-                              assert bool(doctests) == (shard == 1 and status == 0), commands
+                              assert bool(doctests) == (shard == 1 and status == 0 and coverage == 'false'), commands
                               report = directory / f'shard-{shard}.lcov'
-                              assert report.exists() == (coverage == 'true'), (step, shard, status)
+                              assert report.exists() == (step == 'Isolated tests' and coverage == 'true'), (step, shard, status)
                               if report.exists():
                                   assert report.read_text(encoding='utf-8') == 'SF:/src/lib.rs\nDA:1,1\nend_of_record\n'
 
@@ -1429,7 +1512,7 @@ jobs:
 
           def failed_shard_and_missing_coverage_stay_distinct():
               step = next(s for s in workflow.split('      - name: ')[1:] if s.startswith('Upload shard coverage\n')).split('\n  tests-result:', 1)[0]
-              assert "if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'\n" in step
+              assert "if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests'\n" in step
               assert 'always()' not in step and 'if-no-files-found: error\n' in step
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -1694,7 +1777,7 @@ jobs:
               assert 'ADDITIONAL_LOCKED_MANIFESTS: $' + '{{ needs.declaration.outputs.additional_locked_manifests }}' in tests
               declaration_job = workflow.split('  declaration:\n', 1)[1].split('\n  quality:', 1)[0]
               assert 'additional_locked_manifests: $' + '{{ steps.config.outputs.additional_locked_manifests }}' in declaration_job
-              assert 'shard: [1, 2, 3, 4]' in tests
+              assert 'fromJSON(needs.declaration.outputs.coverage' in tests
               for name in ['Tests', 'Isolated tests']:
                   assert 'cargo fetch --locked\n' in body(name)
               with tempfile.TemporaryDirectory() as temporary:
@@ -1707,8 +1790,10 @@ jobs:
                   routes += [('Isolated tests', 1, 'false', None, ['sample']),
                              ('Isolated tests', 1, 'true', None, ['sample']),
                              ('Isolated tests', 2, 'true', None, ['sample']),
-                             ('Isolated tests', 1, 'true', '80', ['sample']),
-                             ('Tests', 4, 'false', None, []), ('Isolated tests', 4, 'true', None, [])]
+                             ('Isolated tests', '', 'true', '80', ['sample']),
+                             ('Tests', 4, 'false', None, []), ('Isolated tests', 4, 'true', None, []),
+                             ('Tests', 'doctests', 'true', None, ['sample']),
+                             ('Isolated tests', 'doctests', 'true', None, ['sample'])]
                   for index, (route, shard, coverage, threshold, packages) in enumerate(routes):
                       acquisition = directory / f'cache-{index}'
                       acquisition.mkdir()
@@ -1735,7 +1820,9 @@ jobs:
                           assert all(c['home'] != str(original_home) and c['ambient'] is None for c in runners)
                       else:
                           assert all(c['home'] == str(original_home) for c in runners)
-                      if threshold:
+                      if shard == 'doctests':
+                          expected = ['test', '--locked', '--doc', '-p', 'sample']
+                      elif threshold:
                           expected = ['llvm-cov', '--workspace', '--locked', '--fail-under-lines', '80']
                       elif route == 'Isolated tests' and coverage == 'true':
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
@@ -1750,7 +1837,7 @@ jobs:
                           else:
                               expected += ['--no-tests', 'pass', '--partition', f'count:{shard}/4']
                       assert runners[0]['args'] == expected, runners[0]['args']
-                      assert [c['args'] for c in runners[1:]] == ([['test', '--locked', '--doc', '-p', 'sample']] if shard == 1 and not threshold else [])
+                      assert [c['args'] for c in runners[1:]] == ([['test', '--locked', '--doc', '-p', 'sample']] if shard == 1 and not threshold and coverage == 'false' else [])
                       print(f'PASS provisioning route {index}: {route}, shard {shard}, coverage {coverage}, threshold {threshold}', flush=True)
 
           locked_manifests_precede_all_test_routes()
@@ -1797,14 +1884,17 @@ jobs:
                   env['PATH'] = os.pathsep.join(bins + [os.environ['PATH']])
                   routes = [('Check target', {'TARGET': os.environ['TARGET']})] if 'TARGET' in os.environ else [
                       ('Lint', {}), ('Docs', {'RUSTDOCFLAGS': '-D warnings -D missing_docs'}),
-                      ('Build wasm crates', {'WASM_CRATES': '["test-tools"]'}), ('Isolated tests', {})]
+                      ('Build wasm crates', {'WASM_CRATES': '["test-tools"]'}), ('Isolated tests', {}), ('Isolated tests', {'SHARD': 'doctests', 'COLLECT_COVERAGE': 'true'})]
                   for index, (route, extra) in enumerate(routes):
                       child = env | extra | {'CARGO_TARGET_DIR': str(directory / f'cold-{index}')}
+                      if extra.get('SHARD') == 'doctests':
+                          # Isolation excludes CARGO_TARGET_DIR, so remove the earlier route's artifacts.
+                          shutil.rmtree(directory / 'target', ignore_errors=True)
                       start = time.monotonic()
                       result = execute(route, directory, child)
                       assert result.returncode == 0, result.stdout + result.stderr
                       assert 'Compiling test-tools' in result.stdout + result.stderr or 'Checking test-tools' in result.stdout + result.stderr, result.stdout + result.stderr
-                      if route == 'Isolated tests':
+                      if route == 'Isolated tests' and not extra:
                           assert 'caller_pinned_tools_are_available' in result.stdout + result.stderr
                       print(f'PASS caller compiler {route}: {time.monotonic() - start:.2f}s; jobs={os.environ.get("CARGO_BUILD_JOBS", "runner default")}; '
                             f'lock wait reported={"Blocking waiting" in result.stderr}', flush=True)
@@ -2098,16 +2188,21 @@ jobs:
                   subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
                   (directory / '.config').mkdir()
                   (directory / '.config/nextest.toml').write_text('[profile.default]\ndefault-filter="none()"\n', encoding='utf-8')
-                  outputs = []
-                  for shard in range(1, 5):
-                      result = execute('Tests', directory, {'SHARD': str(shard)})
-                      assert result.returncode == 0, result.stdout + result.stderr
-                      outputs.append(result.stdout + result.stderr)
-                  combined = ''.join(outputs)
-                  for name in 'abcde':
-                      for kind in ['unit', 'integration']:
-                          assert len(re.findall(r'PASS[^\n]*\b' + kind + '_' + name + r'\b', combined)) == 1, combined
-                  assert combined.count('src/lib.rs - (line 1) ... ok') == 5
+                  for coverage in ['false', 'true']:
+                      outputs = []
+                      for shard in range(1, 5):
+                          result = execute('Tests', directory, {'SHARD': str(shard), 'COLLECT_COVERAGE': coverage})
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          outputs.append(result.stdout + result.stderr)
+                      combined = ''.join(outputs)
+                      for name in 'abcde':
+                          for kind in ['unit', 'integration']:
+                              assert len(re.findall(r'PASS[^\n]*\b' + kind + '_' + name + r'\b', combined)) == 1, combined
+                      assert combined.count('src/lib.rs - (line 1) ... ok') == (5 if coverage == 'false' else 0)
+                      if coverage == 'true':
+                          result = execute('Tests', directory, {'SHARD': 'doctests', 'COLLECT_COVERAGE': coverage})
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          assert (result.stdout + result.stderr).count('src/lib.rs - (line 1) ... ok') == 5
                   # A failed test must fail exactly its partition, not disappear.
                   (directory / 'c/tests/proof.rs').write_text(
                       '#[test] fn failed() { panic!("shard failure"); }\n', encoding='utf-8')
@@ -2435,14 +2530,15 @@ jobs:
 
           def credential_names_fail_closed():
               with tempfile.TemporaryDirectory() as temporary:
-                  for name in credential_names + ['DEEPSEEK_API_KEY']:
-                      for value in ['', 'secret-canary-do-not-print']:
-                          result = execute('Isolated tests', root / 'fixtures/sample',
-                                           {name: value, 'RUNNER_TEMP': temporary})
-                          assert result.returncode != 0
-                          assert name in result.stderr, result.stderr
-                          assert 'secret-canary-do-not-print' not in result.stdout + result.stderr
-                          assert 'Compiling' not in result.stderr
+                  for role in ['1', 'doctests']:
+                      for name in credential_names + ['DEEPSEEK_API_KEY']:
+                          for value in ['', 'secret-canary-do-not-print']:
+                              result = execute('Isolated tests', root / 'fixtures/sample',
+                                               {name: value, 'RUNNER_TEMP': temporary, 'SHARD': role, 'COLLECT_COVERAGE': 'true'})
+                              assert result.returncode != 0
+                              assert name in result.stderr, result.stderr
+                              assert 'secret-canary-do-not-print' not in result.stdout + result.stderr
+                              assert 'Compiling' not in result.stderr
                   result = execute('Isolated tests', root / 'fixtures/sample',
                                    {'AZURE_EXTENSION_DIR': 'allowed', 'RUNNER_TEMP': temporary})
                   assert result.returncode == 0, result.stdout + result.stderr
