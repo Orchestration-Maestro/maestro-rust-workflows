@@ -1351,7 +1351,7 @@ jobs:
                   step = steps[name]
                   assert "        if: always() && needs.declaration.outputs.enabled == 'true'\n" in step
                   assert 'continue-on-error' not in step and 'coverage' not in step
-                  assert workflow.index('      - name: ' + name) > workflow.index('      - name: Isolated tests')
+                  assert list(steps).index(name) > list(steps).index('Isolated tests')
               upload = steps['Upload test diagnostics']
               assert 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' in upload
               assert 'if-no-files-found: ignore\n' in upload
