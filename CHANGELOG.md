@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.3](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.11.2...v0.11.3) (2026-10-20)
+
+
+### Performance
+
+* run full-run doctests beside test shards ([#103](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/103)) ([22f1b79](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/22f1b79d842150b39422b3cce2196403bb22c714))
+
 ## [0.11.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.11.1...v0.11.2) (2026-10-20)
 
 
