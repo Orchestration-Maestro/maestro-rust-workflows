@@ -5,14 +5,14 @@ tests. One additional required job checks licenses, dependency use, spelling,
 secrets, workflows and at least 80% line coverage, with embedded defaults and
 checksum-verified tool releases. Only the caller declaration may extend those
 defaults or raise coverage. The optional caller declaration adds isolated tests, real search tools,
-caller-pinned build and test tools, additional locked manifest provisioning, wasm builds, native foreign-target checks and the
-fixed browser build recipe hook. Optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
+caller-pinned build and test tools, additional locked manifest provisioning, wasm builds, native foreign-target checks, the
+fixed browser build recipe hook and a [nightly fuzz job](docs/caller-checks.md#nightly-fuzz-job) for declared targets. Optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
 use shared verified runtime pins, not caller-selected browser versions. Its spec is
 [One shared Rust CI](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md).
 
 - Accept only the optional `.github/ci.toml` declaration documented in
   `docs/caller-checks.md`; no other consumer settings or command hooks. The
-  directory input is for the self-test, proof and advisory scan; organization
+  directory input is for the self-test, proof, and advisory and fuzz scans; organization
   rules use the root.
   The caller's `.config/nextest.toml` is test-suite runner metadata (such as
   resource groups), not shared-CI settings. Shared-CI partitioning and coverage

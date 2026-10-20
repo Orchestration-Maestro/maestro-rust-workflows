@@ -33,6 +33,14 @@ jobs:
       concurrency-key: test-tools
       test-event: merge_group
 
+  fuzz:
+    name: Fuzz caller
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: fixtures/fuzz
+      concurrency-key: fuzz
+      fuzz-scan: true
+
   quality:
     name: Required repository quality
     needs: [sample, declared, test-tools]
@@ -419,6 +427,7 @@ jobs:
           import pathlib
           import re
           import shlex
+          import shutil
           import subprocess
           import tempfile
           import textwrap
@@ -440,6 +449,28 @@ jobs:
                   argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
                   env = env | {'CARGO_BUILD_JOBS': '3'}
               return subprocess.run(argv, cwd=directory, env=env, capture_output=True, text=True)
+
+          def fuzz_licences_allow_ncsa_only_for_libfuzzer_sys(env, temporary):
+              directory = pathlib.Path(temporary) / 'fuzz-licences'
+              def crate(path, name, license, dependencies=()):
+                  (directory / path / 'src').mkdir(parents=True)
+                  (directory / path / 'src/lib.rs').write_text('', encoding='utf-8')
+                  (directory / path / 'Cargo.toml').write_text(
+                      f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\nlicense = "{license}"\n'
+                      + ('[workspace]\n' if path == 'fuzz' else '') + '[dependencies]\n'
+                      + ''.join(f'{dependency} = {{ path = "../{dependency}" }}\n' for dependency in dependencies), encoding='utf-8')
+              crate('libfuzzer-sys', 'libfuzzer-sys', '(MIT OR Apache-2.0) AND NCSA')
+              crate('other', 'other', 'NCSA')
+              for dependencies, allowed in [(['libfuzzer-sys'], True), (['libfuzzer-sys', 'other'], False)]:
+                  shutil.rmtree(directory / 'fuzz', ignore_errors=True)
+                  crate('fuzz', 'caller-fuzz', 'MIT', dependencies)
+                  subprocess.run(['cargo', 'generate-lockfile', '--offline', '--manifest-path', 'fuzz/Cargo.toml'], cwd=directory, check=True)
+                  result = execute('Fuzz licences', directory, env | {'FUZZ_MANIFEST': 'fuzz/Cargo.toml'})
+                  output = result.stdout + result.stderr
+                  if allowed:
+                      assert result.returncode == 0, output
+                  else:
+                      assert result.returncode != 0 and 'other' in output and 'NCSA' in output, output
 
           def secrets_scan_before_restored_build_output(env, temporary):
               directory = pathlib.Path(temporary) / 'source-only'
@@ -806,26 +837,38 @@ jobs:
               assert [finding['id'] for finding in scan(yanked, {})] == ['yanked once_cell 0.0.1', 'yanked once_cell 0.0.2']
               print('PASS advisory_scan_reports_undeclared_findings_only', flush=True)
 
+          def fake_tool(directory, name):
+              # Records each call as {"argv", "body"} (standard input for --body-file), answers `issue list` with $OPEN
+              # and exits with $FAKE_STATUS.
+              directory.mkdir()
+              calls = directory / 'calls.jsonl'
+              source = directory / f'{name}-source'
+              source.write_text('#!/usr/bin/env python3\nimport json, os, sys\n'
+                                'body = sys.stdin.read() if "--body-file" in sys.argv else None\n'
+                                'with open(os.environ["CALLS"], "a", encoding="utf-8") as calls:\n'
+                                '    calls.write(json.dumps({"argv": sys.argv[1:], "body": body}) + "\\n")\n'
+                                'print(os.environ["OPEN"] if sys.argv[1:3] == ["issue", "list"] else "https://example.invalid/1")\n'
+                                'sys.exit(int(os.environ.get("FAKE_STATUS", "0")))\n', encoding='utf-8')
+              subprocess.run(['install', '-m', '0755', str(source), str(directory / name)], check=True)
+              def recorded():
+                  made = [json.loads(line) for line in calls.read_text(encoding='utf-8').splitlines()] if calls.exists() else []
+                  calls.unlink(missing_ok=True)
+                  return made
+              return {'PATH': f"{directory}{os.pathsep}{os.environ['PATH']}", 'CALLS': str(calls)}, recorded
+
           def advisory_issues_open_once(temporary):
               source = pathlib.Path('.github/workflows/advisories.yml').read_text(encoding='utf-8')
               step = next(s for s in source.split('      - name: ')[1:] if s.splitlines()[0] == 'Open advisory issues')
               code = textwrap.dedent(re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE).group(1))
-              fake = pathlib.Path(temporary) / 'fake-gh'
-              fake.mkdir()
-              calls = fake / 'calls'
-              (fake / 'gh').write_text('#!/usr/bin/env python3\nimport json, os, sys\n'
-                                       'open(os.environ["CALLS"], "a").write(json.dumps(sys.argv[1:]) + "\\n")\n'
-                                       'print(os.environ["OPEN"] if sys.argv[1:3] == ["issue", "list"] else "https://example.invalid/1")\n', encoding='utf-8')
-              (fake / 'gh').chmod(0o755)
+              fake, recorded = fake_tool(pathlib.Path(temporary) / 'fake-gh', 'gh')
               findings = [{'id': 'RUSTSEC-2025-0141', 'title': 'Bincode is unmaintained', 'crates': ['bincode 1.3.3']},
                           {'id': 'yanked once_cell 0.0.1', 'title': 'detected yanked crate', 'crates': ['once_cell 0.0.1']}]
               def report(scan='success', found=findings, dry='false'):
-                  calls.write_text('', encoding='utf-8')
-                  result = subprocess.run(['python3', '-c', code], capture_output=True, text=True, env=os.environ | {
-                      'PATH': f"{fake}:{os.environ['PATH']}", 'CALLS': str(calls), 'SCAN': scan, 'FINDINGS': json.dumps(found),
+                  result = subprocess.run(['python3', '-c', code], capture_output=True, text=True, env=os.environ | fake | {
+                      'SCAN': scan, 'FINDINGS': json.dumps(found),
                       'DRY_RUN': dry, 'RUN_URL': 'https://example.invalid/run', 'REPOSITORY': 'owner/repo', 'GH_TOKEN': 'token',
                       'OPEN': json.dumps([{'title': 'Priority: RUSTSEC-2025-0141 on main: bincode 1.3.3'}])})
-                  return result, [json.loads(line) for line in calls.read_text(encoding='utf-8').splitlines()]
+                  return result, [call['argv'] for call in recorded()]
               result, made = report()
               assert result.returncode != 0 and '2 undeclared advisories on main' in result.stderr, result.stdout + result.stderr
               created = [call for call in made if call[:2] == ['issue', 'create']]
@@ -838,6 +881,29 @@ jobs:
               result, made = report(dry='true')
               assert result.returncode != 0 and made == [] and result.stdout.count('dry run: ') == 2, result.stdout + result.stderr
               print('PASS advisory_issues_open_once', flush=True)
+
+          def fuzz_target_forwards_limits_without_finding(temporary):
+              directory = pathlib.Path(temporary) / 'fuzz-target'
+              (directory / 'fuzz').mkdir(parents=True)
+              fake, recorded = fake_tool(directory / 'tools', 'cargo-fuzz')
+              for status in ['0', '1']:
+                  output = directory / f'output-{status}'
+                  output.write_text('', encoding='utf-8')
+                  result = execute('Fuzz target', directory, os.environ | fake | {
+                      'TOOLS': str(directory / 'tools'), 'FAKE_STATUS': status, 'RUNNER_TEMP': str(directory),
+                      'GITHUB_OUTPUT': str(output), 'FUZZ_MANIFEST': 'fuzz/Cargo.toml', 'TARGET': 'planted',
+                      'SECONDS_BUDGET': '60', 'MAX_LEN': '64', 'TIMEOUT': '5', 'RSS_LIMIT_MB': '512'})
+                  assert output.read_text(encoding='utf-8') == 'found=false\n', result.stderr
+                  calls = [call['argv'] for call in recorded()]
+                  assert calls == [['fuzz', 'run', '--fuzz-dir', 'fuzz', '--target', 'x86_64-unknown-linux-gnu', 'planted', '--',
+                                    '-max_total_time=60', '-max_len=64', '-timeout=5', '-rss_limit_mb=512']], calls
+                  if status == '0':
+                      assert result.returncode == 0, result.stderr
+                  else:
+                      assert result.returncode != 0, result.stdout
+                      assert result.stderr.strip().splitlines()[-1] == 'fuzz target planted exited 1 without a finding', result.stderr
+                  assert not (directory / 'fuzz-finding').exists()
+              print('PASS fuzz_target_forwards_limits_without_finding', flush=True)
 
           def privileged_trigger_workflows_ignore_only_declared_audit(env, temporary):
               import shutil
@@ -926,6 +992,14 @@ jobs:
               installed = execute('Check tools', root, env)
               assert installed.returncode == 0, installed.stdout + installed.stderr
               env.update(dict(line.split('=', 1) for line in pathlib.Path(env['GITHUB_ENV']).read_text(encoding="utf-8").splitlines()))
+              assert not pathlib.Path(env['TOOLS'], 'cargo-fuzz').exists()
+              fuzz_env = env | {'GITHUB_ENV': temporary + '/fuzz-environment', 'FUZZ_SCAN': 'true'}
+              installed = execute('Check tools', root, fuzz_env)
+              assert installed.returncode == 0, installed.stdout + installed.stderr
+              fuzz_tools = pathlib.Path(fuzz_env['GITHUB_ENV']).read_text(encoding='utf-8').removeprefix('TOOLS=').strip()
+              version = subprocess.run([fuzz_tools + '/cargo-fuzz', 'fuzz', '--version'], capture_output=True, text=True)
+              assert version.returncode == 0 and version.stdout == 'cargo-fuzz 0.13.2\n', version.stdout + version.stderr
+              print('PASS fuzz_tool_only_in_fuzz_scan', flush=True)
               component = subprocess.run(['rustup', 'component', 'add', 'llvm-tools-preview'],
                                          cwd=root / 'fixtures/sample', capture_output=True, text=True)
               assert component.returncode == 0, component.stderr
@@ -933,6 +1007,8 @@ jobs:
               assert configured.returncode == 0, configured.stdout + configured.stderr
               env.update(dict(line.split('=', 1) for line in pathlib.Path(env['GITHUB_ENV']).read_text(encoding="utf-8").splitlines()))
               secrets_scan_before_restored_build_output(env, temporary)
+              fuzz_licences_allow_ncsa_only_for_libfuzzer_sys(env, temporary)
+              print('PASS fuzz_licences_allow_ncsa_only_for_libfuzzer_sys', flush=True)
               for name in checks:
                   result = execute(name, root / 'fixtures/sample', env)
                   assert result.returncode == 0, name + '\n' + result.stdout + result.stderr
@@ -944,8 +1020,10 @@ jobs:
                                      '      - ci-internal.yml:15:11\n'
                                      '      - ci-internal.yml:22:11\n'
                                      '      - ci-internal.yml:30:11\n'
+                                     '      - ci-internal.yml:38:11\n'
                                      '      - ci-proof.yml:13:11\n'
-                                     '      - advisories.yml:16:11\n', encoding="utf-8")
+                                     '      - advisories.yml:16:11\n'
+                                     '      - fuzz.yml:14:11\n', encoding="utf-8")
               for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
                            [env['TOOLS'] + '/actionlint', '-config-file', env['CHECK_DEFAULTS'] + '/actionlint.yaml', '-shellcheck=', '-pyflakes=',
                             *map(str, (root / '.github/workflows').glob('*.yml'))]]:
@@ -960,6 +1038,7 @@ jobs:
               advisory_exceptions_cover_all_reported_versions(env, temporary)
               advisories_follow_dependency_changes(env, temporary)
               advisory_issues_open_once(temporary)
+              fuzz_target_forwards_limits_without_finding(temporary)
               privileged_trigger_workflows_ignore_only_declared_audit(env, temporary)
               result = execute('Embedded check defaults', root, env)
               assert result.returncode == 0, result.stdout + result.stderr
@@ -1318,7 +1397,7 @@ jobs:
           def job_run_defaults_preserve_pipeline_failures():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'advisories', 'targets', 'browser', 'browser-tests'}
+              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests'}
               defaults = {name: re.search(r'^    defaults:\n(.*?)^    steps:', job, re.MULTILINE | re.DOTALL)
                           for name, job in jobs.items()}
               assert {name for name, match in defaults.items() if match} == expected
@@ -1532,7 +1611,7 @@ jobs:
           def browser_test_job_is_single_and_optional():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               job = jobs['browser-tests']
-              assert "!inputs.advisory-scan && needs.declaration.outputs.browser_tests == 'true'" in job
+              assert "!inputs.advisory-scan && !inputs.fuzz-scan && needs.declaration.outputs.browser_tests == 'true'" in job
               assert 'runs-on: ubuntu-latest' in job and 'matrix:' not in job
               assert body('Browser test recipe').strip() == 'just browser-test'
               assert 'mise exec' not in body('Browser test recipe')
@@ -1546,7 +1625,7 @@ jobs:
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': ''}
+              assert values == {'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
@@ -1933,6 +2012,111 @@ jobs:
               assert 'runtime' in entry['description'] and 'containment' in entry['description']
 
           locked_manifests_schema_matches_contract()
+
+          def fuzz_caller(temporary):
+              import shutil
+              directory = pathlib.Path(temporary) / 'caller'
+              shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+              (directory / '.github').mkdir()
+              (directory / 'fuzz').mkdir()
+              (directory / 'fuzz/Cargo.toml').write_text('[workspace]\n', encoding='utf-8')
+              return directory
+
+          fuzz_entry = '{name="planted", seconds=60, max_len=64, timeout=5, rss_limit_mb=512}'
+
+          def fuzz_declaration_accepts_exact_entries():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = fuzz_caller(temporary)
+                  base = 'wasm_crates=[]\ncheck_targets=[]\n'
+                  two = (f'fuzz_targets=[{fuzz_entry}, {{name="clean", seconds=10, max_len=8, timeout=5, rss_limit_mb=512}}]\n')
+                  for text, manifest, targets in [
+                          (base, '', '[]'),
+                          (base + 'fuzz_manifest="fuzz/Cargo.toml"\n' + two, 'fuzz/Cargo.toml',
+                           '[{"name": "planted", "seconds": 60, "max_len": 64, "timeout": 5, "rss_limit_mb": 512}, '
+                           '{"name": "clean", "seconds": 10, "max_len": 8, "timeout": 5, "rss_limit_mb": 512}]'),
+                          (base + 'fuzz_manifest="fuzz/Cargo.toml"\nfuzz_targets=[]\n', 'fuzz/Cargo.toml', '[]')]:
+                      (directory / '.github/ci.toml').write_text(text, encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode == 0, result.stderr
+                      assert (values['fuzz_manifest'], values['fuzz_targets'], values['quality_config']) == (manifest, targets, '{}'), values
+
+          fuzz_declaration_accepts_exact_entries()
+          print('PASS fuzz_declaration_accepts_exact_entries')
+
+          def fuzz_declaration_rejects_malformed_entries():
+              def targets(**fields):
+                  entry = dict(name='"planted"', seconds=60, max_len=64, timeout=5, rss_limit_mb=512) | fields
+                  return 'fuzz_manifest="fuzz/Cargo.toml"\nfuzz_targets=[{' + ', '.join(f'{key}={value}' for key, value in entry.items()) + '}]'
+              shape = 'fuzz_targets requires name, seconds, max_len, timeout and rss_limit_mb'
+              path = 'fuzz_manifest requires an existing repository-contained relative Cargo.toml file'
+              number = 'fuzz_targets seconds, max_len, timeout and rss_limit_mb must be positive integers'
+              cases = [('fuzz_manifest="fuzz/Cargo.toml"', 'fuzz_manifest and fuzz_targets must be declared together'),
+                       (f'fuzz_targets=[{fuzz_entry}]', 'fuzz_manifest and fuzz_targets must be declared together'),
+                       (f'fuzz_manifest=1\nfuzz_targets=[{fuzz_entry}]', 'fuzz_manifest must be a nonempty string'),
+                       (f'fuzz_manifest=""\nfuzz_targets=[{fuzz_entry}]', 'fuzz_manifest must be a nonempty string'),
+                       (f'fuzz_manifest="fuzz\\u0001/Cargo.toml"\nfuzz_targets=[{fuzz_entry}]',
+                        'fuzz_manifest cannot contain control characters or surrogates'),
+                       (f'fuzz_manifest="missing/Cargo.toml"\nfuzz_targets=[{fuzz_entry}]', path),
+                       (f'fuzz_manifest="../outside/Cargo.toml"\nfuzz_targets=[{fuzz_entry}]', path),
+                       (f'fuzz_manifest="fuzz/Other.toml"\nfuzz_targets=[{fuzz_entry}]', path),
+                       ('fuzz_manifest="fuzz/Cargo.toml"\nfuzz_targets={}', 'fuzz_targets must be an array'),
+                       ('fuzz_manifest="fuzz/Cargo.toml"\nfuzz_targets=["planted"]', shape),
+                       ('fuzz_manifest="fuzz/Cargo.toml"\nfuzz_targets=[{name="planted", seconds=60, max_len=64, timeout=5}]', shape),
+                       (targets(jobs=2), shape),
+                       (targets(name='"a b"'), 'fuzz_targets name must be a Cargo target name'),
+                       (targets(name=1), 'fuzz_targets name must be a Cargo target name'),
+                       (targets(seconds=0), number), (targets(max_len='true'), number),
+                       (targets(timeout=1.5), number), (targets(rss_limit_mb=-1), number),
+                       (f'fuzz_manifest="fuzz/Cargo.toml"\nfuzz_targets=[{fuzz_entry}, {fuzz_entry}]', 'fuzz_targets names must be unique')]
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = fuzz_caller(temporary)
+                  (directory / 'fuzz/Other.toml').write_text('[workspace]\n', encoding='utf-8')
+                  (directory.parent / 'outside').mkdir()
+                  (directory.parent / 'outside/Cargo.toml').write_text('[workspace]\n', encoding='utf-8')
+                  for text, diagnostic in cases:
+                      (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n' + text + '\n', encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and not values, text
+                      assert result.stderr.strip() == '.github/ci.toml: ' + diagnostic, (text, result.stderr)
+              return len(cases)
+
+          print(f'PASS fuzz_declaration_rejects_malformed_entries: {fuzz_declaration_rejects_malformed_entries()} cases')
+
+          def fuzz_schema_matches_contract():
+              schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
+              manifest, targets = schema['properties']['fuzz_manifest'], schema['properties']['fuzz_targets']
+              assert (manifest['type'], manifest['minLength']) == ('string', 1)
+              assert targets['type'] == 'array'
+              items = targets['items']
+              assert items['type'] == 'object' and items['additionalProperties'] is False
+              assert sorted(items['required']) == ['max_len', 'name', 'rss_limit_mb', 'seconds', 'timeout']
+              assert items['properties']['name'] == {'type': 'string', 'pattern': '^[A-Za-z0-9_-]+$'}
+              for key in ['seconds', 'max_len', 'timeout', 'rss_limit_mb']:
+                  assert {k: v for k, v in items['properties'][key].items() if k != 'description'} == {'type': 'integer', 'minimum': 1}, key
+              assert schema['dependentRequired'] == {'fuzz_manifest': ['fuzz_targets'], 'fuzz_targets': ['fuzz_manifest']}
+              assert schema['required'] == ['wasm_crates', 'check_targets']
+
+          fuzz_schema_matches_contract()
+          print('PASS fuzz_schema_matches_contract')
+
+          def fuzz_scan_runs_only_declaration_and_fuzz():
+              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+              job = jobs['fuzz']
+              assert "    if: $" + "{{ inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}\n" in job
+              assert 'fuzz-scan' not in jobs['declaration'] and 'fuzz-scan' not in jobs['advisories']
+              assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: nightly-2026-09-15\n' in job
+              assert workflow.count('nightly-') == 1 and workflow.count('/cargo-fuzz/') == 1
+              assert '        env:\n          FUZZ_SCAN: true\n        run: *check-tools\n' in job
+              steps = re.findall(r'^      - name: (.+)$', job, re.MULTILINE)
+              assert steps.index('Fuzz licences') < steps.index('Fuzz target'), steps
+              assert "if: steps.fuzz.outputs.found == 'true'" in job.split('- name: Upload fuzz finding\n', 1)[1].split('- name:', 1)[0]
+              nightly = (root / '.github/workflows/fuzz.yml').read_text(encoding='utf-8')
+              triggers = nightly.split('\non:\n', 1)[1].split('\n\n', 1)[0]
+              assert re.findall(r'^  (\w+):', triggers, re.MULTILINE) == ['schedule', 'workflow_dispatch'], triggers
+              assert '      fuzz-scan: true\n' in nightly and 'test-event' not in nightly
+
+          fuzz_scan_runs_only_declaration_and_fuzz()
+          print('PASS fuzz_scan_runs_only_declaration_and_fuzz')
 
           def locked_manifests_forward_ordered_literal_arguments():
               with tempfile.TemporaryDirectory() as temporary:
@@ -3191,18 +3375,19 @@ jobs:
               assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
               assert 'needs: [sample, declared, test-tools]' in internal
               assert 'working-directory: fixtures/test-tools' in internal
-              assert 'needs: [seams, native]' in internal
+              assert 'needs: [seams, native, fuzz-issues]' in internal
               assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
               assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
               for name in ['targets', 'browser', 'tests']:
                   section = workflow.split(f'  {name}:\n')[1]
                   assert 'needs: declaration' in section
               assert 'pull_request:' in workflow and 'merge_group:' in workflow
-              assert "if: $" + "{{ !inputs.advisory-scan && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
-              # The advisory scan mode runs only the declaration and the advisory job.
+              assert "if: $" + "{{ !inputs.advisory-scan && !inputs.fuzz-scan && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
+              # Each scan mode runs only the declaration and its own job.
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               assert "    if: $" + "{{ inputs.advisory-scan }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
-              assert all('!inputs.advisory-scan' in job.split('\n    steps:', 1)[0] for name, job in jobs.items() if name not in ('declaration', 'advisories')), sorted(jobs)
+              assert all('!inputs.advisory-scan && !inputs.fuzz-scan' in job.split('\n    steps:', 1)[0]
+                         for name, job in jobs.items() if name not in ('declaration', 'advisories', 'fuzz')), sorted(jobs)
 
           def browser_test_result_stays_required():
               internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
@@ -3351,9 +3536,138 @@ jobs:
           namespace['foreign_target_failures_are_detected']()
           print('PASS foreign_target_failures_are_detected')
 
+  fuzz-issues:
+    name: Fuzz findings and issues
+    needs: fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download fuzz findings
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: fuzz-fuzz-*
+          path: findings
+      - name: Fuzz findings open one issue each
+        shell: python
+        run: |
+          import ast
+          import base64
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import tempfile
+          import textwrap
+
+          root = pathlib.Path.cwd()
+          source = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+          seam = source.split('      - name: Added checks at workflow seam\n', 1)[1].split('        run: |\n', 1)[1]
+          seam = seam.split('\n      - name: ', 1)[0]
+          tree = ast.parse(textwrap.dedent(seam))
+          # Reuse the seam's fake tool, not a second recorder.
+          tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'fake_tool']
+          exec(compile(tree, 'fake gh', 'exec'))
+          nightly = (root / '.github/workflows/fuzz.yml').read_text(encoding='utf-8')
+          step = next(s for s in nightly.split('      - name: ')[1:] if s.splitlines()[0] == 'Open fuzz issues')
+          code = textwrap.dedent(re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE).group(1))
+          titles = ['Fuzz out-of-memory in hungry', 'Fuzz crash in planted at src/lib.rs:5:5', 'Fuzz timeout in stalled']
+
+          def findings_match_planted_defects():
+              findings = root / 'findings'
+              assert sorted(path.name for path in findings.iterdir()) == ['fuzz-fuzz-hungry', 'fuzz-fuzz-planted', 'fuzz-fuzz-stalled']
+              def finding(name):
+                  return json.loads((findings / name / 'finding.json').read_text(encoding='utf-8'))
+              planted = finding('fuzz-fuzz-planted')
+              assert (planted['kind'], planted['location']) == ('crash', 'src/lib.rs:5:5'), planted
+              assert (findings / 'fuzz-fuzz-planted/minimized').read_bytes() == b'!'
+              seed = (root / 'fixtures/fuzz/fuzz/corpus/planted/seeded-crash').read_bytes()
+              assert (findings / 'fuzz-fuzz-planted/crash-833ac4a2bc4d586cda123149872c41bc75a77b83').read_bytes() == seed
+              assert 'planted crash' in planted['stack'] and planted['stack'].splitlines()[-1].startswith('SUMMARY: '), planted['stack']
+              assert [(finding(name)['kind'], finding(name)['location']) for name in ['fuzz-fuzz-stalled', 'fuzz-fuzz-hungry']] == [('timeout', ''), ('oom', '')]
+
+          findings_match_planted_defects()
+          print('PASS fuzz_findings_match_planted_defects', flush=True)
+
+          with tempfile.TemporaryDirectory() as temporary:
+              fake, recorded = fake_tool(pathlib.Path(temporary) / 'fake-gh', 'gh')
+              def report(cwd=root, scan='success', open_issues=()):
+                  result = subprocess.run(['python3', '-c', code], cwd=cwd, capture_output=True, text=True, env=os.environ | fake | {
+                      'SCAN': scan, 'RUN_URL': 'https://example.invalid/run', 'REPOSITORY': 'owner/repo', 'GH_TOKEN': 'token',
+                      'OPEN': json.dumps(list(open_issues))})
+                  return result, recorded()
+              def filed(made, verb):
+                  return [call for call in made if call['argv'][:2] == ['issue', verb]]
+
+              def issues_open_once_per_finding():
+                  # An open issue whose title only shares the prefix is a different finding.
+                  result, made = report(open_issues=[{'number': 5, 'title': 'Fuzz crash in planted at src/lib.rs:9:9'}])
+                  assert result.returncode != 0 and result.stderr.strip().endswith('3 fuzz findings on main'), result.stdout + result.stderr
+                  created = filed(made, 'create')
+                  assert [call['argv'][call['argv'].index('--title') + 1] for call in created] == titles, made
+                  for call in created:
+                      assert call['argv'][-8:] == ['--body-file', '-', '--label', 'bug', '--label', 'needs-triage', '-R', 'owner/repo'], call
+                  planted = created[1]['body']
+                  assert '`IQ==`' in planted and '- Run: https://example.invalid/run\n' in planted, planted
+                  assert '- Artifact: `fuzz-fuzz-planted` (raw and minimized inputs, logs)\n' in planted, planted
+                  assert not any('clean' in json.dumps(call) for call in made), made
+                  assert len(filed(made, 'list')) == 3 and len(made) == 6, made
+                  return [call['body'] for call in created]
+
+              bodies = issues_open_once_per_finding()
+              print('PASS fuzz_issues_open_once_per_finding', flush=True)
+
+              def replay_comments_on_open_issue():
+                  numbers = {'Fuzz crash in planted at src/lib.rs:5:5': 9, 'Fuzz timeout in stalled': 7, 'Fuzz out-of-memory in hungry': 8}
+                  result, made = report(open_issues=[{'number': number, 'title': title} for title, number in numbers.items()])
+                  assert result.returncode != 0 and result.stderr.strip().endswith('3 fuzz findings on main'), result.stdout + result.stderr
+                  assert filed(made, 'create') == [], made
+                  comments = filed(made, 'comment')
+                  assert [call['argv'] for call in comments] == [['issue', 'comment', str(numbers[title]), '--body-file', '-', '-R', 'owner/repo']
+                                                                for title in titles], made
+                  assert [call['body'] for call in comments] == bodies
+
+              replay_comments_on_open_issue()
+              print('PASS fuzz_replay_comments_on_open_issue', flush=True)
+
+              def report_keeps_failed_scan_red():
+                  result, made = report(scan='failure')
+                  assert len(filed(made, 'create')) == 3, made
+                  assert result.returncode != 0 and result.stderr.strip() == 'fuzz scan failure: https://example.invalid/run', result.stdout + result.stderr
+
+              report_keeps_failed_scan_red()
+              print('PASS fuzz_report_keeps_failed_scan_red', flush=True)
+
+              def report_without_findings_stays_quiet():
+                  empty = pathlib.Path(temporary) / 'empty'
+                  empty.mkdir()
+                  result, made = report(cwd=empty)
+                  assert result.returncode == 0 and result.stdout == 'no fuzz findings on main\n' and made == [], result.stdout + result.stderr
+
+              report_without_findings_stays_quiet()
+              print('PASS fuzz_report_without_findings_stays_quiet', flush=True)
+
+              def issue_body_fits_platform_limit():
+                  large = pathlib.Path(temporary) / 'large'
+                  (large / 'findings/fuzz-fuzz-large').mkdir(parents=True)
+                  (large / 'findings/fuzz-fuzz-large/finding.json').write_text(json.dumps({
+                      'target': 'large', 'kind': 'crash', 'location': '',
+                      'input': base64.b64encode(bytes(60000)).decode(),
+                      'stack': '\n'.join(f'#{index} frame' for index in range(20000))}), encoding='utf-8')
+                  result, made = report(cwd=large)
+                  body = filed(made, 'create')[0]['body']
+                  assert len(body) == 65536 and body.endswith('\n```\n'), len(body)
+                  assert '- Minimized input (60000 bytes): in the artifact\n' in body and 'base64' not in body, body[:400]
+
+              issue_body_fits_platform_limit()
+              print('PASS fuzz_issue_body_fits_platform_limit', flush=True)
+
   consumers:
     name: Required consumer tests
-    needs: [seams, native]
+    needs: [seams, native, fuzz-issues]
     if: always()
     runs-on: ubuntu-latest
     steps:

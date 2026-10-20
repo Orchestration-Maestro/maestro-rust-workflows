@@ -1,0 +1,31 @@
+[package]
+name = "fuzzed-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+fuzzed = { path = ".." }
+
+[workspace]
+
+[[bin]]
+name = "planted"
+path = "fuzz_targets/planted.rs"
+
+[[bin]]
+name = "stalled"
+path = "fuzz_targets/stalled.rs"
+
+[[bin]]
+name = "hungry"
+path = "fuzz_targets/hungry.rs"
+
+[[bin]]
+name = "clean"
+path = "fuzz_targets/clean.rs"
