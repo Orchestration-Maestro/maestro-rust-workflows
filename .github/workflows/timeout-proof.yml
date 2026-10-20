@@ -1,0 +1,14 @@
+name: Timeout diagnostic qualification
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  blocked-caller:
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: fixtures/diagnostic-timeout-proof
+      concurrency-key: diagnostic-timeout-proof-99
