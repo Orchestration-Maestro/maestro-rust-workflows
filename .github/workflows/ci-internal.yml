@@ -1310,7 +1310,7 @@ jobs:
           def browser_test_job_is_single_and_optional():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               job = jobs['browser-tests']
-              assert "!inputs.advisory-scan && needs.declaration.outputs.browser_tests == 'true'" in job
+              assert "!inputs.advisory-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true'" in job
               assert 'runs-on: ubuntu-latest' in job and 'matrix:' not in job
               assert body('Browser test recipe').strip() == 'just browser-test'
               assert 'mise exec' not in body('Browser test recipe')
@@ -1367,6 +1367,14 @@ jobs:
               return tools, log
 
           def warm_cache_keeps_one_writer():
+              assert "TEST_EVENT: $" + "{{ inputs.warm-cache && 'push' ||" in workflow
+              with tempfile.TemporaryDirectory() as temporary:
+                  output = pathlib.Path(temporary) / 'selection'
+                  result = execute('Select test packages', root / 'fixtures/sample', {
+                      'TEST_EVENT': 'push', 'BASE_REF': 'unrelated-workflow-base', 'GITHUB_OUTPUT': str(output)})
+                  assert result.returncode == 0, result.stderr
+                  values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                  assert json.loads(values['packages']) == ['sample'] and values['coverage'] == 'true'
               assert "warm-cache:\n        description:" in workflow
               assert "SCCACHE_GHA_RW_MODE: $" + "{{ inputs.warm-cache && 'READ_WRITE' || 'READ_ONLY' }}" in workflow
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
@@ -3019,10 +3027,10 @@ jobs:
                   section = workflow.split(f'  {name}:\n')[1]
                   assert 'needs: declaration' in section
               assert 'pull_request:' in workflow and 'merge_group:' in workflow
-              assert "if: $" + "{{ !inputs.advisory-scan && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
+              assert "if: $" + "{{ !inputs.advisory-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
               # The advisory scan mode runs only the declaration and the advisory job.
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              assert "    if: $" + "{{ inputs.advisory-scan }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
+              assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
               assert all('!inputs.advisory-scan' in job.split('\n    steps:', 1)[0] for name, job in jobs.items() if name not in ('declaration', 'advisories')), sorted(jobs)
 
           def browser_test_result_stays_required():

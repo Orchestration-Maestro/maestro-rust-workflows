@@ -251,7 +251,7 @@ jobs:
       - name: Select test packages
         id: selection
         env:
-          TEST_EVENT: ${{ github.repository_id == '1404598722' && inputs.test-event || github.event_name }}
+          TEST_EVENT: ${{ inputs.warm-cache && 'push' || github.repository_id == '1404598722' && inputs.test-event || github.event_name }}
           BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           python3 - <<'PYTHON'
