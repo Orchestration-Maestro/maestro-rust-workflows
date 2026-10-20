@@ -1262,7 +1262,11 @@ jobs:
                   with open({str(log)!r}, 'a', encoding='utf-8') as output:
                       output.write(json.dumps(dict(tool=pathlib.Path(sys.argv[0]).name, args=args,
                                                    home=os.environ.get('HOME'), cargo_home=os.environ.get('CARGO_HOME'),
-                                                   ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'))) + '\\n')
+                                                   ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
+                                                   diagnostics=os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'))) + '\\n')
+                  if args[:1] != ['fetch'] and os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'):
+                      (pathlib.Path(os.environ['MAESTRO_TEST_DIAGNOSTICS_DIR']) / 'runner.txt').write_text(
+                          'child marker', encoding='utf-8')
                   if args[:1] == ['fetch'] and {real_cargo!r}:
                       sys.exit(subprocess.run([{real_cargo!r}] + args).returncode)
                   if args[:1] != ['fetch'] and {manifest!r}:
@@ -1279,6 +1283,125 @@ jobs:
               for name in ['cargo', 'cargo-nextest', 'cargo-llvm-cov']:
                   subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
               return tools, log
+
+          def diagnostic_directory_reaches_isolated_runner():
+              for caller in ['.', 'nested space/雪']:
+                  for coverage in ['false', 'true']:
+                      for shard in ['1', '2']:
+                          with tempfile.TemporaryDirectory() as temporary:
+                              directory = pathlib.Path(temporary) / caller
+                              directory.mkdir(parents=True, exist_ok=True)
+                              tools, log = install_recording_runner(directory)
+                              result = execute('Isolated tests', directory, {
+                                  'PATH': str(tools) + os.pathsep + os.environ['PATH'],
+                                  'TOOLS': str(tools), 'RUNNER_TEMP': temporary, 'SHARD': shard,
+                                  'COLLECT_COVERAGE': coverage, 'UNRELATED_AMBIENT_CANARY': 'absent',
+                                  'MAESTRO_TEST_DIAGNOSTICS_DIR': temporary + '/decoy'})
+                              assert result.returncode == 0, result.stdout + result.stderr
+                              commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                              children = [c for c in commands if c['args'][:1] != ['fetch']]
+                              expected = str(directory.resolve() / 'target/browser-author-diagnostics')
+                              assert children and all(c['diagnostics'] == expected for c in children), children
+                              assert all(c['ambient'] is None for c in children)
+                              assert len(children) == (2 if shard == '1' else 1), children
+                              assert children[0]['tool'] == ('cargo-llvm-cov' if coverage == 'true' else 'cargo-nextest')
+                              assert children[0]['args'][children[0]['args'].index('--partition') + 1] == f'count:{shard}/4'
+                              if shard == '1':
+                                  assert children[1]['args'] == ['test', '--locked', '--doc', '--workspace']
+                              assert (pathlib.Path(expected) / 'runner.txt').read_text(encoding='utf-8') == 'child marker'
+                              assert all(not pathlib.Path(c['home']).exists() for c in children)
+                              assert not (pathlib.Path(temporary) / 'decoy').exists()
+
+          diagnostic_directory_reaches_isolated_runner()
+          print('PASS diagnostic_directory_reaches_isolated_runner')
+
+          def diagnostic_post_step_keeps_partial_transcripts():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  env = {'GITHUB_OUTPUT': temporary + '/outputs', 'CALLER_REPOSITORY': 'org/repo',
+                         'CALLER_DIRECTORY': '.', 'CALL_KEY': '', 'GITHUB_REPOSITORY_ID': '123',
+                         'SHARD': '1', 'GITHUB_RUN_ID': '456', 'GITHUB_RUN_ATTEMPT': '1'}
+                  diagnostics = directory / 'target/browser-author-diagnostics'
+                  for state in ['missing', 'empty', 'partial']:
+                      if state == 'empty':
+                          diagnostics.mkdir(parents=True)
+                      if state == 'partial':
+                          (diagnostics / 'one.txt').write_bytes(b'CHILD-READY-MARKER\n::error::literal payload\n')
+                          (diagnostics / 'two.txt').write_bytes(b'phase: waiting-for-child-exit')
+                      result = execute('Print test diagnostics', directory, env)
+                      assert result.returncode == 0, result.stderr
+                      token = re.search(r'^::stop-commands::([^\n]+)\n', result.stdout)
+                      assert token, result.stdout
+                      assert result.stdout.endswith('\n::' + token[1] + '::\n'), result.stdout
+                      if state == 'partial':
+                          for path in diagnostics.iterdir():
+                              assert path.read_bytes() in result.stdout.encode('utf-8')
+                              assert result.stdout.index(path.read_text(encoding='utf-8')) > token.end() - 1
+                      repeated = execute('Print test diagnostics', directory, env)
+                      assert repeated.returncode == 0, repeated.stderr
+                      assert token[1] not in repeated.stdout
+                      assert pathlib.Path(env['GITHUB_OUTPUT']).read_text(encoding='utf-8').startswith('artifact_name=')
+
+          diagnostic_post_step_keeps_partial_transcripts()
+          print('PASS diagnostic_post_step_keeps_partial_transcripts')
+
+          def diagnostic_upload_is_unconditional_and_scoped():
+              steps = dict((s.splitlines()[0], s) for s in workflow.split('      - name: ')[1:])
+              for name in ['Print test diagnostics', 'Upload test diagnostics']:
+                  step = steps[name]
+                  assert "        if: always() && needs.declaration.outputs.enabled == 'true'\n" in step
+                  assert 'continue-on-error' not in step and 'coverage' not in step
+                  assert list(steps).index(name) > list(steps).index('Isolated tests')
+              upload = steps['Upload test diagnostics']
+              assert 'uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' in upload
+              assert 'if-no-files-found: ignore\n' in upload
+              paths = re.search(r'          path: \|\n((?:            .*\n)+)', upload)[1].splitlines()
+              assert [p.strip() for p in paths] == [
+                  "$" + "{{ inputs.working-directory || '.' }}/target/browser-author-diagnostics",
+                  "$" + "{{ inputs.working-directory || '.' }}/nextest.log"]
+              assert 'name: $' + '{{ steps.diagnostics.outputs.artifact_name }}\n' in upload
+              assert 'timeout-minutes: 45\n' in steps['Isolated tests']
+              assert "if: needs.declaration.outputs.enabled != 'true'\n" in steps['Tests']
+              assert "assert os.environ['RESULT'] == 'success'" in body('All test shards passed')
+
+          diagnostic_upload_is_unconditional_and_scoped()
+          print('PASS diagnostic_upload_is_unconditional_and_scoped')
+
+          def diagnostic_artifact_names_distinguish_invocations():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  base = {'CALLER_REPOSITORY': 'org/repo', 'CALLER_DIRECTORY': '.', 'CALL_KEY': '',
+                          'GITHUB_REPOSITORY_ID': '123', 'SHARD': '1', 'GITHUB_RUN_ID': '456', 'GITHUB_RUN_ATTEMPT': '1'}
+                  def name(changes):
+                      output = directory / 'output'
+                      output.write_text('', encoding='utf-8')
+                      result = execute('Print test diagnostics', directory, base | changes | {'GITHUB_OUTPUT': str(output)})
+                      assert result.returncode == 0, result.stderr
+                      value = output.read_text(encoding='utf-8').removeprefix('artifact_name=').strip()
+                      assert re.fullmatch(r'test-diagnostics-123-[0-9a-f]{64}-shard-[12]-run-45[67]-attempt-[12]', value), value
+                      return value
+                  original = name({})
+                  assert original == 'test-diagnostics-123-f6d6a7cff3ca148497eb84888c4fd22a9de927c2e9fda6aa267078943c10ea14-shard-1-run-456-attempt-1'
+                  for field, values in [('CALLER_REPOSITORY', ['other/repo']),
+                                        ('CALLER_DIRECTORY', ['fixtures/a b', 'fixtures/a/b']),
+                                        ('CALL_KEY', ['a/b', 'a-b'])]:
+                      names = [original] + [name({field: value}) for value in values]
+                      assert len(set(names)) == len(names), (field, names)
+                  for field, value, suffix in [('SHARD', '2', '-shard-2-run-456-attempt-1'),
+                                               ('GITHUB_RUN_ID', '457', '-shard-1-run-457-attempt-1'),
+                                               ('GITHUB_RUN_ATTEMPT', '2', '-shard-1-run-456-attempt-2')]:
+                      changed = name({field: value})
+                      assert changed.split('-shard-')[0] == original.split('-shard-')[0]
+                      assert changed.endswith(suffix)
+                  unicode_name = name({'CALLER_DIRECTORY': 'fixtures/雪 space', 'CALL_KEY': 'a/b:!?'})
+                  assert unicode_name == 'test-diagnostics-123-062b74de152feb2104328f6103b56364b374d5af055bba4cce98a5c548f90089-shard-1-run-456-attempt-1'
+              step = next(s for s in workflow.split('      - name: ')[1:] if s.startswith('Print test diagnostics\n'))
+              for expression in ["inputs.checkout-repository || github.repository", "inputs.working-directory || '.'", 'inputs.concurrency-key']:
+                  assert '$' + '{{ ' + expression + ' }}' in step.split('        run:', 1)[0]
+              assert '$' + '{{' not in body('Print test diagnostics')
+
+          diagnostic_artifact_names_distinguish_invocations()
+          print('PASS diagnostic_artifact_names_distinguish_invocations')
 
           def shard_runner_status_survives_log_capture():
               job_run_defaults_preserve_pipeline_failures()
