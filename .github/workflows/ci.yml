@@ -35,6 +35,10 @@ on:
         description: Build the full coverage test graph without running tests or other checks
         type: boolean
         default: false
+      cache-proof-bulk:
+        description: Throwaway proof only; restore a local compiler-cache snapshot
+        type: boolean
+        default: false
       advisory-scan:
         description: Run only the advisory scan of the checked-out caller (scheduled advisory workflow)
         type: boolean
@@ -348,7 +352,7 @@ jobs:
     needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && !inputs.cache-proof-bulk && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -391,9 +395,18 @@ jobs:
           rm "$archive"
           test -x "$bin/sccache"
           echo "$bin" >> "$GITHUB_PATH"
-          { echo RUSTC_WRAPPER=sccache; echo SCCACHE_GHA_ENABLED=true; echo SCCACHE_GHA_VERSION=2; echo CARGO_INCREMENTAL=0; } >> "$GITHUB_ENV"
-          PATH="$bin:$PATH" SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION=2 \
-            SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-error.log" SCCACHE_LOG=debug sccache --start-server
+          if [ "${BULK_CACHE:-false}" = true ]; then
+            unset SCCACHE_GHA_VERSION
+            export SCCACHE_GHA_ENABLED=false
+            export SCCACHE_DIR="$RUNNER_TEMP/maestro-bulk-sccache"
+            export SCCACHE_LOCAL_RW_MODE="$SCCACHE_GHA_RW_MODE"
+            { echo SCCACHE_GHA_ENABLED=false; echo "SCCACHE_DIR=$SCCACHE_DIR"; echo "SCCACHE_LOCAL_RW_MODE=$SCCACHE_LOCAL_RW_MODE"; } >> "$GITHUB_ENV"
+          else
+            export SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION=2
+            { echo SCCACHE_GHA_ENABLED=true; echo SCCACHE_GHA_VERSION=2; } >> "$GITHUB_ENV"
+          fi
+          { echo RUSTC_WRAPPER=sccache; echo CARGO_INCREMENTAL=0; } >> "$GITHUB_ENV"
+          PATH="$bin:$PATH" SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-error.log" SCCACHE_LOG=debug sccache --start-server
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
@@ -457,7 +470,7 @@ jobs:
           fi
       - &cache-error-artifact
         name: Upload compile cache errors
-        if: always() && (steps.cache-statistics.outputs.write_errors == 'true' || (inputs.concurrency-key == 'maestro-proof' && steps.cache-statistics.outcome == 'success'))
+        if: always() && (steps.cache-statistics.outputs.write_errors == 'true' || ((inputs.concurrency-key == 'maestro-proof' || inputs.cache-proof-bulk) && steps.cache-statistics.outcome == 'success'))
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: compile-cache-errors-${{ inputs.concurrency-key || 'root' }}-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
@@ -468,7 +481,7 @@ jobs:
     needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && !inputs.cache-proof-bulk && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -519,11 +532,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,"doctests"]' || '[1,2,3,4]') }}
+        shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || inputs.cache-proof-bulk && '[1,2,3,4]' || needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,"doctests"]' || '[1,2,3,4]') }}
     runs-on: ubuntu-latest
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       WARM_CACHE: ${{ inputs.warm-cache }}
+      BULK_CACHE: ${{ inputs.cache-proof-bulk }}
       SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
@@ -557,6 +571,13 @@ jobs:
             for (const name of ['ACTIONS_CACHE_SERVICE_V2', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
               if (process.env[name]) core.exportVariable(name, process.env[name]);
             }
+      - name: Restore bulk compile cache
+        if: inputs.cache-proof-bulk && !inputs.warm-cache
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/maestro-bulk-sccache
+          key: maestro-bulk-${{ github.run_id }}-${{ github.run_attempt }}
+          fail-on-cache-miss: true
       - name: Compile cache
         timeout-minutes: 10
         run: *sccache-install
@@ -761,6 +782,25 @@ jobs:
         if: always()
         run: *sccache-stats
       - *cache-error-artifact
+      - name: Verify bulk compiler-cache route
+        if: inputs.cache-proof-bulk
+        run: |
+          grep -E '^Cache location +Local disk:' "$RUNNER_TEMP/sccache-stats"
+          if grep -E 'service=ghac|read failed RateLimited' "$RUNNER_TEMP/sccache-error.log"; then
+            exit 1
+          fi
+      - name: Seal bulk compile cache
+        if: inputs.cache-proof-bulk && inputs.warm-cache
+        run: |
+          sccache --stop-server
+          du --bytes --summarize "$SCCACHE_DIR"
+          find "$SCCACHE_DIR" -type f | wc -l
+      - name: Save bulk compile cache
+        if: inputs.cache-proof-bulk && inputs.warm-cache
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/maestro-bulk-sccache
+          key: maestro-bulk-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload shard coverage
         if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -829,7 +869,7 @@ jobs:
   checks:
     name: Dependency, source and coverage checks
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && !inputs.cache-proof-bulk && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1136,7 +1176,7 @@ jobs:
   targets:
     name: Check (${{ matrix.target }})
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && needs.declaration.outputs.targets != '[]' }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && !inputs.cache-proof-bulk && needs.declaration.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1191,7 +1231,7 @@ jobs:
   browser:
     name: Wasm and browser build
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && !inputs.cache-proof-bulk && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1263,7 +1303,7 @@ jobs:
   browser-tests:
     name: Chromium browser tests
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true' }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && !inputs.cache-proof-bulk && needs.declaration.outputs.browser_tests == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:

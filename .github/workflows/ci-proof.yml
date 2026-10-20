@@ -29,6 +29,29 @@ jobs:
       concurrency-key: maestro-proof
       test-event: merge_group
 
+  bulk-warm:
+    name: Warm bulk compiler cache
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: 9e7d7d3ba3f30b14fe912e25ceb4f548ca9c96b7
+      concurrency-key: maestro-bulk-warm
+      warm-cache: true
+      cache-proof-bulk: true
+
+  bulk:
+    needs: bulk-warm
+    name: Bulk partitioned coverage
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: 98b41a9149ebf1d5cfffdc343194cfc0555467d9
+      concurrency-key: maestro-bulk-proof
+      test-event: merge_group
+      cache-proof-bulk: true
+
   comparison:
     name: Maestro single coverage
     runs-on: ubuntu-latest
