@@ -15,9 +15,11 @@ for now; macOS and Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
 
 Tests run with checksum-pinned cargo-nextest 0.9.148 on four Linux runners,
-using automatic count partitions rather than package lists. Doctests run once
-with `cargo test --doc` on shard 1. The aggregate `Tests (ubuntu-latest)`
-requires every shard to succeed, preserving the required-check name.
+using automatic count partitions rather than package lists. Pull-request doctests
+run once with `cargo test --doc` on shard 1. Merge groups and main pushes run
+doctests in a parallel `Doctests` matrix leg. The aggregate
+`Tests (ubuntu-latest)` requires all four shards and, for full runs, `Doctests`
+to succeed, preserving the required-check name.
 Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-diagnostics)
 and the reporter log after isolated tests fail or time out.
 
@@ -27,7 +29,7 @@ job summaries, while permanent failures still fail. Merge groups and main
 pushes run the full suite with coverage.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov
-nextest`. Each shard uploads LCOV; the aggregate counts a source line as covered
+nextest`. Only the four numeric shards upload LCOV; the aggregate counts a source line as covered
 if any shard covers it and enforces the union's 80% floor (or caller's higher
 threshold). Missing shard reports fail. Undeclared callers retain single-job
 coverage in `Dependency, source and coverage checks`.
