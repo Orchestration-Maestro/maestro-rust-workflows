@@ -122,6 +122,7 @@ jobs:
 
           install, startup = body('Compile cache').rsplit('PATH="$bin:$PATH"', 1)
           startup = 'PATH="$bin:$PATH"' + startup
+          exports = install[install.index('{ echo RUSTC_WRAPPER='):]
 
           def run(command, env, cwd=root):
               return subprocess.run(command, env=env, cwd=cwd, capture_output=True, text=True, timeout=60)
@@ -201,8 +202,10 @@ jobs:
               if server:
                   env = remote(env, server, mode)
               try:
-                  started = shell(source, env)
+                  started = shell((exports if source == startup else '') + source, env)
                   assert started.returncode == 0, (started.returncode, started.stdout, started.stderr)
+                  if source == startup:
+                      env.update(line.split('=', 1) for line in (directory / 'env').read_text().splitlines())
                   yield env
               finally:
                   run([str(binary), '--stop-server'], env)
@@ -231,11 +234,18 @@ jobs:
               assert f'::stop-commands::{token}\n{log}\n::{token}::\n' in output
 
           def cache_storage_outage_builds_uncached():
-              for mode in ['READ_WRITE', 'READ_ONLY']:
+              for mode, restart in [('READ_WRITE', False), ('READ_ONLY', False),
+                                    ('READ_WRITE', True), ('READ_ONLY', True)]:
                   with tempfile.TemporaryDirectory() as temporary, storage() as server:
                       directory = pathlib.Path(temporary)
                       with daemon(directory, server, mode) as env:
                           assert not server.requests, server.requests
+                          if restart:
+                              stopped = run([str(binary), '--stop-server'], env)
+                              assert stopped.returncode == 0, stopped.stderr
+                              pathlib.Path(directory / 'sccache-error.log').unlink(missing_ok=True)
+                              print('Restart policy: ' + repr({key: env.get(key) for key in
+                                    ['SCCACHE_SKIP_CACHE_CHECK', 'SCCACHE_ERROR_LOG', 'SCCACHE_LOG']}), flush=True)
                           built = compile_sample(env)
                           assert built.returncode == 0, built.stdout + built.stderr
                           assert list((directory / 'target/debug/deps').glob('libsample-*.rlib'))
@@ -247,7 +257,7 @@ jobs:
                           else:
                               assert not any(p.endswith('/CreateCacheEntry') for p in server.requests)
                           printed_log(env, output)
-                          print(f'PASS outage {mode}: real artifact, hit=0, miss>0', flush=True)
+                          print(f'PASS outage {mode} restart={restart}: real artifact, hit=0, miss>0', flush=True)
 
           def cache_reachable_entries_still_hit():
               with tempfile.TemporaryDirectory() as temporary:
