@@ -8,7 +8,18 @@ permissions:
   contents: read
 
 jobs:
+  warm:
+    name: Warm parent coverage cache
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: 9e7d7d3ba3f30b14fe912e25ceb4f548ca9c96b7
+      concurrency-key: maestro-warm
+      warm-cache: true
+
   maestro:
+    needs: warm
     name: Maestro partitioned coverage
     uses: ./.github/workflows/ci.yml
     with:

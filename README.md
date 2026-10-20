@@ -53,12 +53,21 @@ Every Linux job that compiles Rust runs rustc through checksum-pinned sccache
 --show-stats` at the end. Jobs can read entries from their own ref and the
 default branch. Pull-request re-runs can reuse their earlier entries; later merge
 groups cannot read an earlier group's scope. GitHub evicts entries when the
-repository exceeds its 10 GB cache limit.
+repository exceeds its 10 GB cache limit. Ordinary runs use the compile cache
+in read-only mode: parallel writers exhausted the cache service's rate limit.
+
+A `workflow_call` with `warm-cache: true` writes one full-workspace coverage build
+to its ref's scope. It selects no tests, produces no coverage report and skips
+other checks. A default-branch caller can use it after each merge to make those
+entries readable by later pull requests and merge groups. This warms the
+merge-group coverage flags; pull-request package selection can produce different
+keys. Give concurrent reusable calls distinct `concurrency-key` values.
 
 The server writes a debug log under the runner's temporary directory. When its
 statistics report cache write errors, the job uploads that log as a
-`compile-cache-errors-*` artifact. The sccache server holds the cache credentials,
-so the isolated test environment never sees them. The `target/` and registry
+`compile-cache-errors-*` artifact. The hosted coverage proof also retains these
+logs without write errors to measure third-party cache hits. The sccache server
+holds the cache credentials, so the isolated test environment never sees them. The `target/` and registry
 `actions/cache` entries were removed. The secret scan in
 `Dependency, source and coverage checks` runs before its cache is used.
 

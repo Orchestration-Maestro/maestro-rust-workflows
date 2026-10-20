@@ -31,6 +31,10 @@ on:
         description: Stable key distinguishing multiple calls in one workflow
         type: string
         default: ''
+      warm-cache:
+        description: Build the full coverage test graph without running tests or other checks
+        type: boolean
+        default: false
       advisory-scan:
         description: Run only the advisory scan of the checked-out caller (scheduled advisory workflow)
         type: boolean
@@ -46,6 +50,9 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  SCCACHE_GHA_RW_MODE: ${{ inputs.warm-cache && 'READ_WRITE' || 'READ_ONLY' }}
 
 defaults:
   run:
@@ -341,7 +348,7 @@ jobs:
     needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -450,7 +457,7 @@ jobs:
           fi
       - &cache-error-artifact
         name: Upload compile cache errors
-        if: always() && steps.cache-statistics.outputs.write_errors == 'true'
+        if: always() && (steps.cache-statistics.outputs.write_errors == 'true' || (inputs.concurrency-key == 'maestro-proof' && steps.cache-statistics.outcome == 'success'))
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: compile-cache-errors-${{ inputs.concurrency-key || 'root' }}-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
@@ -461,7 +468,7 @@ jobs:
     needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -507,15 +514,16 @@ jobs:
 
   tests:
     needs: declaration
-    name: ${{ matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}
+    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}
     if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,"doctests"]' || '[1,2,3,4]') }}
+        shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,"doctests"]' || '[1,2,3,4]') }}
     runs-on: ubuntu-latest
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
+      WARM_CACHE: ${{ inputs.warm-cache }}
       SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
@@ -532,7 +540,7 @@ jobs:
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
-        if: needs.declaration.outputs.enabled == 'true'
+        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         run: &free-build-space |
           # The deletion overlaps the toolchain, tools and compilation; the build needs the space minutes later.
           sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc >/dev/null 2>&1 &
@@ -585,7 +593,7 @@ jobs:
           PYTHON
       - name: Tests
         timeout-minutes: 45
-        if: needs.declaration.outputs.enabled != 'true'
+        if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}
         run: |
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
@@ -599,7 +607,7 @@ jobs:
           fi
       - name: Search tools
         timeout-minutes: 10
-        if: needs.declaration.outputs.enabled == 'true'
+        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         run: |
           # Digests: ripgrep's release .sha256 file and fd's GitHub release asset digest.
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-search-bin.XXXXXX")
@@ -634,7 +642,7 @@ jobs:
         run: sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"
       - name: Isolated tests
         timeout-minutes: 45
-        if: needs.declaration.outputs.enabled == 'true'
+        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         env:
           CARGO_COVERAGE_MIN_LINES: ''
         run: |
@@ -673,13 +681,19 @@ jobs:
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
-          if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
+          if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
           if [ "${SHARD:-}" != doctests ]; then
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
-            elif [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; then
+            elif [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
+              partition=(--partition "count:$SHARD/4")
+              report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
+              if [ "${WARM_CACHE:-false}" = true ]; then
+                partition=(-E 'none()')
+                report=(--no-report)
+              fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-                --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/4" --no-tests pass --workspace --locked --lcov --output-path "$PWD/shard-$SHARD.lcov" 2>&1 | tee nextest.log
+                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked "${report[@]}" 2>&1 | tee nextest.log
             else
               partition=()
               if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/4"); fi
@@ -687,7 +701,7 @@ jobs:
                 --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi
           fi
-          if [[ -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
+          if [[ "${WARM_CACHE:-false}" != true && -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
             run_isolated cargo test --locked --doc "${packages[@]}"
           fi
       - name: Print test diagnostics
@@ -748,7 +762,7 @@ jobs:
         run: *sccache-stats
       - *cache-error-artifact
       - name: Upload shard coverage
-        if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests'
+        if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ inputs.concurrency-key || 'root' }}-${{ matrix.shard }}
@@ -758,7 +772,7 @@ jobs:
   tests-result:
     name: Tests (ubuntu-latest)
     needs: [tests, declaration]
-    if: ${{ always() && !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ always() && !inputs.advisory-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     steps:
       - name: All test shards passed
@@ -815,7 +829,7 @@ jobs:
   checks:
     name: Dependency, source and coverage checks
     needs: declaration
-    if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1063,7 +1077,7 @@ jobs:
   advisories:
     name: Advisory scan
     needs: declaration
-    if: ${{ inputs.advisory-scan }}
+    if: ${{ inputs.advisory-scan && !inputs.warm-cache }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1122,7 +1136,7 @@ jobs:
   targets:
     name: Check (${{ matrix.target }})
     needs: declaration
-    if: ${{ !inputs.advisory-scan && needs.declaration.outputs.targets != '[]' }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && needs.declaration.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1177,7 +1191,7 @@ jobs:
   browser:
     name: Wasm and browser build
     needs: declaration
-    if: ${{ !inputs.advisory-scan && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1249,7 +1263,7 @@ jobs:
   browser-tests:
     name: Chromium browser tests
     needs: declaration
-    if: ${{ !inputs.advisory-scan && needs.declaration.outputs.browser_tests == 'true' }}
+    if: ${{ !inputs.advisory-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
