@@ -1,0 +1,9 @@
+wasm_crates = []
+check_targets = []
+fuzz_manifest = "fuzz/Cargo.toml"
+fuzz_targets = [
+  { name = "planted", seconds = 60, max_len = 64, timeout = 5, rss_limit_mb = 512 },
+  { name = "stalled", seconds = 60, max_len = 64, timeout = 2, rss_limit_mb = 512 },
+  { name = "hungry", seconds = 60, max_len = 64, timeout = 5, rss_limit_mb = 256 },
+  { name = "clean", seconds = 10, max_len = 8, timeout = 5, rss_limit_mb = 512 },
+]

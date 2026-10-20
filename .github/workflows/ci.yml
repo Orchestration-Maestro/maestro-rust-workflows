@@ -8,11 +8,11 @@ on:
   workflow_call:
     inputs:
       checkout-repository:
-        description: Repository to check out (self-test, proof and advisory scan; defaults to caller)
+        description: Repository to check out (self-test, proof, and advisory and fuzz scans; defaults to caller)
         type: string
         default: ''
       checkout-ref:
-        description: Checkout ref (self-test, proof and advisory scan; defaults to caller)
+        description: Checkout ref (self-test, proof, and advisory and fuzz scans; defaults to caller)
         type: string
         default: ''
       checkout-base-ref:
@@ -24,7 +24,7 @@ on:
         type: string
         default: ''
       working-directory:
-        description: Directory to check (self-test, proof and advisory scan)
+        description: Directory to check (self-test, proof, and advisory and fuzz scans)
         type: string
         default: .
       concurrency-key:
@@ -33,6 +33,10 @@ on:
         default: ''
       advisory-scan:
         description: Run only the advisory scan of the checked-out caller (scheduled advisory workflow)
+        type: boolean
+        default: false
+      fuzz-scan:
+        description: Run only the fuzz job of the checked-out caller (scheduled fuzz workflow)
         type: boolean
         default: false
     outputs:
@@ -74,6 +78,8 @@ jobs:
       reserved_ports: ${{ steps.config.outputs.reserved_ports }}
       additional_locked_manifests: ${{ steps.config.outputs.additional_locked_manifests }}
       quality_config: ${{ steps.config.outputs.quality_config }}
+      fuzz_manifest: ${{ steps.config.outputs.fuzz_manifest }}
+      fuzz_targets: ${{ steps.config.outputs.fuzz_targets }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -105,11 +111,11 @@ jobs:
               config = None
           except (OSError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='')
+          values = dict(additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows'}
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -140,16 +146,39 @@ jobs:
               for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests'):
                   for value in config.get(key, []):
                       validate_toml_string(key, value)
-              for value in config.get('additional_locked_manifests', []):
+              def contained_manifest(value):
                   manifest = pathlib.Path(value)
                   try:
-                      valid = (not manifest.is_absolute() and manifest.name == 'Cargo.toml'
-                               and manifest.resolve().is_relative_to(pathlib.Path.cwd().resolve())
-                               and manifest.is_file())
+                      return (not manifest.is_absolute() and manifest.name == 'Cargo.toml'
+                              and manifest.resolve().is_relative_to(pathlib.Path.cwd().resolve())
+                              and manifest.is_file())
                   except (OSError, RuntimeError):
-                      valid = False
-                  if not valid:
+                      return False
+              for value in config.get('additional_locked_manifests', []):
+                  if not contained_manifest(value):
                       raise SystemExit(f'{path}: additional_locked_manifests requires existing repository-contained relative Cargo.toml files')
+              if ('fuzz_manifest' in config) != ('fuzz_targets' in config):
+                  raise SystemExit(f'{path}: fuzz_manifest and fuzz_targets must be declared together')
+              if 'fuzz_manifest' in config:
+                  manifest = config['fuzz_manifest']
+                  if type(manifest) is not str or not manifest:
+                      raise SystemExit(f'{path}: fuzz_manifest must be a nonempty string')
+                  validate_toml_string('fuzz_manifest', manifest)
+                  if not contained_manifest(manifest):
+                      raise SystemExit(f'{path}: fuzz_manifest requires an existing repository-contained relative Cargo.toml file')
+                  targets = config['fuzz_targets']
+                  if not isinstance(targets, list):
+                      raise SystemExit(f'{path}: fuzz_targets must be an array')
+                  for entry in targets:
+                      if not isinstance(entry, dict) or set(entry) != {'name', 'seconds', 'max_len', 'timeout', 'rss_limit_mb'}:
+                          raise SystemExit(f'{path}: fuzz_targets requires name, seconds, max_len, timeout and rss_limit_mb')
+                      if type(entry['name']) is not str or not re.fullmatch(r'[A-Za-z0-9_-]+', entry['name']):
+                          raise SystemExit(f'{path}: fuzz_targets name must be a Cargo target name')
+                      if any(type(entry[key]) is not int or entry[key] < 1 for key in ('seconds', 'max_len', 'timeout', 'rss_limit_mb')):
+                          raise SystemExit(f'{path}: fuzz_targets seconds, max_len, timeout and rss_limit_mb must be positive integers')
+                  if len({entry['name'] for entry in targets}) != len(targets):
+                      raise SystemExit(f'{path}: fuzz_targets names must be unique')
+                  values.update(fuzz_manifest=manifest, fuzz_targets=json.dumps(targets))
               privileged = config.get('privileged_trigger_workflows', [])
               if len(set(privileged)) != len(privileged):
                   raise SystemExit(f'{path}: privileged_trigger_workflows entries must be unique')
@@ -341,7 +370,7 @@ jobs:
     needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -455,7 +484,7 @@ jobs:
     needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -500,7 +529,7 @@ jobs:
   tests:
     needs: declaration
     name: ${{ matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}
-    if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -748,7 +777,7 @@ jobs:
   tests-result:
     name: Tests (ubuntu-latest)
     needs: [tests, declaration]
-    if: ${{ always() && !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     steps:
       - name: All test shards passed
@@ -805,7 +834,7 @@ jobs:
   checks:
     name: Dependency, source and coverage checks
     needs: declaration
-    if: ${{ !inputs.advisory-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -851,6 +880,7 @@ jobs:
           https://github.com/zizmorcore/zizmor/releases/download/v1.30.1/zizmor-x86_64-unknown-linux-gnu.tar.gz e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a zizmor
           https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 actionlint
           https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz 3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522 cargo-llvm-cov
+          https://github.com/rust-fuzz/cargo-fuzz/releases/download/0.13.2/cargo-fuzz-0.13.2-x86_64-unknown-linux-musl.tar.gz b5b704018b63e0f151c17a057ac53b5111e1db545d1b9f72fee79f08a545931c cargo-fuzz
           TOOLS
           echo "TOOLS=$bin" >> "$GITHUB_ENV"
       - name: Embedded check defaults
@@ -1048,6 +1078,101 @@ jobs:
         if: always() && needs.declaration.outputs.enabled != 'true'
         run: *sccache-stats
 
+  fuzz:
+    name: Fuzz ${{ matrix.name }}
+    needs: declaration
+    if: ${{ inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.declaration.outputs.fuzz_targets) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory || '.' }}
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-09-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Fuzz toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Check tools
+        timeout-minutes: 10
+        run: *check-tools
+      - name: Fuzz target
+        id: fuzz
+        env:
+          FUZZ_MANIFEST: ${{ needs.declaration.outputs.fuzz_manifest }}
+          TARGET: ${{ matrix.name }}
+          SECONDS_BUDGET: ${{ matrix.seconds }}
+          MAX_LEN: ${{ matrix.max_len }}
+          TIMEOUT: ${{ matrix.timeout }}
+          RSS_LIMIT_MB: ${{ matrix.rss_limit_mb }}
+        run: |
+          python3 - <<'PYTHON'
+          import base64
+          import json
+          import os
+          import pathlib
+          import re
+          import shutil
+          import subprocess
+          target = os.environ['TARGET']
+          fuzz_dir = pathlib.Path(os.environ['FUZZ_MANIFEST']).parent
+          # The minimizer asserts on -max_len, so it reproduces with the time and memory limits only.
+          limits = [f"-timeout={os.environ['TIMEOUT']}", f"-rss_limit_mb={os.environ['RSS_LIMIT_MB']}"]
+          def fuzz(command, *args):
+              result = subprocess.run([os.environ['TOOLS'] + '/cargo-fuzz', 'fuzz', command, '--fuzz-dir', str(fuzz_dir),
+                                       '--target', 'x86_64-unknown-linux-gnu', target, *args],
+                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace')
+              print(result.stdout, flush=True)
+              return result
+          run = fuzz('run', '--', f"-max_total_time={os.environ['SECONDS_BUDGET']}", f"-max_len={os.environ['MAX_LEN']}", *limits)
+          artifacts = [path for path in (fuzz_dir / 'artifacts' / target).glob('*')
+                       if re.fullmatch(r'(crash|timeout|oom|leak)-[0-9a-f]{40}', path.name)]
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'found={str(bool(artifacts)).lower()}\n')
+          if not artifacts:
+              if run.returncode:
+                  raise SystemExit(f'fuzz target {target} exited {run.returncode} without a finding')
+              raise SystemExit(0)
+          if len(artifacts) != 1:
+              raise SystemExit(f'fuzz target {target} left {len(artifacts)} findings')
+          raw = artifacts[0]
+          tmin = fuzz('tmin', str(raw), '--', *limits)
+          reached = re.findall(r'^CRASH_MIN: failed to minimize beyond (.+) \(\d+ bytes\), exiting$', tmin.stdout, re.MULTILINE)
+          minimized = pathlib.Path(reached[-1]) if tmin.returncode == 0 and reached else raw
+          lines = run.stdout.splitlines()
+          panic = next((m for m in map(re.compile(r"^thread '.*' (?:\(\d+\) )?panicked at (.+):$").match, lines) if m), None)
+          start = next((i for i, line in enumerate(lines) if re.search(r"panicked at |has overflowed its stack|^==\d+== ?ERROR: |^ALARM: ", line)), 0)
+          end = next((i + 1 for i in range(start, len(lines)) if lines[i].startswith('SUMMARY: ')), len(lines))
+          out = pathlib.Path(os.environ['RUNNER_TEMP']) / 'fuzz-finding'
+          out.mkdir()
+          shutil.copyfile(raw, out / raw.name)
+          shutil.copyfile(minimized, out / 'minimized')
+          (out / 'fuzz.log').write_text(run.stdout, encoding='utf-8')
+          (out / 'tmin.log').write_text(tmin.stdout, encoding='utf-8')
+          (out / 'finding.json').write_text(json.dumps({
+              'target': target, 'kind': raw.name.split('-', 1)[0],
+              'location': panic[1].removeprefix(f'{pathlib.Path.cwd()}/') if panic else '',
+              'input': base64.b64encode(minimized.read_bytes()).decode(),
+              'stack': '\n'.join(lines[start:end])}), encoding='utf-8')
+          PYTHON
+      - name: Upload fuzz finding
+        if: steps.fuzz.outputs.found == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-${{ inputs.concurrency-key || 'root' }}-${{ matrix.name }}
+          path: ${{ runner.temp }}/fuzz-finding
+          if-no-files-found: error
+
   advisories:
     name: Advisory scan
     needs: declaration
@@ -1110,7 +1235,7 @@ jobs:
   targets:
     name: Check (${{ matrix.target }})
     needs: declaration
-    if: ${{ !inputs.advisory-scan && needs.declaration.outputs.targets != '[]' }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && needs.declaration.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1163,7 +1288,7 @@ jobs:
   browser:
     name: Wasm and browser build
     needs: declaration
-    if: ${{ !inputs.advisory-scan && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1233,7 +1358,7 @@ jobs:
   browser-tests:
     name: Chromium browser tests
     needs: declaration
-    if: ${{ !inputs.advisory-scan && needs.declaration.outputs.browser_tests == 'true' }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && needs.declaration.outputs.browser_tests == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:

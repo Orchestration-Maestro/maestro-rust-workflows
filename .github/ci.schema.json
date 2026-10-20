@@ -186,6 +186,60 @@
         "type": "string"
       },
       "default": []
+    },
+    "fuzz_manifest": {
+      "description": "Literal relative path of the cargo-fuzz crate's Cargo.toml, fuzzed only by the nightly fuzz job. File existence and resolved containment are checked at runtime.",
+      "type": "string",
+      "minLength": 1
+    },
+    "fuzz_targets": {
+      "description": "Fuzz targets of that crate, run nightly in declared order with their libFuzzer limits.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "seconds",
+          "max_len",
+          "timeout",
+          "rss_limit_mb"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "seconds": {
+            "description": "Total fuzzing time in seconds (-max_total_time).",
+            "type": "integer",
+            "minimum": 1
+          },
+          "max_len": {
+            "description": "Largest generated input in bytes (-max_len).",
+            "type": "integer",
+            "minimum": 1
+          },
+          "timeout": {
+            "description": "Seconds one input may run before it counts as a timeout (-timeout).",
+            "type": "integer",
+            "minimum": 1
+          },
+          "rss_limit_mb": {
+            "description": "Memory limit in megabytes before an input counts as out of memory (-rss_limit_mb).",
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
     }
+  },
+  "dependentRequired": {
+    "fuzz_manifest": [
+      "fuzz_targets"
+    ],
+    "fuzz_targets": [
+      "fuzz_manifest"
+    ]
   }
 }

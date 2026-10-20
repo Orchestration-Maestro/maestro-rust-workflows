@@ -1,0 +1,83 @@
+name: Nightly fuzz
+
+on:
+  schedule:
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Maestro main
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: main
+      concurrency-key: fuzz
+      fuzz-scan: true
+
+  report:
+    name: Fuzz issues
+    needs: scan
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      REPOSITORY: Orchestration-Maestro/maestro
+    steps:
+      - name: Download fuzz findings
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: fuzz-fuzz-*
+          path: findings
+      - name: Mint the issue token
+        id: token
+        if: hashFiles('findings/*/finding.json') != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: Orchestration-Maestro
+          repositories: maestro
+          permission-issues: write
+      - name: Open fuzz issues
+        env:
+          SCAN: ${{ needs.scan.result }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: python
+        run: |
+          import base64
+          import json
+          import os
+          import pathlib
+          import subprocess
+          repository = os.environ['REPOSITORY']
+          kinds = {'crash': 'crash', 'timeout': 'timeout', 'oom': 'out-of-memory', 'leak': 'leak'}
+          limit = 65536  # GitHub's issue and comment body limit, in characters.
+          def gh(*args, body=None):
+              return subprocess.run(['gh', *args, '-R', repository], input=body, check=True, capture_output=True, text=True).stdout
+          findings = sorted(pathlib.Path('findings').glob('*/finding.json'))
+          for path in findings:
+              finding = json.loads(path.read_text(encoding='utf-8'))
+              prefix = f"Fuzz {kinds[finding['kind']]} in {finding['target']}"
+              title = f"{prefix} at {finding['location']}" if finding['location'] else prefix
+              size = len(base64.b64decode(finding['input']))
+              head = (f"Nightly fuzzing of `main` reported: {title}.\n\n"
+                      f"- Run: {os.environ['RUN_URL']}\n- Artifact: `{path.parent.name}` (raw and minimized inputs, logs)\n")
+              line = f"- Minimized input ({size} bytes, base64): `{finding['input']}`\n"
+              head += (line if len(head) + len(line) + len('\n```text\n\n```\n') <= limit else f"- Minimized input ({size} bytes): in the artifact\n") + '\n```text\n'
+              body = head + finding['stack'][:limit - len(head) - 5] + '\n```\n'
+              issues = json.loads(gh('issue', 'list', '--state', 'open', '--search', f'"{prefix}" in:title', '--json', 'number,title'))
+              match = next((issue for issue in issues if issue['title'] == title), None)
+              if match:
+                  print(gh('issue', 'comment', str(match['number']), '--body-file', '-', body=body).strip())
+              else:
+                  print(gh('issue', 'create', '--title', title, '--body-file', '-', '--label', 'bug', '--label', 'needs-triage', body=body).strip())
+          if os.environ['SCAN'] != 'success':
+              raise SystemExit(f"fuzz scan {os.environ['SCAN']}: {os.environ['RUN_URL']}")
+          if findings:
+              raise SystemExit(f'{len(findings)} fuzz findings on main')
+          print('no fuzz findings on main')
