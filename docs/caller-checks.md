@@ -534,17 +534,20 @@ a positive integer:
 | `timeout` | `-timeout` | Seconds one input may run before it counts as a timeout |
 | `rss_limit_mb` | `-rss_limit_mb` | Memory in megabytes before an input counts as out of memory |
 
-Targets run in declared order, each in its own job, and an empty array runs
+Each target gets its own job, the jobs start together, and an empty array runs
 none. The committed `<fuzz dir>/corpus/<name>/` directory seeds each run; the
 job does not keep the corpus between nights.
 
-The keys change nothing in pull requests, merge groups or pushes. Only the
-workflow's fuzz-scan mode runs the fuzz job, next to the declaration, and the
-organization's required workflow never sets that mode.
-`.github/workflows/fuzz.yml` calls it for Maestro's `main` every night at 04:41
-UTC and on manual dispatch. Each target job installs cargo-fuzz 0.13.2, a
-checksum-verified release like the other check tools, and the
-`nightly-2026-09-15` toolchain, which replaces the caller's
+Pull requests, merge groups and pushes only validate the keys: a malformed
+entry or a missing manifest fails the declaration, and nothing is fuzzed. Only
+the workflow's fuzz-scan mode runs the fuzz job, next to the declaration, and
+the organization's required workflow never sets that mode. This repository's
+own pull requests also run the `fixtures/fuzz` planted targets to test the
+workflow code; callers' pull requests do not.
+`.github/workflows/fuzz.yml` calls the workflow in that mode for Maestro's
+`main` every night at 04:41 UTC and on manual dispatch. Each target job installs
+cargo-fuzz 0.13.2, a checksum-verified release that only this job downloads,
+and the `nightly-2026-09-15` toolchain, which replaces the caller's
 `rust-toolchain.toml` for that job only. It fuzzes on Linux x86_64
 (`--target x86_64-unknown-linux-gnu`).
 
@@ -562,9 +565,11 @@ or build error fails only that target's job, and the report job still files
 the other targets' findings.
 
 The `libfuzzer-sys` crate that cargo-fuzz uses is licensed
-`(MIT OR Apache-2.0) AND NCSA`. The shared CI accepts NCSA only for that
-crate, in a test-only fuzz crate outside the caller workspace. That fuzz crate
-keeps the NCSA notice, and nothing the caller ships may depend on it. The
+`(MIT OR Apache-2.0) AND NCSA`. Before fuzzing, each target job runs the
+cargo-deny license check on the fuzz crate with the embedded allow list and the
+caller's license exceptions, plus NCSA for `libfuzzer-sys` alone, so any other
+NCSA crate fails the job. Keep the NCSA notice in the fuzz crate, as
+`fixtures/fuzz/fuzz/NOTICE` does, and ship nothing that depends on it. The
 workspace license check never sees the fuzz crate and still rejects NCSA in
 anything the caller ships.
 

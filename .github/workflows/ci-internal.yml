@@ -427,6 +427,7 @@ jobs:
           import pathlib
           import re
           import shlex
+          import shutil
           import subprocess
           import tempfile
           import textwrap
@@ -448,6 +449,28 @@ jobs:
                   argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
                   env = env | {'CARGO_BUILD_JOBS': '3'}
               return subprocess.run(argv, cwd=directory, env=env, capture_output=True, text=True)
+
+          def fuzz_licences_allow_ncsa_only_for_libfuzzer_sys(env, temporary):
+              directory = pathlib.Path(temporary) / 'fuzz-licences'
+              def crate(path, name, license, dependencies=()):
+                  (directory / path / 'src').mkdir(parents=True)
+                  (directory / path / 'src/lib.rs').write_text('', encoding='utf-8')
+                  (directory / path / 'Cargo.toml').write_text(
+                      f'[package]\nname = "{name}"\nversion = "0.1.0"\nedition = "2021"\nlicense = "{license}"\n'
+                      + ('[workspace]\n' if path == 'fuzz' else '') + '[dependencies]\n'
+                      + ''.join(f'{dependency} = {{ path = "../{dependency}" }}\n' for dependency in dependencies), encoding='utf-8')
+              crate('libfuzzer-sys', 'libfuzzer-sys', '(MIT OR Apache-2.0) AND NCSA')
+              crate('other', 'other', 'NCSA')
+              for dependencies, allowed in [(['libfuzzer-sys'], True), (['libfuzzer-sys', 'other'], False)]:
+                  shutil.rmtree(directory / 'fuzz', ignore_errors=True)
+                  crate('fuzz', 'caller-fuzz', 'MIT', dependencies)
+                  subprocess.run(['cargo', 'generate-lockfile', '--offline', '--manifest-path', 'fuzz/Cargo.toml'], cwd=directory, check=True)
+                  result = execute('Fuzz licences', directory, env | {'FUZZ_MANIFEST': 'fuzz/Cargo.toml'})
+                  output = result.stdout + result.stderr
+                  if allowed:
+                      assert result.returncode == 0, output
+                  else:
+                      assert result.returncode != 0 and 'other' in output and 'NCSA' in output, output
 
           def secrets_scan_before_restored_build_output(env, temporary):
               directory = pathlib.Path(temporary) / 'source-only'
@@ -814,17 +837,19 @@ jobs:
               assert [finding['id'] for finding in scan(yanked, {})] == ['yanked once_cell 0.0.1', 'yanked once_cell 0.0.2']
               print('PASS advisory_scan_reports_undeclared_findings_only', flush=True)
 
-          def fake_gh(directory):
-              # Records each call as {"argv", "body"} (standard input for --body-file) and answers `issue list` with $OPEN.
+          def fake_tool(directory, name):
+              # Records each call as {"argv", "body"} (standard input for --body-file), answers `issue list` with $OPEN
+              # and exits with $FAKE_STATUS.
               directory.mkdir()
               calls = directory / 'calls.jsonl'
-              source = directory / 'gh-source'
+              source = directory / f'{name}-source'
               source.write_text('#!/usr/bin/env python3\nimport json, os, sys\n'
                                 'body = sys.stdin.read() if "--body-file" in sys.argv else None\n'
                                 'with open(os.environ["CALLS"], "a", encoding="utf-8") as calls:\n'
                                 '    calls.write(json.dumps({"argv": sys.argv[1:], "body": body}) + "\\n")\n'
-                                'print(os.environ["OPEN"] if sys.argv[1:3] == ["issue", "list"] else "https://example.invalid/1")\n', encoding='utf-8')
-              subprocess.run(['install', '-m', '0755', str(source), str(directory / 'gh')], check=True)
+                                'print(os.environ["OPEN"] if sys.argv[1:3] == ["issue", "list"] else "https://example.invalid/1")\n'
+                                'sys.exit(int(os.environ.get("FAKE_STATUS", "0")))\n', encoding='utf-8')
+              subprocess.run(['install', '-m', '0755', str(source), str(directory / name)], check=True)
               def recorded():
                   made = [json.loads(line) for line in calls.read_text(encoding='utf-8').splitlines()] if calls.exists() else []
                   calls.unlink(missing_ok=True)
@@ -835,7 +860,7 @@ jobs:
               source = pathlib.Path('.github/workflows/advisories.yml').read_text(encoding='utf-8')
               step = next(s for s in source.split('      - name: ')[1:] if s.splitlines()[0] == 'Open advisory issues')
               code = textwrap.dedent(re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE).group(1))
-              fake, recorded = fake_gh(pathlib.Path(temporary) / 'fake-gh')
+              fake, recorded = fake_tool(pathlib.Path(temporary) / 'fake-gh', 'gh')
               findings = [{'id': 'RUSTSEC-2025-0141', 'title': 'Bincode is unmaintained', 'crates': ['bincode 1.3.3']},
                           {'id': 'yanked once_cell 0.0.1', 'title': 'detected yanked crate', 'crates': ['once_cell 0.0.1']}]
               def report(scan='success', found=findings, dry='false'):
@@ -856,6 +881,29 @@ jobs:
               result, made = report(dry='true')
               assert result.returncode != 0 and made == [] and result.stdout.count('dry run: ') == 2, result.stdout + result.stderr
               print('PASS advisory_issues_open_once', flush=True)
+
+          def fuzz_target_forwards_limits_without_finding(temporary):
+              directory = pathlib.Path(temporary) / 'fuzz-target'
+              (directory / 'fuzz').mkdir(parents=True)
+              fake, recorded = fake_tool(directory / 'tools', 'cargo-fuzz')
+              for status in ['0', '1']:
+                  output = directory / f'output-{status}'
+                  output.write_text('', encoding='utf-8')
+                  result = execute('Fuzz target', directory, os.environ | fake | {
+                      'TOOLS': str(directory / 'tools'), 'FAKE_STATUS': status, 'RUNNER_TEMP': str(directory),
+                      'GITHUB_OUTPUT': str(output), 'FUZZ_MANIFEST': 'fuzz/Cargo.toml', 'TARGET': 'planted',
+                      'SECONDS_BUDGET': '60', 'MAX_LEN': '64', 'TIMEOUT': '5', 'RSS_LIMIT_MB': '512'})
+                  assert output.read_text(encoding='utf-8') == 'found=false\n', result.stderr
+                  calls = [call['argv'] for call in recorded()]
+                  assert calls == [['fuzz', 'run', '--fuzz-dir', 'fuzz', '--target', 'x86_64-unknown-linux-gnu', 'planted', '--',
+                                    '-max_total_time=60', '-max_len=64', '-timeout=5', '-rss_limit_mb=512']], calls
+                  if status == '0':
+                      assert result.returncode == 0, result.stderr
+                  else:
+                      assert result.returncode != 0, result.stdout
+                      assert result.stderr.strip().splitlines()[-1] == 'fuzz target planted exited 1 without a finding', result.stderr
+                  assert not (directory / 'fuzz-finding').exists()
+              print('PASS fuzz_target_forwards_limits_without_finding', flush=True)
 
           def privileged_trigger_workflows_ignore_only_declared_audit(env, temporary):
               import shutil
@@ -944,9 +992,14 @@ jobs:
               installed = execute('Check tools', root, env)
               assert installed.returncode == 0, installed.stdout + installed.stderr
               env.update(dict(line.split('=', 1) for line in pathlib.Path(env['GITHUB_ENV']).read_text(encoding="utf-8").splitlines()))
-              version = subprocess.run([env['TOOLS'] + '/cargo-fuzz', 'fuzz', '--version'], capture_output=True, text=True)
+              assert not pathlib.Path(env['TOOLS'], 'cargo-fuzz').exists()
+              fuzz_env = env | {'GITHUB_ENV': temporary + '/fuzz-environment', 'FUZZ_SCAN': 'true'}
+              installed = execute('Check tools', root, fuzz_env)
+              assert installed.returncode == 0, installed.stdout + installed.stderr
+              fuzz_tools = pathlib.Path(fuzz_env['GITHUB_ENV']).read_text(encoding='utf-8').removeprefix('TOOLS=').strip()
+              version = subprocess.run([fuzz_tools + '/cargo-fuzz', 'fuzz', '--version'], capture_output=True, text=True)
               assert version.returncode == 0 and version.stdout == 'cargo-fuzz 0.13.2\n', version.stdout + version.stderr
-              print('PASS fuzz_tool_is_pinned_release', flush=True)
+              print('PASS fuzz_tool_only_in_fuzz_scan', flush=True)
               component = subprocess.run(['rustup', 'component', 'add', 'llvm-tools-preview'],
                                          cwd=root / 'fixtures/sample', capture_output=True, text=True)
               assert component.returncode == 0, component.stderr
@@ -954,6 +1007,8 @@ jobs:
               assert configured.returncode == 0, configured.stdout + configured.stderr
               env.update(dict(line.split('=', 1) for line in pathlib.Path(env['GITHUB_ENV']).read_text(encoding="utf-8").splitlines()))
               secrets_scan_before_restored_build_output(env, temporary)
+              fuzz_licences_allow_ncsa_only_for_libfuzzer_sys(env, temporary)
+              print('PASS fuzz_licences_allow_ncsa_only_for_libfuzzer_sys', flush=True)
               for name in checks:
                   result = execute(name, root / 'fixtures/sample', env)
                   assert result.returncode == 0, name + '\n' + result.stdout + result.stderr
@@ -983,6 +1038,7 @@ jobs:
               advisory_exceptions_cover_all_reported_versions(env, temporary)
               advisories_follow_dependency_changes(env, temporary)
               advisory_issues_open_once(temporary)
+              fuzz_target_forwards_limits_without_finding(temporary)
               privileged_trigger_workflows_ignore_only_declared_audit(env, temporary)
               result = execute('Embedded check defaults', root, env)
               assert result.returncode == 0, result.stdout + result.stderr
@@ -2047,12 +2103,12 @@ jobs:
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               job = jobs['fuzz']
               assert "    if: $" + "{{ inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}\n" in job
-              assert all('!inputs.fuzz-scan' in other.split('\n    steps:', 1)[0] for name, other in jobs.items()
-                         if name not in ('declaration', 'advisories', 'fuzz')), sorted(jobs)
               assert 'fuzz-scan' not in jobs['declaration'] and 'fuzz-scan' not in jobs['advisories']
               assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: nightly-2026-09-15\n' in job
               assert workflow.count('nightly-') == 1 and workflow.count('/cargo-fuzz/') == 1
-              assert '        run: *check-tools\n' in job
+              assert '        env:\n          FUZZ_SCAN: true\n        run: *check-tools\n' in job
+              steps = re.findall(r'^      - name: (.+)$', job, re.MULTILINE)
+              assert steps.index('Fuzz licences') < steps.index('Fuzz target'), steps
               assert "if: steps.fuzz.outputs.found == 'true'" in job.split('- name: Upload fuzz finding\n', 1)[1].split('- name:', 1)[0]
               nightly = (root / '.github/workflows/fuzz.yml').read_text(encoding='utf-8')
               triggers = nightly.split('\non:\n', 1)[1].split('\n\n', 1)[0]
@@ -2061,40 +2117,6 @@ jobs:
 
           fuzz_scan_runs_only_declaration_and_fuzz()
           print('PASS fuzz_scan_runs_only_declaration_and_fuzz')
-
-          def fuzz_target_forwards_limits_without_finding():
-              with tempfile.TemporaryDirectory() as temporary:
-                  directory = pathlib.Path(temporary)
-                  (directory / 'fuzz').mkdir()
-                  tools = directory / 'tools'
-                  tools.mkdir()
-                  log = directory / 'calls.jsonl'
-                  source = directory / 'cargo-fuzz-source'
-                  source.write_text('#!/usr/bin/env python3\nimport json, os, sys\n'
-                                    'open(os.environ["CALLS"], "a", encoding="utf-8").write(json.dumps(sys.argv[1:]) + "\\n")\n'
-                                    'sys.exit(int(os.environ["FAKE_STATUS"]))\n', encoding='utf-8')
-                  subprocess.run(['install', '-m', '0700', str(source), str(tools / 'cargo-fuzz')], check=True)
-                  for status in ['0', '1']:
-                      log.write_text('', encoding='utf-8')
-                      output = directory / f'output-{status}'
-                      output.write_text('', encoding='utf-8')
-                      result = execute('Fuzz target', directory, {
-                          'TOOLS': str(tools), 'CALLS': str(log), 'FAKE_STATUS': status, 'RUNNER_TEMP': temporary,
-                          'GITHUB_OUTPUT': str(output), 'FUZZ_MANIFEST': 'fuzz/Cargo.toml', 'TARGET': 'planted',
-                          'SECONDS_BUDGET': '60', 'MAX_LEN': '64', 'TIMEOUT': '5', 'RSS_LIMIT_MB': '512'})
-                      assert output.read_text(encoding='utf-8') == 'found=false\n', result.stderr
-                      calls = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
-                      assert calls == [['fuzz', 'run', '--fuzz-dir', 'fuzz', '--target', 'x86_64-unknown-linux-gnu', 'planted', '--',
-                                        '-max_total_time=60', '-max_len=64', '-timeout=5', '-rss_limit_mb=512']], calls
-                      if status == '0':
-                          assert result.returncode == 0, result.stderr
-                      else:
-                          assert result.returncode != 0, result.stdout
-                          assert result.stderr.strip().splitlines()[-1] == 'fuzz target planted exited 1 without a finding', result.stderr
-                      assert not (directory / 'fuzz-finding').exists()
-
-          fuzz_target_forwards_limits_without_finding()
-          print('PASS fuzz_target_forwards_limits_without_finding')
 
           def locked_manifests_forward_ordered_literal_arguments():
               with tempfile.TemporaryDirectory() as temporary:
@@ -3546,8 +3568,8 @@ jobs:
           seam = source.split('      - name: Added checks at workflow seam\n', 1)[1].split('        run: |\n', 1)[1]
           seam = seam.split('\n      - name: ', 1)[0]
           tree = ast.parse(textwrap.dedent(seam))
-          # Reuse the advisory reporter's fake gh, not a second recorder.
-          tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'fake_gh']
+          # Reuse the seam's fake tool, not a second recorder.
+          tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'fake_tool']
           exec(compile(tree, 'fake gh', 'exec'))
           nightly = (root / '.github/workflows/fuzz.yml').read_text(encoding='utf-8')
           step = next(s for s in nightly.split('      - name: ')[1:] if s.splitlines()[0] == 'Open fuzz issues')
@@ -3571,7 +3593,7 @@ jobs:
           print('PASS fuzz_findings_match_planted_defects', flush=True)
 
           with tempfile.TemporaryDirectory() as temporary:
-              fake, recorded = fake_gh(pathlib.Path(temporary) / 'fake-gh')
+              fake, recorded = fake_tool(pathlib.Path(temporary) / 'fake-gh', 'gh')
               def report(cwd=root, scan='success', open_issues=()):
                   result = subprocess.run(['python3', '-c', code], cwd=cwd, capture_output=True, text=True, env=os.environ | fake | {
                       'SCAN': scan, 'RUN_URL': 'https://example.invalid/run', 'REPOSITORY': 'owner/repo', 'GH_TOKEN': 'token',

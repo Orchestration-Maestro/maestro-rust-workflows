@@ -863,6 +863,8 @@ jobs:
         run: &check-tools |
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-check-tools.XXXXXX")
           while read -r url digest binary; do
+            # Only the fuzz job needs cargo-fuzz; the required checks never download it.
+            if [ "$binary" = cargo-fuzz ] && [ "${FUZZ_SCAN:-}" != true ]; then continue; fi
             archive=$(mktemp)
             curl --fail --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
@@ -1093,6 +1095,8 @@ jobs:
         working-directory: ${{ inputs.working-directory || '.' }}
     env:
       RUSTUP_TOOLCHAIN: nightly-2026-09-15
+      QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
+      FUZZ_MANIFEST: ${{ needs.declaration.outputs.fuzz_manifest }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1105,11 +1109,22 @@ jobs:
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: Check tools
         timeout-minutes: 10
+        env:
+          FUZZ_SCAN: true
         run: *check-tools
+      - name: Embedded check defaults
+        env:
+          CHECK_ADVISORIES: false
+        run: *check-defaults
+      - name: Fuzz licences
+        run: |
+          # NCSA is accepted only for libfuzzer-sys, and only in this test-only crate.
+          cp "$CHECK_DEFAULTS/deny.toml" "$RUNNER_TEMP/fuzz-deny.toml"
+          printf '\n[[licenses.exceptions]]\nname = "libfuzzer-sys"\nallow = ["NCSA"]\n' >> "$RUNNER_TEMP/fuzz-deny.toml"
+          "$TOOLS/cargo-deny" --manifest-path "$FUZZ_MANIFEST" --locked --all-features --config "$RUNNER_TEMP/fuzz-deny.toml" check licenses
       - name: Fuzz target
         id: fuzz
         env:
-          FUZZ_MANIFEST: ${{ needs.declaration.outputs.fuzz_manifest }}
           TARGET: ${{ matrix.name }}
           SECONDS_BUDGET: ${{ matrix.seconds }}
           MAX_LEN: ${{ matrix.max_len }}

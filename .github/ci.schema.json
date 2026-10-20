@@ -193,7 +193,7 @@
       "minLength": 1
     },
     "fuzz_targets": {
-      "description": "Fuzz targets of that crate, run nightly in declared order with their libFuzzer limits.",
+      "description": "Fuzz targets of that crate, one nightly job each with its libFuzzer limits; pull requests only validate them.",
       "type": "array",
       "items": {
         "type": "object",
