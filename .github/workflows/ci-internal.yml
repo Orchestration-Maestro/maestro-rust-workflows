@@ -96,6 +96,33 @@ jobs:
           assert 'SCCACHE_GHA_ENABLED=true' in workflow and 'CARGO_INCREMENTAL=0' in workflow
           checks = rust_jobs['checks']
           assert checks.index('- name: Secrets\n') < checks.index('- name: Compile cache\n'), 'secret scan precedes cache use'
+      - name: Cache write error diagnostics
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import tempfile
+          import textwrap
+          workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
+          step = workflow.split('        run: &sccache-stats |\n', 1)[1]
+          script = textwrap.dedent(re.match(r'((?:          .*\n|\n)+)', step)[1])
+          for errors in (0, 1, 120):
+              with tempfile.TemporaryDirectory() as directory:
+                  output = pathlib.Path(directory) / 'output'
+                  output.touch()
+                  env = dict(os.environ, RUNNER_TEMP=directory, GITHUB_OUTPUT=str(output),
+                             RUSTC_WRAPPER='sccache', CARGO_INCREMENTAL='0', ERRORS=str(errors))
+                  result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c',
+                      'sccache() { printf "Cache write errors                 %s\\n" "$ERRORS"; };\n' + script],
+                      env=env, capture_output=True, text=True)
+                  assert result.returncode == 0, result.stderr
+                  assert output.read_text() == f'write_errors={str(errors > 0).lower()}\n', (errors, output.read_text())
+          assert 'SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-error.log" SCCACHE_LOG=debug' in workflow
+          assert workflow.count('      - *cache-error-artifact') == 6
+          assert '      - &cache-error-artifact\n        name: Upload compile cache errors' in workflow
+          print('PASS cache write diagnostics: zero, one and multiple write errors')
       # Reusable workflow calls cannot use continue-on-error. The broken
       # fixtures run the workflow's own commands and assert all twenty outcomes.
       - name: Each broken fixture fails only its own check

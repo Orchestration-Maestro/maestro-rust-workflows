@@ -385,7 +385,8 @@ jobs:
           test -x "$bin/sccache"
           echo "$bin" >> "$GITHUB_PATH"
           { echo RUSTC_WRAPPER=sccache; echo SCCACHE_GHA_ENABLED=true; echo SCCACHE_GHA_VERSION=2; echo CARGO_INCREMENTAL=0; } >> "$GITHUB_ENV"
-          PATH="$bin:$PATH" SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION=2 sccache --start-server
+          PATH="$bin:$PATH" SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION=2 \
+            SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-error.log" SCCACHE_LOG=debug sccache --start-server
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
@@ -436,11 +437,25 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Compile cache statistics
+        id: cache-statistics
         if: always()
         run: &sccache-stats |
           test "$RUSTC_WRAPPER" = sccache
           test "$CARGO_INCREMENTAL" = 0
-          sccache --show-stats
+          sccache --show-stats | tee "$RUNNER_TEMP/sccache-stats"
+          if grep -Eq '^Cache write errors +[1-9][0-9]*' "$RUNNER_TEMP/sccache-stats"; then
+            echo write_errors=true >> "$GITHUB_OUTPUT"
+          else
+            echo write_errors=false >> "$GITHUB_OUTPUT"
+          fi
+      - &cache-error-artifact
+        name: Upload compile cache errors
+        if: always() && steps.cache-statistics.outputs.write_errors == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: compile-cache-errors-${{ inputs.concurrency-key || 'root' }}-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sccache-error.log
+          if-no-files-found: error
 
   docs:
     needs: declaration
@@ -485,8 +500,10 @@ jobs:
           RUSTDOCFLAGS: -D warnings -D missing_docs
         run: cargo doc --workspace --no-deps --locked
       - name: Compile cache statistics
+        id: cache-statistics
         if: always()
         run: *sccache-stats
+      - *cache-error-artifact
 
   tests:
     needs: declaration
@@ -726,8 +743,10 @@ jobs:
               output.write('### Flaky tests (passed on retry)\n' + ('\n'.join('- ' + name for name in flaky) if flaky else 'None') + '\n')
           PYTHON
       - name: Compile cache statistics
+        id: cache-statistics
         if: always()
         run: *sccache-stats
+      - *cache-error-artifact
       - name: Upload shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -1036,8 +1055,10 @@ jobs:
           done
           "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
       - name: Compile cache statistics
+        id: cache-statistics
         if: always() && needs.declaration.outputs.enabled != 'true'
         run: *sccache-stats
+      - *cache-error-artifact
 
   advisories:
     name: Advisory scan
@@ -1148,8 +1169,10 @@ jobs:
           rustup target add "$TARGET"
           cargo check --workspace --all-targets --locked --target "$TARGET"
       - name: Compile cache statistics
+        id: cache-statistics
         if: always() && runner.os == 'Linux'
         run: *sccache-stats
+      - *cache-error-artifact
 
   browser:
     name: Wasm and browser build
@@ -1218,8 +1241,10 @@ jobs:
         run: |
           mise exec -- just browser-build
       - name: Compile cache statistics
+        id: cache-statistics
         if: always()
         run: *sccache-stats
+      - *cache-error-artifact
 
   browser-tests:
     name: Chromium browser tests
@@ -1306,5 +1331,7 @@ jobs:
         run: |
           just browser-test
       - name: Compile cache statistics
+        id: cache-statistics
         if: always()
         run: *sccache-stats
+      - *cache-error-artifact

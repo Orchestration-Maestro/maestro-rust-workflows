@@ -50,12 +50,17 @@ than being repaired. Adoption needs a workflows release and organization re-pin.
 Every Linux job that compiles Rust runs rustc through checksum-pinned sccache
 0.18.0 backed by the GitHub Actions cache (`RUSTC_WRAPPER=sccache`,
 `SCCACHE_GHA_ENABLED=true`, `CARGO_INCREMENTAL=0`) and prints `sccache
---show-stats` at the end. Crates a change did not touch come from the cache,
-shared across jobs and runs of the same repository. The sccache server holds the
-cache credentials, so the isolated test environment never sees them. The
-`target/` and registry `actions/cache` entries were removed: sccache replaces
-them and keeps the repository inside GitHub's 10 GB cache limit. The secret scan
-in `Dependency, source and coverage checks` runs before its cache is used.
+--show-stats` at the end. Jobs can read entries from their own ref and the
+default branch. Pull-request re-runs can reuse their earlier entries; later merge
+groups cannot read an earlier group's scope. GitHub evicts entries when the
+repository exceeds its 10 GB cache limit.
+
+The server writes a debug log under the runner's temporary directory. When its
+statistics report cache write errors, the job uploads that log as a
+`compile-cache-errors-*` artifact. The sccache server holds the cache credentials,
+so the isolated test environment never sees them. The `target/` and registry
+`actions/cache` entries were removed. The secret scan in
+`Dependency, source and coverage checks` runs before its cache is used.
 
 ## Adoption
 
