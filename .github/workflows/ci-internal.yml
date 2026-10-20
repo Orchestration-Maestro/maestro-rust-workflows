@@ -2846,6 +2846,8 @@ jobs:
                   for step in ['Browser test tool pin', 'Browser test mise bootstrap', 'Browser test caller tools']:
                       result = execute(step, caller, env)
                       assert result.returncode == 0, result.stdout + result.stderr
+                      if step == 'Browser test mise bootstrap' and paths.exists():
+                          env['PATH'] = os.pathsep.join(reversed(paths.read_text(encoding='utf-8').splitlines())) + os.pathsep + os.environ['PATH']
                   result = execute('Browser runtime tools', caller, env)
                   assert result.returncode == 0, result.stdout + result.stderr
                   values = dict(line.split('=', 1) for line in exported.read_text(encoding='utf-8').splitlines())
@@ -2934,6 +2936,24 @@ jobs:
               assert execute('Browser test caller tools', caller, env | {'PATH': str(shim) + os.pathsep + os.environ['PATH']}).returncode == 73
               print('PASS browser_test_setup_and_recipe_fail_closed', flush=True)
 
+          def workflow_failures_remain_required():
+              internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding="utf-8")
+              assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
+              assert 'needs: [sample, declared, test-tools]' in internal
+              assert 'working-directory: fixtures/test-tools' in internal
+              assert 'needs: [seams, native]' in internal
+              assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
+              assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
+              for name in ['targets', 'browser', 'tests']:
+                  section = workflow.split(f'  {name}:\n')[1]
+                  assert 'needs: declaration' in section
+              assert 'pull_request:' in workflow and 'merge_group:' in workflow
+              assert "if: $" + "{{ !inputs.advisory-scan && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
+              # The advisory scan mode runs only the declaration and the advisory job.
+              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+              assert "    if: $" + "{{ inputs.advisory-scan }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
+              assert all('!inputs.advisory-scan' in job.split('\n    steps:', 1)[0] for name, job in jobs.items() if name not in ('declaration', 'advisories')), sorted(jobs)
+
           def browser_test_result_stays_required():
               internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
               assert 'needs: [sample, declared, test-tools]' in internal
@@ -2991,24 +3011,6 @@ jobs:
 
           mise_bootstrap_checks_release_digest()
           print('PASS mise_bootstrap_checks_release_digest')
-
-          def workflow_failures_remain_required():
-              internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding="utf-8")
-              assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
-              assert 'needs: [sample, declared, test-tools]' in internal
-              assert 'working-directory: fixtures/test-tools' in internal
-              assert 'needs: [seams, native]' in internal
-              assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
-              assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
-              for name in ['targets', 'browser', 'tests']:
-                  section = workflow.split(f'  {name}:\n')[1]
-                  assert 'needs: declaration' in section
-              assert 'pull_request:' in workflow and 'merge_group:' in workflow
-              assert "if: $" + "{{ !inputs.advisory-scan && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
-              # The advisory scan mode runs only the declaration and the advisory job.
-              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              assert "    if: $" + "{{ inputs.advisory-scan }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
-              assert all('!inputs.advisory-scan' in job.split('\n    steps:', 1)[0] for name, job in jobs.items() if name not in ('declaration', 'advisories')), sorted(jobs)
 
           workflow_failures_remain_required()
           print('PASS workflow_failures_remain_required')
