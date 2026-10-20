@@ -67,6 +67,8 @@ jobs:
       coverage: ${{ steps.selection.outputs.coverage }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       targets: ${{ steps.config.outputs.targets }}
+      browser_test_crates: ${{ steps.config.outputs.browser_test_crates }}
+      browser_tests: ${{ steps.selection.outputs.browser_tests }}
       browser_build: ${{ steps.config.outputs.browser_build }}
       test_tools: ${{ steps.config.outputs.test_tools }}
       reserved_ports: ${{ steps.config.outputs.reserved_ports }}
@@ -103,16 +105,19 @@ jobs:
               config = None
           except (OSError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='')
+          values = dict(additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows'}
+              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
                   if key not in config or not isinstance(config[key], list) or any(type(item) is not str for item in config[key]):
                       raise SystemExit(f'{path}: {key} must be an array of strings')
+              browser_tests = config.get('browser_test_crates', [])
+              if not isinstance(browser_tests, list) or any(type(item) is not str for item in browser_tests):
+                  raise SystemExit(f'{path}: browser_test_crates must be an array of strings')
               for key in ('browser_build', 'test_tools'):
                   if type(config.get(key, False)) is not bool:
                       raise SystemExit(f'{path}: {key} must be a boolean')
@@ -217,6 +222,10 @@ jobs:
               for crate in config['wasm_crates']:
                   if crate not in packages:
                       raise SystemExit(f'{path}: wasm_crates contains unknown package {crate!r}')
+              for crate in browser_tests:
+                  if crate not in packages:
+                      raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
+              values.update(browser_test_crates=json.dumps(sorted(set(browser_tests))))
               targets = []
               for target in config['check_targets']:
                   if target not in supported:
@@ -253,6 +262,7 @@ jobs:
           members = set(head['workspace_members'])
           roots = {p: pathlib.Path(packages[p]['manifest_path']).parent.relative_to(pathlib.Path.cwd()) for p in members}
           selected = set(members)
+          browser_changed = False
           event = os.environ['TEST_EVENT']
           base = os.environ.get('BASE_REF')
           if event == 'pull_request' and base:
@@ -277,6 +287,7 @@ jobs:
                       before = {}
                   path = pathlib.Path('.github/ci.toml')
                   after = tomllib.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+                  browser_changed = before.get('browser_test_crates', []) != after.get('browser_test_crates', [])
                   if any(before.get(key) != after.get(key) for key in ('test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests')) or bool(before) != bool(after):
                       selected = set(members)
               if 'Cargo.lock' in changed and selected != members:
@@ -310,12 +321,17 @@ jobs:
                       break
                   selected.update(reverse)
           names = sorted(packages[p]['name'] for p in selected)
+          declaration = pathlib.Path('.github/ci.toml')
+          config = tomllib.loads(declaration.read_text(encoding='utf-8')) if declaration.exists() else {}
+          requested = set(config.get('browser_test_crates', []))
+          browser_tests = bool(requested and (browser_changed or requested.intersection(names)))
           print(f'Selected test packages ({event}): {names}')
           # A change can introduce an advisory only through the lockfile or the declared exceptions.
           check_advisories = event not in ('pull_request', 'merge_group') or not base or subprocess.run(
               ['git', 'diff', '--quiet', base, 'HEAD', '--', 'Cargo.lock', '.github/ci.toml']).returncode != 0
           print(f'Advisory check ({event}): {"required" if check_advisories else "skipped, Cargo.lock and .github/ci.toml unchanged"}')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('browser_tests=' + str(browser_tests).lower() + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
               output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
@@ -1166,7 +1182,7 @@ jobs:
         run: *sccache-install
       - name: Browser tool pin
         if: needs.declaration.outputs.browser_build == 'true'
-        run: |
+        run: &browser-tool-pin |
           test -f mise.toml
           python3 - <<'PYTHON'
           import tomllib
@@ -1201,6 +1217,94 @@ jobs:
         if: needs.declaration.outputs.browser_build == 'true'
         run: |
           mise exec -- just browser-build
+      - name: Compile cache statistics
+        if: always()
+        run: *sccache-stats
+
+  browser-tests:
+    name: Chromium browser tests
+    needs: declaration
+    if: ${{ !inputs.advisory-scan && needs.declaration.outputs.browser_tests == 'true' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory || '.' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Toolchain
+        run: rustup show
+      - name: Compile cache credentials
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            for (const name of ['ACTIONS_CACHE_SERVICE_V2', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
+              if (process.env[name]) core.exportVariable(name, process.env[name]);
+            }
+      - name: Compile cache
+        timeout-minutes: 10
+        run: *sccache-install
+      - name: Browser test tool pin
+        run: *browser-tool-pin
+      - name: Browser test mise bootstrap
+        run: *mise-bootstrap
+      - name: Browser test caller tools
+        run: *caller-tools
+      - name: Browser runtime tools
+        run: |
+          tools=$(mktemp -d "$RUNNER_TEMP/browser-runtime.XXXXXX")
+          cd "$tools"
+          curl --fail --silent --show-error --location https://cdn.playwright.dev/builds/cft/156.0.8078.4/linux64/chrome-linux64.zip -o chromium.zip
+          echo '43fd31766c7533a02dda2ded5ad50c2f861cd5400be7509c0abad71129f79d79  chromium.zip' | sha256sum --check --status
+          unzip -q chromium.zip
+          curl --fail --silent --show-error --location https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz -o bindgen.tar.gz
+          echo '82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e  bindgen.tar.gz' | sha256sum --check --status
+          tar -xzf bindgen.tar.gz
+          curl --fail --silent --show-error --location https://registry.npmjs.org/playwright/-/playwright-1.64.1.tgz -o playwright.tgz
+          curl --fail --silent --show-error --location https://registry.npmjs.org/playwright-core/-/playwright-core-1.64.1.tgz -o playwright-core.tgz
+          python3 - <<'PYTHON'
+          import base64
+          import hashlib
+          import pathlib
+          for name, digest in [
+              ('playwright', 'HCrVhHr5QQuwYoswEUGTb7gGp522yflbv/ST8nF4sFWGuLjQCt17Q/EubpGGSNKYn1tsTCPZxqHhHCfVURu7UA=='),
+              ('playwright-core', 'BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ=='),
+          ]:
+              if hashlib.sha512(pathlib.Path(name + '.tgz').read_bytes()).digest() != base64.b64decode(digest):
+                  raise SystemExit(name + ': archive checksum mismatch')
+          PYTHON
+          mkdir -p node_modules/playwright node_modules/playwright-core
+          tar -xzf playwright.tgz --strip-components=1 -C node_modules/playwright
+          tar -xzf playwright-core.tgz --strip-components=1 -C node_modules/playwright-core
+          node - <<'JAVASCRIPT'
+          const assert = require('node:assert/strict');
+          assert(Number(process.versions.node.split('.')[0]) >= 20);
+          const driver = require('./node_modules/playwright/package.json');
+          const core = require('./node_modules/playwright-core/package.json');
+          assert.equal(driver.version, '1.64.1');
+          assert.deepEqual(driver.dependencies, {'playwright-core': '1.64.1'});
+          assert.equal(core.version, '1.64.1');
+          assert.deepEqual(core.dependencies || {}, {});
+          assert.deepEqual(core.optionalDependencies || {}, {});
+          assert.deepEqual(driver.optionalDependencies || {}, {});
+          console.log(process.version);
+          JAVASCRIPT
+          node node_modules/playwright/cli.js install-deps chromium
+          node node_modules/playwright/cli.js --version
+          "$tools/chrome-linux64/chrome" --version
+          "$tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl/wasm-bindgen" --version
+          echo "$tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
+          echo "PLAYWRIGHT_MODULE=$tools/node_modules/playwright" >> "$GITHUB_ENV"
+          echo "CHROMIUM_PATH=$tools/chrome-linux64/chrome" >> "$GITHUB_ENV"
+      - name: Browser test recipe
+        run: |
+          just browser-test
       - name: Compile cache statistics
         if: always()
         run: *sccache-stats

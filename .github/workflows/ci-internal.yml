@@ -83,8 +83,8 @@ jobs:
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
           assert 'actions/cache' not in workflow, 'sccache replaces target caching'
           jobs = re.split(r'^  (?=[a-z-]+:\n)', workflow.split('\njobs:\n', 1)[1], flags=re.MULTILINE)
-          rust_jobs = {job.split(':', 1)[0]: job for job in jobs if re.search(r"\bcargo (check|clippy|doc|test|llvm-cov)\b|llvm-cov|cargo-nextest|cargo build|'cargo', 'build'", job)}
-          assert set(rust_jobs) == {'quality', 'docs', 'tests', 'checks', 'targets', 'browser'}, sorted(rust_jobs)
+          rust_jobs = {job.split(':', 1)[0]: job for job in jobs if re.search(r"\bcargo (check|clippy|doc|test|llvm-cov)\b|llvm-cov|cargo-nextest|cargo build|'cargo', 'build'|just browser-test", job)}
+          assert set(rust_jobs) == {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}, sorted(rust_jobs)
           for name, job in rust_jobs.items():
               assert '- name: Compile cache\n' in job or '- name: Compile cache credentials\n' in job, name
               assert job.rstrip().count('- name: Compile cache statistics\n') == 1, name
@@ -1068,7 +1068,7 @@ jobs:
           def job_run_defaults_preserve_pipeline_failures():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'advisories', 'targets', 'browser'}
+              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'advisories', 'targets', 'browser', 'browser-tests'}
               defaults = {name: re.search(r'^    defaults:\n(.*?)^    steps:', job, re.MULTILINE | re.DOTALL)
                           for name, job in jobs.items()}
               assert {name for name, match in defaults.items() if match} == expected
@@ -1240,10 +1240,63 @@ jobs:
                   values = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding="utf-8").splitlines())
                   return result, values
 
+
+          def browser_test_declaration_checks_exact_packages():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / 'src').mkdir()
+                  (directory / 'src/lib.rs').write_text('', encoding='utf-8')
+                  (directory / 'Cargo.toml').write_text('[package]\nname="browser-case"\nversion="0.1.0"\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=directory, check=True)
+                  path = directory / '.github/ci.toml'
+                  for value in ['[]', '["browser-case"]', '["browser-case", "browser-case"]']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=' + value, encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode == 0, result.stderr
+                      assert json.loads(values['browser_test_crates']) == sorted(set(json.loads(value)))
+                  for value in ['"browser-case"', '1', '1.5', 'true', '{}', '[1]']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=' + value, encoding='utf-8')
+                      result, _ = declaration(directory)
+                      assert result.returncode != 0
+                      assert result.stderr.strip() == '.github/ci.toml: browser_test_crates must be an array of strings', result.stderr
+                  for name in ['', 'unknown', ' browser-case', 'Browser-case', '$(touch injected)']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=' + json.dumps([name]), encoding='utf-8')
+                      result, _ = declaration(directory)
+                      assert result.returncode != 0
+                      assert result.stderr.strip() == f'.github/ci.toml: browser_test_crates contains unknown package {name!r}', result.stderr
+                  assert not (directory / 'injected').exists()
+                  path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=["browser-case"]', encoding='utf-8')
+                  (directory / 'Cargo.toml').write_text('invalid manifest', encoding='utf-8')
+                  result, _ = declaration(directory)
+                  assert result.returncode != 0 and '.github/ci.toml: caller metadata/toolchain failed' in result.stderr
+                  schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
+                  assert schema['properties']['browser_test_crates']['type'] == 'array'
+                  assert schema['properties']['browser_test_crates']['items'] == {'type': 'string'}
+                  assert schema['required'] == ['wasm_crates', 'check_targets']
+
+
+          browser_test_declaration_checks_exact_packages()
+          print('PASS browser_test_declaration_checks_exact_packages')
+
+          def browser_test_job_is_single_and_optional():
+              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+              job = jobs['browser-tests']
+              assert "!inputs.advisory-scan && needs.declaration.outputs.browser_tests == 'true'" in job
+              assert 'runs-on: ubuntu-latest' in job and 'matrix:' not in job
+              assert body('Browser test recipe').strip() == 'just browser-test'
+              assert 'mise exec' not in body('Browser test recipe')
+              assert 'if:' not in job.split('- name: Browser test caller tools', 1)[1].split('- name:', 1)[0]
+              assert job.index('run: *caller-tools') < job.index('name: Browser runtime tools') < job.index('name: Browser test recipe')
+              assert 'browser_test_crates = ["declared"]' in (root / 'fixtures/declared/.github/ci.toml').read_text(encoding='utf-8')
+
+          browser_test_job_is_single_and_optional()
+          print('PASS browser_test_job_is_single_and_optional')
+
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': ''}
+              assert values == {'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': ''}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
@@ -2260,6 +2313,8 @@ jobs:
                   subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
                   def git(*args):
                       return subprocess.check_output(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', *args], cwd=directory, text=True).strip()
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
                   git('add', '.')
                   git('commit', '-qm', 'base')
                   base = git('rev-parse', 'HEAD')
@@ -2269,11 +2324,34 @@ jobs:
                       result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
                       return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                  declaration_path = directory / '.github/ci.toml'
+                  declaration_path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=["b", "b"]\n', encoding='utf-8')
+                  git('add', '.')
+                  git('commit', '-qm', 'browser opt-in')
+                  assert select()['browser_tests'] == 'true'
+                  assert json.loads(select()['packages']) == []
+                  base = git('rev-parse', 'HEAD')
+                  (directory / 'docs.md').write_text('Documentation', encoding='utf-8')
+                  git('add', '.')
+                  git('commit', '-qm', 'docs')
+                  assert select()['browser_tests'] == 'false'
+                  (directory / 'd/src/lib.rs').write_text('pub fn unrelated() {}\n', encoding='utf-8')
+                  git('add', '.')
+                  git('commit', '-qm', 'unrelated')
+                  assert select()['browser_tests'] == 'false'
+                  assert select('merge_group')['browser_tests'] == select('push')['browser_tests'] == 'true'
+                  git('reset', '--hard', base)
                   (directory / 'a/src/lib.rs').write_text('pub fn changed() {}\n', encoding='utf-8')
                   git('add', '.')
                   git('commit', '-qm', 'source')
                   values = select()
                   assert json.loads(values['packages']) == ['a', 'b', 'c'] and values['coverage'] == 'false'
+                  assert values['browser_tests'] == 'true'
+                  declaration_path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=[]\n', encoding='utf-8')
+                  git('add', '.')
+                  git('commit', '-qm', 'remove browser opt-in')
+                  assert select()['browser_tests'] == 'false'
+                  git('reset', '--hard', 'HEAD~1')
                   assert json.loads(select('merge_group')['packages']) == ['a', 'b', 'c', 'd']
                   assert select('push')['coverage'] == 'true'
                   # Advisories follow the lockfile and declaration only on pull requests and merge groups.
@@ -2289,7 +2367,6 @@ jobs:
                   assert json.loads(select()['packages']) == ['a', 'b', 'c']
                   assert select()['check_advisories'] == select('merge_group')['check_advisories'] == 'true'
                   git('reset', '--hard', base)
-                  (directory / '.github').mkdir()
                   (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\nspelling_words=["word"]\n', encoding='utf-8')
                   git('add', '.')
                   git('commit', '-qm', 'declaration')
@@ -2320,6 +2397,7 @@ jobs:
 
           changed_packages_include_reverse_dependencies()
           print('PASS changed_packages_include_reverse_dependencies')
+          print('PASS browser_test_selection_reuses_package_scope')
 
           def retries_report_flaky_tests_and_keep_failures():
               import shutil
@@ -2756,6 +2834,120 @@ jobs:
           browser_tools_follow_caller_pins()
           print('PASS browser_tools_follow_caller_pins')
 
+          def browser_test_downloads_verify_every_archive():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  paths, exported = directory / 'paths', directory / 'env'
+                  env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths), 'GITHUB_ENV': str(exported)}
+                  caller = directory / 'caller with spaces'
+                  caller.mkdir()
+                  (caller / 'mise.toml').write_text('[tools]\njust="1.58.0"\n', encoding='utf-8')
+                  for step in ['Browser test tool pin', 'Browser test mise bootstrap', 'Browser test caller tools']:
+                      result = execute(step, caller, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                  result = execute('Browser runtime tools', caller, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  values = dict(line.split('=', 1) for line in exported.read_text(encoding='utf-8').splitlines())
+                  installed = pathlib.Path(values['PLAYWRIGHT_MODULE']).parent.parent
+                  cli = paths.read_text(encoding='utf-8').splitlines()[-1]
+                  assert 'Version 1.64.1' in result.stdout and '156.0.8078.4' in result.stdout
+                  assert 'wasm-bindgen 0.2.129' in result.stdout
+                  assert pathlib.Path(values['CHROMIUM_PATH']).is_absolute()
+                  assert pathlib.Path(values['PLAYWRIGHT_MODULE']).is_absolute()
+                  shim = directory / 'shim'
+                  shim.mkdir()
+                  source = directory / 'shim-source'
+                  trace = directory / 'unpacked'
+                  for extractor in ['tar', 'unzip']:
+                      source.write_text('#!/bin/sh\necho "$*" >> ' + shlex.quote(str(trace)) + '\nexec ' + shlex.quote(shutil.which(extractor)) + ' "$@"\n', encoding='utf-8')
+                      subprocess.run(['install', '-m', '0700', str(source), str(shim / extractor)], check=True)
+                  # Only the downloader is replaced: production verification and unpacking remain real.
+                  for archive in ['chromium.zip', 'bindgen.tar.gz', 'playwright.tgz', 'playwright-core.tgz']:
+                      trace.unlink(missing_ok=True)
+                      source.write_text('#!/usr/bin/env python3\n' + textwrap.dedent(f'''
+                          import pathlib, shutil, sys
+                          name = sys.argv[sys.argv.index('-o') + 1]
+                          if name == {archive!r}:
+                              pathlib.Path(name).write_bytes(b'corrupted archive')
+                          else:
+                              shutil.copyfile(pathlib.Path({str(installed)!r}) / name, name)
+                      '''), encoding='utf-8')
+                      subprocess.run(['install', '-m', '0700', str(source), str(shim / 'curl')], check=True)
+                      result = execute('Browser runtime tools', directory, env | {'PATH': f'{shim}:' + os.environ['PATH']})
+                      assert result.returncode != 0, archive
+                      unpacked = trace.read_text(encoding='utf-8') if trace.exists() else ''
+                      if archive == 'chromium.zip':
+                          assert not unpacked
+                      elif archive == 'bindgen.tar.gz':
+                          assert 'bindgen.tar.gz' not in unpacked
+                      else:
+                          assert 'playwright' not in unpacked
+                  source.write_text('#!/bin/sh\nexit 73\n', encoding='utf-8')
+                  subprocess.run(['install', '-m', '0700', str(source), str(shim / 'curl')], check=True)
+                  assert execute('Browser runtime tools', directory, env | {'PATH': f'{shim}:' + os.environ['PATH']}).returncode == 73
+                  subprocess.run(['install', '-m', '0700', str(source), str(shim / 'unzip')], check=True)
+                  (shim / 'curl').unlink()
+                  assert execute('Browser runtime tools', directory, env | {'PATH': f'{shim}:' + os.environ['PATH']}).returncode == 73
+                  assert 'npm install' not in body('Browser runtime tools')
+                  assert 'cli.js install chromium' not in body('Browser runtime tools')
+                  print('PASS browser_test_downloads_verify_every_archive', flush=True)
+                  browser_test_recipe_receives_pinned_tools(directory, env, values, cli)
+                  browser_test_setup_and_recipe_fail_closed(directory, env, values, cli)
+
+          def browser_test_recipe_receives_pinned_tools(directory, env, values, cli):
+              caller = directory / 'caller with spaces'
+              (caller / 'justfile').write_text('browser-test:\n    wasm-bindgen --version\n    node -e \'console.log(require(process.env.PLAYWRIGHT_MODULE + "/package.json").version)\'\n    "$CHROMIUM_PATH" --version\n', encoding='utf-8')
+              decoy = directory / 'decoy'
+              decoy.mkdir()
+              source = directory / 'decoy-source'
+              source.write_text('#!/bin/sh\nexit 69\n', encoding='utf-8')
+              subprocess.run(['install', '-m', '0700', str(source), str(decoy / 'wasm-bindgen')], check=True)
+              for inherited in [str(decoy) + os.pathsep + os.environ['PATH'], os.environ['PATH'] + os.pathsep + str(decoy)]:
+                  caller_paths = pathlib.Path(env['GITHUB_PATH']).read_text(encoding='utf-8').splitlines()
+                  selected = values | env | {'PATH': os.pathsep.join(reversed(caller_paths)) + os.pathsep + inherited}
+                  assert selected['PATH'].split(os.pathsep)[0] == cli
+                  result = execute('Browser test recipe', caller, selected)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert 'wasm-bindgen 0.2.129' in result.stdout and '1.64.1' in result.stdout and '156.0.8078.4' in result.stdout
+              (caller / 'justfile').write_text((root / 'fixtures/declared/justfile').read_text(encoding='utf-8'), encoding='utf-8')
+              result = execute('Browser test recipe', caller, selected)
+              assert result.returncode == 0 and 'PASS browser runtime fixture' in result.stdout, result.stdout + result.stderr
+              print('PASS browser_test_recipe_receives_pinned_tools', flush=True)
+
+          def browser_test_setup_and_recipe_fail_closed(directory, env, values, cli):
+              caller = directory / 'failing caller'
+              caller.mkdir()
+              assert execute('Browser test tool pin', caller, env).returncode != 0
+              (caller / 'mise.toml').write_text('[tools]\n', encoding='utf-8')
+              assert execute('Browser test tool pin', caller, env).returncode != 0
+              selected = env | values | {'PATH': cli + os.pathsep + os.environ['PATH']}
+              for recipe in ['other:\n    @true\n', 'browser-test:\n    @exit 17\n', 'browser-test:\n    @node -e "throw Error(\'binding mismatch\')"\n']:
+                  (caller / 'justfile').write_text(recipe, encoding='utf-8')
+                  result = execute('Browser test recipe', caller, selected)
+                  assert result.returncode != 0, result.stdout + result.stderr
+              shim = caller / 'bin'
+              shim.mkdir()
+              source = caller / 'tool-failure'
+              source.write_text('#!/bin/sh\nexit 73\n', encoding='utf-8')
+              subprocess.run(['install', '-m', '0700', str(source), str(shim / 'mise')], check=True)
+              assert execute('Browser test caller tools', caller, env | {'PATH': str(shim) + os.pathsep + os.environ['PATH']}).returncode == 73
+              print('PASS browser_test_setup_and_recipe_fail_closed', flush=True)
+
+          def browser_test_result_stays_required():
+              internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+              assert 'needs: [sample, declared, test-tools]' in internal
+              assert "all(job['result'] == 'success'" in internal
+              assert 'continue-on-error' not in workflow
+              job = workflow.split('  browser-tests:\n', 1)[1]
+              assert "needs.declaration.outputs.browser_tests == 'true'" in job
+              assert 'persist-credentials: false' in job
+              workflow_failures_remain_required()
+              print('PASS browser_test_result_stays_required')
+
+          browser_test_downloads_verify_every_archive()
+          browser_test_result_stays_required()
+
           def mise_bootstrap_checks_release_digest():
               import shutil
               with tempfile.TemporaryDirectory() as temporary:
@@ -2857,7 +3049,7 @@ jobs:
                       assert 'persist-credentials: false' in step
               assert 'RUSTDOCFLAGS: -D warnings -D missing_docs' in workflow
               assert 'run_isolated cargo test --locked --doc' in body('Isolated tests')
-              for job in ['quality', 'docs', 'tests', 'targets', 'browser', 'declaration']:
+              for job in ['quality', 'docs', 'tests', 'targets', 'browser', 'browser-tests', 'declaration']:
                   section = workflow.split(f'  {job}:\n', 1)[1]
                   assert 'run: rustup show' in section or 'rustup show\n' in section
               internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding="utf-8")

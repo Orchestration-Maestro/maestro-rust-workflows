@@ -65,7 +65,9 @@ no required settings file and no workflow inputs. The optional
 [caller declaration](docs/caller-checks.md) enables isolated tests, real search
 tools, caller-pinned build and test tools, reserved test ports, listed wasm builds, native foreign-target
 checks, [additional locked manifests](docs/caller-checks.md#additional-locked-manifests)
-for independent workspace dependencies, and a pinned browser recipe. A repository's `rust-toolchain.toml`
+for independent workspace dependencies, a caller-pinned browser build recipe,
+and optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
+with shared verified runtime pins. A repository's `rust-toolchain.toml`
 selects its toolchain through rustup.
 
 Every caller also gets the dependency and source checks: cargo-deny

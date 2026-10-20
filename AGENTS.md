@@ -6,7 +6,8 @@ secrets, workflows and at least 80% line coverage, with embedded defaults and
 checksum-verified tool releases. Only the caller declaration may extend those
 defaults or raise coverage. The optional caller declaration adds isolated tests, real search tools,
 caller-pinned build and test tools, additional locked manifest provisioning, wasm builds, native foreign-target checks and the
-fixed browser recipe hook. Its spec is
+fixed browser build recipe hook. Optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
+use shared verified runtime pins, not caller-selected browser versions. Its spec is
 [One shared Rust CI](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md).
 
 - Accept only the optional `.github/ci.toml` declaration documented in
