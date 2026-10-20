@@ -18,6 +18,8 @@ Tests run with checksum-pinned cargo-nextest 0.9.148 on four Linux runners,
 using automatic count partitions rather than package lists. Doctests run once
 with `cargo test --doc` on shard 1. The aggregate `Tests (ubuntu-latest)`
 requires every shard to succeed, preserving the required-check name.
+Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-diagnostics)
+and the reporter log after isolated tests fail or time out.
 
 Pull requests test changed crates and their reverse dependencies, without a
 coverage floor. Each nextest test can retry twice; flaky passes are named in

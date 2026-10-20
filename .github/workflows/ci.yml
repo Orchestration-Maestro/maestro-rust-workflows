@@ -620,6 +620,8 @@ jobs:
           PYTHON
           cargo_home=$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd)
           rustup_home=$(cd "${RUSTUP_HOME:-$HOME/.rustup}" && pwd)
+          diagnostics="$PWD/target/browser-author-diagnostics"
+          mkdir -p "$diagnostics"
           isolation=$(mktemp -d "$RUNNER_TEMP/maestro-tests.XXXXXX")
           trap 'rm -rf "$isolation"' EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
@@ -629,7 +631,7 @@ jobs:
             XDG_CONFIG_HOME="$isolation/config" XDG_DATA_HOME="$isolation/data" \
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
             XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
-            XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 \
+            XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 MAESTRO_TEST_DIAGNOSTICS_DIR="$diagnostics" \
             RUSTC_WRAPPER="${RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
             "$@"
           }
@@ -651,6 +653,44 @@ jobs:
           if [ -z "${CARGO_COVERAGE_MIN_LINES:-}" ] && [ "${SHARD:-1}" = 1 ]; then
             run_isolated cargo test --locked --doc "${packages[@]}"
           fi
+      - name: Print test diagnostics
+        id: diagnostics
+        if: always() && needs.declaration.outputs.enabled == 'true'
+        env:
+          CALLER_REPOSITORY: ${{ inputs.checkout-repository || github.repository }}
+          CALLER_DIRECTORY: ${{ inputs.working-directory || '.' }}
+          CALL_KEY: ${{ inputs.concurrency-key }}
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import secrets
+          import sys
+          identity = [os.environ['CALLER_REPOSITORY'], os.environ['CALLER_DIRECTORY'], os.environ['CALL_KEY']]
+          digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
+          name = f"test-diagnostics-{os.environ['GITHUB_REPOSITORY_ID']}-{digest}-shard-{os.environ['SHARD']}-run-{os.environ['GITHUB_RUN_ID']}-attempt-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'artifact_name={name}\n')
+          token = secrets.token_hex(32)
+          print(f'::stop-commands::{token}', flush=True)
+          try:
+              for path in pathlib.Path('target/browser-author-diagnostics').rglob('*'):
+                  if path.is_file() and not path.is_symlink():
+                      sys.stdout.buffer.write(path.read_bytes())
+          finally:
+              print(f'\n::{token}::', flush=True)
+          PYTHON
+      - name: Upload test diagnostics
+        if: always() && needs.declaration.outputs.enabled == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.diagnostics.outputs.artifact_name }}
+          path: |
+            ${{ inputs.working-directory || '.' }}/target/browser-author-diagnostics
+            ${{ inputs.working-directory || '.' }}/nextest.log
+          if-no-files-found: ignore
       - name: Flaky test summary
         if: always()
         run: |

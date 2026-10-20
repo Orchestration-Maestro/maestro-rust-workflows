@@ -83,6 +83,45 @@ each source line once (covered if any shard hits it), and enforces
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. PRs skip coverage for all callers.
 
+### Test diagnostics
+
+Declared callers receive `MAESTRO_TEST_DIAGNOSTICS_DIR`, an absolute path to
+`target/browser-author-diagnostics` under the caller's working directory. The
+workflow creates it outside disposable HOME/TMP isolation and forwards it to
+partition runners and shard-1 doctests. An inherited value is not used.
+
+Caller tests own transcript production: write regular files there, flush each
+phase before waiting on a child, and exclude credentials and other sensitive
+content. Use distinct files for tests and attempts. The workflow does not create
+transcripts or collect the environment. Callers without transcripts need no
+changes.
+
+After isolated tests, `Print test diagnostics` prints regular transcript files,
+including unfinished final lines, with Actions command processing disabled.
+`Upload test diagnostics` retains only that directory and `nextest.log`, even
+when the isolated step fails or reaches its existing 45-minute cap. Missing or
+empty diagnostics are allowed; retention does not turn a failed test green.
+Runner loss, cancellation or an enclosing job timeout can prevent these steps
+from running.
+
+Artifact names are
+`test-diagnostics-<repository-id>-<caller-digest>-shard-<shard>-run-<run-id>-attempt-<run-attempt>`.
+The caller digest is the full lowercase SHA-256 of the UTF-8 compact JSON array
+`[checkout-repository-or-github.repository, working-directory-or-".", concurrency-key-or-""]`,
+with Unicode unescaped. It distinguishes repositories, caller directories and
+reusable call keys without exposing path characters in artifact names.
+
+Find the artifact name in the run's artifact list, download it, and read the
+caller's marker and last phase (replace the example records with your own):
+
+```bash
+gh api "repos/$repo/actions/runs/$run/artifacts" --jq '.artifacts[].name'
+gh run download "$run" --repo "$repo" --name "$artifact" --dir "$download"
+cat "$download/nextest.log"
+grep -RFn -- 'CHILD-READY-MARKER' "$download/target/browser-author-diagnostics"
+grep -RFn -- 'phase: waiting-for-child-exit' "$download/target/browser-author-diagnostics"
+```
+
 ### Pull-request selection and retries
 
 On pull requests, tests run only changed workspace crates and their reverse
@@ -274,7 +313,8 @@ The exact guarded list is in the shared workflow's isolated-test step.
 
 The child keeps only `PATH`, resolved `CARGO_HOME` and `RUSTUP_HOME`, the
 checkout-selected `RUSTUP_TOOLCHAIN`, fresh `HOME`, `TMPDIR`, `TMP`, `TEMP` and all XDG configuration/data/cache/state/runtime
-locations, plus `MAESTRO_NO_LOCAL_LLM=1`. `TMP` and `TEMP` equal `TMPDIR`; the
+locations, plus `MAESTRO_NO_LOCAL_LLM=1` and the workflow-computed
+`MAESTRO_TEST_DIAGNOSTICS_DIR` described in [Test diagnostics](#test-diagnostics). `TMP` and `TEMP` equal `TMPDIR`; the
 other locations are separate, initially empty directories beneath a unique
 runner-temp parent. Unrelated CI state, proxy settings and application/provider
 overrides are not inherited. The partition argv uses `cargo llvm-cov nextest`; doctests use
