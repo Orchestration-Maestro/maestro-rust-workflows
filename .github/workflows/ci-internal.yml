@@ -147,7 +147,7 @@ jobs:
           startup = 'if [ "$CACHE_RESTORE_OUTCOME"' + startup
 
           def run(command, env, cwd=root):
-              return subprocess.run(command, env=env, cwd=cwd, capture_output=True, text=True, timeout=60)
+              return subprocess.run(command, env=env, cwd=cwd, capture_output=True, text=True)
 
           def shell(source, env):
               return run(['bash', '-e', '-o', 'pipefail', '-c', source], env)
@@ -1519,6 +1519,8 @@ jobs:
         timeout-minutes: 10
         shell: python
         run: |
+          import json
+          import shutil
           import os
           import pathlib
           import re
@@ -1528,7 +1530,6 @@ jobs:
           import unittest
 
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
-          steps = dict(step.split('\n', 1) for step in workflow.split('      - name: ')[1:])
           import ast
           source = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
           code = source.split('      - name: Caller checks at workflow seam\n', 1)[1]
@@ -1536,6 +1537,113 @@ jobs:
           tree = ast.parse(textwrap.dedent(code))
           tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
           exec(compile(tree, 'workflow body resolver', 'exec'))
+
+          from collections import Counter
+
+          def collect(files):
+              found = []
+              counts = Counter()
+              def add(path, job, step, kind, value):
+                  key = (path, job, step, kind)
+                  counts[key] += 1
+                  found.append((*key, counts[key], value))
+              for path, source in sorted(files.items()):
+                  lines = source.splitlines()
+                  job = step = ''
+                  shell = 'bash'
+                  index = 0
+                  while index < len(lines):
+                      line = lines[index]
+                      owner = re.fullmatch(r'  ([\w-]+):', line)
+                      if owner:
+                          job, step, shell = owner[1], '', 'bash'
+                      named = re.match(r'      - name: (.*)', line)
+                      if named:
+                          step, shell = named[1], 'bash'
+                      selected = re.fullmatch(r'        shell: (.*)', line)
+                      if selected:
+                          shell = selected[1]
+                      run = re.fullmatch(r'( +)run: (?:&[\w-]+ )?[|>][-+]?\s*', line)
+                      if run:
+                          end = index + 1
+                          indent = len(run[1])
+                          while end < len(lines) and (not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > indent):
+                              end += 1
+                          body = textwrap.dedent('\n'.join(lines[index + 1:end]))
+                          if shell == 'python':
+                              tree = ast.parse(body)
+                              for node in ast.walk(tree):
+                                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ('run', 'wait', 'communicate'):
+                                      for keyword in node.keywords:
+                                          if keyword.arg == 'timeout':
+                                              add(path, job, step, 'python timeout', ast.unparse(keyword.value))
+                          else:
+                              body = re.sub(r'(?m)^[ \t]*#.*$', '', body)
+                              for match in re.finditer(r'(?<![\w-])(--retry|--retries|--max-time)\s+([^\s;]+)|(?:^|[;|&()])\s*(sleep|timeout)\s+([^\s;]+)', body, re.M):
+                                  add(path, job, step, match[1] or match[3], match[2] or match[4])
+                          if 'f"-timeout={os.environ[\'TIMEOUT\']}"' in body:
+                              add(path, job, step, 'caller fuzz timeout', 'TIMEOUT')
+                          index = end
+                          continue
+                      # Scalar metadata and environment/argument maps are not job or step controls.
+                      metadata = re.match(r'(\s*)(?:name|env|with|outputs|permissions|concurrency|if|uses|working-directory):', line)
+                      if metadata:
+                          indent = len(metadata[1])
+                          index += 1
+                          while index < len(lines) and (not lines[index].strip() or len(lines[index]) - len(lines[index].lstrip()) > indent):
+                              index += 1
+                          continue
+                      # Unknown control layouts produce an unlisted owner/value.
+                      for key in re.finditer(r"(?<![\w-])['\"]?timeout-minutes['\"]?\s*:\s*([^#}\n]+)", line.split('#', 1)[0]):
+                          add(path, job, step, 'timeout-minutes', key[1].strip())
+                      index += 1
+              return found
+
+          authority = {}
+          def permit(path, job, step, kind, value, occurrence=1):
+              reason = ('Approved release-report polling' if kind == 'sleep' else
+                        'Caller-declared fuzz limits; no shared deadline' if kind == 'caller fuzz timeout' else
+                        'Approved nextest retry policy' if kind == '--retries' else
+                        'Approved test/coverage bound' if value == '45' else
+                        'Approved installation bound; compiled-cache tool' if step == 'Compile cache' else
+                        'Approved installation bound; fuzz tools' if job == 'fuzz' else
+                        'Approved installation/self-test download bound')
+              authority[('.github/workflows/' + path + '.yml', job, step, kind, occurrence, value)] = reason
+          for job, names in {
+           'quality': ['Compile cache', 'Mise bootstrap', 'Test tools'],
+           'docs': ['Compile cache', 'Mise bootstrap', 'Test tools'],
+           'tests': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap', 'Test tools'],
+           'checks': ['Check tools', 'Compile cache'],
+           'fuzz': ['Check tools'], 'advisories': ['Check tools'],
+           'targets': ['Compile cache', 'Mise bootstrap', 'Test tools'],
+           'browser': ['Compile cache', 'Browser mise bootstrap', 'Browser tools'],
+           'browser-tests': ['Compile cache'],
+          }.items():
+              for name in names: permit('ci', job, name, 'timeout-minutes', '10')
+          for name in ['Tests', 'Isolated tests']:
+              permit('ci', 'tests', name, 'timeout-minutes', '45')
+          permit('ci', 'checks', 'Coverage', 'timeout-minutes', '45')
+          for name in ['Coverage release installation', 'Search release installation proofs', 'Real search tools']:
+              permit('ci-internal', 'seams', name, 'timeout-minutes', '10')
+          for name in ['Coverage tools', 'Caller tools']:
+              permit('ci-proof', 'comparison', name, 'timeout-minutes', '10')
+          permit('ci-proof', 'comparison', 'Single-job coverage baseline', 'timeout-minutes', '45')
+          permit('ci', 'tests', 'Tests', '--retries', '2')
+          permit('ci', 'tests', 'Isolated tests', '--retries', '2')
+          permit('ci', 'tests', 'Isolated tests', '--retries', '2', 2)
+          permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
+          permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
+
+          def require_recorded_controls(sources, reasons=authority):
+              observed = collect(sources)
+              assert Counter(observed) == Counter(reasons.keys()) and all(reason.strip() for reason in reasons.values()), (
+                  'Unlisted, stale, duplicate or unexplained workflow control',
+                  list((Counter(observed) - Counter(reasons.keys())).elements()),
+                  list((Counter(reasons.keys()) - Counter(observed)).elements()))
+              return '\n'.join(' | '.join(map(str, row)) + ' | ' + reasons[row] for row in observed)
+
+          files = {str(path): path.read_text(encoding='utf-8')
+                   for path in pathlib.Path('.github/workflows').iterdir() if path.suffix in ('.yml', '.yaml')}
 
           class SearchReleases(unittest.TestCase):
               def test_pinned_archives(self):
@@ -1560,21 +1668,128 @@ jobs:
                           self.assertIn('"$bin/' + binary + '" --version', body('Search tools'))
                           self.assertTrue((pathlib.Path(bin_dir) / binary).is_file())
 
-              def test_install_timeouts(self):
-                  for name in ['Search tools', 'Mise bootstrap', 'Browser mise bootstrap', 'Test tools',
-                               'Browser tools', 'Check tools', 'Coverage tools']:
-                      with self.subTest(step=name):
-                          self.assertRegex(steps[name], r'(?m)^        timeout-minutes: 10$')
-                  internal = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
-                  internal_steps = dict(step.split('\n', 1) for step in internal.split('      - name: ')[1:])
-                  for name in ['Search release installation proofs', 'Real search tools']:
-                      with self.subTest(step=name):
-                          self.assertRegex(internal_steps[name], r'(?m)^        timeout-minutes: 10$')
+              def test_workflow_controls_match_authority(self):
+                  report = require_recorded_controls(files)
+                  self.assertEqual(len(report.splitlines()), 36)
+                  print(report)
 
-              def test_caller_test_timeouts(self):
-                  for name in ['Tests', 'Isolated tests', 'Coverage']:
-                      with self.subTest(step=name):
-                          self.assertRegex(steps[name], r'(?m)^        timeout-minutes: 45$')
+              def assert_policy(self, sources, admitted):
+                  if admitted:
+                      require_recorded_controls(sources, authority)
+                  else:
+                      with self.assertRaises(AssertionError):
+                          require_recorded_controls(sources, authority)
+
+              def test_unlisted_step_deadline_is_rejected(self):
+                  source = files['.github/workflows/ci.yml']
+                  candidate = source.replace('      - name: Format\n', '      - name: Format\n        timeout-minutes: 10\n', 1)
+                  self.assertNotEqual(candidate, source)
+                  self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
+
+              def test_unlisted_job_and_workflow_deadlines_are_rejected(self):
+                  source = files['.github/workflows/ci.yml']
+                  candidate = source.replace('  quality:\n', '  quality:\n    timeout-minutes: 10\n', 1)
+                  self.assertNotEqual(candidate, source)
+                  self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
+                  for suffix in ['yml', 'yaml']:
+                      for key in ['timeout-minutes: 10', '"timeout-minutes": 10', "'timeout-minutes': 10", 'extra: {timeout-minutes: 10}']:
+                          with self.subTest(suffix=suffix, key=key):
+                              source = ('jobs:\n  extra: {timeout-minutes: 10, runs-on: ubuntu-latest, steps: [{run: echo valid}]}\n' if key.startswith('extra:') else 'jobs:\n  new:\n    ' + key + '\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo valid\n')
+                              self.assert_policy(files | {'.github/workflows/new.' + suffix: source}, False)
+
+              def test_changed_deadline_value_is_rejected(self):
+                  source = files['.github/workflows/ci.yml']
+                  for old, value in [('10', '11'), ('45', '44'), ('10', '$' + '{{ inputs.minutes }}'), ('10', '')]:
+                      with self.subTest(old=old, value=value):
+                          candidate = source.replace('timeout-minutes: ' + old, 'timeout-minutes: ' + value, 1)
+                          self.assertNotEqual(candidate, source)
+                          self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
+
+              def test_retry_changes_are_rejected_per_branch(self):
+                  source = files['.github/workflows/ci.yml']
+                  positions = [m.start() for m in re.finditer('--retries 2', source)]
+                  self.assertEqual(len(positions), 3)
+                  for offset in positions:
+                      for replacement in ['--retries 3', '--retries 0', '--retries 2 --retries 2']:
+                          with self.subTest(offset=offset, replacement=replacement):
+                              candidate = source[:offset] + source[offset:].replace('--retries 2', replacement, 1)
+                              self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
+
+              def test_authority_is_bound_to_its_owner(self):
+                  copied = 'jobs:\n  other:\n    steps:\n      - name: Search tools\n        timeout-minutes: 10\n        run: echo valid\n'
+                  self.assert_policy(files | {'.github/workflows/new.yml': copied}, False)
+                  self.assert_policy(files | {'.github/workflows/ci.yml': files['.github/workflows/ci.yml'].replace('jobs:\n', copied, 1)}, False)
+                  moved = files.copy()
+                  moved['.github/workflows/moved.yml'] = moved.pop('.github/workflows/ci.yml')
+                  self.assert_policy(moved, False)
+                  removed = files['.github/workflows/ci.yml'].replace('        timeout-minutes: 10\n', '', 1)
+                  self.assert_policy(files | {'.github/workflows/ci.yml': removed}, False)
+
+              def test_script_deadlines_are_rejected(self):
+                  for fragment in ['timeout 3 true', 'curl --max-time 15 https://example.test', 'curl --retry 3 https://example.test']:
+                      with self.subTest(fragment=fragment):
+                          source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        run: |\n          ' + fragment + '\n'
+                          self.assert_policy(files | {'.github/workflows/new.yml': source}, False)
+                  source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        shell: python\n        run: |\n          subprocess.run(["true"], timeout=60)\n'
+                  self.assert_policy(files | {'.github/workflows/new.yml': source}, False)
+
+              def test_literal_fixture_values_are_not_policy(self):
+                  source = ('jobs:\n  new:\n'
+                            '    # timeout-minutes: 999\n'
+                            '    name: "timeout-minutes: 999"\n'
+                            '    env: {timeout-minutes: 999}\n'
+                            '    steps:\n      - name: Example\n        shell: python\n        run: |\n'
+                            '          expected = "timeout-minutes: 45"\n'
+                            '          expected_args = ["--retries", "2"]\n'
+                            '          sample = dict(timeout=5)\n')
+                  for candidate in [source, source.replace('env: {timeout-minutes: 999}', 'env:\n      timeout-minutes: 999'),
+                                    source.replace('env: {timeout-minutes: 999}', 'with:\n      timeout-minutes: 999'),
+                                    'jobs:\n  new:\n    steps:\n      - name: Example\n        run: |\n          # curl --retry 3\n          echo valid\n']:
+                      with self.subTest(source=candidate):
+                          self.assert_policy(files | {'.github/workflows/new.yml': candidate}, True)
+
+              def test_existing_polling_and_fuzz_limits_are_preserved(self):
+                  self.assertEqual([r[-1] for r in collect(files) if r[3] == 'caller fuzz timeout'], ['TIMEOUT'])
+                  source = files['.github/workflows/release-please.yml']
+                  step = source.split('      - name: Export the dependency graph SBOM\n', 1)[1].split('      - name:', 1)[0]
+                  command = textwrap.dedent(step.split('        run: |\n', 1)[1])
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      stubs = {
+                          'gh': '#!/bin/sh\nprintf "%s\\n" "https://api.github.test/repos/owner/repo/dependency-graph/sbom/fetch-report/example"\n',
+                          'curl': ('#!/bin/sh\nn=0\n'
+                                   '[ ! -f "$TEST_ROOT/calls" ] || n=$(cat "$TEST_ROOT/calls")\n'
+                                   'n=$((n + 1))\n[ "$n" -le 2 ] || exit 70\n'
+                                   'printf "%s" "$n" > "$TEST_ROOT/calls"\n'
+                                   'while [ "$1" != --output ]; do shift; done\n'
+                                   'printf \'{"spdxVersion":"SPDX-2.3"}\' > "$2"\n'
+                                   'if [ "$n" -eq 1 ]; then printf 202; else printf 200; fi\n'),
+                          'sleep': '#!/bin/sh\nprintf "%s\\n" "$1" >> "$TEST_ROOT/sleeps"\n',
+                      }
+                      for name, script in stubs.items():
+                          stub = directory / (name + '.source')
+                          stub.write_text(script, encoding='utf-8')
+                          subprocess.run(['install', '-m', '0700', str(stub), str(directory / name)], check=True)
+                      env = os.environ | {'PATH': str(directory) + ':' + os.environ['PATH'], 'TEST_ROOT': temporary,
+                                          'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_API_URL': 'https://api.github.test',
+                                          'ASSETS': str(directory / 'assets'), 'GH_TOKEN': 'fixture'}
+                      executable = shutil.which('bash')
+                      self.assertEqual(pathlib.Path(executable).resolve(), pathlib.Path('/usr/bin/bash'))
+                      result = subprocess.run([executable, '-e', '-o', 'pipefail', '-c', command],
+                                              env=env, capture_output=True, text=True)
+                      self.assertEqual(result.returncode, 0, result.stderr)
+                      self.assertEqual((directory / 'calls').read_text(encoding='utf-8'), '2')
+                      self.assertEqual((directory / 'sleeps').read_text(encoding='utf-8'), '5\n')
+                      self.assertEqual(json.loads((directory / 'assets/sbom.spdx.json').read_text(encoding='utf-8')),
+                                       {'spdxVersion': 'SPDX-2.3'})
+
+              def test_inventory_requires_a_reason_for_each_occurrence(self):
+                  report = require_recorded_controls(files, authority)
+                  self.assertEqual(len(report.splitlines()), 36)
+                  for row in authority:
+                      self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
+                      with self.assertRaises(AssertionError):
+                          require_recorded_controls(files, authority | {row: ''})
 
               def test_corrupt_archives(self):
                   command = body('Search tools')

@@ -143,6 +143,12 @@ verified installations and the sample job's added execution time. The secrets
 probe proves restored `target/` output is not scanned while the same secret in
 tracked source is caught.
 
+The search-release seam also inventories workflow deadlines, retries, report
+polling and caller fuzz-limit forwarding. Each occurrence names its workflow,
+job, step, command occurrence, value and recorded reason. Temporary workflow
+fixtures prove that unlisted, moved, changed, duplicated or unexplained controls
+fail the check, while comments and fixture data add no policy.
+
 The configured `fixtures/declared` caller also passes all declared checks.
 Workflow-body probes cover declarations, isolation, real tools, wasm and
 browser failures and pinned tooling. A developer-tool fixture proves build-script

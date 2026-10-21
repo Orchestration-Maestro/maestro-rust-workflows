@@ -53,8 +53,6 @@ jobs:
           ref: ${{ needs.release.outputs.tag-name }}
           persist-credentials: false
       - name: Export the dependency graph SBOM
-        # Bound the API poll to 2 minutes, with requests 5 seconds apart.
-        timeout-minutes: 2
         shell: bash
         run: |
           set -euo pipefail
@@ -62,7 +60,7 @@ jobs:
           url=$(gh api "repos/$GITHUB_REPOSITORY/dependency-graph/sbom/generate-report" --jq .sbom_url)
           [[ "$url" == "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/dependency-graph/sbom/fetch-report/"* ]]
           while true; do
-            status=$(curl --fail --silent --show-error --location --max-time 15 \
+            status=$(curl --fail --silent --show-error --location \
               -H "Authorization: Bearer $GH_TOKEN" \
               --output "$ASSETS/sbom.spdx.json" --write-out '%{http_code}' "$url")
             case "$status" in
