@@ -13,13 +13,11 @@ snapshot. A warm build uses its parent commit; selected-package proof sets that
 parent as its PR base. The warmer is non-required, and consumers still run if it
 fails. See [Compile cache](../README.md#compile-cache) for snapshot shapes,
 fail-open transfers and storage limits.
-Advance consumer checkout references together to the smallest main commit that resolves
-the reason for the move, after checking its locked dependencies. For example,
-`98b41a9149ebf1d5cfffdc343194cfc0555467d9` locks the updated ZIP closure
-(resolving the archive-extraction advisories), isolates the agent tests' synthetic
-model fixtures, serializes the output-routing child launches that one-process coverage
-runs share, and gives each new agent its own default model so one-process test runs
-no longer leak one test's model edits into another.
+Advance all proof checkout references together after checking locked dependencies.
+The proof uses `69a88cc05dcc39eaf6097af78718eb1b1da81c56` for current caller tool
+downloads and patched certificate-verification dependencies. Its parent,
+`72d3e4831971e95a504224ac0da7c0cdc8475fdf`, supplies the warm build and
+selected-package base.
 Changes to either `.github/workflows/ci.yml` or `.github/workflows/ci-proof.yml`
 schedule the proof; check its results before landing.
 
