@@ -170,7 +170,9 @@ static discovery, not shell evaluation.
 
 The configured `fixtures/declared` caller also passes all declared checks.
 Workflow-body probes cover declarations, isolation, real tools, wasm and
-browser failures and pinned tooling. A developer-tool fixture proves build-script
+browser failures and pinned tooling. The required consumer result also includes
+[the pinned Maestro browser qualification](docs/caller-checks.md#local-build-and-runtime-command),
+using extracted shared setup and recipe bodies. A developer-tool fixture proves build-script
 tool availability across compiling jobs. Isolated tests spawn caller-pinned
 `just` and `prek` only when opted in. Native
 runner proofs detect deliberate Windows/macOS-only failures. The `fixtures/fuzz`

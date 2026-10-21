@@ -505,7 +505,12 @@ The declared fixture proves reusable-job wiring with a real browser assertion,
 not the consumer's Rust assertions. Real-consumer shared-job-body qualification
 uses the immutable main commit containing the harness, all 45 exports, seeded
 failures in both families, missing/zero exports and asynchronous rejection,
-followed by restored sources. Release waits for that hosted qualification.
+followed by restored sources. The internal self-test runs this matrix against a
+pinned Maestro main commit and includes it in Required consumer tests. Browser
+setup and the recipe are extracted from the shared workflow with the same
+extractor as the coverage proof; seam tests reject copied setup bodies. Panic
+controls require the failing export name and WebAssembly trap, not assertion
+text, which the driver does not expose. Release waits for hosted qualification.
 Caller activation is separate: release, re-pin, opt in, then observe the first
 actual Chromium job pass. Workflow landing or a job-body proof is not activation;
 [the delivery issue](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/98)
