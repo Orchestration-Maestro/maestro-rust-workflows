@@ -32,6 +32,20 @@ jobs:
           token: ${{ steps.token.outputs.token }}
           config-file: .github/release-please/config.json
           manifest-file: .github/release-please/manifest.json
+      - name: Mint the Quality sync token
+        id: sync-token
+        if: steps.release.outputs.release_created == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          repositories: .github
+          permission-contents: write
+      - name: Start Quality sync
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ steps.sync-token.outputs.token }}
+        run: gh api --method POST repos/Orchestration-Maestro/.github/dispatches --raw-field event_type=rust-workflows-release
 
   evidence:
     name: Attested release assets

@@ -129,8 +129,8 @@ active. It cannot lower the floor or disable a check. Declared callers retain
 test isolation and their opted-in search/developer tools during coverage.
 
 The approved [shared CI spec](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md)
-defines the scope. Organization pins move separately from this repository's
-releases; publishing the first release does not change existing consumers.
+defines the scope. Creating a release requests Quality sync, which owns eligible
+organization re-pins. Publication itself does not update consumer pins.
 
 ## Self-test
 
@@ -182,8 +182,10 @@ The final checks are `Required repository quality` and
 ## Versions
 
 Release-please opens release pull requests and tags merged releases, starting
-at `v0.1.0`. The organization rules pin a version tag; releasing here does not
-move those pins. CI changes, features and fixes appear in the changelog.
+at `v0.1.0`. Each new release requests Quality sync before asset generation. A
+notification failure fails the release job; the published release remains, but
+asset generation does not start. CI changes, features and fixes appear in the
+changelog.
 
 ### Verify a release
 
