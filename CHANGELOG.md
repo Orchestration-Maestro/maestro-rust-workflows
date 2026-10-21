@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.12.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.11.3...v0.12.0) (2026-10-21)
+
+
+### Continuous Integration
+
+* refresh the Maestro proof snapshot ([#128](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/128)) ([1cf78fa](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/1cf78faeb2893cd3b4a44255ee8ce1fe7c00ac66))
+
+
+### Features
+
+* **ci:** allow the Boost Software License ([#124](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/124)) ([b0cde0f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/b0cde0ff34b39de09a9911e7d2cef6934c37d0a3)), closes [#61](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/61)
+* **ci:** execute declared browser tests in Chromium ([#106](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/106)) ([cfb2f0a](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/cfb2f0a4968595e6edd9715329780e6ff9306be2))
+* **ci:** run declared fuzz targets nightly ([#113](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/113)) ([c46e80e](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/c46e80e87caa235a78b79cc064e56eeb435e19d6))
+
+
+### Bug Fixes
+
+* **ci:** compile through cache storage outages ([#118](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/118)) ([483905b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/483905bea1f105b2cc3e7079377e5b2b4173e110))
+* **ci:** name the declaration file for invalid UTF-8 ([#125](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/125)) ([4511699](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/45116991e15b412c8943fafcfbb46d110ae2b9cb)), closes [#13](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/13)
+
+
+### Performance
+
+* **ci:** restore compiled-cache snapshots per job ([#119](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/119)) ([29e40cd](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/29e40cd68f972a99014715d5f82c0971020cca1a))
+
 ## [0.11.3](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.11.2...v0.11.3) (2026-10-20)
 
 
