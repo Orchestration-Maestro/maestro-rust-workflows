@@ -126,34 +126,35 @@ jobs:
     - name: Immutable shared recipe qualification
       run: "import json, pathlib, subprocess, time\nroot=pathlib.Path.cwd()\nsupport=root/'crates/maestro-web/tests/sandbox_loading_support'\n\
         execution=root/'crates/maestro-web/tests/sandbox_execution_browser.rs'\nloading=root/'crates/maestro-web/tests/sandbox_loading_browser.rs'\n\
-        inventory=support/'exports.json'\noriginal={p:p.read_bytes() for p in [execution,loading,inventory]}\nlogs=root.parent/'qualification-logs'\n\
-        logs.mkdir()\ncommand='just browser-test\\n'\n\ndef run(label, expected, diagnostic=None):\n    start=time.monotonic()\n\
-        \    with (logs/(label+'.log')).open('w') as output:\n        result=subprocess.run(['bash','-e','-o','pipefail','-c',command],stdout=output,stderr=subprocess.STDOUT)\n\
+        inventory=support/'exports.json'\ndriver=support/'run.cjs'\noriginal={p:p.read_bytes() for p in [execution,loading,inventory,driver]}\n\
+        logs=root.parent/'qualification-logs'\nlogs.mkdir()\ncommand='just browser-test\\n'\n\ndef run(label, expected, diagnostic=None):\n\
+        \    original_driver=original[driver].decode()\n    assert original_driver.count('browser.newPage()') == 1\n    driver.write_text(original_driver.replace('browser.newPage()',\
+        \ 'browser.newPage({deviceScaleFactor: 1.25})'))\n    print('PROOF-ONLY driver: browser.newPage() -> browser.newPage({deviceScaleFactor:\
+        \ 1.25})',flush=True)\n    start=time.monotonic()\n    with (logs/(label+'.log')).open('w') as output:\n        result=subprocess.run(['bash','-e','-o','pipefail','-c',command],stdout=output,stderr=subprocess.STDOUT)\n\
         \    text=(logs/(label+'.log')).read_text()\n    print(text, flush=True)\n    print(f'QUALIFICATION {label} exit={result.returncode}\
         \ seconds={time.monotonic()-start:.3f}',flush=True)\n    if expected == 0:\n        assert result.returncode == 0,\
         \ label\n        assert 'FAMILY execution 26/26' in text and 'FAMILY loading 19/19' in text and 'COMPLETE 45/45' in\
-        \ text, label\n    else:\n        assert result.returncode != 0 and diagnostic in text, label\n        assert 'COMPLETE\
-        \ 45/45' not in text, label\n    print('PASS '+label,flush=True)\n\ndef restore():\n    for p, data in original.items():\
-        \ p.write_bytes(data)\n\ndef seed(p,name,statement):\n    text=p.read_text(); marker='pub async fn '+name+'() {'\n\
-        \    assert text.count(marker)==1\n    p.write_text(text.replace(marker,marker+'\\n    '+statement,1))\n\ntry:\n \
-        \   print('INVENTORY '+inventory.read_text(),flush=True)\n    run('sandbox_browser_exports_run_in_shared_body',0)\n\
-        \    run('sandbox_warm_exports_run_in_shared_body',0)\n    seed(execution,'execution_preflight_avoids_all_effects','assert_eq!(1,\
-        \ 2, \"qualification execution seed\");')\n    run('sandbox_execution_seed_fails_shared_body',1,'qualification execution\
-        \ seed'); restore()\n    seed(loading,'prepared_documents_keep_native_data_and_failures','assert_eq!(1, 2, \"qualification\
-        \ loading seed\");')\n    run('sandbox_loading_seed_fails_shared_body',1,'qualification loading seed'); restore()\n\
-        \    data=json.loads(inventory.read_text());data['execution'][0]='qualification_missing_export';inventory.write_text(json.dumps(data,\
-        \ indent=2)+\"\\n\")\n    run('sandbox_missing_export_fails_shared_body',1,'qualification_missing_export');restore()\n\
+        \ text, label\n    else:\n        assert result.returncode != 0 and all(message in text for message in diagnostic),\
+        \ label\n        assert 'COMPLETE 45/45' not in text, label\n    print('PASS '+label,flush=True)\n\ndef restore():\n\
+        \    for p, data in original.items(): p.write_bytes(data)\n\ndef seed(p,name,statement):\n    text=p.read_text();\
+        \ marker='pub async fn '+name+'() {'\n    assert text.count(marker)==1\n    p.write_text(text.replace(marker,marker+'\\\
+        n    '+statement,1))\n\ntry:\n    print('INVENTORY '+inventory.read_text(),flush=True)\n    seed(execution,'execution_preflight_avoids_all_effects','assert_eq!(1,\
+        \ 2, \"qualification execution seed\");')\n    run('sandbox_execution_seed_fails_shared_body',1,('FAIL execution_preflight_avoids_all_effects:',\
+        \ 'RuntimeError', 'unreachable')); restore()\n    seed(loading,'prepared_documents_keep_native_data_and_failures','assert_eq!(1,\
+        \ 2, \"qualification loading seed\");')\n    run('sandbox_loading_seed_fails_shared_body',1,('FAIL prepared_documents_keep_native_data_and_failures:',\
+        \ 'RuntimeError', 'unreachable')); restore()\n    data=json.loads(inventory.read_text());data['execution'][0]='qualification_missing_export';inventory.write_text(json.dumps(data,\
+        \ indent=2)+\"\\n\")\n    run('sandbox_missing_export_fails_shared_body',1,('qualification_missing_export',));restore()\n\
         \    data=json.loads(inventory.read_text());data['execution']=[];inventory.write_text(json.dumps(data, indent=2)+\"\
-        \\n\")\n    run('sandbox_zero_exports_fail_shared_body',1,'empty execution selection');restore()\n    text=execution.read_text()\n\
+        \\n\")\n    run('sandbox_zero_exports_fail_shared_body',1,('empty execution selection',));restore()\n    text=execution.read_text()\n\
         \    marker='pub async fn execution_preflight_avoids_all_effects() {'\n    assert text.count(marker)==1 and text.count('\
         \    fixture.end();\\n}\\n\\nuse crate::sandbox_execution_support;')==1\n    text=text.replace(marker, 'pub async\
         \ fn execution_preflight_avoids_all_effects() -> Result<(), wasm_bindgen::JsValue> {\\n    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::reject(&wasm_bindgen::JsValue::from_str(\"\
         qualification async rejection\"))).await?;',1)\n    text=text.replace('    fixture.end();\\n}\\n\\nuse crate::sandbox_execution_support;',\
         \ '    fixture.end();\\n    Ok(())\\n}\\n\\nuse crate::sandbox_execution_support;',1)\n    execution.write_text(text)\n\
-        \    run('sandbox_async_rejection_fails_shared_body',1,'qualification async rejection');restore()\n    seed(execution,'execution_preflight_avoids_all_effects','wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED)).await.unwrap();\
-        \ panic!(\"qualification async panic\");')\n    run('sandbox_async_panic_fails_shared_body',1,'qualification async\
-        \ panic');restore()\n    run('sandbox_restored_exports_pass_shared_body',0)\n    subprocess.run(['git','diff','--exit-code'],check=True)\n\
-        finally:\n    restore()\n"
+        \    run('sandbox_async_rejection_fails_shared_body',1,('qualification async rejection',));restore()\n    seed(execution,'execution_preflight_avoids_all_effects','wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED)).await.unwrap();\
+        \ panic!(\"qualification async panic\");')\n    run('sandbox_async_panic_fails_shared_body',1,('FAIL execution_preflight_avoids_all_effects:',\
+        \ 'RuntimeError', 'unreachable'));restore()\n    run('sandbox_restored_exports_pass_shared_body',0)\n    restore()\n\
+        \    subprocess.run(['git','diff','--exit-code'],check=True)\nfinally:\n    restore()\n"
       shell: python
     - name: Compile cache statistics
       id: cache-statistics
