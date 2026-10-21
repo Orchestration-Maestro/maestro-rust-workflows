@@ -175,7 +175,8 @@ component distribution, not a caller-provided executable.
   opening issues.
 - The cargo-deny license allowlist is MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
   Apache-2.0 WITH LLVM-exception, Unicode-DFS-2016, Unicode-3.0, CC0-1.0,
-  CDLA-Permissive-2.0, MPL-2.0 and MIT-0.
+  CDLA-Permissive-2.0, MPL-2.0, MIT-0 and BSL-1.0. BSL-1.0 is the Boost Software
+  License; the Business Source License (BUSL-1.1) is not allowed.
 - cargo-machete fails on unused dependencies. Nonempty `ignored` or `renamed`
   package/workspace cargo-machete metadata is rejected; ignored source files
   remain checked, but generated target directories are skipped.
@@ -216,7 +217,7 @@ spelling_words = ["Maestro"]
 git_sources = ["https://github.com/example/library"]
 privileged_trigger_workflows = [".github/workflows/review-gate.yml"]
 license_exceptions = [
-  { package = "specific-library", version = "1.2.3", licenses = ["BSL-1.0"] },
+  { package = "specific-library", version = "1.2.3", licenses = ["0BSD"] },
 ]
 advisory_exceptions = [
   { id = "RUSTSEC-2025-0141", package = "bincode", version = "1.3.3", reason = "Packaged syntax and theme dumps; reviewed exception" },

@@ -725,6 +725,20 @@ jobs:
                   else:
                       assert result.returncode != 0 and 'other' in output and 'NCSA' in output, output
 
+          def boost_license_is_allowed_and_business_source_is_not(env, temporary):
+              directory = pathlib.Path(temporary) / 'boost-license'
+              shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+              manifest = (root / 'fixtures/sample/Cargo.toml').read_text(encoding='utf-8')
+              assert 'license = "MIT"\n' in manifest
+              for license, allowed in [('BSL-1.0', True), ('BUSL-1.1', False)]:
+                  (directory / 'Cargo.toml').write_text(manifest.replace('license = "MIT"', f'license = "{license}"'), encoding='utf-8')
+                  result = execute('Licenses and dependencies', directory, env | {'CHECK_ADVISORIES': 'false'})
+                  output = result.stdout + result.stderr
+                  if allowed:
+                      assert result.returncode == 0, output
+                  else:
+                      assert result.returncode != 0 and 'error[rejected]' in output and license in output, output
+
           def secrets_scan_before_restored_build_output(env, temporary):
               directory = pathlib.Path(temporary) / 'source-only'
               directory.mkdir()
@@ -1262,6 +1276,8 @@ jobs:
               secrets_scan_before_restored_build_output(env, temporary)
               fuzz_licences_allow_ncsa_only_for_libfuzzer_sys(env, temporary)
               print('PASS fuzz_licences_allow_ncsa_only_for_libfuzzer_sys', flush=True)
+              boost_license_is_allowed_and_business_source_is_not(env, temporary)
+              print('PASS boost_license_is_allowed_and_business_source_is_not', flush=True)
               for name in checks:
                   result = execute(name, root / 'fixtures/sample', env)
                   assert result.returncode == 0, name + '\n' + result.stdout + result.stderr
