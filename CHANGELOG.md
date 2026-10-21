@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.13.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.12.0...v0.13.0) (2026-10-21)
+
+
+### Continuous Integration
+
+* check workflow deadlines against their recorded reasons ([#130](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/130)) ([ae56d47](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/ae56d47525e14888f53eb2289cd9b386a0252851))
+* deny warnings in foreign-target checks ([#141](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/141)) ([e234e34](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/e234e34d4d6363a03f171e70e06ef8c10ad7c005))
+* refresh the landed Maestro proof snapshot ([#137](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/137)) ([9ef749b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/9ef749b5cbc15cfa04b243584a8fbc74d2dca55f)), closes [#92](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/92)
+* select advisories only for dependency changes on PRs and queues ([#129](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/129)) ([e5bf401](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/e5bf401f7822f0a117f59e08423cf94e2faa4070))
+
+
+### Features
+
+* **ci:** route declared non-member test inputs on pull requests ([#142](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/142)) ([dd63d50](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/dd63d50fa348104233ad923dc7b7533369cd73b7))
+
+
+### Bug Fixes
+
+* **ci:** notify organization sync after a release ([#149](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/149)) ([54f90f9](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/54f90f9a94cba592eb616647ddb9d1ea04f363ee)), closes [#134](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/134)
+
 ## [0.12.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.11.3...v0.12.0) (2026-10-21)
 
 
