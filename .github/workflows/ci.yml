@@ -321,7 +321,7 @@ jobs:
           # Declared paths outside every member select only the packages whose tests read them.
           inputs = {pathlib.Path(key): {ids[name] for name in readers} for key, readers in config.get('test_inputs', {}).items()}
           if event == 'pull_request' and base:
-              changed = subprocess.check_output(['git', 'diff', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
+              changed = subprocess.check_output(['git', 'diff', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)

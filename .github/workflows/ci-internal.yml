@@ -3716,6 +3716,13 @@ jobs:
                       assert select() == expected, (changed, select())
                       assert select('merge_group') == ['a', 'b', 'c', 'd'], changed
                       git('reset', '--hard', base)
+                  for source, destination, expected in [('shared/data.txt', 'fuzz/data.txt', ['d']),
+                                                        ('other/data.txt', 'shared/moved.txt', ['a', 'b', 'c', 'd']),
+                                                        ('list.json', 'fuzz/list.json', ['a', 'b', 'c'])]:
+                      git('mv', source, destination)
+                      git('commit', '-qm', 'move input')
+                      assert select() == expected, (source, destination, select())
+                      git('reset', '--hard', base)
                   # A changed route cannot be checked against the old one, so it selects everything.
                   (directory / '.github/ci.toml').write_text(declared.replace('["d"]', '["c"]'), encoding='utf-8')
                   git('add', '.')

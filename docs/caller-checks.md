@@ -141,8 +141,9 @@ toolchain or CI workflow/schema changes select everything. Non-test declaration
 keys (such as spelling, wasm and foreign-target lists) select no extra tests;
 changes to test tools, coverage policy, additional locked manifests, declared
 test inputs or declaration presence select everything.
-Docs-only changes outside a crate select no tests. Unowned non-document files
-conservatively select everything, unless `test_inputs` declares their readers.
+Outside a crate, undeclared Markdown files and paths under `docs/` select no
+tests. Other undeclared files select everything. Declared paths select their
+readers, including for Markdown changes.
 Every shard still fetches locked dependencies.
 Merge groups and main pushes run the whole suite with coverage.
 
