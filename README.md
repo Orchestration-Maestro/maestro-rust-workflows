@@ -54,15 +54,17 @@ than being repaired. Adoption needs a workflows release and organization re-pin.
 
 ## Compile cache
 
-Linux compiling jobs and target checks on every supported host restore one
+Linux compiling jobs and target checks on Linux and arm64 macOS restore one
 compiled-cache snapshot through GitHub's cache action, then run
 checksum-pinned sccache 0.18.0 from
 `${runner.temp}/maestro-sccache`. Compiler lookups use local disk, not GitHub
 requests per object. Incremental compilation stays disabled. See
 [Caller compile cache](docs/caller-checks.md#compile-cache) for wrapper settings
 and coverage behaviour. Pinned assets are `x86_64-unknown-linux-musl`,
-`aarch64-unknown-linux-musl`, `aarch64-apple-darwin` and
-`x86_64-pc-windows-msvc`; Windows uses `sccache.exe`. The checks job's
+`aarch64-unknown-linux-musl` and `aarch64-apple-darwin`. Windows target
+checks run uncached because sccache expands response files beyond Windows'
+command-line limit; [Windows caching](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/166)
+tracks the upstream fix. The checks job's
 secret scan runs before restoration; isolated tests receive only non-secret
 local-cache and diagnostic settings, including after automatic server restarts.
 
@@ -81,7 +83,8 @@ merge-group jobs restore but never save. Each test shape has one writer per
 call: the warm build, or shard 1 plus the separate plain doctest leg when the
 numeric shards use coverage. Other compiling jobs each write their own shape.
 A default-branch push warm call also runs the declared target checks to seed
-those shapes. Warm pull-request calls skip targets because they cannot save.
+the Linux and macOS shapes. Warm pull-request calls skip targets because they
+cannot save.
 
 Missing snapshots build cold. Failed restores discard partial data before
 startup, including warning-only failures with no matched-cache output. Only
