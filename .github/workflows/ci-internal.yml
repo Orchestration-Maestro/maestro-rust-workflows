@@ -1557,19 +1557,27 @@ jobs:
                       owner = re.fullmatch(r'  ([\w-]+):', line)
                       if owner:
                           job, step, shell = owner[1], '', 'bash'
-                      named = re.match(r'      - name: (.*)', line)
+                      if line.startswith('      - '):
+                          step, shell = '', 'bash'
+                          line = '        ' + line[8:]
+                      named = re.match(r'        name: (.*)', line)
                       if named:
                           step, shell = named[1], 'bash'
                       selected = re.fullmatch(r'        shell: (.*)', line)
                       if selected:
                           shell = selected[1]
-                      run = re.fullmatch(r'( +)run: (?:&[\w-]+ )?[|>][-+]?\s*', line)
+                      run = re.fullmatch(r'( +)run: (.*)', line)
                       if run:
                           end = index + 1
                           indent = len(run[1])
-                          while end < len(lines) and (not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > indent):
-                              end += 1
-                          body = textwrap.dedent('\n'.join(lines[index + 1:end]))
+                          if re.fullmatch(r'(?:&[\w-]+ )?[|>][-+]?\s*(?:#.*)?', run[2]):
+                              while end < len(lines) and (not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > indent):
+                                  end += 1
+                              body = textwrap.dedent('\n'.join(lines[index + 1:end]))
+                          else:
+                              body = run[2]
+                              if body[:1] in ('\"', "'") and body[-1:] == body[:1]:
+                                  body = body[1:-1]
                           if shell == 'python':
                               tree = ast.parse(body)
                               for node in ast.walk(tree):
@@ -1579,8 +1587,13 @@ jobs:
                                               add(path, job, step, 'python timeout', ast.unparse(keyword.value))
                           else:
                               body = re.sub(r'(?m)^[ \t]*#.*$', '', body)
+                              body = body.replace('\\\n', ' ')
                               for match in re.finditer(r'(?<![\w-])(--retry|--retries|--max-time)\s+([^\s;]+)|(?:^|[;|&()])\s*(sleep|timeout)\s+([^\s;]+)', body, re.M):
-                                  add(path, job, step, match[1] or match[3], match[2] or match[4])
+                                  control_step = step
+                                  if match[1] == '--retries':
+                                      command = body[:match.start()].rsplit('\n', 1)[-1].strip()
+                                      control_step += ' / ' + re.split(r'\s+--', command, 1)[0]
+                                  add(path, job, control_step, match[1] or match[3], match[2] or match[4])
                           if 'f"-timeout={os.environ[\'TIMEOUT\']}"' in body:
                               add(path, job, step, 'caller fuzz timeout', 'TIMEOUT')
                           index = end
@@ -1595,7 +1608,8 @@ jobs:
                           continue
                       # Unknown control layouts produce an unlisted owner/value.
                       for key in re.finditer(r"(?<![\w-])['\"]?timeout-minutes['\"]?\s*:\s*([^#}\n]+)", line.split('#', 1)[0]):
-                          add(path, job, step, 'timeout-minutes', key[1].strip())
+                          control_step = step if len(line) - len(line.lstrip()) > 4 else ''
+                          add(path, job, control_step, 'timeout-minutes', key[1].strip())
                       index += 1
               return found
 
@@ -1628,9 +1642,9 @@ jobs:
           for name in ['Coverage tools', 'Caller tools']:
               permit('ci-proof', 'comparison', name, 'timeout-minutes', '10')
           permit('ci-proof', 'comparison', 'Single-job coverage baseline', 'timeout-minutes', '45')
-          permit('ci', 'tests', 'Tests', '--retries', '2')
-          permit('ci', 'tests', 'Isolated tests', '--retries', '2')
-          permit('ci', 'tests', 'Isolated tests', '--retries', '2', 2)
+          permit('ci', 'tests', 'Tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
+          permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
+          permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
           permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
 
@@ -1732,6 +1746,42 @@ jobs:
                           self.assert_policy(files | {'.github/workflows/new.yml': source}, False)
                   source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        shell: python\n        run: |\n          subprocess.run(["true"], timeout=60)\n'
                   self.assert_policy(files | {'.github/workflows/new.yml': source}, False)
+
+              def test_retry_cannot_move_between_commands(self):
+                  source = files['.github/workflows/ci.yml']
+                  coverage = '              run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest'
+                  plain = '              run_isolated "$TOOLS/cargo-nextest" nextest run'
+                  start = source.index(plain)
+                  end = source.index('\n', source.index('--retries 2', start))
+                  command = source[start:end]
+                  candidate = source.replace(command, command + '\n' + command, 1)
+                  start = candidate.index(coverage)
+                  offset = candidate.index('--retries 2', start)
+                  candidate = candidate[:offset] + candidate[offset:].replace('--retries 2', '', 1)
+                  self.assertEqual(candidate.count('--retries 2'), 3)
+                  self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
+
+              def test_deadline_after_steps_keeps_job_ownership(self):
+                  source = files['.github/workflows/ci-proof.yml']
+                  candidate = source.replace('        timeout-minutes: 45\n', '', 1) + '\n    timeout-minutes: 45\n'
+                  self.assertNotEqual(candidate, source)
+                  self.assert_policy(files | {'.github/workflows/ci-proof.yml': candidate}, False)
+
+              def test_run_forms_reject_unlisted_controls(self):
+                  for header, command in [('run: timeout 3 true', ''), ('- run: |', 'timeout 3 true'),
+                                          ('- run: timeout 3 true', ''), ('run: | # command', 'timeout 3 true'),
+                                          ('run: \"curl --retry 3 https://example.test\"', ''),
+                                          ("run: 'curl --max-time 15 https://example.test'", '')]:
+                      with self.subTest(header=header):
+                          step = ('      ' + header if header.startswith('-') else '      - name: Example\n        ' + header)
+                          source = 'jobs:\n  new:\n    steps:\n' + step + '\n'
+                          if command:
+                              source += '          ' + command + '\n'
+                          self.assert_policy(files | {'.github/workflows/new.yml': source}, False)
+                  source = files['.github/workflows/ci.yml']
+                  candidate = source.replace('run: cargo fmt --all --check', 'run: timeout 3 cargo fmt --all --check', 1)
+                  self.assertNotEqual(candidate, source)
+                  self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
 
               def test_literal_fixture_values_are_not_policy(self):
                   source = ('jobs:\n  new:\n'

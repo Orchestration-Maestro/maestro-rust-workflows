@@ -145,8 +145,8 @@ tracked source is caught.
 
 The search-release seam also inventories workflow deadlines, retries, report
 polling and caller fuzz-limit forwarding. Each occurrence names its workflow,
-job, step, command occurrence, value and recorded reason. Temporary workflow
-fixtures prove that unlisted, moved, changed, duplicated or unexplained controls
+job, step, consuming command, occurrence, value and recorded reason. Temporary
+workflow fixtures prove that unlisted, moved, changed, duplicated or unexplained controls
 fail the check, while comments and fixture data add no policy.
 
 The configured `fixtures/declared` caller also passes all declared checks.
