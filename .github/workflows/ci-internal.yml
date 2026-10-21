@@ -165,6 +165,17 @@ jobs:
               return run(['bash', '-e', '-o', 'pipefail', '-c', source], env)
 
           class Storage(http.server.BaseHTTPRequestHandler):
+              def do_GET(self):
+                  self.server.requests.append(self.path)
+                  index = min(len(self.server.requests) - 1, len(self.server.responses) - 1)
+                  status, payload, headers = self.server.responses[index]
+                  self.send_response(status)
+                  self.send_header('Content-Length', str(len(payload)))
+                  for name, value in headers.items():
+                      self.send_header(name, value)
+                  self.end_headers()
+                  self.wfile.write(payload)
+
               def do_POST(self):
                   self.rfile.read(int(self.headers.get('Content-Length', '0')))
                   self.server.requests.append(self.path)
@@ -644,7 +655,7 @@ jobs:
                               assert result.returncode == 0, (host, result.stderr)
                               name = f'sccache-v0.18.0-{platform}'
                               assert (directory / 'download').read_text(encoding='utf-8').splitlines() == [
-                                  '--fail', '--location', f'https://github.com/mozilla/sccache/releases/download/v0.18.0/{name}.tar.gz',
+                                  '--fail', '--retry', '3', '--location', f'https://github.com/mozilla/sccache/releases/download/v0.18.0/{name}.tar.gz',
                                   '--output', (directory / 'extract').read_text(encoding='utf-8').splitlines()[1]]
                               extraction = (directory / 'extract').read_text(encoding='utf-8').splitlines()
                               executable = 'sccache.exe' if windows else 'sccache'
@@ -1897,6 +1908,7 @@ jobs:
               reason = ('Approved release-report polling' if kind == 'sleep' else
                         'Caller-declared fuzz limits; no shared deadline' if kind == 'caller fuzz timeout' else
                         'Approved nextest retry policy' if kind == '--retries' else
+                        'Approved transient download retry' if kind == '--retry' else
                         'Approved test/coverage bound' if value == '45' else
                         'Approved installation bound; compiled-cache tool' if step == 'Compile cache' else
                         'Approved installation bound; fuzz tools' if job == 'fuzz' else
@@ -1913,6 +1925,19 @@ jobs:
            'browser-tests': ['Compile cache'],
           }.items():
               for name in names: permit('ci', job, name, 'timeout-minutes', '10')
+          for job, names in {
+           'quality': ['Compile cache', 'Mise bootstrap'],
+           'docs': ['Compile cache', 'Mise bootstrap'],
+           'targets': ['Compile cache', 'Mise bootstrap'],
+           'tests': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap'],
+           'checks': ['Check tools', 'Compile cache'],
+           'fuzz': ['Check tools'], 'advisories': ['Check tools'],
+           'browser': ['Compile cache', 'Browser mise bootstrap'],
+           'browser-tests': ['Compile cache', 'Browser test mise bootstrap'],
+          }.items():
+              for name in names: permit('ci', job, name, '--retry', '3')
+          for occurrence in range(1, 5):
+              permit('ci', 'browser-tests', 'Browser runtime tools', '--retry', '3', occurrence)
           for name in ['Tests', 'Isolated tests']:
               permit('ci', 'tests', name, 'timeout-minutes', '45')
           permit('ci', 'checks', 'Coverage', 'timeout-minutes', '45')
@@ -1962,9 +1987,58 @@ jobs:
                           self.assertIn('"$bin/' + binary + '" --version', body('Search tools'))
                           self.assertTrue((pathlib.Path(bin_dir) / binary).is_file())
 
+              def test_transient_download_retry_outcomes(self):
+                  import contextlib
+                  import hashlib
+                  import http.server
+                  import threading
+                  peer = body('Cache storage failures keep builds running', source)
+                  tree = ast.parse(peer)
+                  tree.body = [node for node in tree.body
+                               if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in ('Storage', 'storage')]
+                  namespace = dict(contextlib=contextlib, http=http, threading=threading)
+                  exec(compile(tree, 'existing HTTP peer lifecycle', 'exec'), namespace)
+                  command = body('Compile cache')
+                  parsed = subprocess.check_output([shfmt, '-ln', 'bash', '--to-json'], input=command, text=True)
+                  raw = command.encode('utf-8')
+                  calls = [node['Cmd']['Args'] for node in syntax_nodes(json.loads(parsed))
+                           if node.get('Cmd', {}).get('Type') == 'CallExpr'
+                           and node['Cmd'].get('Args') and command_name(node['Cmd']['Args'][0]) == 'curl']
+                  self.assertEqual(len(calls), 1)
+                  argv = [shlex.split(raw[word['Pos']['Offset']:word['End']['Offset']].decode())[0]
+                          for word in calls[0]]
+                  executable = shutil.which('curl')
+                  self.assertIsNotNone(executable)
+                  cases = [('initial_success', [200], 0, 1, False, {}),
+                           *[('transient_' + str(status), [status, 200], 0, 2, False, {})
+                             for status in [408, 429, 500, 502, 503, 504]],
+                           ('last_retry_succeeds', [500, 500, 500, 200], 0, 4, False, {}),
+                           ('exhaustion_stays_fatal', [500], 22, 4, False, {}),
+                           ('permanent_404_not_retried', [404], 22, 1, False, {}),
+                           ('nontransient_501_not_retried', [501], 22, 1, False, {}),
+                           ('retry_after_header_accepted', [503, 200], 0, 2, False, {'Retry-After': '0'}),
+                           ('retried_corrupt_payload_rejected', [500, 200], 1, 2, True, {})]
+                  payload = b'verified tool payload\n'
+                  digest = hashlib.sha256(payload).hexdigest()
+                  for name, statuses, status, attempts, corrupt, headers in cases:
+                      with self.subTest(name=name), namespace['storage']() as server, tempfile.TemporaryDirectory() as temporary:
+                          server.responses = [(code, b'corrupt' if corrupt else payload, headers) for code in statuses]
+                          output = pathlib.Path(temporary) / 'download'
+                          url = f'http://127.0.0.1:{server.server_port}/pinned-tool'
+                          actual = [executable, *argv[1:]]
+                          actual[actual.index('--location') + 1] = url
+                          actual[actual.index('--output') + 1] = str(output)
+                          command = shlex.join(actual) + '\nprintf "%s  %s\\n" ' + shlex.quote(digest) + ' ' + shlex.quote(str(output))
+                          command += ' | sha256sum --check --status\nprintf "INSTALLED\\n"'
+                          result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command], capture_output=True, text=True)
+                          print(f"DOWNLOAD {name}: exit={result.returncode} requests={len(server.requests)} installed={result.stdout.strip() == 'INSTALLED'}", flush=True)
+                          self.assertEqual(result.returncode, status)
+                          self.assertEqual(server.requests, ['/pinned-tool'] * attempts)
+                          self.assertEqual(result.stdout, 'INSTALLED\n' if status == 0 else '')
+
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 37)
+                  self.assertEqual(len(report.splitlines()), 59)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -1998,6 +2072,17 @@ jobs:
                           candidate = source.replace('timeout-minutes: ' + old, 'timeout-minutes: ' + value, 1)
                           self.assertNotEqual(candidate, source)
                           self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
+
+              def test_download_retry_changes_are_rejected_per_call(self):
+                  source = files['.github/workflows/ci.yml']
+                  positions = [match.start() for match in re.finditer('--retry 3', source)]
+                  self.assertEqual(len(positions), 9)
+                  self.assert_policy(files, True)
+                  for offset in positions:
+                      for replacement in ['', '--retry 2', '--retry 3 --retry 3']:
+                          with self.subTest(offset=offset, replacement=replacement):
+                              candidate = source[:offset] + source[offset:].replace('--retry 3', replacement, 1)
+                              self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
 
               def test_retry_changes_are_rejected_per_branch(self):
                   source = files['.github/workflows/ci.yml']
@@ -2215,7 +2300,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 37)
+                  self.assertEqual(len(report.splitlines()), 59)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):

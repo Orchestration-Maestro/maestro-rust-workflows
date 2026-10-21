@@ -52,6 +52,9 @@ additional_locked_manifests = ["fixtures/author build/Cargo.toml"]
 The additional locked fetch runs before tests; missing or stale locks fail rather
 than being repaired. Adoption needs a workflows release and organization re-pin.
 
+Pinned tool downloads use curl's `--retry 3` for transient failures without
+changing their pins or integrity checks.
+
 ## Compile cache
 
 Linux compiling jobs and target checks on every supported host restore one
