@@ -2197,7 +2197,8 @@ jobs:
               import json
               import subprocess
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=source, text=True))
-              for job in document['jobs'].values():
+              jobs = document['jobs'].values() if 'jobs' in document else [document]
+              for job in jobs:
                   for step in job.get('steps', []):
                       if step.get('name') == name and 'run' in step:
                           assert isinstance(step['run'], str) and step['run'].strip(), f'Missing executable body: {name}'
@@ -2521,11 +2522,13 @@ jobs:
                       assert body(name, candidate).strip() == 'bash -e -o pipefail "$PROOF_STEPS/' + name + '"', name
               require_extracted(job)
               for name in names:
-                  copied = job.replace('bash -e -o pipefail "$PROOF_STEPS/' + name + '"', body(name).strip(), 1)
+                  copied = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=job, text=True))
+                  step = next(step for step in copied['steps'] if step.get('name') == name)
+                  step['run'] = body(name).strip()
                   try:
-                      require_extracted(copied)
-                  except AssertionError:
-                      pass
+                      require_extracted(json.dumps(copied))
+                  except AssertionError as error:
+                      assert str(error) == name
                   else:
                       raise AssertionError('copied setup body accepted: ' + name)
               assert 'python3 workflow/.github/extract-workflow-steps.py' in body('Extract workflow steps', job)
