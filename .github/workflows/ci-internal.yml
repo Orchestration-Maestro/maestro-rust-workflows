@@ -3093,7 +3093,7 @@ jobs:
                   git('reset', '--hard', 'HEAD~1')
                   assert json.loads(select('merge_group')['packages']) == ['a', 'b', 'c', 'd']
                   assert select('push')['coverage'] == 'true'
-                  # Advisories follow the lockfile and declaration only on pull requests and merge groups.
+                  # Advisories follow dependency changes only on pull requests and merge groups.
                   assert [select(event)['check_advisories'] for event in ['pull_request', 'merge_group', 'push', 'schedule']] == ['false', 'false', 'true', 'true']
                   output = directory / '.git/no-base'
                   result = execute('Select test packages', directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
@@ -3114,7 +3114,18 @@ jobs:
                   git('add', '.')
                   git('commit', '-qm', 'non-test settings')
                   assert json.loads(select()['packages']) == []
-                  assert select()['check_advisories'] == 'true'
+                  # Settings that cannot change dependencies leave advisories to main's pushes and scan.
+                  assert select()['check_advisories'] == select('merge_group')['check_advisories'] == 'false'
+                  assert select('push')['check_advisories'] == 'true'
+                  settings = git('rev-parse', 'HEAD')
+                  for key, value in [('advisory_exceptions', '[{id="RUSTSEC-2000-0001", package="a", version="0.1.0", reason="fixture"}]'),
+                                     ('yanked_crate_exceptions', '[{package="a", version="0.1.0"}]')]:
+                      (directory / '.github/ci.toml').write_text(
+                          'wasm_crates=["a"]\ncheck_targets=[]\nspelling_words=["another"]\n' + f'{key}={value}\n', encoding='utf-8')
+                      git('add', '.')
+                      git('commit', '-qm', key)
+                      assert select()['check_advisories'] == select('merge_group')['check_advisories'] == 'true', key
+                      git('reset', '--hard', settings)
                   for entries in [['b/Cargo.toml'], ['c/Cargo.toml'], ['b/Cargo.toml', 'a/Cargo.toml'],
                                   ['a/Cargo.toml', 'b/Cargo.toml'], ['a/Cargo.toml', 'b/Cargo.toml', 'a/Cargo.toml'], []]:
                       base = git('rev-parse', 'HEAD')
@@ -3123,6 +3134,7 @@ jobs:
                       git('add', '.')
                       git('commit', '-qm', 'additional manifests')
                       assert json.loads(select()['packages']) == ['a', 'b', 'c', 'd']
+                      assert select()['check_advisories'] == select('merge_group')['check_advisories'] == 'true'
                   base = git('rev-parse', 'HEAD')
                   (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
                   git('add', '.')

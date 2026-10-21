@@ -164,8 +164,11 @@ component distribution, not a caller-provided executable.
   with all features. Advisories and yanked crates without declared exceptions fail. Registries
   other than crates.io and undeclared git sources fail. Licenses, bans and sources run on
   every event. A pull request or merge group checks advisories and yanked crates only when it changes
-  `Cargo.lock` or `.github/ci.toml`; otherwise the step prints that advisories were not
-  checked. Pushes and other events always check them.
+  `Cargo.lock`, or `advisory_exceptions`, `yanked_crate_exceptions` or
+  `additional_locked_manifests` in `.github/ci.toml`; other declaration changes, such as
+  `spelling_words`, don't select it, and the step prints that advisories were not checked.
+  Pushes to `main`, other events and the scheduled scan always check them, so they still
+  catch an advisory that reaches `main`.
 - The scheduled advisory scan (`.github/workflows/advisories.yml`) runs this workflow in
   advisory-scan mode against Maestro's `main` every hour and on manual dispatch: only the
   declaration and the advisory check run, with the declared exceptions. Each undeclared

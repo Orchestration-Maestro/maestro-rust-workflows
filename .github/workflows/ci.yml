@@ -298,6 +298,13 @@ jobs:
           browser_changed = False
           event = os.environ['TEST_EVENT']
           base = os.environ.get('BASE_REF')
+          def declarations():
+              try:
+                  before = tomllib.loads(subprocess.check_output(['git', 'show', f'{base}:.github/ci.toml'], text=True))
+              except subprocess.CalledProcessError:
+                  before = {}
+              path = pathlib.Path('.github/ci.toml')
+              return before, tomllib.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
           if event == 'pull_request' and base:
               changed = subprocess.check_output(['git', 'diff', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
               selected = set()
@@ -314,12 +321,7 @@ jobs:
                       selected = set(members)
                       break
               if '.github/ci.toml' in changed:
-                  try:
-                      before = tomllib.loads(subprocess.check_output(['git', 'show', f'{base}:.github/ci.toml'], text=True))
-                  except subprocess.CalledProcessError:
-                      before = {}
-                  path = pathlib.Path('.github/ci.toml')
-                  after = tomllib.loads(path.read_text(encoding='utf-8')) if path.exists() else {}
+                  before, after = declarations()
                   browser_changed = before.get('browser_test_crates', []) != after.get('browser_test_crates', [])
                   if any(before.get(key) != after.get(key) for key in ('test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests')) or bool(before) != bool(after):
                       selected = set(members)
@@ -359,10 +361,15 @@ jobs:
           requested = set(config.get('browser_test_crates', []))
           browser_tests = bool(requested and (browser_changed or requested.intersection(names)))
           print(f'Selected test packages ({event}): {names}')
-          # A change can introduce an advisory only through the lockfile or the declared exceptions.
-          check_advisories = event not in ('pull_request', 'merge_group') or not base or subprocess.run(
-              ['git', 'diff', '--quiet', base, 'HEAD', '--', 'Cargo.lock', '.github/ci.toml']).returncode != 0
-          print(f'Advisory check ({event}): {"required" if check_advisories else "skipped, Cargo.lock and .github/ci.toml unchanged"}')
+          # A change can introduce an advisory only through the lockfile, the declared exceptions or the extra locked manifests.
+          check_advisories = event not in ('pull_request', 'merge_group') or not base
+          if not check_advisories:
+              changed_files = subprocess.check_output(['git', 'diff', '--name-only', '-z', base, 'HEAD', '--', 'Cargo.lock', '.github/ci.toml'], text=True).split('\0')[:-1]
+              if '.github/ci.toml' in changed_files:
+                  before, after = declarations()
+                  check_advisories = any(before.get(key) != after.get(key) for key in ('advisory_exceptions', 'yanked_crate_exceptions', 'additional_locked_manifests'))
+              check_advisories = check_advisories or 'Cargo.lock' in changed_files
+          print(f'Advisory check ({event}): {"required" if check_advisories else "skipped, no change to Cargo.lock or the declared exceptions and locked manifests"}')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
@@ -1125,7 +1132,7 @@ jobs:
         run: |
           checks=(licenses bans sources)
           if [ "${CHECK_ADVISORIES:-true}" = false ]; then
-            echo 'advisories: not checked; Cargo.lock and .github/ci.toml are unchanged, and the scheduled advisory scan watches main'
+            echo 'advisories: not checked; Cargo.lock, the declared exceptions and the locked manifests are unchanged, and the scheduled advisory scan watches main'
           else
             checks+=(advisories)
           fi
