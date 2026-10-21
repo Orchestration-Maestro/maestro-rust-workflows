@@ -2195,14 +2195,45 @@ jobs:
 
           def body(name, source=workflow):
               import json
-              import subprocess
-              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=source, text=True))
-              jobs = document['jobs'].values() if 'jobs' in document else [document]
-              for job in jobs:
-                  for step in job.get('steps', []):
-                      if step.get('name') == name and 'run' in step:
-                          assert isinstance(step['run'], str) and step['run'].strip(), f'Missing executable body: {name}'
-                          return step['run']
+              import re
+              import textwrap
+              if source.lstrip().startswith('{'):
+                  document = json.loads(source)
+                  jobs = document['jobs'].values() if 'jobs' in document else [document]
+                  for job in jobs:
+                      for step in job.get('steps', []):
+                          if step.get('name') == name and 'run' in step:
+                              assert isinstance(step['run'], str) and step['run'].strip(), f'Missing executable body: {name}'
+                              return step['run']
+              else:
+                  # Authored workflow bodies use named steps and literal block scalars.
+                  layout = re.search(r'^( *)steps:\n', source, re.MULTILINE)
+                  assert layout, f'Missing executable body: {name}'
+                  indent = layout[1] + '  '
+                  steps = re.split(r'^' + indent + r'- name: ', source, flags=re.MULTILINE)[1:]
+                  for step in steps:
+                      if step.splitlines()[0] != name:
+                          continue
+                      run = re.search(r'^' + indent + r'  run: (.+)$', step, re.MULTILINE)
+                      if not run:
+                          continue
+                      value = run[1]
+                      if value.startswith('*'):
+                          anchor = re.escape(value[1:])
+                          step = next(s for s in steps if re.search(
+                              r'^' + indent + r'  run: &' + anchor + r' \|$', s, re.MULTILINE))
+                          value = '|'
+                      if value == '|' or re.fullmatch(r'&[\w-]+ \|', value):
+                          match = re.search(r'^' + indent + r'  run: (?:&[\w-]+ )?\|\n((?:' +
+                                            indent + r'    .*\n|\n)+)', step, re.MULTILINE)
+                          assert match, f'Missing executable body: {name}'
+                          return textwrap.dedent(match[1])
+                      if value.startswith('"'):
+                          value = json.loads(value)
+                      elif value.startswith("'"):
+                          value = value[1:-1].replace("''", "'")
+                      assert value.strip() and not value.startswith(('[', '{')), f'Missing executable body: {name}'
+                      return value
               raise AssertionError(f'Missing executable body: {name}')
 
           def workflow_body_resolves_parsed_steps():
@@ -2240,8 +2271,17 @@ jobs:
                           (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8'))
               resolver = next(node for node in ast.parse(code).body
                               if isinstance(node, ast.FunctionDef) and node.name == 'body')
-              exec(ast.get_source_segment(code, resolver), namespace)
+              definition = ast.get_source_segment(code, resolver)
+              exec(definition, namespace)
               assert namespace['body']('alias') == "printf 'block\\n'\n"
+              # Standalone native proofs have Python, not a provisioned YAML tool.
+              import sys
+              probe = 'workflow = ' + repr(source) + '\n' + definition + '\n'
+              probe += "assert body('alias') == " + repr("printf 'block\\n'\n") + '\n'
+              probe += "assert body('inline', '{\"steps\":[{\"name\":\"inline\",\"run\":\"ok\"}]}') == 'ok'\n"
+              result = subprocess.run([sys.executable, '-I', '-S', '-c', probe],
+                                      env=os.environ | {'PATH': ''}, capture_output=True, text=True)
+              assert result.returncode == 0, result.stdout + result.stderr
 
           workflow_body_resolves_parsed_steps()
           print('PASS workflow_body_resolves_parsed_steps')
