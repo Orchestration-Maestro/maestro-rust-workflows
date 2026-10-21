@@ -488,7 +488,7 @@ jobs:
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-sccache.XXXXXX")
           if [ "$executable" = sccache.exe ]; then bin=$(cygpath -u "$bin"); fi
           archive=$(mktemp)
-          curl --fail --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
+          curl --fail --retry 3 --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
           python3 - "$digest" "$archive" <<'PYTHON'
           import hashlib
           import sys
@@ -532,7 +532,7 @@ jobs:
           installed=$(mise --version 2>/dev/null | cut -d ' ' -f 1) || installed=
           if [ "$installed" != "$version" ]; then
             bin=$(mktemp -d "$RUNNER_TEMP/maestro-mise.XXXXXX")
-            curl --fail --location "$url" --output "$bin/$executable"
+            curl --fail --retry 3 --location "$url" --output "$bin/$executable"
             python3 - "$digest" "$bin/$executable" <<'PYTHON'
           import hashlib
           import sys
@@ -752,7 +752,7 @@ jobs:
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-coverage-tools.XXXXXX")
           while read -r url digest binary; do
             archive=$(mktemp)
-            curl --fail --location "$url" --output "$archive"
+            curl --fail --retry 3 --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
             tar -xzf "$archive" -C "$bin" "$binary"
             test -x "$bin/$binary"
@@ -799,7 +799,7 @@ jobs:
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-search-bin.XXXXXX")
           while read -r url digest binary; do
             archive=$(mktemp)
-            curl --fail --location "$url" --output "$archive"
+            curl --fail --retry 3 --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
             unpack=$(mktemp -d)
             tar -xzf "$archive" -C "$unpack"
@@ -1061,7 +1061,7 @@ jobs:
             # Only the fuzz job needs cargo-fuzz; the required checks never download it.
             if [ "$binary" = cargo-fuzz ] && [ "${FUZZ_SCAN:-}" != true ]; then continue; fi
             archive=$(mktemp)
-            curl --fail --location "$url" --output "$archive"
+            curl --fail --retry 3 --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
             if [ "$binary" = shfmt ]; then
               install -m 0755 "$archive" "$bin/$binary"
@@ -1674,14 +1674,14 @@ jobs:
         run: |
           tools=$(mktemp -d "$RUNNER_TEMP/browser-runtime.XXXXXX")
           cd "$tools"
-          curl --fail --silent --show-error --location https://cdn.playwright.dev/builds/cft/156.0.8078.4/linux64/chrome-linux64.zip -o chromium.zip
+          curl --fail --retry 3 --silent --show-error --location https://cdn.playwright.dev/builds/cft/156.0.8078.4/linux64/chrome-linux64.zip -o chromium.zip
           echo '43fd31766c7533a02dda2ded5ad50c2f861cd5400be7509c0abad71129f79d79  chromium.zip' | sha256sum --check --status
           unzip -q chromium.zip
-          curl --fail --silent --show-error --location https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz -o bindgen.tar.gz
+          curl --fail --retry 3 --silent --show-error --location https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz -o bindgen.tar.gz
           echo '82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e  bindgen.tar.gz' | sha256sum --check --status
           tar -xzf bindgen.tar.gz
-          curl --fail --silent --show-error --location https://registry.npmjs.org/playwright/-/playwright-1.64.1.tgz -o playwright.tgz
-          curl --fail --silent --show-error --location https://registry.npmjs.org/playwright-core/-/playwright-core-1.64.1.tgz -o playwright-core.tgz
+          curl --fail --retry 3 --silent --show-error --location https://registry.npmjs.org/playwright/-/playwright-1.64.1.tgz -o playwright.tgz
+          curl --fail --retry 3 --silent --show-error --location https://registry.npmjs.org/playwright-core/-/playwright-core-1.64.1.tgz -o playwright-core.tgz
           python3 - <<'PYTHON'
           import base64
           import hashlib
