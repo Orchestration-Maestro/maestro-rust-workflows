@@ -62,6 +62,10 @@ share a plain shape. Other jobs use their own shape, including the native target
 where needed. Immutable save keys distinguish runs, attempts, jobs, matrix legs
 and reusable calls without splitting the shared restore prefix. GitHub's
 branch/default-branch visibility and newest-compatible-prefix lookup apply.
+Only pushes to the caller's default branch save snapshots. Pull-request and
+merge-group jobs restore but never save. Each test shape has one writer per
+call: the warm build, or shard 1 plus the separate plain doctest leg when the
+numeric shards use coverage. Other compiling jobs each write their own shape.
 
 Missing snapshots build cold. Failed restores discard partial data before
 startup, including warning-only failures with no matched-cache output. Only
@@ -76,7 +80,7 @@ The archive contains compiler objects, never `target/`, registry sources,
 credentials or diagnostics. Compressed archive bytes are a separate measurement.
 This per-save bound does not bound the repository's 10 GB allowance: seven
 1-GiB entries total 7,516,192,768 bytes, and two generations total
-15,032,385,536 bytes before extra shards, shapes or targets. GitHub evicts by
+15,032,385,536 bytes before additional shapes or targets. GitHub evicts by
 last access, so even a shape's only seed can disappear and cause a cold build.
 The optional warmer is not a required consumer check. Merging this workflow
 does not release it or change consumer pins.

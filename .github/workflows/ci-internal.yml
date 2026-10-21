@@ -100,6 +100,8 @@ jobs:
                   offsets = [job.index('- name: ' + stage + '\n') for stage in stages]
                   assert offsets == sorted(offsets), name
                   assert all(job.count('- name: ' + stage + '\n') == 1 for stage in stages), name
+                  save = job.split('- name: Save compile cache\n', 1)[1].split('      - name:', 1)[0]
+                  assert "steps.cache-identity.outputs.writer == 'true'" in save, (name, 'save must require the shared writer decision')
                   if name == 'targets':
                       for stage in stages:
                           step = job.split('- name: ' + stage + '\n', 1)[1].split('      - name:', 1)[0]
@@ -231,7 +233,8 @@ jobs:
                       'CALLER_REPOSITORY': 'example/caller', 'CALLER_DIRECTORY': '.',
                       'HOST_OS': 'Linux', 'HOST_ARCH': 'X64', 'CACHE_JOB': 'tests', 'CACHE_INDEX': '0',
                       'CACHE_CALL': 'consumer', 'CACHE_COVERAGE': 'true', 'CACHE_ENABLED': 'true', 'CACHE_WARM': 'false',
-                      'SHARD': '1', 'GITHUB_RUN_ID': '10', 'GITHUB_RUN_ATTEMPT': '1', 'CACHE_TARGET': ''}
+                      'SHARD': '1', 'GITHUB_RUN_ID': '10', 'GITHUB_RUN_ATTEMPT': '1', 'CACHE_TARGET': '',
+                      'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/heads/main', 'CACHE_DEFAULT_BRANCH': 'main'}
                   compiler = changes.pop('compiler', None)
                   if compiler:
                       source = directory / 'source'
@@ -269,6 +272,30 @@ jobs:
                   assert snapshot_keys(**change)['prefix'] == base, change
               key = snapshot_keys(CALLER_DIRECTORY='space and é/child')['key']
               assert key.isascii() and len(key) < 512 and 'space' not in key
+
+          def snapshot_only_default_branch_writers_save():
+              jobs = ['quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests']
+              for job in jobs:
+                  for event in ['pull_request', 'merge_group', 'workflow_dispatch', 'push']:
+                      for ref in ['refs/pull/119/merge', 'refs/heads/feature', 'refs/heads/main', 'refs/tags/main']:
+                          observed = snapshot_keys(CACHE_JOB=job, GITHUB_EVENT_NAME=event, GITHUB_REF=ref)
+                          expected = 'true' if event == 'push' and ref == 'refs/heads/main' else 'false'
+                          assert observed.get('writer') == expected, (job, event, ref, observed)
+              assert snapshot_keys(GITHUB_EVENT_NAME='pull_request', TEST_EVENT='push')['writer'] == 'false'
+              assert snapshot_keys(GITHUB_EVENT_NAME='merge_group', TEST_EVENT='push')['writer'] == 'false'
+              assert snapshot_keys(CACHE_DEFAULT_BRANCH='trunk', GITHUB_REF='refs/heads/trunk')['writer'] == 'true'
+              assert snapshot_keys(CACHE_DEFAULT_BRANCH='trunk')['writer'] == 'false'
+              for enabled, coverage, expected in [('true', 'true', ['1', 'doctests']),
+                                                  ('true', 'false', ['1']), ('false', 'true', ['1'])]:
+                  writers = [shard for shard in ['1', '2', '3', '4', 'doctests']
+                             if snapshot_keys(CACHE_ENABLED=enabled, CACHE_COVERAGE=coverage, SHARD=shard)['writer'] == 'true']
+                  assert writers == expected, (enabled, coverage, writers)
+                  prefixes = [snapshot_keys(CACHE_ENABLED=enabled, CACHE_COVERAGE=coverage, SHARD=shard)['prefix']
+                              for shard in writers]
+                  assert len(prefixes) == len(set(prefixes)), 'at most one writer per actual shape'
+              assert snapshot_keys(CACHE_WARM='true', SHARD='warm')['writer'] == 'true'
+              assert snapshot_keys(CACHE_WARM='true', SHARD='warm', GITHUB_EVENT_NAME='pull_request')['writer'] == 'false'
+              assert 'CACHE_DEFAULT_BRANCH: $' + '{{ github.event.repository.default_branch }}' in workflow
 
           def snapshot_save_keys_are_run_unique():
               base = snapshot_keys()
@@ -540,7 +567,8 @@ jobs:
                   assert not (directory / 'env').exists() and not (directory / 'paths').exists()
 
           for test in [snapshot_key_matches_consuming_shape, snapshot_key_preserves_caller_isolation,
-                       snapshot_save_keys_are_run_unique, snapshot_size_bound_skips_only_ineligible_saves,
+                       snapshot_save_keys_are_run_unique, snapshot_only_default_branch_writers_save,
+                       snapshot_size_bound_skips_only_ineligible_saves,
                        snapshot_seal_stops_before_measurement, cache_statistics_print_error_log,
                        cache_error_artifacts_are_selected_and_scoped]:
               test()
