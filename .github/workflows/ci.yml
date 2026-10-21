@@ -1080,7 +1080,8 @@ jobs:
           directory.mkdir(exist_ok=True)
           def toml_value(value):
               return json.dumps(value, ensure_ascii=False)
-          # BSL-1.0 is the Boost Software License; BUSL-1.1, the Business Source License, stays rejected.
+          # BSL-1.0 is the Boost Software License; BUSL-1.1, the Business Source License, is absent from the default allowlist.
+          # Callers can allow BUSL-1.1 for an exact package version through license_exceptions.
           allow = ['MIT', 'Apache-2.0', 'ISC', 'BSD-2-Clause', 'BSD-3-Clause', 'Zlib',
                    'Apache-2.0 WITH LLVM-exception', 'Unicode-DFS-2016', 'Unicode-3.0',
                    'CC0-1.0', 'CDLA-Permissive-2.0', 'MPL-2.0', 'MIT-0', 'BSL-1.0']

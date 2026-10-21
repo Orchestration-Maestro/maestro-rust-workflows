@@ -24,9 +24,11 @@ Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-di
 and the reporter log after isolated tests fail or time out.
 
 Pull requests test changed crates and their reverse dependencies, without a
-coverage floor. Undeclared Markdown files and paths under `docs/` outside every
-crate select no tests; other undeclared files outside every crate select the
-whole workspace. Callers can declare which packages' tests read a path,
+coverage floor. After workflow and configuration rules apply, fallback selection
+outside every crate skips undeclared Markdown files and paths under `docs/`;
+other undeclared paths select the whole workspace. See the detailed
+[selection rules](docs/caller-checks.md#pull-request-selection-and-retries).
+Callers can declare which packages' tests read a path,
 including Markdown
 ([`test_inputs`](docs/caller-checks.md#pull-request-selection-and-retries)).
 Each nextest test can retry twice; flaky passes are named in

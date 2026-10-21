@@ -3545,15 +3545,22 @@ jobs:
                               declaration.write_text(unchanged + f'{change}={value}\n', encoding='utf-8')
                           git('add', '.')
                           git('commit', '-qm', change)
-                          for event in ['pull_request', 'merge_group']:
-                              output = repository / '.git/selection'
-                              output.write_text('', encoding='utf-8')
-                              result = execute('Select test packages', directory, {'TEST_EVENT': event,
-                                  'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
-                              assert result.returncode == 0, result.stdout + result.stderr
-                              values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-                              expected = 'false' if change in ['spelling_words', 'additional_locked_manifests'] else 'true'
-                              assert values['check_advisories'] == expected, (caller, change, event, values)
+                          directions = ['add', 'remove'] if change in ['advisory_exceptions', 'yanked_crate_exceptions'] else ['add']
+                          comparison_base = base
+                          for direction in directions:
+                              if direction == 'remove':
+                                  comparison_base = git('rev-parse', 'HEAD')
+                                  git('checkout', base, '--', str(declaration.relative_to(repository)))
+                                  git('commit', '-qm', 'remove ' + change)
+                              for event in ['pull_request', 'merge_group']:
+                                  output = repository / '.git/selection'
+                                  output.write_text('', encoding='utf-8')
+                                  result = execute('Select test packages', directory, {'TEST_EVENT': event,
+                                      'BASE_REF': comparison_base, 'GITHUB_OUTPUT': str(output)})
+                                  assert result.returncode == 0, result.stdout + result.stderr
+                                  values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                                  expected = 'false' if change in ['spelling_words', 'additional_locked_manifests'] else 'true'
+                                  assert values['check_advisories'] == expected, (caller, change, direction, event, values)
 
           advisory_selection_is_caller_relative()
           print('PASS advisory_selection_is_caller_relative')
