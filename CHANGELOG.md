@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.15.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.0...v0.15.1) (2026-10-21)
+
+
+### Continuous Integration
+
+* retry transient pinned tool downloads ([#167](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/167)) ([6b59ab2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/6b59ab28a643a84c51384058e378e48689567631)), closes [#60](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/60)
+
+
+### Bug Fixes
+
+* **ci:** leave Windows target checks uncached ([#168](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/168)) ([cdf6985](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/cdf69857d0dc9839208bef6f42da4ca9ae7ca908)), closes [#152](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/152)
+* **ci:** warm foreign-target compiler caches ([#163](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/163)) ([0542cc1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/0542cc1873d09457e3f8b6e529f503a623ef7a3c)), closes [#152](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/152)
+
 ## [0.15.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.14.0...v0.15.0) (2026-10-21)
 
 
