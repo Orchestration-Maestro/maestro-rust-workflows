@@ -3036,7 +3036,57 @@ jobs:
           coverage_merge_uses_union_and_requires_all_reports()
           print('PASS coverage_merge_uses_union_and_requires_all_reports')
 
+          def fixture_git(directory, *args):
+              return subprocess.check_output(['git', '-c', 'user.name=Fixture', '-c',
+                  'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', *args],
+                  cwd=directory, text=True).strip()
+
+          def advisory_selection_is_caller_relative():
+              from functools import partial
+              import shutil
+              for caller in ['.', 'fixtures/declared']:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      repository = pathlib.Path(temporary)
+                      directory = repository / caller
+                      shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True,
+                                      ignore=shutil.ignore_patterns('target', '.git'))
+                      (directory / '.github').mkdir(exist_ok=True)
+                      declaration = directory / '.github/ci.toml'
+                      declaration.write_text('advisory_exceptions=[]\nspelling_words=["base"]\n', encoding='utf-8')
+                      subprocess.run(['git', 'init', '--quiet'], cwd=repository, check=True)
+                      git = partial(fixture_git, repository)
+                      git('add', '.')
+                      git('commit', '-qm', 'base')
+                      base = git('rev-parse', 'HEAD')
+                      for change in ['Cargo.lock', 'advisory_exceptions', 'yanked_crate_exceptions', 'spelling_words', 'additional_locked_manifests']:
+                          git('reset', '--hard', base)
+                          if change == 'Cargo.lock':
+                              with (directory / 'Cargo.lock').open('a', encoding='utf-8') as lock:
+                                  lock.write('\n# dependency fixture\n')
+                          else:
+                              value = {'advisory_exceptions': '[{id="RUSTSEC-2000-0001", package="a", version="0.1.0", reason="fixture"}]',
+                                       'yanked_crate_exceptions': '[{package="a", version="0.1.0"}]',
+                                       'spelling_words': '["changed"]',
+                                       'additional_locked_manifests': '["extra/Cargo.toml"]'}[change]
+                              unchanged = 'advisory_exceptions=[]\n' if change != 'advisory_exceptions' else ''
+                              declaration.write_text(unchanged + f'{change}={value}\n', encoding='utf-8')
+                          git('add', '.')
+                          git('commit', '-qm', change)
+                          for event in ['pull_request', 'merge_group']:
+                              output = repository / '.git/selection'
+                              output.write_text('', encoding='utf-8')
+                              result = execute('Select test packages', directory, {'TEST_EVENT': event,
+                                  'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                              assert result.returncode == 0, result.stdout + result.stderr
+                              values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                              expected = 'false' if change in ['spelling_words', 'additional_locked_manifests'] else 'true'
+                              assert values['check_advisories'] == expected, (caller, change, event, values)
+
+          advisory_selection_is_caller_relative()
+          print('PASS advisory_selection_is_caller_relative')
+
           def changed_packages_include_reverse_dependencies():
+              from functools import partial
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c","d"]\n', encoding='utf-8')
@@ -3050,8 +3100,7 @@ jobs:
                       (crate / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
                   subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
                   subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
-                  def git(*args):
-                      return subprocess.check_output(['git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', *args], cwd=directory, text=True).strip()
+                  git = partial(fixture_git, directory)
                   (directory / '.github').mkdir()
                   (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
                   git('add', '.')
@@ -3138,7 +3187,7 @@ jobs:
                       git('add', '.')
                       git('commit', '-qm', 'additional manifests')
                       assert json.loads(select()['packages']) == ['a', 'b', 'c', 'd']
-                      assert select()['check_advisories'] == select('merge_group')['check_advisories'] == 'true'
+                      assert select()['check_advisories'] == select('merge_group')['check_advisories'] == 'false'
                   base = git('rev-parse', 'HEAD')
                   (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
                   git('add', '.')

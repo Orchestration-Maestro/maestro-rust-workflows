@@ -300,7 +300,7 @@ jobs:
           base = os.environ.get('BASE_REF')
           def declarations():
               try:
-                  before = tomllib.loads(subprocess.check_output(['git', 'show', f'{base}:.github/ci.toml'], text=True))
+                  before = tomllib.loads(subprocess.check_output(['git', 'show', f'{base}:./.github/ci.toml'], text=True))
               except subprocess.CalledProcessError:
                   before = {}
               path = pathlib.Path('.github/ci.toml')
@@ -361,18 +361,18 @@ jobs:
           requested = set(config.get('browser_test_crates', []))
           browser_tests = bool(requested and (browser_changed or requested.intersection(names)))
           print(f'Selected test packages ({event}): {names}')
-          # A change can introduce an advisory only through the lockfile, the declared exceptions or the extra locked manifests.
+          # A change can introduce an advisory only through the lockfile or the declared exceptions.
           check_advisories = event not in ('pull_request', 'merge_group') or not base
           if not check_advisories:
               # A base the checkout cannot read keeps the check.
-              diff = subprocess.run(['git', 'diff', '--name-only', '-z', base, 'HEAD', '--', 'Cargo.lock', '.github/ci.toml'], capture_output=True, text=True)
+              diff = subprocess.run(['git', 'diff', '--relative', '--name-only', '-z', base, 'HEAD', '--', 'Cargo.lock', '.github/ci.toml'], capture_output=True, text=True)
               changed_files = diff.stdout.split('\0')[:-1]
               if diff.returncode or 'Cargo.lock' in changed_files:
                   check_advisories = True
               elif '.github/ci.toml' in changed_files:
                   before, after = declarations()
-                  check_advisories = any(before.get(key) != after.get(key) for key in ('advisory_exceptions', 'yanked_crate_exceptions', 'additional_locked_manifests'))
-          print(f'Advisory check ({event}): {"required" if check_advisories else "skipped, no change to Cargo.lock or the declared exceptions and locked manifests"}')
+                  check_advisories = any(before.get(key) != after.get(key) for key in ('advisory_exceptions', 'yanked_crate_exceptions'))
+          print(f'Advisory check ({event}): {"required" if check_advisories else "skipped, no change to Cargo.lock or the declared exceptions"}')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
@@ -1135,7 +1135,7 @@ jobs:
         run: |
           checks=(licenses bans sources)
           if [ "${CHECK_ADVISORIES:-true}" = false ]; then
-            echo 'advisories: not checked; Cargo.lock, the declared exceptions and the locked manifests are unchanged, and the scheduled advisory scan watches main'
+            echo 'advisories: not checked; Cargo.lock and the declared exceptions are unchanged, and the scheduled advisory scan watches main'
           else
             checks+=(advisories)
           fi
