@@ -8,8 +8,12 @@ workspace proof, and advisory and fuzz scans. Optional `checkout-repository` and
 repository and commit. `checkout-base-ref` and `test-event` are overrides
 restricted to this workflow repository; they default to the real PR base and event.
 
-Both coverage proof jobs use one immutable Maestro snapshot for comparable runs.
-Advance both checkout references together to the smallest main commit that resolves
+The full and selected-package proof consumers use one immutable Maestro source
+snapshot. A warm build uses its parent commit; selected-package proof sets that
+parent as its PR base. The warmer is non-required, and consumers still run if it
+fails. See [Compile cache](../README.md#compile-cache) for snapshot shapes,
+fail-open transfers and storage limits.
+Advance consumer checkout references together to the smallest main commit that resolves
 the reason for the move, after checking its locked dependencies. For example,
 `98b41a9149ebf1d5cfffdc343194cfc0555467d9` locks the updated ZIP closure
 (resolving the archive-extraction advisories), isolates the agent tests' synthetic

@@ -31,6 +31,10 @@ on:
         description: Stable key distinguishing multiple calls in one workflow
         type: string
         default: ''
+      warm-cache:
+        description: Build the full coverage test graph without running tests or other checks
+        type: boolean
+        default: false
       advisory-scan:
         description: Run only the advisory scan of the checked-out caller (scheduled advisory workflow)
         type: boolean
@@ -273,7 +277,7 @@ jobs:
       - name: Select test packages
         id: selection
         env:
-          TEST_EVENT: ${{ github.repository_id == '1404598722' && inputs.test-event || github.event_name }}
+          TEST_EVENT: ${{ inputs.warm-cache && 'push' || github.repository_id == '1404598722' && inputs.test-event || github.event_name }}
           BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           python3 - <<'PYTHON'
@@ -370,7 +374,7 @@ jobs:
     needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -388,14 +392,59 @@ jobs:
         run: |
           rustup show
           rustup component add rustfmt clippy
-      - name: Compile cache credentials
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            for (const name of ['ACTIONS_CACHE_SERVICE_V2', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
-              if (process.env[name]) core.exportVariable(name, process.env[name]);
-            }
+      - name: Compile cache identity
+        id: cache-identity
+        env: &sccache-identity-env
+          CALLER_REPOSITORY: ${{ inputs.checkout-repository || github.repository }}
+          CALLER_DIRECTORY: ${{ inputs.working-directory || '.' }}
+          HOST_OS: ${{ runner.os }}
+          HOST_ARCH: ${{ runner.arch }}
+          CACHE_JOB: ${{ github.job }}
+          CACHE_INDEX: ${{ strategy.job-index || 0 }}
+          CACHE_CALL: ${{ inputs.concurrency-key }}
+          CACHE_COVERAGE: ${{ needs.declaration.outputs.coverage }}
+          CACHE_ENABLED: ${{ needs.declaration.outputs.enabled }}
+          CACHE_WARM: ${{ inputs.warm-cache }}
+          CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: &sccache-identity |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          shape = os.environ['CACHE_JOB']
+          if shape == 'tests':
+              coverage = os.environ['CACHE_WARM'] == 'true' or (os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true' and os.environ.get('SHARD', '') not in ('', 'doctests'))
+              shape = 'tests-coverage' if coverage else 'tests-plain'
+          elif shape == 'targets':
+              shape += '-' + os.environ['CACHE_TARGET']
+          compiler = subprocess.check_output(['rustc', '-vV'], text=True)
+          identity = [os.environ[name] for name in ['CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'HOST_OS', 'HOST_ARCH']] + [compiler, shape]
+          digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+          prefix = f'maestro-compile-v1-{digest}-'
+          call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
+          suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX']) + '-' + call
+          writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
+          if os.environ['CACHE_JOB'] == 'tests':
+              shard = os.environ.get('SHARD', '')
+              writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\n')
+          PYTHON
+      - name: Restore compile cache
+        id: cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: &sccache-restore
+          path: ${{ runner.temp }}/maestro-sccache
+          key: ${{ steps.cache-identity.outputs.key }}
+          restore-keys: ${{ steps.cache-identity.outputs.prefix }}
+          enableCrossOsArchive: false
+          fail-on-cache-miss: false
       - name: Compile cache
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         timeout-minutes: 10
         run: &sccache-install |
           version=0.18.0
@@ -413,11 +462,15 @@ jobs:
           rm "$archive"
           test -x "$bin/sccache"
           echo "$bin" >> "$GITHUB_PATH"
-          { echo RUSTC_WRAPPER=sccache; echo SCCACHE_GHA_ENABLED=true; echo SCCACHE_GHA_VERSION=2; echo CARGO_INCREMENTAL=0;
-            echo SCCACHE_SKIP_CACHE_CHECK=true; echo "SCCACHE_ERROR_LOG=$RUNNER_TEMP/sccache-error.log"; echo SCCACHE_LOG=debug; } >> "$GITHUB_ENV"
-          PATH="$bin:$PATH" SCCACHE_GHA_ENABLED=true SCCACHE_GHA_VERSION=2 \
-            SCCACHE_SKIP_CACHE_CHECK=true SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-error.log" \
-            SCCACHE_LOG=debug sccache --start-server
+          if [ "$CACHE_RESTORE_OUTCOME" = failure ] || { [ "$CACHE_RESTORE_MATCHED" != true ] && [ "$CACHE_RESTORE_MATCHED" != false ]; }; then
+            rm -rf "$RUNNER_TEMP/maestro-sccache"
+            echo 'Compile cache snapshot restore failed; using an empty local cache'
+          fi
+          export SCCACHE_DIR="$RUNNER_TEMP/maestro-sccache" SCCACHE_CACHE_SIZE=1073741824
+          export SCCACHE_LOCAL_RW_MODE=READ_WRITE SCCACHE_GHA_ENABLED=false CARGO_INCREMENTAL=0
+          export SCCACHE_SKIP_CACHE_CHECK=true SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-error.log" SCCACHE_LOG=debug
+          { echo RUSTC_WRAPPER=sccache; env | grep -E '^(SCCACHE_(DIR|CACHE_SIZE|LOCAL_RW_MODE|GHA_ENABLED|SKIP_CACHE_CHECK|ERROR_LOG|LOG)|CARGO_INCREMENTAL)='; } >> "$GITHUB_ENV"
+          PATH="$bin:$PATH" sccache --start-server
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
@@ -468,23 +521,76 @@ jobs:
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Compile cache statistics
+        id: cache-statistics
         if: always()
         run: &sccache-stats |
           test "$RUSTC_WRAPPER" = sccache
           test "$CARGO_INCREMENTAL" = 0
-          sccache --show-stats
+          sccache --show-stats | tee "$RUNNER_TEMP/sccache-stats"
+          if grep -Eq '^Cache write errors +[1-9][0-9]*' "$RUNNER_TEMP/sccache-stats"; then
+            echo write_errors=true >> "$GITHUB_OUTPUT"
+          else
+            echo write_errors=false >> "$GITHUB_OUTPUT"
+          fi
           if [ -f "$RUNNER_TEMP/sccache-error.log" ]; then
             token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')
             echo "::stop-commands::$token"
             cat "$RUNNER_TEMP/sccache-error.log"
             printf '\n::%s::\n' "$token"
           fi
+      - name: Upload compile cache errors
+        if: &sccache-artifact-condition always() && (steps.cache-statistics.outputs.write_errors == 'true' || (inputs.concurrency-key == 'maestro-proof' && steps.cache-statistics.outcome == 'success'))
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: &sccache-artifact
+          name: compile-cache-errors-${{ inputs.concurrency-key || 'root' }}-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sccache-error.log
+          if-no-files-found: error
+      - name: Seal compile cache
+        id: cache-seal
+        run: &sccache-seal |
+          if ! sccache --stop-server; then
+            echo 'Compile cache snapshot save skipped: server stop failed'
+            exit 0
+          fi
+          python3 - <<'PYTHON'
+          import os
+          import pathlib
+          import stat
+          files = size = 0
+          try:
+              def failed(error):
+                  raise error
+              for directory, _, names in os.walk(os.environ['SCCACHE_DIR'], onerror=failed):
+                  for name in names:
+                      metadata = pathlib.Path(directory, name).lstat()
+                      if stat.S_ISREG(metadata.st_mode):
+                          files += 1
+                          size += metadata.st_size
+          except OSError:
+              print('Compile cache snapshot save skipped: cache inspection failed')
+          else:
+              print(f'Compile cache snapshot: {files} files, {size} bytes')
+              if not files or not size:
+                  print('Compile cache snapshot save skipped: empty cache')
+              elif size > 1073741824:
+                  print('Compile cache snapshot save skipped: exceeds 1073741824 bytes')
+              else:
+                  with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+                      output.write('eligible=true\n')
+          PYTHON
+      - name: Save compile cache
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: &sccache-save
+          path: ${{ runner.temp }}/maestro-sccache
+          key: ${{ steps.cache-identity.outputs.key }}
 
   docs:
     needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -500,14 +606,19 @@ jobs:
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Toolchain
         run: rustup show
-      - name: Compile cache credentials
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            for (const name of ['ACTIONS_CACHE_SERVICE_V2', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
-              if (process.env[name]) core.exportVariable(name, process.env[name]);
-            }
+      - name: Compile cache identity
+        id: cache-identity
+        env: *sccache-identity-env
+        run: *sccache-identity
+      - name: Restore compile cache
+        id: cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-restore
       - name: Compile cache
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         timeout-minutes: 10
         run: *sccache-install
       - name: Mise bootstrap
@@ -523,20 +634,34 @@ jobs:
           RUSTDOCFLAGS: -D warnings -D missing_docs
         run: cargo doc --workspace --no-deps --locked
       - name: Compile cache statistics
+        id: cache-statistics
         if: always()
         run: *sccache-stats
+      - name: Upload compile cache errors
+        if: *sccache-artifact-condition
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: *sccache-artifact
+      - name: Seal compile cache
+        id: cache-seal
+        run: *sccache-seal
+      - name: Save compile cache
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-save
 
   tests:
     needs: declaration
-    name: ${{ matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}
+    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}
     if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,"doctests"]' || '[1,2,3,4]') }}
+        shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,"doctests"]' || '[1,2,3,4]') }}
     runs-on: ubuntu-latest
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
+      WARM_CACHE: ${{ inputs.warm-cache }}
       SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
@@ -553,7 +678,7 @@ jobs:
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
-        if: needs.declaration.outputs.enabled == 'true'
+        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         run: &free-build-space |
           # The deletion overlaps the toolchain, tools and compilation; the build needs the space minutes later.
           sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc >/dev/null 2>&1 &
@@ -563,14 +688,19 @@ jobs:
           toolchain=$(rustup show active-toolchain)
           echo "RUSTUP_TOOLCHAIN=${toolchain%% *}" >> "$GITHUB_ENV"
           rustup component add llvm-tools-preview
-      - name: Compile cache credentials
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            for (const name of ['ACTIONS_CACHE_SERVICE_V2', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
-              if (process.env[name]) core.exportVariable(name, process.env[name]);
-            }
+      - name: Compile cache identity
+        id: cache-identity
+        env: *sccache-identity-env
+        run: *sccache-identity
+      - name: Restore compile cache
+        id: cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-restore
       - name: Compile cache
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         timeout-minutes: 10
         run: *sccache-install
       - name: Coverage tools
@@ -606,7 +736,7 @@ jobs:
           PYTHON
       - name: Tests
         timeout-minutes: 45
-        if: needs.declaration.outputs.enabled != 'true'
+        if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}
         run: |
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
@@ -620,7 +750,7 @@ jobs:
           fi
       - name: Search tools
         timeout-minutes: 10
-        if: needs.declaration.outputs.enabled == 'true'
+        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         run: |
           # Digests: ripgrep's release .sha256 file and fd's GitHub release asset digest.
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-search-bin.XXXXXX")
@@ -655,7 +785,7 @@ jobs:
         run: sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"
       - name: Isolated tests
         timeout-minutes: 45
-        if: needs.declaration.outputs.enabled == 'true'
+        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         env:
           CARGO_COVERAGE_MIN_LINES: ''
         run: |
@@ -689,18 +819,27 @@ jobs:
             XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 MAESTRO_TEST_DIAGNOSTICS_DIR="$diagnostics" \
             RUSTC_WRAPPER="${RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
+            SCCACHE_DIR="${SCCACHE_DIR-}" SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE-}" \
+            SCCACHE_LOCAL_RW_MODE="${SCCACHE_LOCAL_RW_MODE-}" SCCACHE_GHA_ENABLED="${SCCACHE_GHA_ENABLED-}" \
+            SCCACHE_SKIP_CACHE_CHECK="${SCCACHE_SKIP_CACHE_CHECK-}" SCCACHE_ERROR_LOG="${SCCACHE_ERROR_LOG-}" SCCACHE_LOG="${SCCACHE_LOG-}" \
             "$@"
           }
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
-          if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
+          if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
           if [ "${SHARD:-}" != doctests ]; then
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
-            elif [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; then
+            elif [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
+              partition=(--partition "count:$SHARD/4")
+              report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
+              if [ "${WARM_CACHE:-false}" = true ]; then
+                partition=(-E 'none()')
+                report=(--no-report)
+              fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-                --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/4" --no-tests pass --workspace --locked --lcov --output-path "$PWD/shard-$SHARD.lcov" 2>&1 | tee nextest.log
+                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked "${report[@]}" 2>&1 | tee nextest.log
             else
               partition=()
               if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/4"); fi
@@ -708,7 +847,7 @@ jobs:
                 --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi
           fi
-          if [[ -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
+          if [[ "${WARM_CACHE:-false}" != true && -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
             run_isolated cargo test --locked --doc "${packages[@]}"
           fi
       - name: Print test diagnostics
@@ -764,10 +903,23 @@ jobs:
               output.write('### Flaky tests (passed on retry)\n' + ('\n'.join('- ' + name for name in flaky) if flaky else 'None') + '\n')
           PYTHON
       - name: Compile cache statistics
+        id: cache-statistics
         if: always()
         run: *sccache-stats
+      - name: Upload compile cache errors
+        if: *sccache-artifact-condition
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: *sccache-artifact
+      - name: Seal compile cache
+        id: cache-seal
+        run: *sccache-seal
+      - name: Save compile cache
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-save
       - name: Upload shard coverage
-        if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests'
+        if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ inputs.concurrency-key || 'root' }}-${{ matrix.shard }}
@@ -777,7 +929,7 @@ jobs:
   tests-result:
     name: Tests (ubuntu-latest)
     needs: [tests, declaration]
-    if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     steps:
       - name: All test shards passed
@@ -834,7 +986,7 @@ jobs:
   checks:
     name: Dependency, source and coverage checks
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1055,15 +1207,21 @@ jobs:
             "$TOOLS/zizmor" --offline --config "$CHECK_DEFAULTS/zizmor.yaml" --strict-collection "${workflows[@]}"
             "$TOOLS/actionlint" -config-file "$CHECK_DEFAULTS/actionlint.yaml" -shellcheck= -pyflakes= "${workflows[@]}"
           fi
-      - name: Compile cache credentials
+      - name: Compile cache identity
+        id: cache-identity
         if: needs.declaration.outputs.enabled != 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            for (const name of ['ACTIONS_CACHE_SERVICE_V2', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
-              if (process.env[name]) core.exportVariable(name, process.env[name]);
-            }
+        env: *sccache-identity-env
+        run: *sccache-identity
+      - name: Restore compile cache
+        id: cache-restore
+        if: needs.declaration.outputs.enabled != 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-restore
       - name: Compile cache
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         if: needs.declaration.outputs.enabled != 'true'
         timeout-minutes: 10
         run: *sccache-install
@@ -1077,13 +1235,27 @@ jobs:
           done
           "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
       - name: Compile cache statistics
+        id: cache-statistics
         if: always() && needs.declaration.outputs.enabled != 'true'
         run: *sccache-stats
+      - name: Upload compile cache errors
+        if: *sccache-artifact-condition
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: *sccache-artifact
+      - name: Seal compile cache
+        id: cache-seal
+        if: needs.declaration.outputs.enabled != 'true'
+        run: *sccache-seal
+      - name: Save compile cache
+        if: needs.declaration.outputs.enabled != 'true' && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-save
 
   fuzz:
     name: Fuzz ${{ matrix.name }}
     needs: declaration
-    if: ${{ inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}
+    if: ${{ !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -1191,7 +1363,7 @@ jobs:
   advisories:
     name: Advisory scan
     needs: declaration
-    if: ${{ inputs.advisory-scan }}
+    if: ${{ inputs.advisory-scan && !inputs.warm-cache }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1250,12 +1422,14 @@ jobs:
   targets:
     name: Check (${{ matrix.target }})
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && needs.declaration.outputs.targets != '[]' }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && needs.declaration.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.declaration.outputs.targets) }}
     runs-on: ${{ matrix.runner }}
+    env:
+      CACHE_TARGET: ${{ matrix.target }}
     defaults:
       run:
         shell: bash
@@ -1270,15 +1444,21 @@ jobs:
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Toolchain
         run: rustup show
-      - name: Compile cache credentials
+      - name: Compile cache identity
+        id: cache-identity
         if: runner.os == 'Linux'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            for (const name of ['ACTIONS_CACHE_SERVICE_V2', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
-              if (process.env[name]) core.exportVariable(name, process.env[name]);
-            }
+        env: *sccache-identity-env
+        run: *sccache-identity
+      - name: Restore compile cache
+        id: cache-restore
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-restore
       - name: Compile cache
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         if: runner.os == 'Linux'
         timeout-minutes: 10
         run: *sccache-install
@@ -1297,13 +1477,27 @@ jobs:
           rustup target add "$TARGET"
           cargo check --workspace --all-targets --locked --target "$TARGET"
       - name: Compile cache statistics
+        id: cache-statistics
         if: always() && runner.os == 'Linux'
         run: *sccache-stats
+      - name: Upload compile cache errors
+        if: *sccache-artifact-condition
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: *sccache-artifact
+      - name: Seal compile cache
+        id: cache-seal
+        if: runner.os == 'Linux'
+        run: *sccache-seal
+      - name: Save compile cache
+        if: runner.os == 'Linux' && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-save
 
   browser:
     name: Wasm and browser build
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1319,14 +1513,19 @@ jobs:
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Toolchain
         run: rustup show
-      - name: Compile cache credentials
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            for (const name of ['ACTIONS_CACHE_SERVICE_V2', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
-              if (process.env[name]) core.exportVariable(name, process.env[name]);
-            }
+      - name: Compile cache identity
+        id: cache-identity
+        env: *sccache-identity-env
+        run: *sccache-identity
+      - name: Restore compile cache
+        id: cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-restore
       - name: Compile cache
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         timeout-minutes: 10
         run: *sccache-install
       - name: Browser tool pin
@@ -1367,13 +1566,26 @@ jobs:
         run: |
           mise exec -- just browser-build
       - name: Compile cache statistics
+        id: cache-statistics
         if: always()
         run: *sccache-stats
+      - name: Upload compile cache errors
+        if: *sccache-artifact-condition
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: *sccache-artifact
+      - name: Seal compile cache
+        id: cache-seal
+        run: *sccache-seal
+      - name: Save compile cache
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-save
 
   browser-tests:
     name: Chromium browser tests
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && needs.declaration.outputs.browser_tests == 'true' }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1389,14 +1601,19 @@ jobs:
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Toolchain
         run: rustup show
-      - name: Compile cache credentials
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        with:
-          script: |
-            for (const name of ['ACTIONS_CACHE_SERVICE_V2', 'ACTIONS_CACHE_URL', 'ACTIONS_RESULTS_URL', 'ACTIONS_RUNTIME_TOKEN']) {
-              if (process.env[name]) core.exportVariable(name, process.env[name]);
-            }
+      - name: Compile cache identity
+        id: cache-identity
+        env: *sccache-identity-env
+        run: *sccache-identity
+      - name: Restore compile cache
+        id: cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-restore
       - name: Compile cache
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         timeout-minutes: 10
         run: *sccache-install
       - name: Browser test tool pin
@@ -1455,5 +1672,18 @@ jobs:
         run: |
           just browser-test
       - name: Compile cache statistics
+        id: cache-statistics
         if: always()
         run: *sccache-stats
+      - name: Upload compile cache errors
+        if: *sccache-artifact-condition
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: *sccache-artifact
+      - name: Seal compile cache
+        id: cache-seal
+        run: *sccache-seal
+      - name: Save compile cache
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-save

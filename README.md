@@ -47,22 +47,43 @@ than being repaired. Adoption needs a workflows release and organization re-pin.
 
 ## Compile cache
 
-Every Linux job that compiles Rust runs rustc through checksum-pinned sccache
-0.18.0 backed by the GitHub Actions cache (`RUSTC_WRAPPER=sccache`,
-`SCCACHE_GHA_ENABLED=true`, `CARGO_INCREMENTAL=0`) and prints `sccache
---show-stats` at the end. Crates a change did not touch come from the cache,
-shared across jobs and runs of the same repository. The sccache server holds the
-cache credentials, so the isolated test environment never sees them. The
-`target/` and registry `actions/cache` entries were removed: sccache replaces
-them and keeps the repository inside GitHub's 10 GB cache limit. The secret scan
-in `Dependency, source and coverage checks` runs before its cache is used.
+Each of the seven Linux compiling jobs restores one compiled-cache snapshot
+through GitHub's cache action, then runs checksum-pinned sccache 0.18.0 from
+`${runner.temp}/maestro-sccache`. Compiler lookups use local disk, not GitHub
+requests per object. Incremental compilation stays disabled. The checks job's
+secret scan runs before restoration; isolated tests receive only non-secret
+local-cache and diagnostic settings, including after automatic server restarts.
 
-The server skips the startup storage capability check. The job exports this
-setting and diagnostic logging settings so automatic server restarts keep them.
-If storage reads or writes fail during compilation, Rust still builds without
-cached artifacts. The final statistics step prints the cache error log with
-Actions command processing disabled. Compiler, test and checksum-verified installation failures still fail
-CI; cache requests may continue during an outage.
+Compatibility prefixes identify the caller repository and directory, host,
+compiler and job shape. Coverage shards share a prefix with the optional
+`warm-cache: true` build, which compiles the full coverage test graph without
+running tests or producing a report. Plain selected-package builds and doctests
+share a plain shape. Other jobs use their own shape, including the native target
+where needed. Immutable save keys distinguish runs, attempts, jobs, matrix legs
+and reusable calls without splitting the shared restore prefix. GitHub's
+branch/default-branch visibility and newest-compatible-prefix lookup apply.
+Only pushes to the caller's default branch save snapshots. Pull-request and
+merge-group jobs restore but never save. Each test shape has one writer per
+call: the warm build, or shard 1 plus the separate plain doctest leg when the
+numeric shards use coverage. Other compiling jobs each write their own shape.
+
+Missing snapshots build cold. Failed restores discard partial data before
+startup, including warning-only failures with no matched-cache output. Only
+archive transfers may fail open; installation, checksum, compiler, test and
+policy failures still fail CI. No workflow retry, sleep or per-object fallback
+is added. Statistics print raw diagnostics with Actions command processing
+disabled; cache write errors retain their diagnostic artifact.
+
+After a successful job, the server stops before one inspection walk. Empty
+payloads, stop/inspection failures and native payloads above 1 GiB skip saving.
+The archive contains compiler objects, never `target/`, registry sources,
+credentials or diagnostics. Compressed archive bytes are a separate measurement.
+This per-save bound does not bound the repository's 10 GB allowance: seven
+1-GiB entries total 7,516,192,768 bytes, and two generations total
+15,032,385,536 bytes before additional shapes or targets. GitHub evicts by
+last access, so even a shape's only seed can disappear and cause a cold build.
+The optional warmer is not a required consumer check. Merging this workflow
+does not release it or change consumer pins.
 
 ## Adoption
 

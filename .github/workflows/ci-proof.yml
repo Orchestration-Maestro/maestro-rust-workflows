@@ -8,7 +8,19 @@ permissions:
   contents: read
 
 jobs:
+  warm:
+    name: Warm Maestro coverage cache
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: 9e7d7d3ba3f30b14fe912e25ceb4f548ca9c96b7
+      concurrency-key: maestro-warm
+      warm-cache: true
+
   maestro:
+    needs: warm
+    if: always()
     name: Maestro partitioned coverage
     uses: ./.github/workflows/ci.yml
     with:
@@ -17,6 +29,19 @@ jobs:
       checkout-ref: 98b41a9149ebf1d5cfffdc343194cfc0555467d9
       concurrency-key: maestro-proof
       test-event: merge_group
+
+  selected:
+    name: Maestro selected-package tests
+    needs: warm
+    if: always()
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: 98b41a9149ebf1d5cfffdc343194cfc0555467d9
+      checkout-base-ref: 9e7d7d3ba3f30b14fe912e25ceb4f548ca9c96b7
+      concurrency-key: maestro-selected
+      test-event: pull_request
 
   comparison:
     name: Maestro single coverage
