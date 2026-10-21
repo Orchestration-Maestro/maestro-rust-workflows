@@ -127,10 +127,12 @@ jobs:
       run: "import json, pathlib, subprocess, time\nroot=pathlib.Path.cwd()\nsupport=root/'crates/maestro-web/tests/sandbox_loading_support'\n\
         execution=root/'crates/maestro-web/tests/sandbox_execution_browser.rs'\nloading=root/'crates/maestro-web/tests/sandbox_loading_browser.rs'\n\
         inventory=support/'exports.json'\ndriver=support/'run.cjs'\noriginal={p:p.read_bytes() for p in [execution,loading,inventory,driver]}\n\
-        logs=root.parent/'qualification-logs'\nlogs.mkdir()\ncommand='just browser-test\\n'\n\ndef run(label, expected, diagnostic=None):\n\
-        \    original_driver=original[driver].decode()\n    assert original_driver.count('browser.newPage()') == 1\n    driver.write_text(original_driver.replace('browser.newPage()',\
-        \ 'browser.newPage({deviceScaleFactor: 1.25})'))\n    print('PROOF-ONLY driver: browser.newPage() -> browser.newPage({deviceScaleFactor:\
-        \ 1.25})',flush=True)\n    start=time.monotonic()\n    with (logs/(label+'.log')).open('w') as output:\n        result=subprocess.run(['bash','-e','-o','pipefail','-c',command],stdout=output,stderr=subprocess.STDOUT)\n\
+        logs=root.parent/'qualification-logs'\nlogs.mkdir()\ntracked_before=subprocess.check_output(['git','diff','--binary'])\n\
+        print('SETUP DIFF\\n'+tracked_before.decode(),flush=True)\ncommand='just browser-test\\n'\n\ndef run(label, expected,\
+        \ diagnostic=None):\n    original_driver=original[driver].decode()\n    assert original_driver.count('browser.newPage()')\
+        \ == 1\n    driver.write_text(original_driver.replace('browser.newPage()', 'browser.newPage({deviceScaleFactor: 1.25})'))\n\
+        \    print('PROOF-ONLY driver: browser.newPage() -> browser.newPage({deviceScaleFactor: 1.25})',flush=True)\n    start=time.monotonic()\n\
+        \    with (logs/(label+'.log')).open('w') as output:\n        result=subprocess.run(['bash','-e','-o','pipefail','-c',command],stdout=output,stderr=subprocess.STDOUT)\n\
         \    text=(logs/(label+'.log')).read_text()\n    print(text, flush=True)\n    print(f'QUALIFICATION {label} exit={result.returncode}\
         \ seconds={time.monotonic()-start:.3f}',flush=True)\n    if expected == 0:\n        assert result.returncode == 0,\
         \ label\n        assert 'FAMILY execution 26/26' in text and 'FAMILY loading 19/19' in text and 'COMPLETE 45/45' in\
@@ -154,7 +156,9 @@ jobs:
         \    run('sandbox_async_rejection_fails_shared_body',1,('qualification async rejection',));restore()\n    seed(execution,'execution_preflight_avoids_all_effects','wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED)).await.unwrap();\
         \ panic!(\"qualification async panic\");')\n    run('sandbox_async_panic_fails_shared_body',1,('FAIL execution_preflight_avoids_all_effects:',\
         \ 'RuntimeError', 'unreachable'));restore()\n    run('sandbox_restored_exports_pass_shared_body',0)\n    restore()\n\
-        \    subprocess.run(['git','diff','--exit-code'],check=True)\nfinally:\n    restore()\n"
+        \    assert all(p.read_bytes() == data for p, data in original.items()), 'owned files were not restored'\n    assert\
+        \ subprocess.check_output(['git','diff','--binary']) == tracked_before, 'qualification changed tracked files'\nfinally:\n\
+        \    restore()\n"
       shell: python
     - name: Compile cache statistics
       id: cache-statistics
