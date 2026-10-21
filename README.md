@@ -66,7 +66,9 @@ local-cache and diagnostic settings, including after automatic server restarts.
 Compatibility prefixes identify the caller repository and directory, host,
 compiler and job shape. Coverage shards share a prefix with the optional
 `warm-cache: true` build, which compiles the full coverage test graph without
-running tests or producing a report. Plain selected-package builds and doctests
+producing a report. By default it runs no tests; an optional caller
+[`warm_test_filter`](docs/caller-checks.md#warm-test-filter) runs selected tests
+to include their child compiles in an eligible snapshot. Plain selected-package builds and doctests
 share a plain shape. Other jobs use their own shape, including the native target
 where needed. Immutable save keys distinguish runs, attempts, jobs, matrix legs
 and reusable calls without splitting the shared restore prefix. GitHub's
