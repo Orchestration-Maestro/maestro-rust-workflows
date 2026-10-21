@@ -68,6 +68,13 @@ file/key diagnostic before optional work is emitted. Metadata or compiler
 inspection failures also fail validation. Wasm and target array order and repetitions are
 retained; declaration text is never executed as shell syntax.
 
+## Compile cache
+
+Compiling jobs export `CARGO_BUILD_RUSTC_WRAPPER=sccache`, so callers do not
+need to set `RUSTC_WRAPPER` for caching. A build that a test starts after removing
+`RUSTC_WRAPPER` keeps the cache without coverage instrumentation. Coverage runs
+still instrument workspace builds and send their compiles through the cache.
+
 ## Test shards
 
 Tests use checksum-pinned cargo-nextest 0.9.148 with four automatic
