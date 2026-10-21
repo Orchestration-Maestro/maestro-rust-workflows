@@ -246,6 +246,11 @@
           }
         }
       }
+    },
+    "warm_test_filter": {
+      "description": "Nextest filterset executed only by warm-cache builds to cache child compiles.",
+      "type": "string",
+      "default": "none()"
     }
   },
   "dependentRequired": {

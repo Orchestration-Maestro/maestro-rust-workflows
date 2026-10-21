@@ -29,6 +29,37 @@ browser_test_crates = []
 test_tools = false
 ```
 
+## Warm test filter
+
+`warm_test_filter` is an optional nextest filterset string used only by
+`warm-cache: true`. With no declaration or no key, it defaults to `none()`:
+compile the full coverage test graph, but run no tests. For example:
+
+```toml
+wasm_crates = []
+check_targets = []
+warm_test_filter = 'test(child_build)'
+```
+
+Choose tests that start child compiles. The warm build still compiles the full
+coverage test graph, then runs only the selected tests under the existing
+isolated coverage runner. It ignores the caller's default test filter and
+produces no coverage report or doctest run. Ordinary tests and package selection
+ignore this key.
+
+Declaration validation checks only that the value is a string. Nextest parses
+its grammar during the warm run: an invalid expression or an explicit empty
+string fails that run. Whitespace, quotes, backslashes, Unicode and multiline
+expressions pass through unchanged; the value is never evaluated as shell code.
+A valid filter matching no tests succeeds under the existing no-tests policy.
+
+Running tests adds execution time and compiler objects. Keep the filter narrow
+enough for the warm build to finish between default-branch pushes and for the
+native payload to stay within 1 GiB. The existing writer and size rules still
+apply: only an eligible successful default-branch warm build saves a snapshot;
+a pull-request run cannot prove saving. More cached compiles are useful only
+when that save succeeds and later jobs restore the compatible snapshot.
+
 ## Reusable-call concurrency
 
 The optional workflow input `concurrency-key` defaults to an empty string,

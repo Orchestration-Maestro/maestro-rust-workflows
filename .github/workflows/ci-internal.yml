@@ -2194,17 +2194,56 @@ jobs:
           root = pathlib.Path.cwd()
 
           def body(name, source=workflow):
-              steps = re.split(r'^      - name: ', source, flags=re.MULTILINE)
-              step = next(s for s in steps[1:] if s.splitlines()[0] == name)
-              alias = re.search(r'^        run: \*([\w-]+)$', step, re.MULTILINE)
-              if alias:
-                  step = next(s for s in source.split('      - name: ')[1:] if f'run: &{alias[1]} |' in s)
-              match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
-              if match:
-                  return textwrap.dedent(match.group(1))
-              inline = re.search(r'^        run: ([^|&*].*)$', step, re.MULTILINE)
-              assert inline, f'Missing executable body: {name}'
-              return inline[1] + '\n'
+              import json
+              import subprocess
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=source, text=True))
+              for job in document['jobs'].values():
+                  for step in job.get('steps', []):
+                      if step.get('name') == name and 'run' in step:
+                          assert isinstance(step['run'], str) and step['run'].strip(), f'Missing executable body: {name}'
+                          return step['run']
+              raise AssertionError(f'Missing executable body: {name}')
+
+          def workflow_body_resolves_parsed_steps():
+              source = '''jobs:
+            fixture:
+              env:
+                name: wanted
+                run: unrelated
+              steps:
+                - name: wanted
+                  uses: example/action
+                - name: block
+                  run: &command |
+                    printf 'block\\n'
+                - name: wanted
+                  run: "printf inline"
+                - name: wanted
+                  run: wrong
+                - name: alias
+                  run: *command
+          '''
+              assert body('wanted', source) == "printf inline"
+              assert body('block', source) == body('alias', source) == "printf 'block\\n'\n"
+              for invalid in ['missing', 'empty', 'invalid']:
+                  sample = source + '      - {name: empty, run: ""}\n      - {name: invalid, run: [wrong]}\n'
+                  try:
+                      body(invalid, sample)
+                  except AssertionError as error:
+                      assert str(error) == f'Missing executable body: {invalid}'
+                  else:
+                      raise AssertionError(f'Accepted invalid body: {invalid}')
+              # The proof workflow extracts only this definition.
+              namespace = {'workflow': source}
+              code = body('Caller checks at workflow seam',
+                          (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8'))
+              resolver = next(node for node in ast.parse(code).body
+                              if isinstance(node, ast.FunctionDef) and node.name == 'body')
+              exec(ast.get_source_segment(code, resolver), namespace)
+              assert namespace['body']('alias') == "printf 'block\\n'\n"
+
+          workflow_body_resolves_parsed_steps()
+          print('PASS workflow_body_resolves_parsed_steps')
 
           def job_run_defaults_preserve_pipeline_failures():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
@@ -2510,13 +2549,71 @@ jobs:
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
+              assert values == {'warm_test_filter': json.dumps('none()'), 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
 
           absent_keeps_base_checks()
           print('PASS absent_keeps_base_checks')
+
+          def warm_filter_declaration_keeps_defaults():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
+                  result, values = declaration(directory)
+                  assert result.returncode == 0, result.stderr
+                  assert values['enabled'] == 'true'
+                  assert json.loads(values['warm_test_filter']) == 'none()'
+              schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
+              prop = schema['properties']['warm_test_filter']
+              assert prop['type'] == 'string' and prop['default'] == 'none()'
+              assert schema['required'] == ['wasm_crates', 'check_targets']
+              assert schema['additionalProperties'] is False
+
+          warm_filter_declaration_keeps_defaults()
+          print('PASS warm_filter_declaration_keeps_defaults')
+
+          warm_filters = ['test(child_build)', 'none()', '', ' test("quoted words") ',
+                          'test(λ)', r'test(a\b)', 'test(child_build)\n & !test(unrelated)',
+                          '$(touch injected); `touch injected`; $HOME']
+
+          def warm_filter_declaration_preserves_strings():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  for value in warm_filters:
+                      (directory / '.github/ci.toml').write_text(
+                          'wasm_crates=[]\ncheck_targets=[]\nwarm_test_filter=' + json.dumps(value, ensure_ascii=False), encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode == 0, result.stderr
+                      assert json.loads(values['warm_test_filter']) == value
+                      assert values['quality_config'] == '{}'
+                      assert values['enabled'] == 'true'
+                  assert not (directory / 'injected').exists()
+
+          warm_filter_declaration_preserves_strings()
+          print('PASS warm_filter_declaration_preserves_strings')
+
+          def warm_filter_declaration_rejects_non_strings():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  for value in ['true', '1', '1.5', '[]', '{}', '1979-05-27', '07:32:00', '1979-05-27T07:32:00Z']:
+                      (directory / '.github/ci.toml').write_text(
+                          'wasm_crates=[]\ncheck_targets=[]\nwarm_test_filter=' + value, encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode != 0
+                      assert result.stderr.strip() == '.github/ci.toml: warm_test_filter must be a string', result.stderr
+                      assert values == {}
+
+          warm_filter_declaration_rejects_non_strings()
+          print('PASS warm_filter_declaration_rejects_non_strings')
 
           def install_recording_runner(directory, real_cargo=None, manifest=None, status=0):
               tools = directory / 'runner-tools'
@@ -2551,7 +2648,137 @@ jobs:
                   subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
               return tools, log
 
+          def warm_filter_runs_only_in_warm_mode():
+              for value in warm_filters:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      result = execute('Isolated tests', directory, {
+                          'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                          'RUNNER_TEMP': temporary, 'SHARD': 'warm', 'COLLECT_COVERAGE': 'false',
+                          'WARM_CACHE': 'true', 'WARM_TEST_FILTER': value, 'TEST_PACKAGES': '[]',
+                          'CARGO_COVERAGE_MIN_LINES': ''})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      assert len(commands) == 2 and commands[0]['args'] == ['fetch', '--locked']
+                      args = commands[1]['args']
+                      assert args.count('-E') == 1 and args[args.index('-E') + 1] == value, args
+                      assert '--workspace' in args and '--no-report' in args
+                      assert '--partition' not in args and '--doc' not in args and '--lcov' not in args
+                      assert commands[1]['home'] != os.environ.get('HOME')
+                      assert not (directory / 'injected').exists() and not list(directory.glob('*.lcov'))
+              for step, shard, coverage, floor in [('Tests', '2', 'false', ''),
+                                                   ('Isolated tests', '2', 'false', ''),
+                                                   ('Isolated tests', '2', 'true', ''),
+                                                   ('Isolated tests', 'doctests', 'true', ''),
+                                                   ('Isolated tests', '', 'true', '80')]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                             'RUNNER_TEMP': temporary, 'SHARD': shard, 'COLLECT_COVERAGE': coverage,
+                             'CARGO_COVERAGE_MIN_LINES': floor, 'TEST_PACKAGES': '["sample"]', 'WARM_CACHE': 'false'}
+                      observed = []
+                      for value in [None, 'test(']:
+                          result = execute(step, directory, env | {'WARM_TEST_FILTER': value})
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                          assert commands and all('-E' not in args and 'test(' not in args for args in commands)
+                          observed.append(commands)
+                          log.unlink()
+                      assert observed[0] == observed[1]
+
+          warm_filter_runs_only_in_warm_mode()
+          print('PASS warm_filter_runs_only_in_warm_mode')
+
+          def warm_filter_workspace(directory):
+              import shutil
+              shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+              (directory / '.config').mkdir()
+              (directory / '.config/nextest.toml').write_text('[profile.default]\ndefault-filter="none()"\n', encoding='utf-8')
+              child = directory / 'child'
+              (child / 'src').mkdir(parents=True)
+              (child / 'Cargo.toml').write_text(
+                  '[workspace]\n[package]\nname="warm-child"\nversion="0.1.0"\nedition="2021"\n', encoding='utf-8')
+              (child / 'src/lib.rs').write_text('pub fn child() {}\n', encoding='utf-8')
+              subprocess.run(['cargo', 'generate-lockfile', '--offline', '--manifest-path', str(child / 'Cargo.toml')], check=True)
+              (directory / 'src/lib.rs').write_text(textwrap.dedent('''
+                  #[test]
+                  fn child_build() {
+                      assert!(std::env::var_os("WARM_TEST_FILTER").is_none());
+                      let started = std::time::Instant::now();
+                      let output = std::process::Command::new(env!("CARGO"))
+                          .args(["build", "--offline", "--locked", "--manifest-path", "child/Cargo.toml",
+                                 "--target-dir", "child-output"])
+                          .output().unwrap();
+                      let stderr = String::from_utf8_lossy(&output.stderr);
+                      std::fs::write("child-build.log", format!("child build elapsed: {:?}; lock wait reported: {}; compiler output:\\n{}",
+                                                             started.elapsed(), stderr.contains("Blocking waiting for file lock"), stderr)).unwrap();
+                      assert!(output.status.success(), "child build failed");
+                      assert!(stderr.contains("Compiling warm-child"));
+                      std::fs::write("child-built", "compiled").unwrap();
+                  }
+                  #[test]
+                  fn unrelated() { std::fs::write("unrelated-ran", "wrong selection").unwrap(); }
+                  #[test]
+                  fn permanently_failing() { assert_eq!(1, 2, "intentional warm failure"); }
+              '''), encoding='utf-8')
+              return {'RUNNER_TEMP': str(directory), 'SHARD': 'warm', 'COLLECT_COVERAGE': 'false',
+                      'WARM_CACHE': 'true', 'TEST_PACKAGES': '[]', 'CARGO_COVERAGE_MIN_LINES': '', 'RUSTC_WRAPPER': ''}
+
+          def warm_filter_runs_selected_child_builds():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  env = warm_filter_workspace(directory)
+                  assert not (directory / 'target').exists() and not (directory / 'child-output').exists()
+                  result = execute('Isolated tests', directory, env | {
+                      'WARM_TEST_FILTER': 'test(child_build)\n & !test(unrelated)'})
+                  output = result.stdout + result.stderr
+                  assert result.returncode == 0, output
+                  assert '1 test run: 1 passed' in output and 'child_build' in output, output
+                  assert (directory / 'child-built').read_text(encoding='utf-8') == 'compiled'
+                  assert (directory / 'child-output/debug/deps').is_dir()
+                  assert not (directory / 'unrelated-ran').exists() and not list(directory.glob('*.lcov'))
+                  assert 'Doc-tests' not in output
+                  print(output + (directory / 'child-build.log').read_text(encoding='utf-8'), flush=True)
+
+          warm_filter_runs_selected_child_builds()
+          print('PASS warm_filter_runs_selected_child_builds')
+
+          def warm_filter_failures_keep_job_red():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  env = warm_filter_workspace(directory)
+                  for value, status in [('test(', 94), ('', 94), ('test(permanently_failing)', 100),
+                                        ('test(missing)', 0), ('test([)', 0)]:
+                      result = execute('Isolated tests', directory, env | {'WARM_TEST_FILTER': value})
+                      output = result.stdout + result.stderr
+                      assert result.returncode == status, output
+                      if status == 94:
+                          assert 'failed to parse filterset' in output, output
+                      elif status == 100:
+                          assert 'intentional warm failure' in output and 'assertion `left == right` failed' in output, output
+                          assert 'TRY 3 FAIL' in output, output
+                      else:
+                          assert '0 tests run' in output, output
+                      assert not (directory / 'child-built').exists() and not (directory / 'unrelated-ran').exists()
+                      assert not list(directory.glob('*.lcov')) and 'Doc-tests' not in output
+                      print(f'PASS warm filter {value!r}: exit {result.returncode}\n{output}', flush=True)
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              save = next(step for step in document['jobs']['tests']['steps'] if step.get('name') == 'Save compile cache')
+              assert save['if'] == "steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'"
+
+          warm_filter_failures_keep_job_red()
+          print('PASS warm_filter_failures_keep_job_red')
+
           def warm_cache_keeps_one_writer():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              declaration_job = document['jobs']['declaration']
+              assert declaration_job['outputs']['warm_test_filter'] == '$' + '{{ steps.config.outputs.warm_test_filter }}'
+              assert next(step for step in declaration_job['steps'] if step.get('name') == 'Read caller declaration')['id'] == 'config'
+              assert document['jobs']['tests']['env']['WARM_TEST_FILTER'] == '$' + '{{ fromJSON(needs.declaration.outputs.warm_test_filter) }}'
+              assert all('needs.declaration.outputs.warm_test_filter' not in step.get('run', '')
+                         for job in document['jobs'].values() for step in job.get('steps', []))
               assert "TEST_EVENT: $" + "{{ inputs.warm-cache && 'push' ||" in workflow
               with tempfile.TemporaryDirectory() as temporary:
                   output = pathlib.Path(temporary) / 'selection'
@@ -3742,6 +3969,14 @@ jobs:
                       assert result.returncode == 0, result.stdout + result.stderr
                       return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                   declaration_path = directory / '.github/ci.toml'
+                  for value in ['test(child_build)', 'none()', None]:
+                      declaration_path.write_text('wasm_crates=[]\ncheck_targets=[]\n' + (
+                          'warm_test_filter=' + json.dumps(value) + '\n' if value is not None else ''), encoding='utf-8')
+                      git('add', '.')
+                      git('commit', '-qm', 'warm filter only')
+                      values = select()
+                      assert json.loads(values['packages']) == [] and values['check_advisories'] == 'false'
+                      base = git('rev-parse', 'HEAD')
                   declaration_path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=["b", "b"]\n', encoding='utf-8')
                   git('add', '.')
                   git('commit', '-qm', 'browser opt-in')

@@ -32,7 +32,7 @@ on:
         type: string
         default: ''
       warm-cache:
-        description: Build the full coverage test graph without running tests or other checks
+        description: Build the full coverage test graph with optional filtered test execution
         type: boolean
         default: false
       advisory-scan:
@@ -70,6 +70,7 @@ jobs:
         working-directory: ${{ inputs.working-directory || '.' }}
     outputs:
       enabled: ${{ steps.config.outputs.enabled }}
+      warm_test_filter: ${{ steps.config.outputs.warm_test_filter }}
       packages: ${{ steps.selection.outputs.packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
@@ -115,11 +116,11 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(warm_test_filter=json.dumps('none()'), additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'warm_test_filter', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -136,6 +137,9 @@ jobs:
                   raise SystemExit(f'{path}: reserved_ports must be an array of integers from 1 to 65535')
               if len(set(ports)) != len(ports):
                   raise SystemExit(f'{path}: reserved_ports entries must be unique')
+              if type(config.get('warm_test_filter', 'none()')) is not str:
+                  raise SystemExit(f'{path}: warm_test_filter must be a string')
+              values['warm_test_filter'] = json.dumps(config.get('warm_test_filter', 'none()'))
               values['reserved_ports'] = ','.join(map(str, ports))
               values['additional_locked_manifests'] = json.dumps(config.get('additional_locked_manifests', []))
               threshold = config.get('coverage_min_lines', 80)
@@ -686,6 +690,7 @@ jobs:
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       WARM_CACHE: ${{ inputs.warm-cache }}
+      WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
       SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
@@ -859,7 +864,7 @@ jobs:
               partition=(--partition "count:$SHARD/4")
               report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
               if [ "${WARM_CACHE:-false}" = true ]; then
-                partition=(-E 'none()')
+                partition=(-E "${WARM_TEST_FILTER-none()}")
                 report=(--no-report)
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \

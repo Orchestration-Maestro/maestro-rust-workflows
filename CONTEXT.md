@@ -44,7 +44,7 @@ _Avoid_: Snapshot, when it means a compiler-cache snapshot rather than a source 
 
 **Job shape**: The compilation characteristics used to decide whether jobs can share a compiled-cache snapshot.
 
-**Warm build**: An optional compilation that seeds the coverage cache without running tests.
+**Warm build**: An optional compilation that seeds the coverage cache. It runs no tests unless the caller declares a warm test filter.
 
 _Avoid_: Warmer; warm-up, when they mean this cache-seeding build.
 
