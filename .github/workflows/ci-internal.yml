@@ -618,7 +618,8 @@ jobs:
                                   'uname': 'if [ "$1" = -s ]; then echo "$HOST"; else echo "$ARCH"; fi\n',
                                   'curl': 'printf "%s\\n" "$@" > "$TRACE/download"\nwhile [ "$1" != --output ]; do shift; done\nif [ "$CORRUPT" = true ]; then printf corrupt > "$2"; else cp "$ARCHIVE" "$2"; fi\n',
                                   'tar': 'printf "%s\\n" "$@" > "$TRACE/extract"\n"$REAL_TAR" "$@" || exit\nwhile [ "$1" != -C ]; do shift; done\nbin=$2\nprintf \'#!/bin/sh\\nprintf "%%s\\\\n" "$@" >> "$TRACE/server"\\n\' > "$bin/sccache"\nchmod +x "$bin/sccache"\nif [ "$OS" = Windows_NT ]; then cp "$bin/sccache" "$bin/sccache.exe"; fi\n',
-                                  'cygpath': 'printf "%s\\n" "$@" >> "$TRACE/cygpath"\nprintf "%s\\n" "C:\\\\native\\\\$(basename "$2")"\n',
+                                  'mktemp': 'result=$("$REAL_MKTEMP" "$@") || exit\nif [ "$OS" = Windows_NT ] && [ "$1" = -d ]; then printf "%s\\n" "C:\\\\native\\\\$(basename "$result")"; else printf "%s\\n" "$result"; fi\n',
+                                  'cygpath': 'printf "%s\\n" "$@" >> "$TRACE/cygpath"\nif [ "$1" = -u ]; then printf "%s/%s\\n" "$TRACE" "${2##*\\\\}"; else printf "%s\\n" "C:\\\\native\\\\$(basename "$2")"; fi\n',
                                   'mise': 'exit 99\n', 'yq': 'exit 99\n'}
                               for tool, content in tools.items():
                                   source = directory / 'source'
@@ -629,7 +630,8 @@ jobs:
                                   'HOST': host, 'ARCH': arch, 'OS': 'Windows_NT' if windows else '',
                                   'CORRUPT': str(corrupt).lower(), 'ARCHIVE': str(archives / (platform + '.tar.gz')),
                                   'TRACE': str(directory), 'TMPDIR': str(directory), 'CACHE_RESTORE_MATCHED': 'false',
-                                  'PATH': str(shim) + os.pathsep + os.environ['PATH'], 'REAL_TAR': shutil.which('tar')}
+                                  'PATH': str(shim) + os.pathsep + os.environ['PATH'], 'REAL_TAR': shutil.which('tar'),
+                                  'REAL_MKTEMP': shutil.which('mktemp')}
                               result = shell(installer, env)
                               if corrupt or not platform:
                                   assert result.returncode != 0, (host, arch, corrupt)
@@ -656,6 +658,7 @@ jobs:
                                   assert (directory / 'paths').read_text(encoding='utf-8') == 'C:\\native\\' + pathlib.Path(extraction[3]).name + '\n'
                                   assert exported['SCCACHE_DIR'] == 'C:\\native\\maestro-sccache'
                                   assert (directory / 'cygpath').read_text(encoding='utf-8').splitlines() == [
+                                      '-u', 'C:\\native\\' + pathlib.Path(extraction[3]).name,
                                       '-w', extraction[3], '-w', str(directory / 'maestro-sccache')]
                               else:
                                   assert (directory / 'paths').read_text(encoding='utf-8') == extraction[3] + '\n'

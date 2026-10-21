@@ -486,6 +486,7 @@ jobs:
           esac
           name=sccache-v$version-$platform
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-sccache.XXXXXX")
+          if [ "$executable" = sccache.exe ]; then bin=$(cygpath -u "$bin"); fi
           archive=$(mktemp)
           curl --fail --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
           python3 - "$digest" "$archive" <<'PYTHON'
