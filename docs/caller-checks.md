@@ -101,7 +101,7 @@ retained; declaration text is never executed as shell syntax.
 
 ## Compile cache
 
-Compiling jobs export `CARGO_BUILD_RUSTC_WRAPPER=sccache`, so callers do not
+Cached compiling jobs export `CARGO_BUILD_RUSTC_WRAPPER=sccache`, so callers do not
 need to set `RUSTC_WRAPPER` for caching. A build that a test starts after removing
 `RUSTC_WRAPPER` keeps the cache without coverage instrumentation. Coverage runs
 still instrument workspace builds and send their compiles through the cache.
@@ -109,7 +109,12 @@ still instrument workspace builds and send their compiles through the cache.
 | Jobs | Host | Restore | Save |
 | --- | --- | --- | --- |
 | Format and lint, Docs, Tests, Doctests, Dependency/source/coverage checks, Wasm and browser build, Chromium browser tests | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
-| Declared target checks | Linux, arm64 macOS, x86_64 Windows | Every call that runs the job | Default-branch pushes only; one writer per host/target shape |
+| Declared target checks | Linux, arm64 macOS | Every call that runs the job | Default-branch pushes only; one writer per host/target shape |
+| Declared target checks | x86_64 Windows | Never | Never |
+
+Windows checks run uncached because sccache expands response files beyond
+Windows' command-line limit; [Windows caching](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/166)
+tracks the upstream fix.
 
 A default-branch push with `warm-cache: true` also runs the declared target
 checks. Other warm calls skip them. Host-specific, checksum-pinned assets
