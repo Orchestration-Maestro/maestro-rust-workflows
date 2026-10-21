@@ -24,9 +24,11 @@ Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-di
 and the reporter log after isolated tests fail or time out.
 
 Pull requests test changed crates and their reverse dependencies, without a
-coverage floor. Undeclared Markdown files and paths under `docs/` outside every
-crate select no tests; other undeclared files outside every crate select the
-whole workspace. Callers can declare which packages' tests read a path,
+coverage floor. After workflow and configuration rules apply, fallback selection
+outside every crate skips undeclared Markdown files and paths under `docs/`;
+other undeclared paths select the whole workspace. See the detailed
+[selection rules](docs/caller-checks.md#pull-request-selection-and-retries).
+Callers can declare which packages' tests read a path,
 including Markdown
 ([`test_inputs`](docs/caller-checks.md#pull-request-selection-and-retries)).
 Each nextest test can retry twice; flaky passes are named in
@@ -107,8 +109,9 @@ selects its toolchain through rustup.
 Every caller also gets the dependency and source checks: cargo-deny
 (licenses, bans, sources and advisories; pull requests and merge groups check
 advisories when they change `Cargo.lock` or the advisory or yanked-crate exceptions
-in `.github/ci.toml` (or when the base cannot be read), while an
-[hourly advisory scan](docs/caller-checks.md#required-dependency-source-and-coverage-checks)
+in `.github/ci.toml`, when the base is absent, or for merge groups when the base
+cannot be read. Pull requests with an unreadable nonempty base fail package
+selection. The [hourly advisory scan](docs/caller-checks.md#required-dependency-source-and-coverage-checks)
 of Maestro's `main` opens an issue per new finding), cargo-machete (unused dependencies; a package named by `hakari-package` in
 `.config/hakari.toml` is not checked and its member dependency edge is accepted),
 cargo-hakari (`cargo hakari verify` when `.config/hakari.toml` exists),

@@ -141,8 +141,9 @@ toolchain or CI workflow/schema changes select everything. Non-test declaration
 keys (such as spelling, wasm and foreign-target lists) select no extra tests;
 changes to test tools, coverage policy, additional locked manifests, declared
 test inputs or declaration presence select everything.
-Outside a crate, undeclared Markdown files and paths under `docs/` select no
-tests. Other undeclared files select everything. Declared paths select their
+For paths outside a crate, fallback selection skips undeclared Markdown files
+and paths under `docs/`; other undeclared files select everything. The workflow
+and configuration rules above take precedence. Declared paths select their
 readers, including for Markdown changes.
 Every shard still fetches locked dependencies.
 Merge groups and main pushes run the whole suite with coverage.
@@ -175,10 +176,13 @@ component distribution, not a caller-provided executable.
 - cargo-deny checks licenses, bans, sources and advisories across the workspace
   with all features. Advisories and yanked crates without declared exceptions fail. Registries
   other than crates.io and undeclared git sources fail. Licenses, bans and sources run on
-  every event. A pull request or merge group checks advisories and yanked crates only when it changes
+  every event. A pull request or merge group checks advisories and yanked crates when it changes
   `Cargo.lock`, or `advisory_exceptions` or `yanked_crate_exceptions`
-  in `.github/ci.toml`; other declaration changes, such as
-  `spelling_words`, don't select it, and the step prints that advisories were not checked.
+  in `.github/ci.toml`, including exception removal. An absent base also selects
+  the check. An unreadable nonempty base selects the check for merge groups;
+  pull requests fail package selection before the advisory check. Other declaration
+  changes, such as `spelling_words`, don't select the check, and the step prints that
+  advisories were not checked.
   Pushes to `main`, other events and the scheduled scan always check them, so they still
   catch an advisory that reaches `main`.
 - The scheduled advisory scan (`.github/workflows/advisories.yml`) runs this workflow in
@@ -191,7 +195,8 @@ component distribution, not a caller-provided executable.
 - The cargo-deny license allowlist is MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
   Apache-2.0 WITH LLVM-exception, Unicode-DFS-2016, Unicode-3.0, CC0-1.0,
   CDLA-Permissive-2.0, MPL-2.0, MIT-0 and BSL-1.0. BSL-1.0 is the Boost Software
-  License; the Business Source License (BUSL-1.1) is not allowed.
+  License; the Business Source License (BUSL-1.1) is absent from this default list.
+  Callers can allow it for an exact package version through `license_exceptions`.
 - cargo-machete fails on unused dependencies. Nonempty `ignored` or `renamed`
   package/workspace cargo-machete metadata is rejected; ignored source files
   remain checked, but generated target directories are skipped.
