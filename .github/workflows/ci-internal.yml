@@ -3935,7 +3935,8 @@ jobs:
               assert json.loads(values['targets']) == expected
               assert 'runs-on: $' + '{{ matrix.runner }}' in workflow
               assert 'rustup target add "$TARGET"' in body('Check target')
-              assert 'cargo check --workspace --all-targets --locked --target "$TARGET"' in body('Check target')
+              assert 'rustup component add clippy' in body('Check target')
+              assert 'cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings' in body('Check target')
               if 'GITHUB_OUTPUT' in os.environ:
                   with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
                       output.write('targets=' + json.dumps(expected + [{'target': 'x86_64-apple-darwin', 'runner': 'macos-15-intel'}]) + '\n')
@@ -3964,6 +3965,20 @@ jobs:
 
           wasm_target_failure_is_detected()
           print('PASS wasm_target_failure_is_detected')
+
+          def foreign_target_warnings_are_denied():
+              target = os.environ.get('TARGET', 'x86_64-unknown-linux-gnu')
+              for fixture in ['target-field-unix', 'target-field-portable']:
+                  result = execute('Check target', root / 'fixtures' / fixture, {'TARGET': target})
+                  output = result.stdout + result.stderr
+                  rejected = fixture == 'target-field-unix' and target.endswith('windows-msvc')
+                  if rejected:
+                      assert result.returncode != 0 and 'field `value` is never read' in output, output
+                  else:
+                      assert result.returncode == 0, output
+                  print(f'PASS foreign_target_warnings_are_denied: {fixture}, {target}, exit {result.returncode}', flush=True)
+
+          foreign_target_warnings_are_denied()
 
           def foreign_target_failures_are_detected():
               target = os.environ.get('TARGET')
@@ -4343,6 +4358,7 @@ jobs:
           namespace['mise_bootstrap_uses_runner_platform']()
           namespace['caller_build_tools_reach_compilers']()
           namespace['foreign_target_failures_are_detected']()
+          namespace['foreign_target_warnings_are_denied']()
           print('PASS foreign_target_failures_are_detected')
 
   fuzz-issues:

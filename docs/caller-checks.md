@@ -495,10 +495,10 @@ than treating estimates as deadlines.
 
 ## Foreign-target checks
 
-The caller's rustup toolchain installs each requested target, then runs:
+The caller's rustup toolchain installs each requested target and Clippy, then runs:
 
 ```bash
-cargo check --workspace --all-targets --locked --target "$TARGET"
+cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings
 ```
 
 | Target | Runner |
