@@ -187,6 +187,20 @@
       },
       "default": []
     },
+    "test_inputs": {
+      "description": "Repository-relative files or directories outside every workspace member, each mapped to the exact workspace package names whose tests read it. On pull requests a change under a declared path selects only those packages and their reverse dependencies, and an empty list selects none. Path form and package names are checked at runtime.",
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "default": {}
+    },
     "fuzz_manifest": {
       "description": "Literal relative path of the cargo-fuzz crate's Cargo.toml, fuzzed only by the nightly fuzz job. File existence and resolved containment are checked at runtime.",
       "type": "string",

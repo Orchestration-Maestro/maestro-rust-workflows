@@ -2305,6 +2305,43 @@ jobs:
 
 
           browser_test_declaration_checks_exact_packages()
+
+          def test_inputs_declaration_checks_paths_and_packages():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / 'src').mkdir()
+                  (directory / 'src/lib.rs').write_text('', encoding='utf-8')
+                  (directory / 'Cargo.toml').write_text('[package]\nname="reader"\nversion="0.1.0"\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=directory, check=True)
+                  path = directory / '.github/ci.toml'
+                  for value in ['{}', '{"shared/"=["reader"], "list.json"=["reader", "reader"], "fuzz"=[]}', '{"a/./b"=[]}']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_inputs=' + value, encoding='utf-8')
+                      result, _ = declaration(directory)
+                      assert result.returncode == 0, (value, result.stderr)
+                  for value, diagnostic in [('[]', 'must map repository paths to arrays of package names'),
+                                            ('{"shared/"="reader"}', 'must map repository paths to arrays of package names'),
+                                            ('{"shared/"=[1]}', 'must map repository paths to arrays of package names'),
+                                            ('{""=[]}', 'keys must be repository-relative paths'),
+                                            ('{"./"=[]}', 'keys must be repository-relative paths'),
+                                            ('{"/abs"=[]}', 'keys must be repository-relative paths'),
+                                            ('{"a/../b"=[]}', 'keys must be repository-relative paths'),
+                                            ('{"a\\\\b"=[]}', 'keys must be repository-relative paths'),
+                                            ('{"\\u0007"=[]}', 'cannot contain control characters or surrogates'),
+                                            ('{"shared/"=["unknown"]}', "contains unknown package 'unknown'")]:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_inputs=' + value, encoding='utf-8')
+                      result, _ = declaration(directory)
+                      assert result.returncode != 0, value
+                      assert result.stderr.strip() == '.github/ci.toml: test_inputs ' + diagnostic, (value, result.stderr)
+                  schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
+                  entry = schema['properties']['test_inputs']
+                  assert entry['type'] == 'object' and entry['default'] == {}
+                  assert entry['additionalProperties'] == {'type': 'array', 'items': {'type': 'string'}}
+                  assert entry['propertyNames'] == {'minLength': 1}
+                  assert 'test_inputs' not in schema['required']
+
+          test_inputs_declaration_checks_paths_and_packages()
+          print('PASS test_inputs_declaration_checks_paths_and_packages')
           print('PASS browser_test_declaration_checks_exact_packages')
 
           def browser_test_job_is_single_and_optional():
@@ -3637,6 +3674,63 @@ jobs:
 
           changed_packages_include_reverse_dependencies()
           print('PASS changed_packages_include_reverse_dependencies')
+
+          def declared_test_inputs_select_their_readers():
+              from functools import partial
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c","d"]\n', encoding='utf-8')
+                  for name, dependency in [('a', None), ('b', 'a'), ('c', 'b'), ('d', None)]:
+                      crate = directory / name
+                      (crate / 'src').mkdir(parents=True)
+                      manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n'
+                      if dependency:
+                          manifest += f'[dependencies]\n{dependency}={{path="../{dependency}"}}\n'
+                      (crate / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+                      (crate / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+                  subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+                  git = partial(fixture_git, directory)
+                  for name in ['shared/data.txt', 'shared/notes.md', 'list.json', 'fuzz/src/main.rs', 'other/data.txt']:
+                      (directory / name).parent.mkdir(parents=True, exist_ok=True)
+                      (directory / name).write_text('base\n', encoding='utf-8')
+                  declared = 'wasm_crates=[]\ncheck_targets=[]\ntest_inputs={"shared/"=["d"], "list.json"=["a"], "fuzz"=[]}\n'
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text(declared, encoding='utf-8')
+                  git('add', '.')
+                  git('commit', '-qm', 'base')
+                  base = git('rev-parse', 'HEAD')
+                  def select(event='pull_request'):
+                      output = directory / '.git/selection'
+                      output.write_text('', encoding='utf-8')
+                      result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      return json.loads(dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['packages'])
+                  for changed, expected in [(['shared/data.txt'], ['d']), (['shared/notes.md'], ['d']), (['list.json'], ['a', 'b', 'c']),
+                                            (['fuzz/src/main.rs'], []), (['fuzz/src/main.rs', 'shared/data.txt'], ['d']),
+                                            (['other/data.txt'], ['a', 'b', 'c', 'd']), (['shared/data.txt', 'other/data.txt'], ['a', 'b', 'c', 'd'])]:
+                      for name in changed:
+                          (directory / name).write_text('changed\n', encoding='utf-8')
+                      git('add', '.')
+                      git('commit', '-qm', 'change')
+                      assert select() == expected, (changed, select())
+                      assert select('merge_group') == ['a', 'b', 'c', 'd'], changed
+                      git('reset', '--hard', base)
+                  for source, destination, expected in [('shared/data.txt', 'fuzz/data.txt', ['d']),
+                                                        ('other/data.txt', 'shared/moved.txt', ['a', 'b', 'c', 'd']),
+                                                        ('list.json', 'fuzz/list.json', ['a', 'b', 'c'])]:
+                      git('mv', source, destination)
+                      git('commit', '-qm', 'move input')
+                      assert select() == expected, (source, destination, select())
+                      git('reset', '--hard', base)
+                  # A changed route cannot be checked against the old one, so it selects everything.
+                  (directory / '.github/ci.toml').write_text(declared.replace('["d"]', '["c"]'), encoding='utf-8')
+                  git('add', '.')
+                  git('commit', '-qm', 'route')
+                  assert select() == ['a', 'b', 'c', 'd']
+
+          declared_test_inputs_select_their_readers()
+          print('PASS declared_test_inputs_select_their_readers')
           print('PASS browser_test_selection_reuses_package_scope')
 
           def retries_report_flaky_tests_and_keep_failures():

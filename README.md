@@ -24,7 +24,12 @@ Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-di
 and the reporter log after isolated tests fail or time out.
 
 Pull requests test changed crates and their reverse dependencies, without a
-coverage floor. Each nextest test can retry twice; flaky passes are named in
+coverage floor. Undeclared Markdown files and paths under `docs/` outside every
+crate select no tests; other undeclared files outside every crate select the
+whole workspace. Callers can declare which packages' tests read a path,
+including Markdown
+([`test_inputs`](docs/caller-checks.md#pull-request-selection-and-retries)).
+Each nextest test can retry twice; flaky passes are named in
 job summaries, while permanent failures still fail. Merge groups and main
 pushes run the full suite with coverage.
 
