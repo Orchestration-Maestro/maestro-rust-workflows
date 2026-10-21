@@ -230,7 +230,7 @@ jobs:
                   env = environment(directory) | {
                       'CALLER_REPOSITORY': 'example/caller', 'CALLER_DIRECTORY': '.',
                       'HOST_OS': 'Linux', 'HOST_ARCH': 'X64', 'CACHE_JOB': 'tests', 'CACHE_INDEX': '0',
-                      'CACHE_CALL': 'consumer', 'CACHE_COVERAGE': 'true', 'CACHE_WARM': 'false',
+                      'CACHE_CALL': 'consumer', 'CACHE_COVERAGE': 'true', 'CACHE_ENABLED': 'true', 'CACHE_WARM': 'false',
                       'SHARD': '1', 'GITHUB_RUN_ID': '10', 'GITHUB_RUN_ATTEMPT': '1', 'CACHE_TARGET': ''}
                   compiler = changes.pop('compiler', None)
                   if compiler:
@@ -250,6 +250,11 @@ jobs:
               plain = snapshot_keys(CACHE_COVERAGE='false')['prefix']
               assert plain != coverage and snapshot_keys(SHARD='doctests')['prefix'] == plain
               assert snapshot_keys(CACHE_COVERAGE='', SHARD='')['prefix'] == plain
+              for event, collect in [('pull_request', 'false'), ('push', 'true'), ('merge_group', 'true')]:
+                  for shard in ['1', '2', '3', '4', 'doctests']:
+                      observed = snapshot_keys(CACHE_ENABLED='false', CACHE_COVERAGE=collect, SHARD=shard)['prefix']
+                      assert observed == plain, (event, shard, 'undeclared tests must use the plain snapshot')
+              assert 'CACHE_ENABLED: $' + '{{ needs.declaration.outputs.enabled }}' in workflow
               shapes = [snapshot_keys(CACHE_JOB=job)['prefix'] for job in
                         ['quality', 'docs', 'checks', 'browser', 'browser-tests']]
               assert len(set(shapes + [plain, coverage])) == 7
@@ -480,6 +485,32 @@ jobs:
                       else:
                           assert 'stop-commands' not in result.stdout and 'Egress' not in result.stdout
 
+          def cache_error_artifacts_are_selected_and_scoped():
+              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
+                                     workflow.split('\njobs:\n', 1)[1], re.M | re.S))
+              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              uploads = {name: job.split('      - name: Upload compile cache errors\n')[1].split('      - name:', 1)[0]
+                         for name, job in jobs.items() if '      - name: Upload compile cache errors\n' in job}
+              assert set(uploads) == owners
+              condition = re.search(r'if: &sccache-artifact-condition (.*)', uploads['quality'])[1]
+              assert condition == ("always() && (steps.cache-statistics.outputs.write_errors == 'true' || "
+                                   "(inputs.concurrency-key == 'maestro-proof' && steps.cache-statistics.outcome == 'success'))")
+              expression = condition.replace('always()', 'True').replace('&&', 'and').replace('||', 'or')
+              for errors in ['false', 'true']:
+                  for call in ['ordinary', 'maestro-selected', 'maestro-proof']:
+                      for outcome in ['success', 'failure', 'skipped']:
+                          actual = expression.replace('steps.cache-statistics.outputs.write_errors', repr(errors))
+                          actual = actual.replace('inputs.concurrency-key', repr(call)).replace('steps.cache-statistics.outcome', repr(outcome))
+                          assert eval(actual) == (errors == 'true' or (call == 'maestro-proof' and outcome == 'success'))
+              scope = "compile-cache-errors-$" + "{{ inputs.concurrency-key || 'root' }}-$" + "{{ github.job }}-$" + "{{ strategy.job-index || 0 }}-$" + "{{ github.run_attempt }}"
+              assert 'name: ' + scope in uploads['quality']
+              assert 'path: $' + '{{ runner.temp }}/sccache-error.log' in uploads['quality']
+              assert 'if-no-files-found: error' in uploads['quality']
+              for name in owners - {'quality'}:
+                  assert 'if: *sccache-artifact-condition' in uploads[name], name
+                  assert 'with: *sccache-artifact' in uploads[name], name
+              assert all('uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02' in step for step in uploads.values())
+
           def cache_outage_keeps_compiler_failure():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -510,7 +541,8 @@ jobs:
 
           for test in [snapshot_key_matches_consuming_shape, snapshot_key_preserves_caller_isolation,
                        snapshot_save_keys_are_run_unique, snapshot_size_bound_skips_only_ineligible_saves,
-                       snapshot_seal_stops_before_measurement, cache_statistics_print_error_log]:
+                       snapshot_seal_stops_before_measurement, cache_statistics_print_error_log,
+                       cache_error_artifacts_are_selected_and_scoped]:
               test()
               print('PASS ' + test.__name__, flush=True)
 
