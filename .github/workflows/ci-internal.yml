@@ -1540,6 +1540,10 @@ jobs:
 
           from collections import Counter
 
+          yq = shutil.which('yq')
+          assert yq, 'Mike Farah yq is required to parse workflow controls'
+          subprocess.run([yq, '--version'], check=True)
+
           def collect(files):
               found = []
               counts = Counter()
@@ -1548,36 +1552,27 @@ jobs:
                   counts[key] += 1
                   found.append((*key, counts[key], value))
               for path, source in sorted(files.items()):
-                  lines = source.splitlines()
-                  job = step = ''
-                  shell = 'bash'
-                  index = 0
-                  while index < len(lines):
-                      line = lines[index]
-                      owner = re.fullmatch(r'  ([\w-]+):', line)
-                      if owner:
-                          job, step, shell = owner[1], '', 'bash'
-                      if line.startswith('      - '):
-                          step, shell = '', 'bash'
-                          line = '        ' + line[8:]
-                      named = re.match(r'        name: (.*)', line)
-                      if named:
-                          step, shell = named[1], 'bash'
-                      selected = re.fullmatch(r'        shell: (.*)', line)
-                      if selected:
-                          shell = selected[1]
-                      run = re.fullmatch(r'( +)run: (.*)', line)
-                      if run:
-                          end = index + 1
-                          indent = len(run[1])
-                          if re.fullmatch(r'(?:&[\w-]+ )?[|>][-+]?\s*(?:#.*)?', run[2]):
-                              while end < len(lines) and (not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > indent):
-                                  end += 1
-                              body = textwrap.dedent('\n'.join(lines[index + 1:end]))
-                          else:
-                              body = run[2]
-                              if body[:1] in ('\"', "'") and body[-1:] == body[:1]:
-                                  body = body[1:-1]
+                  result = subprocess.run([yq, 'eval-all', '-o=json', '-I=0', '[.]', '-'],
+                                          input=source, text=True, capture_output=True)
+                  assert result.returncode == 0, f'yq failed to parse {path}: {result.stderr}'
+                  documents = json.loads(result.stdout)
+                  assert len(documents) == 1, f'{path}: expected one workflow document'
+                  model = documents[0]
+                  if 'timeout-minutes' in model:
+                      add(path, '', '', 'timeout-minutes', str(model['timeout-minutes']))
+                  for job, node in model.get('jobs', {}).items():
+                      if 'timeout-minutes' in node:
+                          add(path, job, '', 'timeout-minutes', str(node['timeout-minutes']))
+                      default_shell = node.get('defaults', {}).get('run', {}).get(
+                          'shell', model.get('defaults', {}).get('run', {}).get('shell', 'bash'))
+                      for entry in node.get('steps', []):
+                          step = entry.get('name', '')
+                          if 'timeout-minutes' in entry:
+                              add(path, job, step, 'timeout-minutes', str(entry['timeout-minutes']))
+                          if 'run' not in entry:
+                              continue
+                          body = entry['run']
+                          shell = entry.get('shell', default_shell)
                           if shell == 'python':
                               tree = ast.parse(body)
                               for node in ast.walk(tree):
@@ -1596,21 +1591,6 @@ jobs:
                                   add(path, job, control_step, match[1] or match[3], match[2] or match[4])
                           if 'f"-timeout={os.environ[\'TIMEOUT\']}"' in body:
                               add(path, job, step, 'caller fuzz timeout', 'TIMEOUT')
-                          index = end
-                          continue
-                      # Scalar metadata and environment/argument maps are not job or step controls.
-                      metadata = re.match(r'(\s*)(?:name|env|with|outputs|permissions|concurrency|if|uses|working-directory):', line)
-                      if metadata:
-                          indent = len(metadata[1])
-                          index += 1
-                          while index < len(lines) and (not lines[index].strip() or len(lines[index]) - len(lines[index].lstrip()) > indent):
-                              index += 1
-                          continue
-                      # Unknown control layouts produce an unlisted owner/value.
-                      for key in re.finditer(r"(?<![\w-])['\"]?timeout-minutes['\"]?\s*:\s*([^#}\n]+)", line.split('#', 1)[0]):
-                          control_step = step if len(line) - len(line.lstrip()) > 4 else ''
-                          add(path, job, control_step, 'timeout-minutes', key[1].strip())
-                      index += 1
               return found
 
           authority = {}
@@ -1782,6 +1762,30 @@ jobs:
                   candidate = source.replace('run: cargo fmt --all --check', 'run: timeout 3 cargo fmt --all --check', 1)
                   self.assertNotEqual(candidate, source)
                   self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
+
+              def test_workflow_reader_fails_closed(self):
+                  for source, message in [('jobs: [', 'yq failed to parse'),
+                                          ('jobs: {}\n---\njobs: {}\n', 'expected one workflow document')]:
+                      with self.subTest(source=source), self.assertRaisesRegex(AssertionError, message):
+                          collect({'.github/workflows/new.yml': source})
+
+              def test_parsed_workflow_ownership(self):
+                  source = files['.github/workflows/ci.yml']
+                  original = '      - name: Format\n        run: cargo fmt --all --check\n'
+                  for replacement in [
+                      '      - {name: Format, run: timeout 3 cargo fmt --all --check}\n',
+                      '      - name: Format\n        run: |2\n          timeout 3 cargo fmt --all --check\n',
+                      '      - name: Format\n        run: &format timeout 3 cargo fmt --all --check\n      - run: *format\n',
+                      '      - name: Format\n        run: \'import subprocess; subprocess.run(["true"], timeout=60)\'\n        shell: python\n',
+                  ]:
+                      with self.subTest(replacement=replacement):
+                          candidate = source.replace(original, replacement, 1)
+                          self.assertNotEqual(candidate, source)
+                          self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
+                  candidate = source.replace('run: &sccache-stats |\n', 'run: &sccache-stats |\n          timeout 3 true\n', 1)
+                  self.assertNotEqual(candidate, source)
+                  owners = [row[1] for row in collect({'.github/workflows/ci.yml': candidate}) if row[3] == 'timeout']
+                  self.assertCountEqual(owners, ['quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'])
 
               def test_literal_fixture_values_are_not_policy(self):
                   source = ('jobs:\n  new:\n'

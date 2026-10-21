@@ -146,8 +146,11 @@ tracked source is caught.
 The search-release seam also inventories workflow deadlines, retries, report
 polling and caller fuzz-limit forwarding. Each occurrence names its workflow,
 job, step, consuming command, occurrence, value and recorded reason. Temporary
-workflow fixtures prove that unlisted, moved, changed, duplicated or unexplained controls
-fail the check, while comments and fixture data add no policy.
+workflow fixtures reject unlisted, moved, changed, duplicated or unexplained
+controls. The runner-provided Mike Farah `yq` reads YAML nodes, including flow
+mappings and aliases; a missing tool or parse failure fails the check. Python
+fixture strings and YAML comments add no policy. Shell checks cover the tested
+literal command forms, not arbitrary Bash syntax.
 
 The configured `fixtures/declared` caller also passes all declared checks.
 Workflow-body probes cover declarations, isolation, real tools, wasm and
