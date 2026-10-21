@@ -1804,6 +1804,7 @@ jobs:
           for name in ['Coverage tools', 'Caller tools']:
               permit('ci-proof', 'comparison', name, 'timeout-minutes', '10')
           permit('ci-proof', 'comparison', 'Single-job coverage baseline', 'timeout-minutes', '45')
+          permit('ci-internal', 'browser-qualification', 'Compile cache', 'timeout-minutes', '10')
           permit('ci', 'tests', 'Tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
@@ -1846,7 +1847,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 36)
+                  self.assertEqual(len(report.splitlines()), 37)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2097,7 +2098,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 36)
+                  self.assertEqual(len(report.splitlines()), 37)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
@@ -2442,6 +2443,42 @@ jobs:
 
           browser_test_job_is_single_and_optional()
           print('PASS browser_test_job_is_single_and_optional')
+
+          def browser_qualification_reuses_production_bodies():
+              source = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+              job = source.split('  browser-qualification:\n', 1)[1].split('\n  consumers:', 1)[0]
+              names = ['Toolchain', 'Compile cache identity', 'Compile cache', 'Browser test tool pin',
+                       'Browser test mise bootstrap', 'Browser test caller tools', 'Browser runtime tools',
+                       'Compile cache statistics', 'Seal compile cache']
+              def require_extracted(candidate):
+                  for name in names:
+                      assert body(name, candidate).strip() == 'bash -e -o pipefail "$PROOF_STEPS/' + name + '"', name
+              require_extracted(job)
+              for name in names:
+                  copied = job.replace('bash -e -o pipefail "$PROOF_STEPS/' + name + '"', body(name).strip(), 1)
+                  try:
+                      require_extracted(copied)
+                  except AssertionError:
+                      pass
+                  else:
+                      raise AssertionError('copied setup body accepted: ' + name)
+              assert 'python3 workflow/.github/extract-workflow-steps.py' in body('Extract workflow steps', job)
+              proof = (root / '.github/workflows/ci-proof.yml').read_text(encoding='utf-8')
+              assert body('Extract workflow steps', proof) == body('Extract workflow steps', job)
+              qualification = ast.parse(body('Immutable shared recipe qualification', job))
+              command = next(node.value for node in qualification.body if isinstance(node, ast.Assign)
+                             and any(isinstance(target, ast.Name) and target.id == 'command' for target in node.targets))
+              assert ast.unparse(command) == "(pathlib.Path(os.environ['PROOF_STEPS']) / 'Browser test recipe').read_text(encoding='utf-8')"
+              assert 'browser-qualification' in source.split('  consumers:\n', 1)[1].split('    if:', 1)[0]
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_ENV': str(directory / 'env')}
+                  subprocess.run(['python3', str(root / '.github/extract-workflow-steps.py')], env=env, check=True)
+                  for name in names + ['Browser test recipe']:
+                      assert (directory / 'proof-steps' / name).read_text(encoding='utf-8') == body(name), name
+
+          browser_qualification_reuses_production_bodies()
+          print('PASS browser_qualification_reuses_production_bodies')
 
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
@@ -4385,7 +4422,7 @@ jobs:
               assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
               assert 'needs: [sample, declared, test-tools]' in internal
               assert 'working-directory: fixtures/test-tools' in internal
-              assert 'needs: [seams, native, fuzz-issues]' in internal
+              assert 'needs: [seams, native, fuzz-issues, browser-qualification]' in internal
               assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
               assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
               for name in ['targets', 'browser', 'tests']:
@@ -4676,9 +4713,171 @@ jobs:
               issue_body_fits_platform_limit()
               print('PASS fuzz_issue_body_fits_platform_limit', flush=True)
 
+  browser-qualification:
+    name: Maestro browser qualification
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: maestro
+    steps:
+      - name: Checkout workflow
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          path: workflow
+      - name: Checkout Maestro
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          repository: Orchestration-Maestro/maestro
+          path: maestro
+          ref: a402fd15c14ddb9ad40ef173e9dd2faf6dc2ab74
+      - name: Extract workflow steps
+        working-directory: .
+        run: python3 workflow/.github/extract-workflow-steps.py
+      - name: Toolchain
+        run: bash -e -o pipefail "$PROOF_STEPS/Toolchain"
+      - name: Compile cache identity
+        id: cache-identity
+        env:
+          CALLER_REPOSITORY: Orchestration-Maestro/maestro
+          CALLER_DIRECTORY: maestro
+          HOST_OS: ${{ runner.os }}
+          HOST_ARCH: ${{ runner.arch }}
+          CACHE_JOB: ${{ github.job }}
+          CACHE_INDEX: ${{ strategy.job-index || 0 }}
+          CACHE_CALL: ''
+          CACHE_COVERAGE: 'false'
+          CACHE_ENABLED: 'true'
+          CACHE_WARM: 'false'
+          CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: bash -e -o pipefail "$PROOF_STEPS/Compile cache identity"
+      - name: Restore compile cache
+        id: cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ${{ runner.temp }}/maestro-sccache
+          key: ${{ steps.cache-identity.outputs.key }}
+          restore-keys: ${{ steps.cache-identity.outputs.prefix }}
+          enableCrossOsArchive: false
+          fail-on-cache-miss: false
+      - name: Compile cache
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        timeout-minutes: 10
+        run: bash -e -o pipefail "$PROOF_STEPS/Compile cache"
+      - name: Browser test tool pin
+        run: bash -e -o pipefail "$PROOF_STEPS/Browser test tool pin"
+      - name: Browser test mise bootstrap
+        run: bash -e -o pipefail "$PROOF_STEPS/Browser test mise bootstrap"
+      - name: Browser test caller tools
+        run: bash -e -o pipefail "$PROOF_STEPS/Browser test caller tools"
+      - name: Browser runtime tools
+        run: bash -e -o pipefail "$PROOF_STEPS/Browser runtime tools"
+      - name: Immutable shared recipe qualification
+        run: |
+          import json, os, pathlib, subprocess, time
+          root=pathlib.Path.cwd()
+          support=root/'crates/maestro-web/tests/sandbox_loading_support'
+          execution=root/'crates/maestro-web/tests/sandbox_execution_browser.rs'
+          loading=root/'crates/maestro-web/tests/sandbox_loading_browser.rs'
+          inventory=support/'exports.json'
+          driver=support/'run.cjs'
+          original={p:p.read_bytes() for p in [execution,loading,inventory,driver]}
+          logs=root.parent/'qualification-logs'
+          logs.mkdir()
+          tracked_before=subprocess.check_output(['git','diff','--binary'])
+          print('SETUP DIFF\n'+tracked_before.decode(),flush=True)
+          command=(pathlib.Path(os.environ['PROOF_STEPS'])/'Browser test recipe').read_text(encoding='utf-8')
+
+          def run(label, expected, diagnostic=None):
+              start=time.monotonic()
+              with (logs/(label+'.log')).open('w', encoding='utf-8') as output:
+                  result=subprocess.run(['bash','-e','-o','pipefail','-c',command],stdout=output,stderr=subprocess.STDOUT)
+              text=(logs/(label+'.log')).read_text(encoding='utf-8')
+              print(text, flush=True)
+              print(f'QUALIFICATION {label} exit={result.returncode} seconds={time.monotonic()-start:.3f}',flush=True)
+              if expected == 0:
+                  assert result.returncode == 0, label
+                  assert 'FAMILY execution 26/26' in text and 'FAMILY loading 19/19' in text and 'COMPLETE 45/45' in text, label
+              else:
+                  assert result.returncode != 0 and all(message in text for message in diagnostic), label
+                  assert 'COMPLETE 45/45' not in text, label
+              print('PASS '+label,flush=True)
+
+          def restore():
+              for p, data in original.items(): p.write_bytes(data)
+
+          def seed(p,name,statement):
+              text=p.read_text(encoding='utf-8'); marker='pub async fn '+name+'() {'
+              assert text.count(marker)==1
+              p.write_text(text.replace(marker,marker+'\n    '+statement,1), encoding='utf-8')
+
+          try:
+              print('INVENTORY '+inventory.read_text(encoding='utf-8'),flush=True)
+              seed(execution,'execution_preflight_avoids_all_effects','assert_eq!(1, 2, "qualification execution seed");')
+              run('sandbox_execution_seed_fails_shared_body',1,('FAIL execution_preflight_avoids_all_effects:', 'RuntimeError', 'unreachable')); restore()
+              seed(loading,'prepared_documents_keep_native_data_and_failures','assert_eq!(1, 2, "qualification loading seed");')
+              run('sandbox_loading_seed_fails_shared_body',1,('FAIL prepared_documents_keep_native_data_and_failures:', 'RuntimeError', 'unreachable')); restore()
+              data=json.loads(inventory.read_text(encoding='utf-8'));data['execution'][0]='qualification_missing_export';inventory.write_text(json.dumps(data, indent=2)+"\n", encoding='utf-8')
+              run('sandbox_missing_export_fails_shared_body',1,('qualification_missing_export',));restore()
+              data=json.loads(inventory.read_text(encoding='utf-8'));data['execution']=[];inventory.write_text(json.dumps(data, indent=2)+"\n", encoding='utf-8')
+              run('sandbox_zero_exports_fail_shared_body',1,('empty execution selection',));restore()
+              text=execution.read_text(encoding='utf-8')
+              marker='pub async fn execution_preflight_avoids_all_effects() {'
+              assert text.count(marker)==1 and text.count('    fixture.end();\n}\n\nuse crate::sandbox_execution_support;')==1
+              text=text.replace(marker, 'pub async fn execution_preflight_avoids_all_effects() -> Result<(), wasm_bindgen::JsValue> {\n    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::reject(&wasm_bindgen::JsValue::from_str("qualification async rejection"))).await?;',1)
+              text=text.replace('    fixture.end();\n}\n\nuse crate::sandbox_execution_support;', '    fixture.end();\n    Ok(())\n}\n\nuse crate::sandbox_execution_support;',1)
+              execution.write_text(text, encoding='utf-8')
+              run('sandbox_async_rejection_fails_shared_body',1,('qualification async rejection',));restore()
+              seed(execution,'execution_preflight_avoids_all_effects','wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED)).await.unwrap(); panic!("qualification async panic");')
+              run('sandbox_async_panic_fails_shared_body',1,('FAIL execution_preflight_avoids_all_effects:', 'RuntimeError', 'unreachable'));restore()
+              run('sandbox_restored_exports_pass_shared_body',0)
+              restore()
+              assert all(p.read_bytes() == data for p, data in original.items()), 'owned files were not restored'
+              assert subprocess.check_output(['git','diff','--binary']) == tracked_before, 'qualification changed tracked files'
+          finally:
+              restore()
+        shell: python
+      - name: Compile cache statistics
+        id: cache-statistics
+        if: always()
+        run: bash -e -o pipefail "$PROOF_STEPS/Compile cache statistics"
+      - name: Upload compile cache errors
+        if: always() && (steps.cache-statistics.outputs.write_errors == 'true' || ('' == 'maestro-proof' && steps.cache-statistics.outcome
+          == 'success'))
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: compile-cache-errors-root-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sccache-error.log
+          if-no-files-found: error
+      - name: Seal compile cache
+        id: cache-seal
+        run: bash -e -o pipefail "$PROOF_STEPS/Seal compile cache"
+      - name: Save compile cache
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ${{ runner.temp }}/maestro-sccache
+          key: ${{ steps.cache-identity.outputs.key }}
+      - name: Preserve qualification logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: browser-qualification
+          path: qualification-logs
+          if-no-files-found: error
+    env:
+      DECLARATION_TEST_TOOLS: 'true'
+      CARGO_BUILD_JOBS: '3'
+
   consumers:
     name: Required consumer tests
-    needs: [seams, native, fuzz-issues]
+    needs: [seams, native, fuzz-issues, browser-qualification]
     if: always()
     runs-on: ubuntu-latest
     steps:
