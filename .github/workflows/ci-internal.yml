@@ -1539,10 +1539,34 @@ jobs:
           exec(compile(tree, 'workflow body resolver', 'exec'))
 
           from collections import Counter
+          import shlex
 
           yq = shutil.which('yq')
           assert yq, 'Mike Farah yq is required to parse workflow controls'
           subprocess.run([yq, '--version'], check=True)
+
+          def shfmt_install():
+              command = body('Check tools')
+              return '\n'.join(line for line in command.splitlines()
+                               if not line.startswith('https://') or line.endswith(' shfmt'))
+
+          tool_directory = tempfile.TemporaryDirectory()
+          temporary = tool_directory.name
+          env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_ENV': temporary + '/environment'}
+          subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', shfmt_install()], env=env, check=True)
+          tools = pathlib.Path(env['GITHUB_ENV']).read_text(encoding='utf-8').removeprefix('TOOLS=').strip()
+          shfmt = str(pathlib.Path(tools) / 'shfmt')
+          assert pathlib.Path(shfmt).is_file(), 'shfmt is required to parse workflow controls'
+          subprocess.run([shfmt, '--version'], check=True)
+
+          def syntax_nodes(value):
+              if isinstance(value, dict):
+                  yield value
+                  for child in value.values():
+                      yield from syntax_nodes(child)
+              elif isinstance(value, list):
+                  for child in value:
+                      yield from syntax_nodes(child)
 
           def collect(files):
               found = []
@@ -1573,22 +1597,46 @@ jobs:
                               continue
                           body = entry['run']
                           shell = entry.get('shell', default_shell)
-                          if shell == 'python':
-                              tree = ast.parse(body)
-                              for node in ast.walk(tree):
+                          python_sources = [body] if shell == 'python' else []
+                          if shell != 'python':
+                              result = subprocess.run([shfmt, '-ln', 'bash', '--to-json'], input=body,
+                                                      text=True, capture_output=True)
+                              assert result.returncode == 0, f'shfmt failed to parse {path}/{job}/{step}: {result.stderr}'
+                              raw = body.encode('utf-8')
+                              def spelling(word):
+                                  return raw[word['Pos']['Offset']:word['End']['Offset']].decode('utf-8')
+                              for node in syntax_nodes(json.loads(result.stdout)):
+                                  command = node.get('Cmd', {})
+                                  if command.get('Type') != 'CallExpr':
+                                      continue
+                                  words = command.get('Args', [])
+                                  argv = [shlex.split(spelling(word))[0] for word in words]
+                                  if argv[:2] in (['python', '-'], ['python3', '-']):
+                                      for redirect in node.get('Redirs', []):
+                                          if 'Hdoc' in redirect and redirect.get('N', {}).get('Value', '0') == '0':
+                                              python_sources.append(''.join(part['Value'] if part['Type'] == 'Lit' else spelling(part)
+                                                                            for part in redirect['Hdoc'].get('Parts', [])))
+                                  prefix = []
+                                  for word, argument in zip(words, argv):
+                                      if argument.startswith('--'):
+                                          break
+                                      prefix.append(spelling(word))
+                                  for index, argument in enumerate(argv):
+                                      kind, equal, value = argument.partition('=')
+                                      if kind in ('--retry', '--retries', '--max-time'):
+                                          value = value if equal else argv[index + 1] if index + 1 < len(argv) else ''
+                                      elif index == 0 and argument in ('sleep', 'timeout'):
+                                          kind, value = argument, argv[1] if len(argv) > 1 else ''
+                                      else:
+                                          continue
+                                      owner = step + ' / ' + ' '.join(prefix) if kind == '--retries' else step
+                                      add(path, job, owner, kind, value)
+                          for python_source in python_sources:
+                              for node in ast.walk(ast.parse(python_source)):
                                   if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr in ('run', 'wait', 'communicate'):
                                       for keyword in node.keywords:
                                           if keyword.arg == 'timeout':
                                               add(path, job, step, 'python timeout', ast.unparse(keyword.value))
-                          else:
-                              body = re.sub(r'(?m)^[ \t]*#.*$', '', body)
-                              body = body.replace('\\\n', ' ')
-                              for match in re.finditer(r'(?<![\w-])(--retry|--retries|--max-time)\s+([^\s;]+)|(?:^|[;|&()])\s*(sleep|timeout)\s+([^\s;]+)', body, re.M):
-                                  control_step = step
-                                  if match[1] == '--retries':
-                                      command = body[:match.start()].rsplit('\n', 1)[-1].strip()
-                                      control_step += ' / ' + re.split(r'\s+--', command, 1)[0]
-                                  add(path, job, control_step, match[1] or match[3], match[2] or match[4])
                           if 'f"-timeout={os.environ[\'TIMEOUT\']}"' in body:
                               add(path, job, step, 'caller fuzz timeout', 'TIMEOUT')
               return found
@@ -1763,6 +1811,50 @@ jobs:
                   self.assertNotEqual(candidate, source)
                   self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
 
+              def test_shell_reader_fails_closed(self):
+                  source = 'jobs:\n  new:\n    steps:\n      - run: "case"\n'
+                  with self.assertRaisesRegex(AssertionError, 'shfmt failed to parse'):
+                      collect({'example.yml': source})
+                  executable = pathlib.Path(shfmt)
+                  executable.rename(executable.with_suffix('.hidden'))
+                  try:
+                      with self.assertRaises(FileNotFoundError):
+                          collect({'example.yml': 'jobs: {new: {steps: [{run: echo ok}]}}'})
+                  finally:
+                      executable.with_suffix('.hidden').rename(executable)
+
+              def test_shfmt_release_is_verified(self):
+                  row = next(line for line in shfmt_install().splitlines() if line.startswith('https://'))
+                  self.assertEqual(row, 'https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64 76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf shfmt')
+                  self.assertEqual(subprocess.check_output([shfmt, '--version'], text=True), 'v3.14.1\n')
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      curl = directory / 'curl'
+                      curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\nprintf corrupt > "$2"\n', encoding='utf-8')
+                      curl.chmod(0o755)
+                      env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_ENV': temporary + '/environment',
+                                          'PATH': temporary + ':' + os.environ['PATH']}
+                      result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', shfmt_install()],
+                                              env=env, capture_output=True, text=True)
+                      self.assertNotEqual(result.returncode, 0)
+                      self.assertFalse(pathlib.Path(env['GITHUB_ENV']).exists())
+                      self.assertFalse(list(directory.glob('maestro-check-tools.*/shfmt')))
+
+              def test_quoted_shell_payload_is_data(self):
+                  command = "cat <<'DATA'\nsleep 99\ncurl --retry 9 example\nDATA\necho 'curl --retry 8'\ncase x in x) sleep 5 ;; esac\n"
+                  source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        run: |\n' + textwrap.indent(command, '          ')
+                  self.assertEqual(collect({'example.yml': source}), [('example.yml', 'new', 'Example', 'sleep', 1, '5')])
+
+              def test_unquoted_heredoc_substitution_is_executable(self):
+                  command = 'cat <<DATA\n$(sleep 6)\nDATA\n'
+                  source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        run: |\n' + textwrap.indent(command, '          ')
+                  self.assertEqual(collect({'example.yml': source}), [('example.yml', 'new', 'Example', 'sleep', 1, '6')])
+
+              def test_python_heredoc_uses_own_language(self):
+                  command = "python3 - <<'PYTHON'\nimport subprocess\nexpected = ['--retries', '9']\nsubprocess.run(['true'], timeout=60)\nPYTHON\n"
+                  source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        run: |\n' + textwrap.indent(command, '          ')
+                  self.assertEqual(collect({'example.yml': source}), [('example.yml', 'new', 'Example', 'python timeout', 1, '60')])
+
               def test_workflow_reader_fails_closed(self):
                   for source, message in [('jobs: [', 'yq failed to parse'),
                                           ('jobs: {}\n---\njobs: {}\n', 'expected one workflow document')]:
@@ -1871,7 +1963,10 @@ jobs:
                           self.assertFalse(list(directory.glob('maestro-search-bin.*/fd')))
 
           suite = unittest.defaultTestLoader.loadTestsFromTestCase(SearchReleases)
-          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          try:
+              result = unittest.TextTestRunner(verbosity=2).run(suite)
+          finally:
+              tool_directory.cleanup()
           if not result.wasSuccessful():
               raise SystemExit(1)
 

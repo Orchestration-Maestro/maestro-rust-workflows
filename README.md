@@ -148,9 +148,13 @@ polling and caller fuzz-limit forwarding. Each occurrence names its workflow,
 job, step, consuming command, occurrence, value and recorded reason. Temporary
 workflow fixtures reject unlisted, moved, changed, duplicated or unexplained
 controls. The runner-provided Mike Farah `yq` reads YAML nodes, including flow
-mappings and aliases; a missing tool or parse failure fails the check. Python
-fixture strings and YAML comments add no policy. Shell checks cover the tested
-literal command forms, not arbitrary Bash syntax.
+mappings and aliases. Check tools installs checksum-verified shfmt v3.14.1; the
+same installer supplies the self-test. Its Bash syntax tree identifies executable
+commands, including substitutions inside unquoted heredocs, without treating
+quoted heredoc payloads or string contents as commands. Python steps and stdin
+heredocs owned by `python -` or `python3 -` are inspected through Python's syntax
+tree. Missing tools and parse failures fail the check. This is static discovery,
+not shell evaluation; dynamically generated commands are not resolved.
 
 The configured `fixtures/declared` caller also passes all declared checks.
 Workflow-body probes cover declarations, isolation, real tools, wasm and
