@@ -427,7 +427,7 @@ jobs:
               coverage = os.environ['CACHE_WARM'] == 'true' or (os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true' and os.environ.get('SHARD', '') not in ('', 'doctests'))
               shape = 'tests-coverage' if coverage else 'tests-plain'
           elif shape == 'targets':
-              shape += '-' + os.environ['CACHE_TARGET']
+              shape += '-clippy-' + os.environ['CACHE_TARGET']
           compiler = subprocess.check_output(['rustc', '-vV'], text=True)
           identity = [os.environ[name] for name in ['CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'HOST_OS', 'HOST_ARCH']] + [compiler, shape]
           digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
@@ -1492,7 +1492,8 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           rustup target add "$TARGET"
-          cargo check --workspace --all-targets --locked --target "$TARGET"
+          rustup component add clippy
+          cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && runner.os == 'Linux'
