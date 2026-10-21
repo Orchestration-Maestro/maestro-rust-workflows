@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.13.0...v0.14.0) (2026-10-21)
+
+
+### Continuous Integration
+
+* export the compile cache as cargo configuration ([#155](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/155)) ([7d72c8f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/7d72c8f05834bb0a134c1867161deb36e7f6fb61))
+
+
+### Features
+
+* **ci:** qualify shared Chromium tests against Maestro ([#154](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/154)) ([4df89cc](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/4df89cc71f7ca6248b4d30560f8966c34ba649dd))
+
 ## [0.13.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.12.0...v0.13.0) (2026-10-21)
 
 
