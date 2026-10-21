@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.15.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.14.0...v0.15.0) (2026-10-21)
+
+
+### Continuous Integration
+
+* advance the coverage proof to the native residency repair ([#160](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/160)) ([9ecc74e](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/9ecc74ea5057a92f393a3bd145387a65e0a2803d)), closes [#156](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/156)
+
+
+### Features
+
+* **ci:** warm caller-selected test compiles ([#159](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/159)) ([7cb2919](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/7cb2919ceb86f5289d117b6fefe2b74630581b03))
+
 ## [0.14.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.13.0...v0.14.0) (2026-10-21)
 
 
