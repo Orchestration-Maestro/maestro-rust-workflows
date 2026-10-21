@@ -36,4 +36,6 @@ Use Matt Pocock's five default triage labels. See `docs/agents/triage-labels.md`
 
 ### Domain docs
 
+Use [CONTEXT.md](CONTEXT.md) for this repository's terms.
+
 Single-context layout. See `docs/agents/domain.md`.
