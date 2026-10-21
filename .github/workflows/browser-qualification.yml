@@ -130,9 +130,10 @@ jobs:
         logs=root.parent/'qualification-logs'\nlogs.mkdir()\ntracked_before=subprocess.check_output(['git','diff','--binary'])\n\
         print('SETUP DIFF\\n'+tracked_before.decode(),flush=True)\ncommand='just browser-test\\n'\n\ndef run(label, expected,\
         \ diagnostic=None):\n    original_driver=original[driver].decode()\n    assert original_driver.count('browser.newPage()')\
-        \ == 1\n    driver.write_text(original_driver.replace('browser.newPage()', 'browser.newPage({deviceScaleFactor: 1.25})'))\n\
-        \    print('PROOF-ONLY driver: browser.newPage() -> browser.newPage({deviceScaleFactor: 1.25})',flush=True)\n    start=time.monotonic()\n\
-        \    with (logs/(label+'.log')).open('w') as output:\n        result=subprocess.run(['bash','-e','-o','pipefail','-c',command],stdout=output,stderr=subprocess.STDOUT)\n\
+        \ == 1\n    assert original_driver.count(\"args: ['--no-sandbox']\") == 1\n    driver.write_text(original_driver.replace('browser.newPage()',\
+        \ 'browser.newPage({deviceScaleFactor: 1.25})').replace(\"args: ['--no-sandbox']\", \"args: ['--no-sandbox', '--force-device-scale-factor=1.25']\"\
+        ))\n    print('PROOF-ONLY driver: browser.newPage() -> browser.newPage({deviceScaleFactor: 1.25}); launch adds --force-device-scale-factor=1.25',flush=True)\n\
+        \    start=time.monotonic()\n    with (logs/(label+'.log')).open('w') as output:\n        result=subprocess.run(['bash','-e','-o','pipefail','-c',command],stdout=output,stderr=subprocess.STDOUT)\n\
         \    text=(logs/(label+'.log')).read_text()\n    print(text, flush=True)\n    print(f'QUALIFICATION {label} exit={result.returncode}\
         \ seconds={time.monotonic()-start:.3f}',flush=True)\n    if expected == 0:\n        assert result.returncode == 0,\
         \ label\n        assert 'FAMILY execution 26/26' in text and 'FAMILY loading 19/19' in text and 'COMPLETE 45/45' in\
