@@ -24,7 +24,10 @@ Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-di
 and the reporter log after isolated tests fail or time out.
 
 Pull requests test changed crates and their reverse dependencies, without a
-coverage floor. Each nextest test can retry twice; flaky passes are named in
+coverage floor. Files outside every crate select the whole workspace unless
+the caller declares which packages' tests read them
+([`test_inputs`](docs/caller-checks.md#pull-request-selection-and-retries)).
+Each nextest test can retry twice; flaky passes are named in
 job summaries, while permanent failures still fail. Merge groups and main
 pushes run the full suite with coverage.
 

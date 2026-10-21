@@ -139,10 +139,23 @@ crate; lockfile changes compare the resolved transitive dependency identities
 and features at base and head, selecting affected crates. Root manifest,
 toolchain or CI workflow/schema changes select everything. Non-test declaration
 keys (such as spelling, wasm and foreign-target lists) select no extra tests;
-changes to test tools, coverage policy, additional locked manifests or declaration presence select everything.
+changes to test tools, coverage policy, additional locked manifests, declared
+test inputs or declaration presence select everything.
 Docs-only changes outside a crate select no tests. Unowned non-document files
-conservatively select everything. Every shard still fetches locked dependencies.
+conservatively select everything, unless `test_inputs` declares their readers.
+Every shard still fetches locked dependencies.
 Merge groups and main pushes run the whole suite with coverage.
+
+`test_inputs` maps repository-relative files or directories outside the
+workspace members to the exact package names whose tests read them. A change
+under a declared path selects those packages and their reverse dependencies,
+including Markdown files there. An empty list marks a path no workspace test
+reads, such as a separate fuzz workspace. Paths must stay inside the repository
+and names must be workspace packages; anything else fails the declaration.
+
+```toml
+test_inputs = { "packages/" = ["packages-crate"], "layers.json" = ["conventions"], "fuzz/" = [] }
+```
 
 CI allows two retries for each nextest test. A pass on retry remains a flaky
 pass, named in the job summary; permanent failures fail the shard. Caller
