@@ -493,7 +493,7 @@ jobs:
           export SCCACHE_DIR="$RUNNER_TEMP/maestro-sccache" SCCACHE_CACHE_SIZE=1073741824
           export SCCACHE_LOCAL_RW_MODE=READ_WRITE SCCACHE_GHA_ENABLED=false CARGO_INCREMENTAL=0
           export SCCACHE_SKIP_CACHE_CHECK=true SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-error.log" SCCACHE_LOG=debug
-          { echo RUSTC_WRAPPER=sccache; env | grep -E '^(SCCACHE_(DIR|CACHE_SIZE|LOCAL_RW_MODE|GHA_ENABLED|SKIP_CACHE_CHECK|ERROR_LOG|LOG)|CARGO_INCREMENTAL)='; } >> "$GITHUB_ENV"
+          { echo CARGO_BUILD_RUSTC_WRAPPER=sccache; env | grep -E '^(SCCACHE_(DIR|CACHE_SIZE|LOCAL_RW_MODE|GHA_ENABLED|SKIP_CACHE_CHECK|ERROR_LOG|LOG)|CARGO_INCREMENTAL)='; } >> "$GITHUB_ENV"
           PATH="$bin:$PATH" sccache --start-server
       - name: Mise bootstrap
         timeout-minutes: 10
@@ -548,7 +548,7 @@ jobs:
         id: cache-statistics
         if: always()
         run: &sccache-stats |
-          test "$RUSTC_WRAPPER" = sccache
+          test "$CARGO_BUILD_RUSTC_WRAPPER" = sccache
           test "$CARGO_INCREMENTAL" = 0
           sccache --show-stats | tee "$RUNNER_TEMP/sccache-stats"
           if grep -Eq '^Cache write errors +[1-9][0-9]*' "$RUNNER_TEMP/sccache-stats"; then
@@ -842,7 +842,7 @@ jobs:
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
             XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 MAESTRO_TEST_DIAGNOSTICS_DIR="$diagnostics" \
-            RUSTC_WRAPPER="${RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
+            CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
             SCCACHE_DIR="${SCCACHE_DIR-}" SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE-}" \
             SCCACHE_LOCAL_RW_MODE="${SCCACHE_LOCAL_RW_MODE-}" SCCACHE_GHA_ENABLED="${SCCACHE_GHA_ENABLED-}" \
             SCCACHE_SKIP_CACHE_CHECK="${SCCACHE_SKIP_CACHE_CHECK-}" SCCACHE_ERROR_LOG="${SCCACHE_ERROR_LOG-}" SCCACHE_LOG="${SCCACHE_LOG-}" \

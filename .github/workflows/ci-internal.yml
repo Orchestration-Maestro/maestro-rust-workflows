@@ -130,6 +130,7 @@ jobs:
           import os
           import pathlib
           import re
+          import shlex
           import shutil
           import subprocess
           import tempfile
@@ -193,7 +194,7 @@ jobs:
           @contextlib.contextmanager
           def daemon(directory, outcome='success', matched='false'):
               env = environment(directory) | {'bin': str(binary.parent), 'PATH': str(binary.parent) + os.pathsep + os.environ['PATH'],
-                                              'RUSTC_WRAPPER': 'sccache', 'CACHE_RESTORE_OUTCOME': outcome, 'CACHE_RESTORE_MATCHED': matched}
+                                              'CACHE_RESTORE_OUTCOME': outcome, 'CACHE_RESTORE_MATCHED': matched}
               try:
                   started = shell(startup, env)
                   assert started.returncode == 0, (started.returncode, started.stdout, started.stderr)
@@ -481,8 +482,8 @@ jobs:
                       result = shell(command, isolated_env)
                       assert result.returncode == 0, result.stdout + result.stderr
                       assert 'OPENAI_API_KEY=' not in result.stdout and 'ACTIONS_RUNTIME_TOKEN=' not in result.stdout
-                      for key in ['SCCACHE_DIR', 'SCCACHE_CACHE_SIZE', 'SCCACHE_LOCAL_RW_MODE', 'SCCACHE_GHA_ENABLED',
-                                  'SCCACHE_SKIP_CACHE_CHECK', 'SCCACHE_ERROR_LOG', 'SCCACHE_LOG']:
+                      for key in ['CARGO_BUILD_RUSTC_WRAPPER', 'SCCACHE_DIR', 'SCCACHE_CACHE_SIZE', 'SCCACHE_LOCAL_RW_MODE',
+                                  'SCCACHE_GHA_ENABLED', 'SCCACHE_SKIP_CACHE_CHECK', 'SCCACHE_ERROR_LOG', 'SCCACHE_LOG']:
                           assert f'{key}={env[key]}\n' in result.stdout, key
                       assert artifact(env) == warm_artifact
                       stats(env, '1', '0')
@@ -499,7 +500,7 @@ jobs:
                       if exists:
                           (directory / 'sccache-error.log').write_text(log, encoding='utf-8')
                       env = environment(directory) | {'PATH': str(directory) + os.pathsep + os.environ['PATH'],
-                                                       'RUSTC_WRAPPER': 'sccache', 'STATS_STATUS': str(status), 'WRITE_ERRORS': str(errors)}
+                                                       'CARGO_BUILD_RUSTC_WRAPPER': 'sccache', 'STATS_STATUS': str(status), 'WRITE_ERRORS': str(errors)}
                       result = shell(body('Compile cache statistics'), env)
                       assert result.returncode == status, result.stderr
                       assert result.stdout.startswith('Cache hits 1\n')
@@ -549,6 +550,32 @@ jobs:
                       assert built.returncode == 0, built.stderr
                       stats(env, '0', '[1-9][0-9]*')
 
+          def cache_wrapper_is_cargo_configuration():
+              # Coverage owns RUSTC_WRAPPER, so the cache travels as cargo configuration.
+              for step in ['Compile cache', 'Compile cache statistics', 'Isolated tests']:
+                  assert not re.search(r'\bRUSTC_WRAPPER\b', body(step)), step
+              assert 'echo CARGO_BUILD_RUSTC_WRAPPER=sccache;' in body('Compile cache')
+              assert 'test "$CARGO_BUILD_RUSTC_WRAPPER" = sccache' in body('Compile cache statistics')
+              assert 'CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER-}"' in body('Isolated tests')
+
+          def builds_without_the_coverage_wrapper_keep_the_cache():
+              # A build a test starts drops RUSTC_WRAPPER to stay uninstrumented and must still reach the cache.
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  with daemon(directory) as env:
+                      shown = run(['cargo', 'llvm-cov', 'show-env', '--sh'], env, root / 'fixtures/sample')
+                      assert shown.returncode == 0, shown.stderr
+                      coverage = env | dict(shlex.split(line)[1].split('=', 1)
+                                            for line in shown.stdout.splitlines() if line.startswith('export '))
+                      started = {key: value for key, value in coverage.items() if key != 'RUSTC_WRAPPER'}
+                      for build, instrumented, misses in [(coverage, True, '1'), (started, False, '2')]:
+                          shutil.rmtree(directory / 'target', ignore_errors=True)
+                          result = compile_sample(build)
+                          assert result.returncode == 0, result.stderr
+                          rlib = next((directory / 'target/debug/deps').glob('libsample-*.rlib')).read_bytes()
+                          assert (b'__llvm_covfun' in rlib) == instrumented, instrumented
+                          stats(env, '0', misses)
+
           def cache_installation_failure_stays_fatal():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -570,7 +597,7 @@ jobs:
                        snapshot_save_keys_are_run_unique, snapshot_only_default_branch_writers_save,
                        snapshot_size_bound_skips_only_ineligible_saves,
                        snapshot_seal_stops_before_measurement, cache_statistics_print_error_log,
-                       cache_error_artifacts_are_selected_and_scoped]:
+                       cache_error_artifacts_are_selected_and_scoped, cache_wrapper_is_cargo_configuration]:
               test()
               print('PASS ' + test.__name__, flush=True)
 
@@ -592,7 +619,7 @@ jobs:
               for test in [snapshot_missing_entries_build_uncached, snapshot_partial_restore_is_discarded,
                            snapshot_restore_outage_builds_uncached, snapshot_save_outage_keeps_build_success,
                            snapshot_restart_preserves_isolated_local_policy, cache_outage_keeps_compiler_failure,
-                           cache_installation_failure_stays_fatal]:
+                           builds_without_the_coverage_wrapper_keep_the_cache, cache_installation_failure_stays_fatal]:
                   test()
                   print('PASS ' + test.__name__, flush=True)
       # Reusable workflow calls cannot use continue-on-error. The broken

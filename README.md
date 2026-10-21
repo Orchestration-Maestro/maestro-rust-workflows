@@ -57,7 +57,9 @@ than being repaired. Adoption needs a workflows release and organization re-pin.
 Each of the seven Linux compiling jobs restores one compiled-cache snapshot
 through GitHub's cache action, then runs checksum-pinned sccache 0.18.0 from
 `${runner.temp}/maestro-sccache`. Compiler lookups use local disk, not GitHub
-requests per object. Incremental compilation stays disabled. The checks job's
+requests per object. Incremental compilation stays disabled. See
+[Caller compile cache](docs/caller-checks.md#compile-cache) for wrapper settings
+and coverage behaviour. The checks job's
 secret scan runs before restoration; isolated tests receive only non-secret
 local-cache and diagnostic settings, including after automatic server restarts.
 
