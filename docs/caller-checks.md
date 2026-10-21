@@ -523,8 +523,12 @@ fuzz_targets = [
 The declaration checks it like an additional locked manifest: it must be an
 existing file inside the repository. Keep that crate outside the caller
 workspace, with its own empty `[workspace]` table as cargo-fuzz lays it out, so
-no pull-request job builds it. Every `fuzz_targets` entry needs all five fields, and each number is
-a positive integer:
+no pull-request job builds it. The nightly license check runs locked over that
+crate, so it needs an allowed `license` field in its `Cargo.toml` and a
+committed `Cargo.lock`, as `fixtures/fuzz/fuzz/` has. A crate made by
+`cargo fuzz init` has neither, and every nightly run fails until both exist.
+Every `fuzz_targets` entry needs all five fields, and each number is a positive
+integer:
 
 | Field | libFuzzer flag | Meaning |
 | --- | --- | --- |
@@ -569,9 +573,9 @@ The `libfuzzer-sys` crate that cargo-fuzz uses is licensed
 cargo-deny license check on the fuzz crate with the embedded allow list and the
 caller's license exceptions, plus NCSA for `libfuzzer-sys` alone, so any other
 NCSA crate fails the job. Keep the NCSA notice in the fuzz crate, as
-`fixtures/fuzz/fuzz/NOTICE` does, and ship nothing that depends on it. The
-workspace license check never sees the fuzz crate and still rejects NCSA in
-anything the caller ships.
+`fixtures/fuzz/fuzz/NOTICE` does, and nothing you ship may depend on the fuzz
+crate. The workspace license check never sees the fuzz crate and still rejects
+NCSA in anything the caller ships.
 
 ## Adoption and verification
 
