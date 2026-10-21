@@ -1275,6 +1275,8 @@ jobs:
                                      '      - ci-internal.yml:30:11\n'
                                      '      - ci-internal.yml:38:11\n'
                                      '      - ci-proof.yml:13:11\n'
+                                     '      - ci-proof.yml:25:11\n'
+                                     '      - ci-proof.yml:37:11\n'
                                      '      - advisories.yml:16:11\n'
                                      '      - fuzz.yml:14:11\n', encoding="utf-8")
               for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
