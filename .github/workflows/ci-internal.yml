@@ -3197,6 +3197,9 @@ jobs:
                       if 'extra=true' in text:
                           assert 'extra' in result.stderr
                       assert not values
+                  path.write_bytes(b'\xff')  # Invalid UTF-8 still names the declaration.
+                  result, values = declaration(directory)
+                  assert result.returncode != 0 and '.github/ci.toml' in result.stderr and not values, result.stderr
                   path.unlink()
                   path.mkdir()  # A present path that cannot be read as a file is not absence.
                   result, values = declaration(directory)
