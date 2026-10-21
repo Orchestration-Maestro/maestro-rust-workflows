@@ -1,0 +1,202 @@
+name: Hosted browser qualification resume (throwaway)
+'on':
+  pull_request:
+    branches:
+    - main
+permissions:
+  contents: read
+jobs:
+  qualification:
+    name: Chromium browser tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: maestro
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+        repository: Orchestration-Maestro/maestro
+        path: maestro
+        ref: 88b71ca9e90df0665e942b0f1a6b771a909b7123
+    - name: Toolchain
+      run: rustup show
+    - name: Compile cache identity
+      id: cache-identity
+      env:
+        CALLER_REPOSITORY: Orchestration-Maestro/maestro
+        CALLER_DIRECTORY: maestro
+        HOST_OS: ${{ runner.os }}
+        HOST_ARCH: ${{ runner.arch }}
+        CACHE_JOB: ${{ github.job }}
+        CACHE_INDEX: ${{ strategy.job-index || 0 }}
+        CACHE_CALL: ''
+        CACHE_COVERAGE: 'false'
+        CACHE_ENABLED: 'true'
+        CACHE_WARM: 'false'
+        CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: "python3 - <<'PYTHON'\nimport hashlib\nimport json\nimport os\nimport subprocess\nshape = os.environ['CACHE_JOB']\n\
+        if shape == 'tests':\n    coverage = os.environ['CACHE_WARM'] == 'true' or (os.environ['CACHE_ENABLED'] == 'true'\
+        \ and os.environ['CACHE_COVERAGE'] == 'true' and os.environ.get('SHARD', '') not in ('', 'doctests'))\n    shape =\
+        \ 'tests-coverage' if coverage else 'tests-plain'\nelif shape == 'targets':\n    shape += '-' + os.environ['CACHE_TARGET']\n\
+        compiler = subprocess.check_output(['rustc', '-vV'], text=True)\nidentity = [os.environ[name] for name in ['CALLER_REPOSITORY',\
+        \ 'CALLER_DIRECTORY', 'HOST_OS', 'HOST_ARCH']] + [compiler, shape]\ndigest = hashlib.sha256(json.dumps(identity, ensure_ascii=True,\
+        \ separators=(',', ':')).encode('utf-8')).hexdigest()\nprefix = f'maestro-compile-v1-{digest}-'\ncall = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()\n\
+        suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX'])\
+        \ + '-' + call\nwriter = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' +\
+        \ os.environ['CACHE_DEFAULT_BRANCH']\nif os.environ['CACHE_JOB'] == 'tests':\n    shard = os.environ.get('SHARD',\
+        \ '')\n    writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['CACHE_ENABLED'] ==\
+        \ 'true' and os.environ['CACHE_COVERAGE'] == 'true'))\nwith open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8')\
+        \ as output:\n    output.write(f'prefix={prefix}\\nkey={prefix}{suffix}\\nwriter={str(writer).lower()}\\n')\nPYTHON\n"
+    - name: Restore compile cache
+      id: cache-restore
+      continue-on-error: true
+      uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+      with:
+        path: ${{ runner.temp }}/maestro-sccache
+        key: ${{ steps.cache-identity.outputs.key }}
+        restore-keys: ${{ steps.cache-identity.outputs.prefix }}
+        enableCrossOsArchive: false
+        fail-on-cache-miss: false
+    - name: Compile cache
+      env:
+        CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+        CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+      timeout-minutes: 10
+      run: "version=0.18.0\n# Digests: GitHub release asset digests of the musl tarballs.\ncase \"$(uname -m)\" in\n  x86_64)\
+        \ arch=x86_64 digest=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89 ;;\n  aarch64) arch=aarch64\
+        \ digest=2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a ;;\nesac\nname=sccache-v$version-$arch-unknown-linux-musl\n\
+        bin=$(mktemp -d \"$RUNNER_TEMP/maestro-sccache.XXXXXX\")\narchive=$(mktemp)\ncurl --fail --location \"https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz\"\
+        \ --output \"$archive\"\nprintf '%s  %s\\n' \"$digest\" \"$archive\" | sha256sum --check --status\ntar -xzf \"$archive\"\
+        \ -C \"$bin\" --strip-components=1 \"$name/sccache\"\nrm \"$archive\"\ntest -x \"$bin/sccache\"\necho \"$bin\" >>\
+        \ \"$GITHUB_PATH\"\nif [ \"$CACHE_RESTORE_OUTCOME\" = failure ] || { [ \"$CACHE_RESTORE_MATCHED\" != true ] && [ \"\
+        $CACHE_RESTORE_MATCHED\" != false ]; }; then\n  rm -rf \"$RUNNER_TEMP/maestro-sccache\"\n  echo 'Compile cache snapshot\
+        \ restore failed; using an empty local cache'\nfi\nexport SCCACHE_DIR=\"$RUNNER_TEMP/maestro-sccache\" SCCACHE_CACHE_SIZE=1073741824\n\
+        export SCCACHE_LOCAL_RW_MODE=READ_WRITE SCCACHE_GHA_ENABLED=false CARGO_INCREMENTAL=0\nexport SCCACHE_SKIP_CACHE_CHECK=true\
+        \ SCCACHE_ERROR_LOG=\"$RUNNER_TEMP/sccache-error.log\" SCCACHE_LOG=debug\n{ echo RUSTC_WRAPPER=sccache; env | grep\
+        \ -E '^(SCCACHE_(DIR|CACHE_SIZE|LOCAL_RW_MODE|GHA_ENABLED|SKIP_CACHE_CHECK|ERROR_LOG|LOG)|CARGO_INCREMENTAL)='; }\
+        \ >> \"$GITHUB_ENV\"\nPATH=\"$bin:$PATH\" sccache --start-server\n"
+    - name: Browser test tool pin
+      run: "test -f mise.toml\npython3 - <<'PYTHON'\nimport tomllib\nwith open('mise.toml', 'rb') as source:\n    config =\
+        \ tomllib.load(source)\nif 'just' not in config.get('tools', {}):\n    raise SystemExit('mise.toml: tools.just must\
+        \ select the caller browser tool')\nPYTHON\n"
+    - name: Browser test mise bootstrap
+      run: "# https://github.com/jdx/mise/releases/download/v2026.10.2/SHASUMS256.txt\nversion=2026.10.2\nexecutable=mise\n\
+        case \"$(uname -s):$(uname -m)\" in\n  Linux:x86_64) platform=linux-x64 digest=8f5f6660336f572830e33cd9b378d3131e529a0d4c4f0c553776be90a1ba302a\
+        \ ;;\n  Linux:aarch64) platform=linux-arm64 digest=8d230a5a23ac559ea24ec65280867f437000b37473d967a9bb954837592490a8\
+        \ ;;\n  Darwin:arm64) platform=macos-arm64 digest=66d49acecca413c8b334922584982a4907a10588912829873d6c55d0c6d42612\
+        \ ;;\n  Darwin:x86_64) platform=macos-x64 digest=1c6b3d4aaeba8d3b8b57e2d06e4b7825a5134b7aa6e97313bd99db6f22bac21f\
+        \ ;;\n  MINGW*:x86_64) platform=windows-x64.exe executable=mise.exe digest=15901d0b8e0cfe76c1c3b7de4194f929244f331ca3fdf183c2e3aa17ba31634c\
+        \ ;;\n  *) echo 'Unsupported mise runner host' >&2; exit 1 ;;\nesac\nurl=https://github.com/jdx/mise/releases/download/v$version/mise-v$version-$platform\n\
+        installed=$(mise --version 2>/dev/null | cut -d ' ' -f 1) || installed=\nif [ \"$installed\" != \"$version\" ]; then\n\
+        \  bin=$(mktemp -d \"$RUNNER_TEMP/maestro-mise.XXXXXX\")\n  curl --fail --location \"$url\" --output \"$bin/$executable\"\
+        \n  python3 - \"$digest\" \"$bin/$executable\" <<'PYTHON'\nimport hashlib\nimport sys\nwith open(sys.argv[2], 'rb')\
+        \ as source:\n    raise SystemExit(hashlib.file_digest(source, 'sha256').hexdigest() != sys.argv[1])\nPYTHON\n  chmod\
+        \ +x \"$bin/$executable\"\n  \"$bin/$executable\" --version | grep \"^$version \"\n  export PATH=\"$bin:$PATH\"\n\
+        \  if [ \"$executable\" = mise.exe ]; then bin=$(cygpath -w \"$bin\"); fi\n  echo \"$bin\" >> \"$GITHUB_PATH\"\nfi\n"
+    - name: Browser test caller tools
+      run: "if [ ! -f mise.toml ]; then\n  echo 'mise.toml: caller tools require a pinned tool configuration' >&2\n  exit\
+        \ 1\nfi\nmise install\nmise bin-paths | while IFS= read -r bin; do\n  if [ \"${OS:-}\" = Windows_NT ]; then bin=$(cygpath\
+        \ -w \"$bin\"); fi\n  echo \"$bin\" >> \"$GITHUB_PATH\"\ndone\n"
+    - name: Browser runtime tools
+      run: "tools=$(mktemp -d \"$RUNNER_TEMP/browser-runtime.XXXXXX\")\ncd \"$tools\"\ncurl --fail --silent --show-error --location\
+        \ https://cdn.playwright.dev/builds/cft/156.0.8078.4/linux64/chrome-linux64.zip -o chromium.zip\necho '43fd31766c7533a02dda2ded5ad50c2f861cd5400be7509c0abad71129f79d79\
+        \  chromium.zip' | sha256sum --check --status\nunzip -q chromium.zip\ncurl --fail --silent --show-error --location\
+        \ https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz\
+        \ -o bindgen.tar.gz\necho '82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e  bindgen.tar.gz' | sha256sum\
+        \ --check --status\ntar -xzf bindgen.tar.gz\ncurl --fail --silent --show-error --location https://registry.npmjs.org/playwright/-/playwright-1.64.1.tgz\
+        \ -o playwright.tgz\ncurl --fail --silent --show-error --location https://registry.npmjs.org/playwright-core/-/playwright-core-1.64.1.tgz\
+        \ -o playwright-core.tgz\npython3 - <<'PYTHON'\nimport base64\nimport hashlib\nimport pathlib\nfor name, digest in\
+        \ [\n    ('playwright', 'HCrVhHr5QQuwYoswEUGTb7gGp522yflbv/ST8nF4sFWGuLjQCt17Q/EubpGGSNKYn1tsTCPZxqHhHCfVURu7UA=='),\n\
+        \    ('playwright-core', 'BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ=='),\n\
+        ]:\n    if hashlib.sha512(pathlib.Path(name + '.tgz').read_bytes()).digest() != base64.b64decode(digest):\n      \
+        \  raise SystemExit(name + ': archive checksum mismatch')\nPYTHON\nmkdir -p node_modules/playwright node_modules/playwright-core\n\
+        tar -xzf playwright.tgz --strip-components=1 -C node_modules/playwright\ntar -xzf playwright-core.tgz --strip-components=1\
+        \ -C node_modules/playwright-core\nnode - <<'JAVASCRIPT'\nconst assert = require('node:assert/strict');\nassert(Number(process.versions.node.split('.')[0])\
+        \ >= 20);\nconst driver = require('./node_modules/playwright/package.json');\nconst core = require('./node_modules/playwright-core/package.json');\n\
+        assert.equal(driver.version, '1.64.1');\nassert.deepEqual(driver.dependencies, {'playwright-core': '1.64.1'});\nassert.equal(core.version,\
+        \ '1.64.1');\nassert.deepEqual(core.dependencies || {}, {});\nassert.deepEqual(core.optionalDependencies || {}, {});\n\
+        assert.deepEqual(driver.optionalDependencies || {}, {});\nconsole.log(process.version);\nJAVASCRIPT\nnode node_modules/playwright/cli.js\
+        \ install-deps chromium\nnode node_modules/playwright/cli.js --version\n\"$tools/chrome-linux64/chrome\" --version\n\
+        \"$tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl/wasm-bindgen\" --version\necho \"$tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl\"\
+        \ >> \"$GITHUB_PATH\"\necho \"PLAYWRIGHT_MODULE=$tools/node_modules/playwright\" >> \"$GITHUB_ENV\"\necho \"CHROMIUM_PATH=$tools/chrome-linux64/chrome\"\
+        \ >> \"$GITHUB_ENV\"\n"
+    - name: Immutable shared recipe qualification
+      run: "import json, pathlib, subprocess, time\nroot=pathlib.Path.cwd()\nsupport=root/'crates/maestro-web/tests/sandbox_loading_support'\n\
+        execution=root/'crates/maestro-web/tests/sandbox_execution_browser.rs'\nloading=root/'crates/maestro-web/tests/sandbox_loading_browser.rs'\n\
+        inventory=support/'exports.json'\noriginal={p:p.read_bytes() for p in [execution,loading,inventory]}\nlogs=root.parent/'qualification-logs'\n\
+        logs.mkdir()\ncommand='just browser-test\\n'\n\ndef run(label, expected, diagnostic=None):\n    start=time.monotonic()\n\
+        \    with (logs/(label+'.log')).open('w') as output:\n        result=subprocess.run(['bash','-e','-o','pipefail','-c',command],stdout=output,stderr=subprocess.STDOUT)\n\
+        \    text=(logs/(label+'.log')).read_text()\n    print(text, flush=True)\n    print(f'QUALIFICATION {label} exit={result.returncode}\
+        \ seconds={time.monotonic()-start:.3f}',flush=True)\n    if expected == 0:\n        assert result.returncode == 0,\
+        \ label\n        assert 'FAMILY execution 26/26' in text and 'FAMILY loading 19/19' in text and 'COMPLETE 45/45' in\
+        \ text, label\n    else:\n        assert result.returncode != 0 and diagnostic in text, label\n        assert 'COMPLETE\
+        \ 45/45' not in text, label\n    print('PASS '+label,flush=True)\n\ndef restore():\n    for p, data in original.items():\
+        \ p.write_bytes(data)\n\ndef seed(p,name,statement):\n    text=p.read_text(); marker='pub async fn '+name+'() {'\n\
+        \    assert text.count(marker)==1\n    p.write_text(text.replace(marker,marker+'\\n    '+statement,1))\n\ntry:\n \
+        \   print('INVENTORY '+inventory.read_text(),flush=True)\n    run('sandbox_browser_exports_run_in_shared_body',0)\n\
+        \    run('sandbox_warm_exports_run_in_shared_body',0)\n    seed(execution,'execution_preflight_avoids_all_effects','assert_eq!(1,\
+        \ 2, \"qualification execution seed\");')\n    run('sandbox_execution_seed_fails_shared_body',1,'qualification execution\
+        \ seed'); restore()\n    seed(loading,'prepared_documents_keep_native_data_and_failures','assert_eq!(1, 2, \"qualification\
+        \ loading seed\");')\n    run('sandbox_loading_seed_fails_shared_body',1,'qualification loading seed'); restore()\n\
+        \    data=json.loads(inventory.read_text());data['execution'][0]='qualification_missing_export';inventory.write_text(json.dumps(data,\
+        \ indent=2)+\"\\n\")\n    run('sandbox_missing_export_fails_shared_body',1,'qualification_missing_export');restore()\n\
+        \    data=json.loads(inventory.read_text());data['execution']=[];inventory.write_text(json.dumps(data, indent=2)+\"\
+        \\n\")\n    run('sandbox_zero_exports_fail_shared_body',1,'empty execution selection');restore()\n    text=execution.read_text()\n\
+        \    marker='pub async fn execution_preflight_avoids_all_effects() {'\n    assert text.count(marker)==1 and text.count('\
+        \    fixture.end();\\n}\\n\\nuse crate::sandbox_execution_support;')==1\n    text=text.replace(marker, 'pub async\
+        \ fn execution_preflight_avoids_all_effects() -> Result<(), wasm_bindgen::JsValue> {\\n    wasm_bindgen_futures::JsFuture::from(js_sys::Promise::reject(&wasm_bindgen::JsValue::from_str(\"\
+        qualification async rejection\"))).await?;',1)\n    text=text.replace('    fixture.end();\\n}\\n\\nuse crate::sandbox_execution_support;',\
+        \ '    fixture.end();\\n    Ok(())\\n}\\n\\nuse crate::sandbox_execution_support;',1)\n    execution.write_text(text)\n\
+        \    run('sandbox_async_rejection_fails_shared_body',1,'qualification async rejection');restore()\n    seed(execution,'execution_preflight_avoids_all_effects','wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&wasm_bindgen::JsValue::UNDEFINED)).await.unwrap();\
+        \ panic!(\"qualification async panic\");')\n    run('sandbox_async_panic_fails_shared_body',1,'qualification async\
+        \ panic');restore()\n    run('sandbox_restored_exports_pass_shared_body',0)\n    subprocess.run(['git','diff','--exit-code'],check=True)\n\
+        finally:\n    restore()\n"
+      shell: python
+    - name: Compile cache statistics
+      id: cache-statistics
+      if: always()
+      run: "test \"$RUSTC_WRAPPER\" = sccache\ntest \"$CARGO_INCREMENTAL\" = 0\nsccache --show-stats | tee \"$RUNNER_TEMP/sccache-stats\"\
+        \nif grep -Eq '^Cache write errors +[1-9][0-9]*' \"$RUNNER_TEMP/sccache-stats\"; then\n  echo write_errors=true >>\
+        \ \"$GITHUB_OUTPUT\"\nelse\n  echo write_errors=false >> \"$GITHUB_OUTPUT\"\nfi\nif [ -f \"$RUNNER_TEMP/sccache-error.log\"\
+        \ ]; then\n  token=$(python3 -c 'import secrets; print(secrets.token_hex(32))')\n  echo \"::stop-commands::$token\"\
+        \n  cat \"$RUNNER_TEMP/sccache-error.log\"\n  printf '\\n::%s::\\n' \"$token\"\nfi\n"
+    - name: Upload compile cache errors
+      if: always() && (steps.cache-statistics.outputs.write_errors == 'true' || ('' == 'maestro-proof' && steps.cache-statistics.outcome
+        == 'success'))
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: compile-cache-errors-root-${{ github.job }}-${{ strategy.job-index || 0 }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/sccache-error.log
+        if-no-files-found: error
+    - name: Seal compile cache
+      id: cache-seal
+      run: "if ! sccache --stop-server; then\n  echo 'Compile cache snapshot save skipped: server stop failed'\n  exit 0\n\
+        fi\npython3 - <<'PYTHON'\nimport os\nimport pathlib\nimport stat\nfiles = size = 0\ntry:\n    def failed(error):\n\
+        \        raise error\n    for directory, _, names in os.walk(os.environ['SCCACHE_DIR'], onerror=failed):\n       \
+        \ for name in names:\n            metadata = pathlib.Path(directory, name).lstat()\n            if stat.S_ISREG(metadata.st_mode):\n\
+        \                files += 1\n                size += metadata.st_size\nexcept OSError:\n    print('Compile cache snapshot\
+        \ save skipped: cache inspection failed')\nelse:\n    print(f'Compile cache snapshot: {files} files, {size} bytes')\n\
+        \    if not files or not size:\n        print('Compile cache snapshot save skipped: empty cache')\n    elif size >\
+        \ 1073741824:\n        print('Compile cache snapshot save skipped: exceeds 1073741824 bytes')\n    else:\n       \
+        \ with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:\n            output.write('eligible=true\\\
+        n')\nPYTHON\n"
+    - name: Save compile cache
+      if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+      continue-on-error: true
+      uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809
+      with:
+        path: ${{ runner.temp }}/maestro-sccache
+        key: ${{ steps.cache-identity.outputs.key }}
+    - name: Preserve qualification logs
+      if: always()
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: browser-qualification
+        path: qualification-logs
+        if-no-files-found: error
+    env:
+      DECLARATION_TEST_TOOLS: 'true'
+      CARGO_BUILD_JOBS: '3'
