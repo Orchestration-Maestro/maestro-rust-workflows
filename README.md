@@ -144,6 +144,22 @@ verified installations and the sample job's added execution time. The secrets
 probe proves restored `target/` output is not scanned while the same secret in
 tracked source is caught.
 
+The search-release seam also inventories workflow deadlines, retries, report
+polling and caller fuzz-limit forwarding. Each occurrence names its workflow,
+job, step, consuming command, occurrence, value and recorded reason. Temporary
+workflow fixtures reject unlisted, moved, changed, duplicated or unexplained
+controls. The runner-provided Mike Farah `yq` reads YAML nodes, including flow
+mappings and aliases. Check tools installs checksum-verified shfmt v3.14.1; the
+same installer supplies the self-test. Its Bash syntax tree identifies executable
+commands, including substitutions inside unquoted heredocs, without treating
+quoted heredoc payloads or string contents as commands. Python steps and stdin
+heredocs owned by `python -` or `python3 -` are inspected through Python's syntax
+tree. A consumer table binds shell options to the commands that interpret them;
+arguments to other commands remain data. The checker follows `run_isolated` and
+`timeout` wrappers. An unresolved dynamic command carrying a control option
+fails closed. Missing tools and parse failures also fail the check. This is
+static discovery, not shell evaluation.
+
 The configured `fixtures/declared` caller also passes all declared checks.
 Workflow-body probes cover declarations, isolation, real tools, wasm and
 browser failures and pinned tooling. A developer-tool fixture proves build-script
