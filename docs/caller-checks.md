@@ -178,9 +178,11 @@ component distribution, not a caller-provided executable.
   other than crates.io and undeclared git sources fail. Licenses, bans and sources run on
   every event. A pull request or merge group checks advisories and yanked crates when it changes
   `Cargo.lock`, or `advisory_exceptions` or `yanked_crate_exceptions`
-  in `.github/ci.toml`, including exception removal. An absent or unreadable base
-  also selects the check. Other declaration changes, such as
-  `spelling_words`, don't select the check, and the step prints that advisories were not checked.
+  in `.github/ci.toml`, including exception removal. An absent base also selects
+  the check. An unreadable nonempty base selects the check for merge groups;
+  pull requests fail package selection before the advisory check. Other declaration
+  changes, such as `spelling_words`, don't select the check, and the step prints that
+  advisories were not checked.
   Pushes to `main`, other events and the scheduled scan always check them, so they still
   catch an advisory that reaches `main`.
 - The scheduled advisory scan (`.github/workflows/advisories.yml`) runs this workflow in

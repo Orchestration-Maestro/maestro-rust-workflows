@@ -109,8 +109,9 @@ selects its toolchain through rustup.
 Every caller also gets the dependency and source checks: cargo-deny
 (licenses, bans, sources and advisories; pull requests and merge groups check
 advisories when they change `Cargo.lock` or the advisory or yanked-crate exceptions
-in `.github/ci.toml` (or when the base cannot be read), while an
-[hourly advisory scan](docs/caller-checks.md#required-dependency-source-and-coverage-checks)
+in `.github/ci.toml`, when the base is absent, or for merge groups when the base
+cannot be read. Pull requests with an unreadable nonempty base fail package
+selection. The [hourly advisory scan](docs/caller-checks.md#required-dependency-source-and-coverage-checks)
 of Maestro's `main` opens an issue per new finding), cargo-machete (unused dependencies; a package named by `hakari-package` in
 `.config/hakari.toml` is not checked and its member dependency edge is accepted),
 cargo-hakari (`cargo hakari verify` when `.config/hakari.toml` exists),
