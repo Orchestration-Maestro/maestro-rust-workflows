@@ -106,6 +106,19 @@ need to set `RUSTC_WRAPPER` for caching. A build that a test starts after removi
 `RUSTC_WRAPPER` keeps the cache without coverage instrumentation. Coverage runs
 still instrument workspace builds and send their compiles through the cache.
 
+| Jobs | Host | Restore | Save |
+| --- | --- | --- | --- |
+| Format and lint, Docs, Tests, Doctests, Dependency/source/coverage checks, Wasm and browser build, Chromium browser tests | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
+| Declared target checks | Linux, arm64 macOS, x86_64 Windows | Every call that runs the job | Default-branch pushes only; one writer per host/target shape |
+
+A default-branch push with `warm-cache: true` also runs the declared target
+checks. Other warm calls skip them. Host-specific, checksum-pinned assets
+are listed in [Compile cache](../README.md#compile-cache).
+
+The 1 GiB native-payload bound applies to each save, not the repository's
+10 GB cache allowance. Compressed snapshot sizes are measured separately;
+GitHub eviction can remove even the newest snapshot of a shape.
+
 ## Test shards
 
 Tests use checksum-pinned cargo-nextest 0.9.148 with four automatic
