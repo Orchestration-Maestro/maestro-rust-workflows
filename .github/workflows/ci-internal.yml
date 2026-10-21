@@ -90,6 +90,12 @@ jobs:
           import re
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
           def snapshot_jobs_share_one_owner():
+              import json
+              import subprocess
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              assert document['permissions'] == {'contents': 'read'}
+              assert set(document['jobs']) == {'declaration', 'quality', 'docs', 'tests', 'checks', 'advisories',
+                                               'targets', 'browser', 'browser-tests', 'fuzz', 'tests-result'}
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
               owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
@@ -104,8 +110,12 @@ jobs:
                   assert "steps.cache-identity.outputs.writer == 'true'" in save, (name, 'save must require the shared writer decision')
                   if name == 'targets':
                       for stage in stages:
-                          step = job.split('- name: ' + stage + '\n', 1)[1].split('      - name:', 1)[0]
-                          assert "runner.os == 'Linux'" in step, stage
+                          parsed = next(item for item in document['jobs'][name]['steps'] if item.get('name') == stage)
+                          assert 'runner.os' not in parsed.get('if', ''), stage
+                          if stage == 'Compile cache statistics':
+                              assert parsed['if'] == 'always()'
+                          if stage == 'Save compile cache':
+                              assert "steps.cache-seal.outputs.eligible == 'true'" in parsed['if']
               for name in owners - {'quality'}:
                   assert 'env: *sccache-identity-env' in jobs[name]
                   for alias in ['sccache-identity', 'sccache-restore', 'sccache-install', 'sccache-stats', 'sccache-seal', 'sccache-save']:
@@ -115,7 +125,8 @@ jobs:
               for obsolete in ['Compile cache credentials', 'SCCACHE_GHA_VERSION', 'SCCACHE_GHA_RW_MODE',
                                'SCCACHE_GHA_ENABLED=true', 'cache-proof-bulk', 'ACTIONS_RUNTIME_TOKEN']:
                   assert obsolete not in workflow, obsolete
-              assert 'version=0.18.0' in workflow and 'sha256sum --check --status' in workflow
+              installer = next(item['run'] for item in document['jobs']['quality']['steps'] if item.get('name') == 'Compile cache')
+              assert 'version=0.18.0' in installer and "hashlib.file_digest(source, 'sha256')" in installer
               assert 'SCCACHE_GHA_ENABLED=false' in workflow and 'CARGO_INCREMENTAL=0' in workflow
 
           snapshot_jobs_share_one_owner()
@@ -263,6 +274,11 @@ jobs:
                         ['quality', 'docs', 'checks', 'browser', 'browser-tests']]
               assert len(set(shapes + [plain, coverage])) == 7
               assert snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-unknown-linux-gnu')['prefix'] != snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='x86_64-unknown-linux-gnu')['prefix']
+
+              apple = snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-apple-darwin', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
+              assert apple == snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-apple-darwin', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
+              assert apple != snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-apple-darwin', HOST_OS='Linux', HOST_ARCH='ARM64')['prefix']
+              assert apple != snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='x86_64-apple-darwin', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
 
           def snapshot_key_preserves_caller_isolation():
               base = snapshot_keys()['prefix']
@@ -576,6 +592,79 @@ jobs:
                           assert (b'__llvm_covfun' in rlib) == instrumented, instrumented
                           stats(env, '0', misses)
 
+          def cache_install_selects_pinned_host_asset():
+              hosts = [('Linux', 'x86_64', 'x86_64-unknown-linux-musl'),
+                       ('Linux', 'aarch64', 'aarch64-unknown-linux-musl'),
+                       ('Darwin', 'arm64', 'aarch64-apple-darwin'),
+                       ('MINGW64_NT-10.0-26100', 'x86_64', 'x86_64-pc-windows-msvc')]
+              installer = body('Compile cache')
+              assert "hashlib.file_digest(source, 'sha256')" in installer
+              for forbidden in ['mise', 'yq', 'CARGO_TARGET_DIR']:
+                  assert forbidden not in installer
+              with tempfile.TemporaryDirectory(prefix='cache install space ') as temporary:
+                  archives = pathlib.Path(temporary)
+                  for host, arch, platform in hosts:
+                      archive = archives / (platform + '.tar.gz')
+                      url = f'https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-{platform}.tar.gz'
+                      subprocess.run(['curl', '--fail', '--location', url, '--output', str(archive)], check=True)
+                  for host, arch, platform in hosts + [('Darwin', 'x86_64', ''), ('FreeBSD', 'amd64', '')]:
+                      for corrupt in ([False, True] if platform else [False]):
+                          with tempfile.TemporaryDirectory(prefix='cache host space ') as trial:
+                              directory = pathlib.Path(trial)
+                              shim = directory / 'shim'
+                              shim.mkdir()
+                              # Host routing runs on Linux; substitute execution only after extracting verified release bytes.
+                              tools = {
+                                  'uname': 'if [ "$1" = -s ]; then echo "$HOST"; else echo "$ARCH"; fi\n',
+                                  'curl': 'printf "%s\\n" "$@" > "$TRACE/download"\nwhile [ "$1" != --output ]; do shift; done\nif [ "$CORRUPT" = true ]; then printf corrupt > "$2"; else cp "$ARCHIVE" "$2"; fi\n',
+                                  'tar': 'printf "%s\\n" "$@" > "$TRACE/extract"\n"$REAL_TAR" "$@" || exit\nwhile [ "$1" != -C ]; do shift; done\nbin=$2\nprintf \'#!/bin/sh\\nprintf "%%s\\\\n" "$@" >> "$TRACE/server"\\n\' > "$bin/sccache"\nchmod +x "$bin/sccache"\nif [ "$OS" = Windows_NT ]; then cp "$bin/sccache" "$bin/sccache.exe"; fi\n',
+                                  'mktemp': 'result=$("$REAL_MKTEMP" "$@") || exit\nif [ "$OS" = Windows_NT ] && [ "$1" = -d ]; then printf "%s\\n" "C:\\\\native\\\\$(basename "$result")"; else printf "%s\\n" "$result"; fi\n',
+                                  'cygpath': 'printf "%s\\n" "$@" >> "$TRACE/cygpath"\nif [ "$1" = -u ]; then printf "%s/%s\\n" "$TRACE" "${2##*\\\\}"; else printf "%s\\n" "C:\\\\native\\\\$(basename "$2")"; fi\n',
+                                  'mise': 'exit 99\n', 'yq': 'exit 99\n'}
+                              for tool, content in tools.items():
+                                  source = directory / 'source'
+                                  source.write_text('#!/bin/sh\n' + content, encoding='utf-8')
+                                  subprocess.run(['install', '-m', '0700', str(source), str(shim / tool)], check=True)
+                              windows = host.startswith('MINGW')
+                              env = environment(directory) | {
+                                  'HOST': host, 'ARCH': arch, 'OS': 'Windows_NT' if windows else '',
+                                  'CORRUPT': str(corrupt).lower(), 'ARCHIVE': str(archives / (platform + '.tar.gz')),
+                                  'TRACE': str(directory), 'TMPDIR': str(directory), 'CACHE_RESTORE_MATCHED': 'false',
+                                  'PATH': str(shim) + os.pathsep + os.environ['PATH'], 'REAL_TAR': shutil.which('tar'),
+                                  'REAL_MKTEMP': shutil.which('mktemp')}
+                              result = shell(installer, env)
+                              if corrupt or not platform:
+                                  assert result.returncode != 0, (host, arch, corrupt)
+                                  assert not (directory / 'extract').exists() and not (directory / 'server').exists()
+                                  assert not (directory / 'paths').exists() and not (directory / 'env').exists()
+                                  if not platform:
+                                      assert not (directory / 'download').exists()
+                                      assert result.stderr == 'Unsupported compile cache runner host\n'
+                                  continue
+                              assert result.returncode == 0, (host, result.stderr)
+                              name = f'sccache-v0.18.0-{platform}'
+                              assert (directory / 'download').read_text(encoding='utf-8').splitlines() == [
+                                  '--fail', '--location', f'https://github.com/mozilla/sccache/releases/download/v0.18.0/{name}.tar.gz',
+                                  '--output', (directory / 'extract').read_text(encoding='utf-8').splitlines()[1]]
+                              extraction = (directory / 'extract').read_text(encoding='utf-8').splitlines()
+                              executable = 'sccache.exe' if windows else 'sccache'
+                              assert extraction[0] == '-xzf' and extraction[2] == '-C'
+                              assert extraction[4:] == ['--strip-components=1', f'{name}/{executable}']
+                              assert (directory / 'server').read_text(encoding='utf-8') == '--start-server\n'
+                              exported = dict(line.split('=', 1) for line in (directory / 'env').read_text(encoding='utf-8').splitlines())
+                              assert exported['CARGO_BUILD_RUSTC_WRAPPER'] == 'sccache' and exported['CARGO_INCREMENTAL'] == '0'
+                              assert 'CARGO_TARGET_DIR' not in exported
+                              if windows:
+                                  assert (directory / 'paths').read_text(encoding='utf-8') == 'C:\\native\\' + pathlib.Path(extraction[3]).name + '\n'
+                                  assert exported['SCCACHE_DIR'] == 'C:\\native\\maestro-sccache'
+                                  assert (directory / 'cygpath').read_text(encoding='utf-8').splitlines() == [
+                                      '-u', 'C:\\native\\' + pathlib.Path(extraction[3]).name,
+                                      '-w', extraction[3], '-w', str(directory / 'maestro-sccache')]
+                              else:
+                                  assert (directory / 'paths').read_text(encoding='utf-8') == extraction[3] + '\n'
+                                  assert exported['SCCACHE_DIR'] == str(directory / 'maestro-sccache')
+                                  assert not (directory / 'cygpath').exists()
+
           def cache_installation_failure_stays_fatal():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -597,7 +686,8 @@ jobs:
                        snapshot_save_keys_are_run_unique, snapshot_only_default_branch_writers_save,
                        snapshot_size_bound_skips_only_ineligible_saves,
                        snapshot_seal_stops_before_measurement, cache_statistics_print_error_log,
-                       cache_error_artifacts_are_selected_and_scoped, cache_wrapper_is_cargo_configuration]:
+                       cache_error_artifacts_are_selected_and_scoped, cache_wrapper_is_cargo_configuration,
+                       cache_install_selects_pinned_host_asset]:
               test()
               print('PASS ' + test.__name__, flush=True)
 
@@ -2834,8 +2924,23 @@ jobs:
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               for name, job in jobs.items():
-                  if name not in ('declaration', 'tests'):
+                  if name not in ('declaration', 'tests', 'targets'):
                       assert '!inputs.warm-cache' in re.search(r'^    if: (.*)', job, re.MULTILINE)[1], name
+              condition = document['jobs']['targets']['if']
+              for warm in (False, True):
+                  for event in ('push', 'pull_request', 'merge_group', 'workflow_dispatch'):
+                      for advisory, fuzz, targets in [(False, False, '[{}]'), (True, False, '[{}]'),
+                                                       (False, True, '[{}]'), (False, False, '[]')]:
+                          expression = condition.removeprefix('$' + '{{').removesuffix('}}').strip()
+                          for key, value in {'inputs.warm-cache': warm, 'github.event_name': event,
+                                             'inputs.advisory-scan': advisory, 'inputs.fuzz-scan': fuzz,
+                                             'needs.declaration.outputs.targets': targets}.items():
+                              expression = expression.replace(key, repr(value))
+                          expression = expression.replace('&&', ' and ').replace('||', ' or ')
+                          expression = re.sub(r'!(?!=)', ' not ', expression).strip()
+                          observed = eval(expression, {'__builtins__': {}})
+                          assert observed == (not advisory and not fuzz and targets != '[]' and
+                                              (not warm or event == 'push')), (warm, event, advisory, fuzz, targets)
               tests = jobs['tests']
               assert 'WARM_CACHE: $' + '{{ inputs.warm-cache }}' in tests
               assert "inputs.warm-cache && '[\"warm\"]'" in tests
