@@ -1376,7 +1376,6 @@ jobs:
           import subprocess
           import tempfile
           import textwrap
-          import tomllib
 
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding="utf-8")
           root = pathlib.Path.cwd()
@@ -1634,7 +1633,6 @@ jobs:
           print('PASS absent_keeps_base_checks')
 
           def install_recording_runner(directory, real_cargo=None, manifest=None, status=0):
-              import shutil
               tools = directory / 'runner-tools'
               tools.mkdir()
               log = directory / 'commands.jsonl'
