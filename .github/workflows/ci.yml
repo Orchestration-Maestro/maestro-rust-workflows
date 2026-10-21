@@ -364,11 +364,14 @@ jobs:
           # A change can introduce an advisory only through the lockfile, the declared exceptions or the extra locked manifests.
           check_advisories = event not in ('pull_request', 'merge_group') or not base
           if not check_advisories:
-              changed_files = subprocess.check_output(['git', 'diff', '--name-only', '-z', base, 'HEAD', '--', 'Cargo.lock', '.github/ci.toml'], text=True).split('\0')[:-1]
-              if '.github/ci.toml' in changed_files:
+              # A base the checkout cannot read keeps the check.
+              diff = subprocess.run(['git', 'diff', '--name-only', '-z', base, 'HEAD', '--', 'Cargo.lock', '.github/ci.toml'], capture_output=True, text=True)
+              changed_files = diff.stdout.split('\0')[:-1]
+              if diff.returncode or 'Cargo.lock' in changed_files:
+                  check_advisories = True
+              elif '.github/ci.toml' in changed_files:
                   before, after = declarations()
                   check_advisories = any(before.get(key) != after.get(key) for key in ('advisory_exceptions', 'yanked_crate_exceptions', 'additional_locked_manifests'))
-              check_advisories = check_advisories or 'Cargo.lock' in changed_files
           print(f'Advisory check ({event}): {"required" if check_advisories else "skipped, no change to Cargo.lock or the declared exceptions and locked manifests"}')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')

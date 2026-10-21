@@ -3098,6 +3098,10 @@ jobs:
                   output = directory / '.git/no-base'
                   result = execute('Select test packages', directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
                   assert result.returncode == 0 and 'check_advisories=true' in output.read_text(encoding='utf-8'), result.stdout + result.stderr
+                  # A base the checkout cannot read keeps the check.
+                  output.write_text('', encoding='utf-8')
+                  result = execute('Select test packages', directory, {'TEST_EVENT': 'merge_group', 'BASE_REF': '0' * 40, 'GITHUB_OUTPUT': str(output)})
+                  assert result.returncode == 0 and 'check_advisories=true' in output.read_text(encoding='utf-8'), result.stdout + result.stderr
                   git('reset', '--hard', base)
                   (directory / 'a/Cargo.toml').write_text((directory / 'a/Cargo.toml').read_text(encoding='utf-8').replace('0.1.0', '0.2.0'), encoding='utf-8')
                   subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
