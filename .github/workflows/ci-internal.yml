@@ -558,19 +558,19 @@ jobs:
               shutil.copytree(root / 'fixtures/yanked-crates', directory, ignore=shutil.ignore_patterns('target'))
               entries = [{'package': 'once_cell', 'version': version} for version in ['0.0.1', '0.0.2']]
               for case, config, expected in [
-                  ('exact-versions', {'yanked_crate_exceptions': entries}, None),
-                  ('different-version', {'yanked_crate_exceptions': entries[:1]}, '0.0.2'),
-                  ('no-exception', {}, '0.0.1'),
-                  ('empty-exceptions', {'yanked_crate_exceptions': []}, '0.0.1'),
+                  ('exact-versions', {'yanked_crate_exceptions': entries}, []),
+                  ('different-version', {'yanked_crate_exceptions': entries[:1]}, ['0.0.2']),
+                  ('no-exception', {}, ['0.0.1', '0.0.2']),
+                  ('empty-exceptions', {'yanked_crate_exceptions': []}, ['0.0.1', '0.0.2']),
               ]:
                   result = execute('Embedded check defaults', directory, env | {'QUALITY_CONFIG': json.dumps(config)})
                   assert result.returncode == 0, result.stdout + result.stderr
                   result = execute('Licenses and dependencies', directory, env)
                   output = result.stdout + result.stderr
-                  if expected is None:
-                      assert result.returncode == 0, output
-                  else:
-                      assert result.returncode != 0 and 'error[yanked]' in output and expected in output, output
+                  # Each yank diagnostic quotes its own Cargo.lock entry; other diagnostics name both versions.
+                  yanked = [version for block in re.split(r'(?m)^(?=\w+\[)', output) if block.startswith('error[yanked]')
+                            for version in re.findall(r'once_cell (\S+) registry\+', block)]
+                  assert (result.returncode == 0) == (not expected) and sorted(yanked) == expected, output
                   print(f'PASS yanked_exceptions_{case}: exit {result.returncode}', flush=True)
               # The yank exception does not excuse a security advisory or a license.
               for fixture, package, version, finding in [('advisory-exceptions', 'bincode', '1.3.3', 'RUSTSEC-2025-0141'),
