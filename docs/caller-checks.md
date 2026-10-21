@@ -14,9 +14,9 @@ parent as its PR base. The warmer is non-required, and consumers still run if it
 fails. See [Compile cache](../README.md#compile-cache) for snapshot shapes,
 fail-open transfers and storage limits.
 Advance all proof checkout references together after checking locked dependencies.
-The proof uses `69a88cc05dcc39eaf6097af78718eb1b1da81c56` for current caller tool
+The proof uses `696d241bd2af03bbdf8ebfa8a8e6df39dfd45bd1` for current caller tool
 downloads and patched certificate-verification dependencies. Its parent,
-`72d3e4831971e95a504224ac0da7c0cdc8475fdf`, supplies the warm build and
+`1f1fc9a053defd4b054fd42ae1f2913187a04b9f`, supplies the warm build and
 selected-package base.
 Changes to either `.github/workflows/ci.yml` or `.github/workflows/ci-proof.yml`
 schedule the proof; check its results before landing.
