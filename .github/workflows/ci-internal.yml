@@ -5323,27 +5323,45 @@ jobs:
           def archive_shards_run_without_compiling_the_checkout():
               import shutil
               for route, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
-                  with tempfile.TemporaryDirectory() as temporary:
-                      directory = pathlib.Path(temporary)
-                      producer, shard = directory / 'producer', directory / 'shard'
-                      for checkout in [producer, shard]:
-                          shutil.copytree(root / 'fixtures/sample', checkout, ignore=shutil.ignore_patterns('target'))
-                      env = {'RUNNER_TEMP': temporary, 'SHARD': 'archive', 'BUILD_TEST_ARCHIVE': 'true',
-                             'TEST_PACKAGES': '["sample"]', 'COLLECT_COVERAGE': coverage}
-                      result = execute(route, producer, env)
-                      assert result.returncode == 0, result.stdout + result.stderr
-                      archive = shard / 'test-binaries.tar.zst'
-                      shutil.copyfile(producer / archive.name, archive)
-                      shutil.rmtree(producer)
-                      (shard / 'src/lib.rs').write_text('compile_error!("archive shards must not compile");\n', encoding='utf-8')
-                      result = execute(route, shard, env | {'BUILD_TEST_ARCHIVE': 'false', 'SHARD': '1', 'SHARD_COUNT': '1', 'TEST_ARCHIVE': str(archive)})
-                      assert result.returncode == 0, result.stdout + result.stderr
-                      assert '1 passed' in result.stdout + result.stderr, result.stdout + result.stderr
-                      assert 'Compiling sample' not in result.stdout + result.stderr
-                      if coverage == 'true':
-                          assert (shard / 'shard-1.lcov').is_file()
+                  for preserve_paths in [False, True]:
+                      with tempfile.TemporaryDirectory() as temporary:
+                          directory = pathlib.Path(temporary)
+                          producer, replacement = directory / 'checkout', directory / 'replacement'
+                          for checkout in [producer, replacement]:
+                              shutil.copytree(root / 'fixtures/sample', checkout, ignore=shutil.ignore_patterns('target'))
+                          if preserve_paths:
+                              (producer / 'src/bin').mkdir()
+                              (producer / 'src/bin/archive-child.rs').write_text('fn main() { println!("archived child"); }\n', encoding='utf-8')
+                              (producer / 'tests').mkdir()
+                              (producer / 'tests/runtime.rs').write_text('''
+              #[test]
+              fn archived_executables_remain_available() {
+                  let cargo = std::process::Command::new(env!("CARGO")).arg("--version").output().unwrap();
+                  assert!(cargo.status.success());
+                  let child = std::process::Command::new(env!("CARGO_BIN_EXE_archive-child")).output().unwrap();
+                  assert!(child.status.success());
+                  assert_eq!(child.stdout, b"archived child\\n");
+              }
+              ''', encoding='utf-8')
+                          env = {'RUNNER_TEMP': temporary, 'SHARD': 'archive', 'BUILD_TEST_ARCHIVE': 'true',
+                                 'TEST_PACKAGES': '["sample"]', 'COLLECT_COVERAGE': coverage}
+                          result = execute(route, producer, env)
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          shutil.copyfile(producer / 'test-binaries.tar.zst', replacement / 'test-binaries.tar.zst')
+                          shutil.rmtree(producer)
+                          if preserve_paths:
+                              replacement.rename(producer)
+                          shard = producer if preserve_paths else replacement
+                          archive = shard / 'test-binaries.tar.zst'
+                          (shard / 'src/lib.rs').write_text('compile_error!("archive shards must not compile");\n', encoding='utf-8')
+                          result = execute(route, shard, env | {'BUILD_TEST_ARCHIVE': 'false', 'SHARD': '1', 'SHARD_COUNT': '1', 'TEST_ARCHIVE': str(archive)})
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          assert f'{2 if preserve_paths else 1} passed' in result.stdout + result.stderr, result.stdout + result.stderr
+                          assert 'Compiling sample' not in result.stdout + result.stderr
+                          print(f'PASS archive runtime route={route} coverage={coverage} embedded={preserve_paths}', flush=True)
+                          if coverage == 'true':
+                              assert (shard / 'shard-1.lcov').is_file()
               print('PASS archive_shards_run_without_compiling_the_checkout')
-
           archive_shards_run_without_compiling_the_checkout()
 
           def test_archive_build_once_and_shards_only_execute():

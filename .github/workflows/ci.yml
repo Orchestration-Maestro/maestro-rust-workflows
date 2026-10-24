@@ -910,7 +910,7 @@ jobs:
             exit 0
           fi
           if [ -n "${TEST_ARCHIVE:-}" ]; then
-            run_packages=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD")
+            run_packages=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
           else
             run_packages=(--locked "${packages[@]}")
           fi
@@ -984,7 +984,11 @@ jobs:
           trap 'rm -rf "$isolation"' EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
           run_isolated() {
+          # llvm-cov extracts nextest's target/ prefix inside its own target directory.
+          local coverage_target="$PWD/target/llvm-cov-target"
+          if [ "${BUILD_TEST_ARCHIVE:-false}" = true ]; then coverage_target="$coverage_target/target"; fi
           env -i PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+            CARGO_LLVM_COV_TARGET_DIR="$coverage_target" \
             HOME="$isolation/home" TMPDIR="$isolation/tmp" TMP="$isolation/tmp" TEMP="$isolation/tmp" \
             XDG_CONFIG_HOME="$isolation/config" XDG_DATA_HOME="$isolation/data" \
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
@@ -1014,8 +1018,8 @@ jobs:
           fi
           coverage_packages=(--workspace --locked)
           if [ -n "${TEST_ARCHIVE:-}" ]; then
-            run_packages=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD")
-            coverage_packages=("${run_packages[@]}")
+            run_packages=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
+            coverage_packages=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
           else
             run_packages=(--locked "${packages[@]}")
           fi
