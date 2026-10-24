@@ -154,8 +154,9 @@ jobs:
                   self.assertEqual(commands[0][:5], ['diff', '--no-ext-diff', '--no-renames', '--relative', '--unified=0'])
                   mutation = commands[1]
                   self.assertEqual(mutation[mutation.index('--shard') + 1], '5/6')
-                  for flag in ['--in-diff', '--workspace', '--no-config', '--test-workspace=true', '--cargo-arg=--locked', '--ignore-default-filter']:
+                  for flag in ['--in-diff', '--workspace', '--no-config', '--cargo-arg=--locked', '--ignore-default-filter']:
                       self.assertIn(flag, mutation)
+                  self.assertNotIn('--test-workspace=true', mutation)
                   result, commands = invoke({'nightly': True})
                   self.assertEqual(result.returncode, 0, result.stderr)
                   self.assertNotIn('--in-diff', commands[0])
@@ -249,6 +250,16 @@ jobs:
                       self.assertNotEqual(result.returncode, 0)
                       self.assertIn('only by workflow_dispatch on the default branch', result.stderr)
 
+              def test_mutation_bound_is_platform_owned(self):
+                  job = workflow['jobs']['quality-set']
+                  unbounded = next(step for step in job['steps'] if step.get('name') == 'Run quality gate')
+                  bounded = next(step for step in job['steps'] if step.get('name') == 'Run nightly test gate')
+                  self.assertNotIn('timeout-minutes', unbounded)
+                  self.assertEqual(bounded['timeout-minutes'], 45)
+                  self.assertIn("matrix.mode == 'miri'", bounded['if'])
+                  self.assertIn("matrix.mode == 'address'", bounded['if'])
+                  self.assertIn("matrix.mode == 'thread'", bounded['if'])
+
           unittest.main()
       - name: Toolchain
         working-directory: fixtures/sample
@@ -300,7 +311,7 @@ jobs:
               diff = pathlib.Path(temporary) / 'changes.diff'
               lines = original.splitlines()
               diff.write_text('--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1,' + str(len(lines)) + ' @@\n' + ''.join('+' + line + '\n' for line in lines), encoding='utf-8')
-              mutation = ['cargo', 'mutants', '--workspace', '--no-config', '--test-workspace=true', '--cargo-arg=--locked',
+              mutation = ['cargo', 'mutants', '--workspace', '--no-config', '--cargo-arg=--locked',
                           '--test-tool=nextest', '--shard=0/1', '--in-diff', str(diff), '--output', temporary,
                           '--', '--user-config-file', 'none', '--ignore-default-filter']
               bench = ['cargo', 'bench', '--locked', '--bench', 'instructions', '--', '--home=' + temporary + '/instructions', '--output-format=json']
@@ -2223,7 +2234,7 @@ jobs:
                       permit('ci', job, name, '--retry', '3')
           for name in ['Archive tests', 'Archive isolated tests']:
               permit('ci', 'test-build', name, 'timeout-minutes', '45')
-          permit('ci', 'quality-set', 'Run quality gate', 'timeout-minutes', '45')
+          permit('ci', 'quality-set', 'Run nightly test gate', 'timeout-minutes', '45')
           permit('ci', 'test-build', 'Archive tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'test-build', 'Archive isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
           permit('ci', 'test-build', 'Archive isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')

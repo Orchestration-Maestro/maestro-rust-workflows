@@ -235,8 +235,8 @@ sha256sum -c SHA256SUMS
 
 Every pull request runs six changed-line mutation shards and a workspace
 `cargo hack check --each-feature --all-targets --locked`. Mutation testing uses
-cargo-mutants 27.1.0 with `--in-diff`, the full workspace test suite and no caller
-mutation exclusions. A survivor fails the shard; its job summary names the source
+cargo-mutants 27.1.0 with `--in-diff` and no caller mutation exclusions. Each
+mutant runs its package’s tests; nightly generation covers every workspace member. A survivor fails the shard; its job summary names the source
 file, line, replacement and mutation. Download `quality-…-mutation-N` artifacts
 for `outcomes.json`, diffs and logs. Infrastructure and baseline-test failures
 also fail; they are not treated as caught mutants.

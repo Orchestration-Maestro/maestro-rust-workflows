@@ -2129,7 +2129,7 @@ jobs:
           if mode == 'features':
               run(['cargo', 'hack', 'check', '--workspace', '--all-targets', '--each-feature', '--locked'])
           elif mode == 'mutation':
-              command = ['cargo', 'mutants', '--workspace', '--no-config', '--test-workspace=true',
+              command = ['cargo', 'mutants', '--workspace', '--no-config',
                          '--test-tool=nextest', '--cargo-arg=--locked', '--shard', f"{args['shard']}/6",
                          '--output', str(results)]
               if not args['nightly']:
@@ -2220,10 +2220,14 @@ jobs:
         run: |
           printf '%s\n' "$ISOLATED_TESTS" > "$RUNNER_TEMP/isolated-quality.sh"
       - name: Run quality gate
-        timeout-minutes: 45
-        run: |
+        if: matrix.mode != 'miri' && matrix.mode != 'address' && matrix.mode != 'thread'
+        run: &run-quality-gate |
           mkdir -p quality-results
           bash -e -o pipefail "$RUNNER_TEMP/isolated-quality.sh" 2>&1 | tee quality-results/run.log
+      - name: Run nightly test gate
+        if: matrix.mode == 'miri' || matrix.mode == 'address' || matrix.mode == 'thread'
+        timeout-minutes: 45
+        run: *run-quality-gate
       - name: Mutation survivor summary
         if: always() && matrix.mode == 'mutation'
         run: |
