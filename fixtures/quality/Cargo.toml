@@ -1,0 +1,14 @@
+[package]
+name = "quality"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace]
+
+[dev-dependencies]
+gungraun = "=0.20.0"
+
+[[bench]]
+name = "instructions"
+harness = false

@@ -267,6 +267,61 @@ jobs:
           step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == 'Coverage tools')
           match = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(match[1])], check=True)
+      - name: Quality runtime proofs
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import tempfile
+          import yaml
+
+          root = pathlib.Path.cwd()
+          workflow = yaml.safe_load((root / '.github/workflows/ci.yml').read_text(encoding='utf-8'))
+          def body(name):
+              return next(step['run'] for job in workflow['jobs'].values() for step in job.get('steps', []) if step.get('name') == name)
+
+          with tempfile.TemporaryDirectory() as temporary:
+              env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path'}
+              for mode in ['mutation', 'instructions']:
+                  subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Quality tools')], env=env | {'MODE': mode}, check=True)
+              paths = pathlib.Path(env['GITHUB_PATH']).read_text(encoding='utf-8').splitlines()
+              env['PATH'] = os.pathsep.join(paths + [os.environ['PATH']])
+              fixture = root / 'fixtures/quality'
+              source = fixture / 'src/lib.rs'
+              original = source.read_text(encoding='utf-8')
+              def run(command, expected=0):
+                  result = subprocess.run(command, cwd=fixture, env=env, capture_output=True, text=True)
+                  print('+ ' + ' '.join(command), flush=True)
+                  print(result.stdout + result.stderr, flush=True)
+                  assert result.returncode == expected, (result.returncode, result.stdout, result.stderr)
+                  return result
+              diff = pathlib.Path(temporary) / 'changes.diff'
+              lines = original.splitlines()
+              diff.write_text('--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1,' + str(len(lines)) + ' @@\n' + ''.join('+' + line + '\n' for line in lines), encoding='utf-8')
+              mutation = ['cargo', 'mutants', '--workspace', '--no-config', '--test-workspace=true', '--cargo-arg=--locked',
+                          '--test-tool=nextest', '--shard=0/1', '--in-diff', str(diff), '--output', temporary,
+                          '--', '--user-config-file', 'none', '--ignore-default-filter']
+              bench = ['cargo', 'bench', '--locked', '--bench', 'instructions', '--', '--home=' + temporary + '/instructions', '--output-format=json']
+              try:
+                  run(mutation)
+                  source.write_text(original.replace('assert_eq!(double(21), 42);', 'assert_eq!(double(0), 0);'), encoding='utf-8')
+                  run(mutation, 2)
+                  outcomes = json.loads((pathlib.Path(temporary) / 'mutants.out/outcomes.json').read_text(encoding='utf-8'))
+                  survivors = [entry['scenario']['Mutant'] for entry in outcomes['outcomes'] if entry['summary'] == 'MissedMutant']
+                  assert any(item['file'] == 'src/lib.rs' and item['span']['start']['line'] == 5 for item in survivors), survivors
+                  print('PASS weakened-test mutation gate names src/lib.rs:5', flush=True)
+                  source.write_text(original, encoding='utf-8')
+                  run(bench + ['--save-baseline=main'])
+                  run(bench + ['--baseline=main', '--callgrind-limits=ir=5%'])
+                  source.write_text(original.replace('value * 2', 'let mut value = value;\n    for _ in 0..1000 { value = std::hint::black_box(value); }\n    value * 2'), encoding='utf-8')
+                  regression = subprocess.run(bench + ['--baseline=main', '--callgrind-limits=ir=5%'], cwd=fixture, env=env, capture_output=True, text=True)
+                  print(regression.stdout + regression.stderr, flush=True)
+                  assert regression.returncode != 0 and 'regress' in (regression.stdout + regression.stderr).lower(), (regression.returncode, regression.stdout, regression.stderr)
+                  print('PASS instruction-count regression above 5% fails', flush=True)
+              finally:
+                  source.write_text(original, encoding='utf-8')
       - name: Compile cache in every Rust job
         shell: python
         run: |
