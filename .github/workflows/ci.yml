@@ -2030,6 +2030,7 @@ jobs:
           packages = {package['name']: package for package in metadata['packages']}
           identity = hashlib.sha256(b'gungraun-0.20.0\0')
           identity.update(subprocess.check_output(['rustc', '-vV']))
+          identity.update(subprocess.check_output(['valgrind', '--version']))
           identity.update(subprocess.check_output(['git', 'rev-parse', '--show-prefix']))
           for entry in json.loads(os.environ['BENCHMARKS']):
               package = packages[entry['package']]

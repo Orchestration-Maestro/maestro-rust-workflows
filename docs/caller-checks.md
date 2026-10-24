@@ -646,11 +646,11 @@ include the full diagnostic log, including failures.
 Instruction counts use Gungraun (formerly iai-callgrind) with the runner image's
 Valgrind. Scheduled runs restore the last successful main measurements, apply
 `--callgrind-limits=ir=5%`, and advance the baseline only after success. Immutable
-cache keys include the main revision, compiler and harness identity; only
+cache keys include the main revision, compiler, Valgrind and harness identity; only
 default-branch scheduled runs or explicit manual seeds can save them. A missing
 baseline fails with a seed instruction, not a passing first measurement. Run
 `workflow_dispatch` on the default branch with `seed-instruction-baseline: true`
-after adoption or a harness/compiler change. Seeding runs only the instruction
+after adoption or a harness/compiler/Valgrind change. Seeding runs only the instruction
 benchmarks and makes no comparison.
 
 Ordinary manual runs compare the checked-out revision with freshly fetched
