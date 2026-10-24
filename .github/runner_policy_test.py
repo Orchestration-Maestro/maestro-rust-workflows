@@ -18,6 +18,8 @@ class RunnerPolicyTests(unittest.TestCase):
     def test_python_random_tokens_are_not_repository_secrets(self):
         require_secret_free('token = secrets.token_hex(32)')
         require_secret_free('token: ${{ secrets.GITHUB_TOKEN }}')
+        require_secret_free("token: ${{ secrets['GITHUB_TOKEN'] }}")
+        require_secret_free('permissions: &read {contents: read}\njobs: {a: *read, b: *read}')
 
     def test_repository_secret_references_and_inheritance_are_refused(self):
         for source in ('token: ${{ secrets.KEY }}', 'secrets: inherit', '"secrets": inherit', "'secrets': inherit", r'"\u0073ecrets": inherit',
@@ -26,7 +28,7 @@ class RunnerPolicyTests(unittest.TestCase):
             with self.subTest(source=source), self.assertRaises(ValueError):
                 require_secret_free(source)
 
-    def select(self, availability, source='permissions: {contents: read}', corrupt=False, offline=False, moved=False):
+    def select(self, availability, source='permissions: {contents: read}', corrupt=False, offline=False, moved=False, missing_yaml=False, provider=False):
         workflow = WORKFLOW.read_text()
         step = workflow.split('      - name: Select Linux runner\n', 1)[1].split('      - name: ', 1)[0]
         body = re.search(r"          python3 - <<'PYTHON'\n(.*?)          PYTHON", step, re.DOTALL)[1]
@@ -49,8 +51,13 @@ class RunnerPolicyTests(unittest.TestCase):
             output = Path(temporary) / 'output'
             env = {'RUNNER_AVAILABILITY': json.dumps(availability), 'GITHUB_OUTPUT': str(output),
                    'CALLER_WORKFLOW': 'Orchestration-Maestro/maestro/.github/workflows/check.yml@refs/heads/main',
-                   'CALLER_WORKFLOW_SHA': '1'*40, 'GH_TOKEN': 'synthetic-job-token'}
-            with patch.dict(os.environ, env), patch('urllib.request.urlopen', side_effect=urlopen), patch('time.time', return_value=1000):
+                   'GITHUB_REPOSITORY': 'Orchestration-Maestro/maestro-rust-workflows' if provider else 'Orchestration-Maestro/maestro', 'CALLER_WORKFLOW_SHA': '1'*40, 'GH_TOKEN': 'synthetic-job-token'}
+            original_import = __import__
+            def imported(name, *args, **kwargs):
+                if missing_yaml and name == 'yaml':
+                    raise ImportError('YAML unavailable')
+                return original_import(name, *args, **kwargs)
+            with patch('builtins.__import__', side_effect=imported), patch.dict(os.environ, env), patch('urllib.request.urlopen', side_effect=urlopen), patch('time.time', return_value=1000):
                 exec(compile(code, 'Select Linux runner', 'exec'), {})
             labels = json.loads(output.read_text().split('=', 1)[1])
             return labels, requests
@@ -62,6 +69,15 @@ class RunnerPolicyTests(unittest.TestCase):
                 labels, requests = self.select(value)
                 self.assertEqual(labels, 'ubuntu-latest')
                 self.assertEqual(requests, [])
+
+    def test_missing_yaml_and_invalid_yaml_use_hosted_without_installing(self):
+        self.assertEqual(self.select({'timestamp': 1000, 'online': 4}, missing_yaml=True)[0], 'ubuntu-latest')
+        self.assertEqual(self.select({'timestamp': 1000, 'online': 4}, source='jobs: [unterminated')[0], 'ubuntu-latest')
+
+    def test_provider_self_tests_use_hosted_for_unresolvable_pr_refs(self):
+        labels, requests = self.select({'timestamp': 1000, 'online': 4}, provider=True)
+        self.assertEqual(labels, 'ubuntu-latest')
+        self.assertEqual(requests, [])
 
     def test_moved_branch_does_not_replace_the_executed_workflow(self):
         labels, _ = self.select({'timestamp': 1000, 'online': 4}, moved=True)
@@ -76,7 +92,9 @@ class RunnerPolicyTests(unittest.TestCase):
     def test_secret_bearing_caller_and_unverifiable_policy_stay_hosted(self):
         cases = [{'source': 'token: ${{ secrets.KEY }}'}, {'source': 'secrets: inherit'},
                  {'source': '"secrets": inherit'}, {'source': r'"\u0073ecrets": inherit'},
-                 {'source': "token: ${{ format('}}{0}', secrets.KEY) }}"}, {'moved': True},
+                 {'source': "token: ${{ format('}}{0}', secrets.KEY) }}"},
+                 {'source': "token: ${{ format('it''s }}{0}', secrets.KEY) }}"},
+                 {'source': "token: ${{ format('unterminated')"}, {'moved': True},
                  {'corrupt': True}, {'offline': True}]
         for options in cases:
             with self.subTest(options=options):

@@ -681,9 +681,12 @@ release, pin/ruleset read-back and required checks after repinning.
 The hosted caller-declaration job selects the organization's `maestro-aws`
 runner group for x64 Linux jobs when its published online count is positive
 and no more than five minutes old. Missing, expired or invalid availability,
-or a caller workflow that declares, inherits or references repository secrets,
+or an exact caller-workflow revision that declares, inherits or references repository secrets,
 selects GitHub-hosted Linux instead. The declaration and the runner controller
 use the same pinned secret-reference policy. The automatic job token is allowed.
+The selector uses the platform YAML parser without installing packages; a missing
+parser selects hosted Linux. The provider's own self-tests stay hosted because
+their synthetic PR refs cannot be admitted as pinned runner-group workflows.
 Native ARM Linux, Windows, macOS and CodeQL remain GitHub-hosted.
 
 Each AWS runner accepts one job. It has a separate unprivileged identity,

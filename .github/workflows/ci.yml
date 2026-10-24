@@ -102,11 +102,13 @@ jobs:
         env:
           RUNNER_AVAILABILITY: ${{ vars.MAESTRO_AWS_RUNNERS }}
           CALLER_WORKFLOW: ${{ github.workflow_ref }}
+          CALLER_WORKFLOW_SHA: ${{ github.workflow_sha }}
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PYTHON'
           import base64
           import json
+          import re
           import hashlib
           import os
           import time
@@ -114,26 +116,33 @@ jobs:
           import urllib.request
           labels = 'ubuntu-latest'
           try:
+              if os.environ.get('GITHUB_REPOSITORY') == 'Orchestration-Maestro/maestro-rust-workflows':
+                  raise ValueError('provider self-tests use hosted runners')
               availability = json.loads(os.environ.get('RUNNER_AVAILABILITY') or '{}')
               age = time.time() - availability['timestamp']
               if not 0 <= age <= 300 or availability['online'] <= 0:
                   raise ValueError('no fresh online runner')
               repository, workflow = os.environ['CALLER_WORKFLOW'].split('/.github/', 1)
-              path, ref = workflow.rsplit('@', 1)
+              path, _ = workflow.rsplit('@', 1)
+              ref = os.environ['CALLER_WORKFLOW_SHA']
+              if not re.fullmatch(r'[0-9a-f]{40}', ref):
+                  raise ValueError('unverifiable caller workflow revision')
               url = f'https://api.github.com/repos/{repository}/contents/.github/{path}?ref=' + urllib.parse.quote(ref, safe='')
               request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN']})
               with urllib.request.urlopen(request, timeout=20) as response:
                   source = base64.b64decode(json.load(response)['content']).decode()
-              policy_url = 'https://raw.githubusercontent.com/Orchestration-Maestro/maestro-rust-workflows/4401f75def99a9d864b2e7dfb1c8b890c69c0222/.github/runner_policy.py'
+              policy_url = 'https://raw.githubusercontent.com/Orchestration-Maestro/maestro-rust-workflows/c71b00cd1b02f2f687ca74d3a10d0da040c26997/.github/runner_policy.py'
               with urllib.request.urlopen(policy_url, timeout=20) as response:
                   policy = response.read()
-              if hashlib.sha256(policy).hexdigest() != '883364d607ff7643696aded9dad05a75da1a1d87ff1a33ad43dc19a6cbd1921a':
+              if hashlib.sha256(policy).hexdigest() != '5750dc0847630528a6475349191c5263f04fa93735252a2890fd1cc9504b24c9':
                   raise ValueError('runner policy digest mismatch')
               namespace = {}
               exec(compile(policy, 'runner_policy.py', 'exec'), namespace)
               namespace['require_secret_free'](source)
+              import yaml
+              print('Runner policy PyYAML: ' + yaml.__version__)
               labels = ['self-hosted', 'linux', 'maestro-aws']
-          except (KeyError, TypeError, ValueError, OSError):
+          except (ImportError, KeyError, TypeError, ValueError, OSError):
               print('Hosted Linux fallback: unavailable runner or unverified secret-free caller')
           print('Linux runner selection: ' + json.dumps(labels))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
