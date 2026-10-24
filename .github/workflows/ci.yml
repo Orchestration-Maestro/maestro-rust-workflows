@@ -103,6 +103,7 @@ jobs:
           RUNNER_AVAILABILITY: ${{ vars.MAESTRO_AWS_RUNNERS }}
           CALLER_WORKFLOW: ${{ github.workflow_ref }}
           CALLER_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          PULL_REQUEST_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PYTHON'
@@ -118,6 +119,13 @@ jobs:
           try:
               if os.environ.get('GITHUB_REPOSITORY') == 'Orchestration-Maestro/maestro-rust-workflows':
                   raise ValueError('provider self-tests use hosted runners')
+              event = os.environ['GITHUB_EVENT_NAME']
+              if event in ('pull_request', 'pull_request_target'):
+                  head = os.environ.get('PULL_REQUEST_HEAD_REPOSITORY')
+                  if not head or head != os.environ.get('GITHUB_REPOSITORY'):
+                      raise ValueError('fork or unverifiable pull request uses hosted runners')
+              elif event not in ('push', 'merge_group', 'schedule', 'workflow_dispatch', 'repository_dispatch'):
+                  raise ValueError('unverifiable workflow event')
               availability = json.loads(os.environ.get('RUNNER_AVAILABILITY') or '{}')
               age = time.time() - availability['timestamp']
               if not 0 <= age <= 300 or availability['online'] <= 0:

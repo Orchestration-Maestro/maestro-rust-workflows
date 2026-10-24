@@ -47,7 +47,7 @@ class RunnerPolicyTests(unittest.TestCase):
             with self.subTest(source=source), self.assertRaises(ValueError):
                 require_secret_free(source)
 
-    def select(self, availability, source='permissions: {contents: read}', corrupt=False, offline=False, moved=False, missing_yaml=False, provider=False):
+    def select(self, availability, source='permissions: {contents: read}', corrupt=False, offline=False, moved=False, missing_yaml=False, provider=False, event="push", head="Orchestration-Maestro/maestro"):
         workflow = WORKFLOW.read_text()
         step = workflow.split('      - name: Select Linux runner\n', 1)[1].split('      - name: ', 1)[0]
         body = re.search(r"          python3 - <<'PYTHON'\n(.*?)          PYTHON", step, re.DOTALL)[1]
@@ -68,7 +68,8 @@ class RunnerPolicyTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / 'output'
-            env = {'RUNNER_AVAILABILITY': json.dumps(availability), 'GITHUB_OUTPUT': str(output),
+            env = {'GITHUB_EVENT_NAME': event, 'PULL_REQUEST_HEAD_REPOSITORY': head,
+                   'RUNNER_AVAILABILITY': json.dumps(availability), 'GITHUB_OUTPUT': str(output),
                    'CALLER_WORKFLOW': 'Orchestration-Maestro/maestro/.github/workflows/check.yml@refs/heads/main',
                    'GITHUB_REPOSITORY': 'Orchestration-Maestro/maestro-rust-workflows' if provider else 'Orchestration-Maestro/maestro', 'CALLER_WORKFLOW_SHA': '1'*40, 'GH_TOKEN': 'synthetic-job-token'}
             original_import = __import__
@@ -103,6 +104,21 @@ class RunnerPolicyTests(unittest.TestCase):
     def test_moved_branch_does_not_replace_the_executed_workflow(self):
         labels, _ = self.select({'timestamp': 1000, 'online': 4}, moved=True)
         self.assertEqual(labels, 'ubuntu-latest')
+
+    def test_fork_missing_head_and_unknown_events_stay_hosted(self):
+        for event, head in [('pull_request', 'external/maestro'),
+                            ('pull_request_target', 'external/maestro'),
+                            ('pull_request', ''), ('unknown', 'Orchestration-Maestro/maestro')]:
+            with self.subTest(event=event, head=head):
+                labels, requests = self.select({'timestamp': 1000, 'online': 4}, event=event, head=head)
+                self.assertEqual(labels, 'ubuntu-latest')
+                self.assertEqual(requests, [])
+
+    def test_same_repository_pull_requests_keep_aws(self):
+        for event in ('pull_request', 'pull_request_target'):
+            with self.subTest(event=event):
+                labels, _ = self.select({'timestamp': 1000, 'online': 4}, event=event)
+                self.assertEqual(labels, ['self-hosted', 'linux', 'maestro-aws'])
 
     def test_fresh_availability_and_secret_free_caller_use_aws(self):
         for source in ('run: |\n  token = secrets.token_hex(32)\n', 'token: ${{ secrets.GITHUB_TOKEN }}'):
