@@ -5329,7 +5329,21 @@ jobs:
                           producer, replacement = directory / 'checkout', directory / 'replacement'
                           for checkout in [producer, replacement]:
                               shutil.copytree(root / 'fixtures/sample', checkout, ignore=shutil.ignore_patterns('target'))
+                          env = {'RUNNER_TEMP': temporary, 'SHARD': 'archive', 'BUILD_TEST_ARCHIVE': 'true',
+                                 'TEST_PACKAGES': '["sample"]', 'COLLECT_COVERAGE': coverage}
                           if preserve_paths:
+                              producer_cargo, consumer_cargo = directory / 'producer-cargo', directory / 'consumer-cargo'
+                              producer_cargo.mkdir()
+                              consumer_cargo.mkdir()
+                              manifest = producer / 'Cargo.toml'
+                              manifest.write_text(manifest.read_text(encoding='utf-8') + '\n[dependencies]\naccesskit = "=0.24.1"\n', encoding='utf-8')
+                              lock_env = {key: value for key, value in os.environ.items()
+                                          if key not in credential_names and not key.endswith('_API_KEY')}
+                              subprocess.run(['cargo', 'generate-lockfile'], cwd=producer,
+                                             env=lock_env | {'CARGO_HOME': str(producer_cargo)}, check=True, capture_output=True)
+                              shutil.copyfile(producer / 'Cargo.toml', replacement / 'Cargo.toml')
+                              shutil.copyfile(producer / 'Cargo.lock', replacement / 'Cargo.lock')
+                              env['CARGO_HOME'] = str(producer_cargo)
                               (producer / 'src/bin').mkdir()
                               (producer / 'src/bin/archive-child.rs').write_text('fn main() { println!("archived child"); }\n', encoding='utf-8')
                               (producer / 'tests').mkdir()
@@ -5338,18 +5352,22 @@ jobs:
               fn archived_executables_remain_available() {
                   let cargo = std::process::Command::new(env!("CARGO")).arg("--version").output().unwrap();
                   assert!(cargo.status.success());
+                  let metadata = std::process::Command::new(env!("CARGO"))
+                      .args(["metadata", "--offline", "--locked", "--format-version", "1"])
+                      .current_dir(env!("CARGO_MANIFEST_DIR")).output().unwrap();
+                  assert!(metadata.status.success(), "{}", String::from_utf8_lossy(&metadata.stderr));
                   let child = std::process::Command::new(env!("CARGO_BIN_EXE_archive-child")).output().unwrap();
                   assert!(child.status.success());
                   assert_eq!(child.stdout, b"archived child\\n");
               }
               ''', encoding='utf-8')
-                          env = {'RUNNER_TEMP': temporary, 'SHARD': 'archive', 'BUILD_TEST_ARCHIVE': 'true',
-                                 'TEST_PACKAGES': '["sample"]', 'COLLECT_COVERAGE': coverage}
                           result = execute(route, producer, env)
                           assert result.returncode == 0, result.stdout + result.stderr
                           shutil.copyfile(producer / 'test-binaries.tar.zst', replacement / 'test-binaries.tar.zst')
                           shutil.rmtree(producer)
                           if preserve_paths:
+                              shutil.copytree(producer_cargo / 'registry/index', consumer_cargo / 'registry/index')
+                              env['CARGO_HOME'] = str(consumer_cargo)
                               replacement.rename(producer)
                           shard = producer if preserve_paths else replacement
                           archive = shard / 'test-binaries.tar.zst'
@@ -5383,9 +5401,10 @@ jobs:
                       result = execute(route, directory, env)
                       assert result.returncode == 0, result.stdout + result.stderr
                       commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
-                      assert len(commands) == 1 and '--archive-file' in commands[0], commands
-                      assert commands[0][commands[0].index('--partition') + 1] == 'count:6/6', commands
-                      assert '--workspace-remap' in commands[0] and '--locked' not in commands[0], commands
+                      assert commands[0] == ['fetch', '--locked'], commands
+                      assert len(commands) == 2 and '--archive-file' in commands[1], commands
+                      assert commands[1][commands[1].index('--partition') + 1] == 'count:6/6', commands
+                      assert '--workspace-remap' in commands[1] and '--locked' not in commands[1], commands
               print('PASS test_archive_build_once_and_shards_only_execute')
 
           test_archive_build_once_and_shards_only_execute()

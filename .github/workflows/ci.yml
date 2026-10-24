@@ -901,7 +901,7 @@ jobs:
         timeout-minutes: 45
         if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}
         run: &base-tests |
-          if [ -z "${TEST_ARCHIVE:-}" ]; then cargo fetch --locked; fi
+          cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
@@ -1004,7 +1004,7 @@ jobs:
             run_isolated python3 "$QUALITY_SCRIPT" "$QUALITY_JOB_ARGS"
             exit 0
           fi
-          if [ -z "${TEST_ARCHIVE:-}" ]; then cargo fetch --locked; fi
+          cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
