@@ -661,7 +661,10 @@ The issue reporter groups full-mutation survivors by crate. It comments on an
 existing open `Mutation survivors in <crate>` issue or creates one with `bug`
 and `needs-triage`. The job stays red while survivors exist. Missing mutation
 reports and tool/build failures also fail; no issue is filed for them as if
-they were survivors. Both the caller's nightly workflow and its reusable
+they were survivors. Empty mutation selections have a canonical empty
+`survivors.json` after a successful tool exit, even when the tool writes no
+native `outcomes.json`. Failed or skipped executions cannot use that case.
+Both the caller's nightly workflow and its reusable
 workflows must pass the existing runner policy and executing-ref allowlist.
 
 ## Nightly fuzz job

@@ -260,6 +260,14 @@ jobs:
                   self.assertIn("matrix.mode == 'address'", bounded['if'])
                   self.assertIn("matrix.mode == 'thread'", bounded['if'])
 
+              def test_successful_empty_mutation_shard_publishes_no_survivors(self):
+                  (self.root / 'quality-results').mkdir()
+                  for status in ['success', 'failure', 'skipped']:
+                      result = self.shell(body('Mutation survivor summary'), MUTATION_RUN_RESULT=status)
+                      self.assertEqual(result.returncode == 0, status == 'success', result.stderr)
+                      if status == 'success':
+                          self.assertEqual(json.loads((self.root / 'quality-results/survivors.json').read_text(encoding='utf-8')), [])
+
           unittest.main()
       - name: Toolchain
         working-directory: fixtures/sample
@@ -316,6 +324,14 @@ jobs:
                           '--', '--user-config-file', 'none', '--ignore-default-filter']
               bench = ['cargo', 'bench', '--locked', '--bench', 'instructions', '--', '--home=' + temporary + '/instructions', '--output-format=json']
               try:
+                  full_diff = diff.read_text(encoding='utf-8')
+                  diff.write_text('', encoding='utf-8')
+                  empty = mutation.copy()
+                  empty[empty.index('--output') + 1] = temporary + '/empty'
+                  run(empty)
+                  assert not (pathlib.Path(temporary) / 'empty/mutants.out/outcomes.json').exists()
+                  diff.write_text(full_diff, encoding='utf-8')
+                  print('PASS native empty mutation selection exits successfully without outcomes.json', flush=True)
                   run(mutation)
                   source.write_text(original.replace('assert_eq!(double(21), 42);', 'assert_eq!(double(0), 0);'), encoding='utf-8')
                   run(mutation, 2)

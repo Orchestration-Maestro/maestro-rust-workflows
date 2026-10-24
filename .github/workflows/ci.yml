@@ -2220,6 +2220,7 @@ jobs:
         run: |
           printf '%s\n' "$ISOLATED_TESTS" > "$RUNNER_TEMP/isolated-quality.sh"
       - name: Run quality gate
+        id: quality-run
         if: matrix.mode != 'miri' && matrix.mode != 'address' && matrix.mode != 'thread'
         run: &run-quality-gate |
           mkdir -p quality-results
@@ -2230,6 +2231,8 @@ jobs:
         run: *run-quality-gate
       - name: Mutation survivor summary
         if: always() && matrix.mode == 'mutation'
+        env:
+          MUTATION_RUN_RESULT: ${{ steps.quality-run.outcome }}
         run: |
           python3 - <<'PYTHON'
           import json
@@ -2237,10 +2240,14 @@ jobs:
           import pathlib
           results = pathlib.Path('quality-results')
           path = results / 'mutants.out/outcomes.json'
-          if not path.is_file():
+          if path.is_file():
+              outcome = json.loads(path.read_text(encoding='utf-8'))
+              survivors = [entry['scenario']['Mutant'] for entry in outcome['outcomes'] if entry['summary'] == 'MissedMutant']
+          elif os.environ.get('MUTATION_RUN_RESULT') == 'success':
+              # The pinned tool exits successfully without a native report for empty selections.
+              survivors = []
+          else:
               raise SystemExit('Mutation run did not produce outcomes.json')
-          outcome = json.loads(path.read_text(encoding='utf-8'))
-          survivors = [entry['scenario']['Mutant'] for entry in outcome['outcomes'] if entry['summary'] == 'MissedMutant']
           (results / 'survivors.json').write_text(json.dumps(survivors), encoding='utf-8')
           lines = [f"{item['file']}:{item['span']['start']['line']}:{item['span']['start']['column']}: {item['name']} => {item['replacement']}" for item in survivors]
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
