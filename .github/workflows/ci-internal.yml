@@ -68,6 +68,188 @@ jobs:
           persist-credentials: false
       - name: Ephemeral runner policy
         run: python3 -m unittest discover -s .github -p runner_policy_test.py
+      - name: Quality gates at workflow seam
+        shell: python
+        run: |
+          import ast
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import tempfile
+          import unittest
+          import yaml
+
+          workflow = yaml.safe_load(pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8'))
+          nightly = yaml.safe_load(pathlib.Path('.github/workflows/quality-nightly.yml').read_text(encoding='utf-8'))
+
+          def body(name, document=workflow):
+              return next(step['run'] for job in document['jobs'].values() for step in job.get('steps', []) if step.get('name') == name)
+
+          execution = body('Prepare quality execution').split("<<'PYTHON'\n", 1)[1].split('\nPYTHON', 1)[0]
+
+          class QualityGates(unittest.TestCase):
+              def setUp(self):
+                  self.temporary = tempfile.TemporaryDirectory()
+                  self.addCleanup(self.temporary.cleanup)
+                  self.root = pathlib.Path(self.temporary.name)
+                  self.env = os.environ | {'GITHUB_OUTPUT': str(self.root / 'output'), 'GITHUB_STEP_SUMMARY': str(self.root / 'summary')}
+
+              def shell(self, source, **env):
+                  return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', source], cwd=self.root,
+                                        env=self.env | env, capture_output=True, text=True)
+
+              def test_missing_instruction_comparison_cannot_pass(self):
+                  tree = ast.parse(execution)
+                  function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == 'identities')
+                  namespace = {'json': json}
+                  exec(compile(ast.Module(body=[function], type_ignores=[]), 'instruction comparison', 'exec'), namespace)
+                  path = self.root / 'current.jsonl'
+                  path.write_text(json.dumps({'module_path': 'bench::parse', 'id': None, 'profiles': []}) + '\n', encoding='utf-8')
+                  with self.assertRaises(SystemExit):
+                      namespace['identities'](path)
+                  path.write_text('', encoding='utf-8')
+                  with self.assertRaises(SystemExit):
+                      namespace['identities'](path)
+
+              def test_merge_and_nightly_matrices_preserve_all_shards(self):
+                  for nightly_mode, expected in [('false', ['mutation'] * 6 + ['features']), ('true', ['mutation'] * 6 + ['address', 'thread', 'miri', 'instructions'])]:
+                      result = self.shell(body('Select quality jobs'), NIGHTLY=nightly_mode, MIRI_CRATES='["sample"]', BENCHMARKS='[{"package":"sample","bench":"speed"}]')
+                      self.assertEqual(result.returncode, 0, result.stderr)
+                      jobs = json.loads((self.root / 'output').read_text(encoding='utf-8').splitlines()[-1].removeprefix('matrix='))['include']
+                      self.assertEqual([job['mode'] for job in jobs], expected)
+                      self.assertEqual([job['shard'] for job in jobs if job['mode'] == 'mutation'], list(range(6)))
+
+              def test_survivor_fails_and_names_source_line(self):
+                  directory = self.root / 'quality-results/mutants.out'
+                  directory.mkdir(parents=True)
+                  mutant = dict(package='sample', file='src/lib.rs', name='replace add -> u32 with 0', replacement='0', span=dict(start=dict(line=4, column=5)))
+                  for summary, expected in [('MissedMutant', 1), ('CaughtMutant', 0)]:
+                      (directory / 'outcomes.json').write_text(json.dumps({'outcomes': [dict(scenario=dict(Mutant=mutant), summary=summary)]}), encoding='utf-8')
+                      result = self.shell(body('Mutation survivor summary'))
+                      self.assertEqual(result.returncode, expected, result.stderr)
+                  self.assertIn('src/lib.rs:4:5', (self.root / 'summary').read_text(encoding='utf-8'))
+                  (directory / 'outcomes.json').unlink()
+                  self.assertNotEqual(self.shell(body('Mutation survivor summary')).returncode, 0)
+
+              def test_mutation_command_is_diff_limited_and_feature_check_is_exhaustive(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  log = self.root / 'commands'
+                  recorder = '#!/usr/bin/env python3\nimport json,os,pathlib,sys\nwith open(os.environ["COMMAND_LOG"],"a",encoding="utf-8") as out: out.write(json.dumps(sys.argv[1:])+"\\n")\nsys.exit(int(os.environ.get("COMMAND_STATUS","0")))\n'
+                  for tool in ['cargo', 'git']:
+                      path = tools / tool
+                      path.write_text(recorder, encoding='utf-8')
+                      path.chmod(0o700)
+                  script = self.root / 'quality.py'
+                  script.write_text(execution, encoding='utf-8')
+                  args = dict(mode='mutation', shard=5, nightly=False, base='abc123', miri=[], benchmarks=[])
+                  def invoke(changes, status='0'):
+                      log.write_text('', encoding='utf-8')
+                      result = subprocess.run(['python3', str(script), json.dumps(args | changes)], cwd=self.root,
+                                              env=self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'COMMAND_LOG': str(log), 'COMMAND_STATUS': status}, capture_output=True, text=True)
+                      return result, [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                  result, commands = invoke({})
+                  self.assertEqual(result.returncode, 0, result.stderr)
+                  self.assertEqual(commands[0][:5], ['diff', '--no-ext-diff', '--no-renames', '--relative', '--unified=0'])
+                  mutation = commands[1]
+                  self.assertEqual(mutation[mutation.index('--shard') + 1], '5/6')
+                  for flag in ['--in-diff', '--workspace', '--no-config', '--test-workspace=true', '--cargo-arg=--locked', '--ignore-default-filter']:
+                      self.assertIn(flag, mutation)
+                  result, commands = invoke({'nightly': True})
+                  self.assertEqual(result.returncode, 0, result.stderr)
+                  self.assertNotIn('--in-diff', commands[0])
+                  result, commands = invoke({'base': ''})
+                  self.assertNotEqual(result.returncode, 0)
+                  self.assertEqual(commands, [])
+                  result, commands = invoke({'mode': 'features'})
+                  self.assertEqual(commands, [['hack', 'check', '--workspace', '--all-targets', '--each-feature', '--locked']])
+                  self.assertEqual(result.returncode, 0, result.stderr)
+                  self.assertNotEqual(invoke({'mode': 'features'}, '42')[0].returncode, 0)
+
+              def test_nightly_reuses_existing_crate_issue(self):
+                  for shard in range(6):
+                      directory = self.root / f'findings/shard-{shard}'
+                      directory.mkdir(parents=True)
+                      mutant = dict(package='sample', file='src/lib.rs', name='replace add with 0', replacement='0', span=dict(start=dict(line=4, column=5)))
+                      (directory / 'survivors.json').write_text(json.dumps([mutant] if shard == 0 else []), encoding='utf-8')
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  gh = tools / 'gh'
+                  gh.write_text('#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ["COMMAND_LOG"],"a",encoding="utf-8") as out: out.write(json.dumps(sys.argv[1:])+"\\n")\nprint(json.dumps([{"number":17,"title":"Mutation survivors in sample"}]) if sys.argv[1:3]==["issue","list"] else "https://example.test/issue/17")\n', encoding='utf-8')
+                  gh.chmod(0o700)
+                  script = self.root / 'report.py'
+                  script.write_text(body('File mutation survivors', nightly), encoding='utf-8')
+                  result = subprocess.run(['python3', str(script)], cwd=self.root,
+                                          env=self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'COMMAND_LOG': str(self.root / 'commands'), 'REPOSITORY': 'example/caller', 'SCAN': 'failure', 'RUN_URL': 'https://example.test/run'}, capture_output=True, text=True)
+                  self.assertNotEqual(result.returncode, 0)
+                  commands = [json.loads(line) for line in (self.root / 'commands').read_text(encoding='utf-8').splitlines()]
+                  self.assertEqual(commands[1][:3], ['issue', 'comment', '17'])
+                  self.assertFalse(any(command[:2] == ['issue', 'create'] for command in commands))
+
+              def test_caller_quality_declarations_validate_packages_and_benchmarks(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  metadata = {'packages': [{'name': 'sample', 'targets': [{'name': 'speed', 'kind': ['bench']}]}]}
+                  for name, output in [('cargo', json.dumps(metadata)), ('rustc', 'x86_64-unknown-linux-gnu')]:
+                      path = tools / name
+                      path.write_text('#!/usr/bin/env python3\nprint(' + repr(output) + ')\n', encoding='utf-8')
+                      path.chmod(0o700)
+                  directory = self.root / '.github'
+                  directory.mkdir()
+                  declarations = [('miri_crates=["sample"]\ninstruction_benchmarks=[{package="sample",bench="speed"}]\n', True),
+                                  ('miri_crates=["unknown"]\n', False), ('miri_crates=true\n', False),
+                                  ('instruction_benchmarks=[{package="sample",bench="missing"}]\n', False),
+                                  ('instruction_benchmarks=[{package="sample",bench="speed",extra=true}]\n', False)]
+                  for text, valid in declarations:
+                      (directory / 'ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n' + text, encoding='utf-8')
+                      result = self.shell(body('Read caller declaration'), PATH=str(tools) + os.pathsep + os.environ['PATH'])
+                      self.assertEqual(result.returncode == 0, valid, result.stderr)
+
+              def test_sanitizers_and_miri_cover_declared_tests_on_pinned_nightly(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  cargo = tools / 'cargo'
+                  log = self.root / 'commands'
+                  cargo.write_text('#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ["COMMAND_LOG"],"a",encoding="utf-8") as out: out.write(json.dumps(dict(args=sys.argv[1:],toolchain=os.environ.get("RUSTUP_TOOLCHAIN"),flags=os.environ.get("RUSTFLAGS")))+"\\n")\n', encoding='utf-8')
+                  cargo.chmod(0o700)
+                  script = self.root / 'quality.py'
+                  script.write_text(execution, encoding='utf-8')
+                  for mode in ['miri', 'address', 'thread']:
+                      log.write_text('', encoding='utf-8')
+                      args = dict(mode=mode, toolchain='nightly-2026-09-15', miri=['sample'])
+                      result = subprocess.run(['python3', str(script), json.dumps(args)], cwd=self.root,
+                                              env=self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'COMMAND_LOG': str(log)}, capture_output=True, text=True)
+                      self.assertEqual(result.returncode, 0, result.stderr)
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      self.assertEqual({command['toolchain'] for command in commands}, {'nightly-2026-09-15'})
+                      if mode == 'miri':
+                          self.assertEqual([command['args'] for command in commands], [['miri', 'setup'], ['miri', 'test', '--locked', '-p', 'sample']])
+                      else:
+                          self.assertEqual({command['flags'] for command in commands}, {f'-Zsanitizer={mode}'})
+                          self.assertIn('--all-targets', commands[0]['args'])
+                          self.assertIn('--doc', commands[1]['args'])
+                          self.assertTrue(all('--workspace' in command['args'] and '-Zbuild-std' in command['args'] and '--locked' in command['args'] for command in commands))
+
+              def test_saved_baseline_is_required_and_prs_cannot_seed(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  valgrind = tools / 'valgrind'
+                  valgrind.write_text('#!/bin/sh\nprintf "valgrind fixture\\n"\n', encoding='utf-8')
+                  valgrind.chmod(0o700)
+                  script = self.root / 'quality.py'
+                  script.write_text(execution, encoding='utf-8')
+                  args = dict(mode='instructions', baseline_mode='saved', baseline_directory=str(self.root / 'empty'), benchmarks=[])
+                  result = subprocess.run(['python3', str(script), json.dumps(args)], cwd=self.root,
+                                          env=self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH']}, capture_output=True, text=True)
+                  self.assertNotEqual(result.returncode, 0)
+                  self.assertIn('No successful main instruction baseline', result.stderr)
+                  for event, ref in [('pull_request', 'refs/heads/main'), ('workflow_dispatch', 'refs/heads/branch')]:
+                      result = self.shell(body('Instruction baseline identity'), BASELINE_MODE='seed', GITHUB_EVENT_NAME=event, GITHUB_REF=ref, DEFAULT_BRANCH='main')
+                      self.assertNotEqual(result.returncode, 0)
+                      self.assertIn('only by workflow_dispatch on the default branch', result.stderr)
+
+          unittest.main()
       - name: Toolchain
         working-directory: fixtures/sample
         run: |
@@ -97,10 +279,10 @@ jobs:
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               assert document['permissions'] == {'contents': 'read'}
               assert set(document['jobs']) == {'declaration', 'quality', 'docs', 'tests', 'checks', 'advisories',
-                                               'targets', 'browser', 'browser-tests', 'fuzz', 'tests-result'}
+                                               'targets', 'browser', 'browser-tests', 'fuzz', 'tests-result', 'test-build', 'quality-set'}
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
-              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests', 'test-build'}
               stages = ['Compile cache identity', 'Restore compile cache', 'Compile cache',
                         'Compile cache statistics', 'Seal compile cache', 'Save compile cache']
               for name in owners:
@@ -330,6 +512,10 @@ jobs:
                   prefixes = [snapshot_keys(CACHE_ENABLED=enabled, CACHE_COVERAGE=coverage, SHARD=shard)['prefix']
                               for shard in writers]
                   assert len(prefixes) == len(set(prefixes)), 'at most one writer per actual shape'
+              archive = snapshot_keys(CACHE_JOB='test-build', SHARD='archive')
+              assert archive['prefix'] == snapshot_keys(SHARD='1')['prefix']
+              assert archive['writer'] == 'true'
+              assert snapshot_keys(SHARD='1', TEST_ARCHIVE='test-binaries.tar.zst')['writer'] == 'false'
               assert snapshot_keys(CACHE_WARM='true', SHARD='warm')['writer'] == 'true'
               assert snapshot_keys(CACHE_WARM='true', SHARD='warm', GITHUB_EVENT_NAME='pull_request')['writer'] == 'false'
               assert 'CACHE_DEFAULT_BRANCH: $' + '{{ github.event.repository.default_branch }}' in workflow
@@ -552,7 +738,7 @@ jobs:
           def cache_error_artifacts_are_selected_and_scoped():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
-              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests', 'test-build'}
               uploads = {name: job.split('      - name: Upload compile cache errors\n')[1].split('      - name:', 1)[0]
                          for name, job in jobs.items() if '      - name: Upload compile cache errors\n' in job}
               assert set(uploads) == owners
@@ -1973,6 +2159,19 @@ jobs:
           permit('ci', 'tests', 'Tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
+          for job in ['test-build', 'quality-set']:
+              names = ['Coverage tools', 'Search tools', 'Mise bootstrap', 'Test tools']
+              names += ['Compile cache'] if job == 'test-build' else ['Quality tools']
+              for name in names:
+                  permit('ci', job, name, 'timeout-minutes', '10')
+                  if name != 'Test tools':
+                      permit('ci', job, name, '--retry', '3')
+          for name in ['Archive tests', 'Archive isolated tests']:
+              permit('ci', 'test-build', name, 'timeout-minutes', '45')
+          permit('ci', 'quality-set', 'Run quality gate', 'timeout-minutes', '45')
+          permit('ci', 'test-build', 'Archive tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
+          permit('ci', 'test-build', 'Archive isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
+          permit('ci', 'test-build', 'Archive isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
           permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
 
@@ -2061,7 +2260,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 59)
+                  self.assertEqual(len(report.splitlines()), 83)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2099,7 +2298,7 @@ jobs:
               def test_download_retry_changes_are_rejected_per_call(self):
                   source = files['.github/workflows/ci.yml']
                   positions = [match.start() for match in re.finditer('--retry 3', source)]
-                  self.assertEqual(len(positions), 9)
+                  self.assertEqual(len(positions), 10)
                   self.assert_policy(files, True)
                   for offset in positions:
                       for replacement in ['', '--retry 2', '--retry 3 --retry 3']:
@@ -2269,7 +2468,7 @@ jobs:
                   candidate = source.replace('run: &sccache-stats |\n', 'run: &sccache-stats |\n          timeout 3 true\n', 1)
                   self.assertNotEqual(candidate, source)
                   owners = [row[1] for row in collect({'.github/workflows/ci.yml': candidate}) if row[3] == 'timeout']
-                  self.assertCountEqual(owners, ['quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'])
+                  self.assertCountEqual(owners, ['quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests', 'test-build'])
 
               def test_literal_fixture_values_are_not_policy(self):
                   source = ('jobs:\n  new:\n'
@@ -2323,7 +2522,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 59)
+                  self.assertEqual(len(report.splitlines()), 83)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
@@ -2487,7 +2686,7 @@ jobs:
           def job_run_defaults_preserve_pipeline_failures():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests'}
+              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests', 'test-build', 'quality-set'}
               defaults = {name: re.search(r'^    defaults:\n(.*?)^    steps:', job, re.MULTILINE | re.DOTALL)
                           for name, job in jobs.items()}
               assert {name for name, match in defaults.items() if match} == expected
@@ -2790,7 +2989,7 @@ jobs:
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'warm_test_filter': json.dumps('none()'), 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
+              assert values == {'warm_test_filter': json.dumps('none()'), 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'miri_crates': '[]', 'instruction_benchmarks': '[]'}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
@@ -3087,9 +3286,9 @@ jobs:
           def coverage_matrix_splits_doctests_from_partitions():
               tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
               matrix = re.search(r'        shard: (.*)', tests)[1]
-              assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,\"doctests\"]' || '[1,2,3,4]') }}"
-              assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}" in tests
-              assert '    needs: declaration\n' in tests and '      fail-fast: false\n' in tests
+              assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || '[1,2,3,4,5,6,\"doctests\"]') }}"
+              assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/6)', matrix.shard) }}" in tests
+              assert '    needs: [declaration, test-build]\n' in tests and '      fail-fast: false\n' in tests
               assert 'advisory-scan' in tests and "inputs.working-directory != '.'" in tests
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -3107,8 +3306,8 @@ jobs:
                           assert result.returncode == 0, result.stderr
                           selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                           choices = re.findall(r"'(\[.*?\])'", matrix)
-                          legs = json.loads(choices[1 if selected['coverage'] == 'true' else 2])
-                          assert legs == ([1, 2, 3, 4] if event == 'pull_request' else [1, 2, 3, 4, 'doctests'])
+                          legs = json.loads(choices[1])
+                          assert legs == [1, 2, 3, 4, 5, 6, 'doctests']
 
           coverage_matrix_splits_doctests_from_partitions()
           print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -3514,8 +3713,8 @@ jobs:
               job = jobs['fuzz']
               assert "    if: $" + "{{ !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}\n" in job
               assert 'fuzz-scan' not in jobs['declaration'] and 'fuzz-scan' not in jobs['advisories']
-              assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: nightly-2026-09-15\n' in job
-              assert workflow.count('nightly-') == 1 and workflow.count('/cargo-fuzz/') == 1
+              assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: *quality-nightly-toolchain\n' in job
+              assert len(re.findall(r'nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}', workflow)) == 1 and workflow.count('/cargo-fuzz/') == 1
               assert '        env:\n          FUZZ_SCAN: true\n        run: *check-tools\n' in job
               steps = re.findall(r'^      - name: (.+)$', job, re.MULTILINE)
               assert steps.index('Fuzz licences') < steps.index('Fuzz target'), steps
@@ -5033,6 +5232,58 @@ jobs:
 
           reusable_calls_complete_independently()
           print('PASS reusable_calls_complete_independently')
+
+          def archive_shards_run_without_compiling_the_checkout():
+              import shutil
+              for route, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      producer, shard = directory / 'producer', directory / 'shard'
+                      for checkout in [producer, shard]:
+                          shutil.copytree(root / 'fixtures/sample', checkout, ignore=shutil.ignore_patterns('target'))
+                      env = {'RUNNER_TEMP': temporary, 'SHARD': 'archive', 'BUILD_TEST_ARCHIVE': 'true',
+                             'TEST_PACKAGES': '["sample"]', 'COLLECT_COVERAGE': coverage}
+                      result = execute(route, producer, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      archive = shard / 'test-binaries.tar.zst'
+                      shutil.copyfile(producer / archive.name, archive)
+                      shutil.rmtree(producer)
+                      (shard / 'src/lib.rs').write_text('compile_error!("archive shards must not compile");\n', encoding='utf-8')
+                      result = execute(route, shard, env | {'BUILD_TEST_ARCHIVE': 'false', 'SHARD': '1', 'SHARD_COUNT': '1', 'TEST_ARCHIVE': str(archive)})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      assert '1 passed' in result.stdout + result.stderr, result.stdout + result.stderr
+                      assert 'Compiling sample' not in result.stdout + result.stderr
+                      if coverage == 'true':
+                          assert (shard / 'shard-1.lcov').is_file()
+              print('PASS archive_shards_run_without_compiling_the_checkout')
+
+          archive_shards_run_without_compiling_the_checkout()
+
+          def test_archive_build_once_and_shards_only_execute():
+              for route, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                             'RUNNER_TEMP': temporary, 'SHARD': 'archive', 'COLLECT_COVERAGE': coverage,
+                             'TEST_PACKAGES': '["sample"]', 'BUILD_TEST_ARCHIVE': 'true'}
+                      result = execute(route, directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                      assert commands[0] == ['fetch', '--locked'], commands
+                      expected = ['llvm-cov', 'nextest-archive'] if coverage == 'true' else ['nextest', 'archive']
+                      assert commands[1][:2] == expected and '--archive-file' in commands[1], commands
+                      log.write_text('', encoding='utf-8')
+                      env.update(BUILD_TEST_ARCHIVE='false', TEST_ARCHIVE=str(directory / 'test-binaries.tar.zst'), SHARD='6', SHARD_COUNT='6')
+                      result = execute(route, directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                      assert len(commands) == 1 and '--archive-file' in commands[0], commands
+                      assert commands[0][commands[0].index('--partition') + 1] == 'count:6/6', commands
+                      assert '--workspace-remap' in commands[0] and '--locked' not in commands[0], commands
+              print('PASS test_archive_build_once_and_shards_only_execute')
+
+          test_archive_build_once_and_shards_only_execute()
 
           def workflow_safety_is_unchanged():
               assert re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + ['cargo test --workspace --locked'] == [

@@ -1,0 +1,70 @@
+name: Nightly Rust quality
+
+on:
+  workflow_call:
+    inputs:
+      seed-instruction-baseline:
+        description: Seed the instruction baseline from an explicit default-branch manual run
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  scan:
+    name: Nightly scans
+    uses: ./.github/workflows/ci.yml
+    with:
+      quality-scan: true
+      seed-instruction-baseline: ${{ inputs.seed-instruction-baseline }}
+      concurrency-key: quality-nightly
+
+  report:
+    name: Mutation issues
+    needs: scan
+    if: ${{ always() && !inputs.seed-instruction-baseline }}
+    runs-on: ${{ fromJSON(needs.scan.outputs.linux-runner || '"ubuntu-latest"') }}
+    steps:
+      - name: Download mutation survivors
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: quality-quality-nightly-mutation-*
+          path: findings
+      - name: File mutation survivors
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SCAN: ${{ needs.scan.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: python
+        run: |
+          import collections
+          import json
+          import os
+          import pathlib
+          import subprocess
+          survivors = collections.defaultdict(list)
+          reports = list(pathlib.Path('findings').glob('*/survivors.json'))
+          for path in reports:
+              for mutant in json.loads(path.read_text(encoding='utf-8')):
+                  start = mutant['span']['start']
+                  survivors[mutant['package']].append(f"{mutant['file']}:{start['line']}:{start['column']}: {mutant['name']} => {mutant['replacement']}")
+          def gh(*args, body=None):
+              return subprocess.run(['gh', *args, '-R', os.environ['REPOSITORY']], input=body,
+                                    check=True, capture_output=True, text=True).stdout
+          for package, lines in sorted(survivors.items()):
+              title = f'Mutation survivors in {package}'
+              head = f"Nightly mutation testing on main found {len(lines)} survivors.\n\nRun: {os.environ['RUN_URL']}\nFull findings: mutation artifacts for this run.\n\n```text\n"
+              body = head + '\n'.join(sorted(lines))[:65536 - len(head) - 5] + '\n```\n'
+              issues = json.loads(gh('issue', 'list', '--state', 'open', '--search', f'"{title}" in:title', '--json', 'number,title'))
+              existing = next((issue for issue in issues if issue['title'] == title), None)
+              if existing:
+                  print(gh('issue', 'comment', str(existing['number']), '--body-file', '-', body=body).strip())
+              else:
+                  print(gh('issue', 'create', '--title', title, '--body-file', '-', '--label', 'bug', '--label', 'needs-triage', body=body).strip())
+          if os.environ['SCAN'] != 'success' or len(reports) != 6:
+              raise SystemExit(f"Nightly scans {os.environ['SCAN']}; received {len(reports)}/6 mutation reports")
+          if survivors:
+              raise SystemExit(f'Mutation survivors in {len(survivors)} crates; issues updated')
