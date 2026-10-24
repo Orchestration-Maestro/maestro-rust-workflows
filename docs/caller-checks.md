@@ -675,3 +675,23 @@ required results aggregate the new positive caller and workflow proofs.
 Releases and organization/caller pins are coordinated separately. A code
 change or release tag alone does not prove adoption: observe the immutable
 release, pin/ruleset read-back and required checks after repinning.
+
+## Ephemeral Linux runners
+
+The hosted caller-declaration job selects the organization's `maestro-aws`
+runner group for x64 Linux jobs when its published online count is positive
+and no more than five minutes old. Missing, expired or invalid availability,
+or a caller workflow that declares, inherits or references repository secrets,
+selects GitHub-hosted Linux instead. The declaration and the runner controller
+use the same pinned secret-reference policy. The automatic job token is allowed.
+Native ARM Linux, Windows, macOS and CodeQL remain GitHub-hosted.
+
+Each AWS runner accepts one job. It has a separate unprivileged identity,
+filesystem and network namespace, with no access to the registration credential,
+build-user state, another runner, private networks or instance metadata.
+Only HTTPS and DNS leave its network. Existing memory admission reserves each
+runner's cap and gives waiting compile jobs priority. Four idle runners are the
+initial target; admission can delay replacements. Repository secrets are not
+passed to these jobs, and external contributors require approval before running.
+Availability is checked before scheduling; a host lost afterward fails or leaves
+an already-selected job queued, not silently rerun on another host.
