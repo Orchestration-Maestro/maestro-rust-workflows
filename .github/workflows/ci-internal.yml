@@ -66,6 +66,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Ephemeral runner policy
+        run: python3 -m unittest discover -s .github -p runner_policy_test.py
       - name: Toolchain
         working-directory: fixtures/sample
         run: |
@@ -2737,7 +2739,7 @@ jobs:
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               job = jobs['browser-tests']
               assert "!inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true'" in job
-              assert 'runs-on: ubuntu-latest' in job and 'matrix:' not in job
+              assert 'runs-on: $' + '{{ fromJSON(needs.declaration.outputs.linux_runner) }}' in job and 'matrix:' not in job
               assert body('Browser test recipe').strip() == 'just browser-test'
               assert 'mise exec' not in body('Browser test recipe')
               assert 'if:' not in job.split('- name: Browser test caller tools', 1)[1].split('- name:', 1)[0]
@@ -3964,7 +3966,7 @@ jobs:
                       assert result.returncode != 0 and 'reserved_ports' in result.stderr, bad + result.stderr
               tests = workflow.split('  tests:\n', 1)[1].split('  targets:', 1)[0]
               step = next(s for s in tests.split('      - name: ')[1:] if s.splitlines()[0] == 'Reserved ports')
-              assert "if: needs.declaration.outputs.reserved_ports != ''" in step
+              assert "if: runner.environment == 'github-hosted' && needs.declaration.outputs.reserved_ports != ''" in step
               assert 'sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"' in step
               assert tests.index('- name: Reserved ports') < tests.index('- name: Isolated tests')
 
@@ -4672,7 +4674,7 @@ jobs:
               result, values = declaration(root / 'fixtures/declared')
               assert result.returncode == 0, result.stderr
               assert json.loads(values['targets']) == expected
-              assert 'runs-on: $' + '{{ matrix.runner }}' in workflow
+              assert 'runs-on: $' + "{{ matrix.runner == 'ubuntu-latest' && fromJSON(needs.declaration.outputs.linux_runner) || matrix.runner }}" in workflow
               assert 'rustup target add "$TARGET"' in body('Check target')
               assert 'rustup component add clippy' in body('Check target')
               assert 'cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings' in body('Check target')

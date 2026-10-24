@@ -1,0 +1,142 @@
+"""Exercise the deployed policy and the declaration's actual runner-selection body."""
+import io
+import json
+import os
+import re
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from runner_policy import require_secret_free
+
+ROOT = Path(__file__).resolve().parent
+WORKFLOW = ROOT / 'workflows/ci.yml'
+
+
+class RunnerPolicyTests(unittest.TestCase):
+    authored_witnesses = [
+        'jobs:\n  on:\n    secrets: inherit\n  yes:\n    steps: [{run: echo safe}]\n',
+        'env:\n  ON: "${{ secrets.KEY }}"\n  YES: safe\n',
+        '"\\u0073ecrets": inherit',
+        'jobs:\n  first: &shared\n    secrets: inherit\n  second:\n    <<: *shared\n',
+        'Secrets: inherit',
+    ]
+
+    def test_every_authored_mapping_pair_is_checked_by_the_policy(self):
+        for source in self.authored_witnesses:
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                require_secret_free(source)
+
+    def test_every_authored_mapping_pair_selects_hosted(self):
+        for source in self.authored_witnesses:
+            with self.subTest(source=source):
+                self.assertEqual(self.select({'timestamp': 1000, 'online': 4}, source)[0], 'ubuntu-latest')
+
+    def test_python_random_tokens_are_not_repository_secrets(self):
+        require_secret_free('run: |\n  token = secrets.token_hex(32)\n')
+        require_secret_free('token: ${{ secrets.GITHUB_TOKEN }}')
+        require_secret_free("token: ${{ secrets['GITHUB_TOKEN'] }}")
+        require_secret_free('permissions: &read {contents: read}\njobs: {a: *read, b: *read}')
+        require_secret_free('jobs: &cycle {again: *cycle}')
+
+    def test_repository_secret_references_and_inheritance_are_refused(self):
+        for source in ('token: ${{ secrets.KEY }}', 'secrets: inherit', '"secrets": inherit', "'secrets': inherit", r'"\u0073ecrets": inherit',
+                       "token: ${{ format('}}{0}', secrets.KEY) }}",
+                       'token: ${{ toJSON(secrets) }}', "token: ${{ secrets['KEY'] }}"):
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                require_secret_free(source)
+
+    def select(self, availability, source='permissions: {contents: read}', corrupt=False, offline=False, moved=False, missing_yaml=False, provider=False, event="push", head="Orchestration-Maestro/maestro"):
+        workflow = WORKFLOW.read_text()
+        step = workflow.split('      - name: Select Linux runner\n', 1)[1].split('      - name: ', 1)[0]
+        body = re.search(r"          python3 - <<'PYTHON'\n(.*?)          PYTHON", step, re.DOTALL)[1]
+        code = '\n'.join(line[10:] for line in body.splitlines())
+        requests = []
+
+        def urlopen(request, **_kwargs):
+            requests.append(request)
+            if offline:
+                raise OSError('unavailable')
+            if isinstance(request, str):
+                return io.BytesIO(b'corrupt' if corrupt else (ROOT / 'runner_policy.py').read_bytes())
+            import base64
+            selected = source
+            if moved:
+                selected = 'token: ${{ secrets.KEY }}' if 'ref=' + '1'*40 in request.full_url else 'permissions: {contents: read}'
+            return io.BytesIO(json.dumps({'content': base64.b64encode(selected.encode()).decode()}).encode())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'output'
+            env = {'GITHUB_EVENT_NAME': event, 'PULL_REQUEST_HEAD_REPOSITORY': head,
+                   'RUNNER_AVAILABILITY': json.dumps(availability), 'GITHUB_OUTPUT': str(output),
+                   'CALLER_WORKFLOW': 'Orchestration-Maestro/maestro/.github/workflows/check.yml@refs/heads/main',
+                   'GITHUB_REPOSITORY': 'Orchestration-Maestro/maestro-rust-workflows' if provider else 'Orchestration-Maestro/maestro', 'CALLER_WORKFLOW_SHA': '1'*40, 'GH_TOKEN': 'synthetic-job-token'}
+            original_import = __import__
+            def imported(name, *args, **kwargs):
+                if missing_yaml and name == 'yaml':
+                    raise ImportError('YAML unavailable')
+                return original_import(name, *args, **kwargs)
+            with patch('builtins.__import__', side_effect=imported), patch.dict(os.environ, env), patch('urllib.request.urlopen', side_effect=urlopen), patch('time.time', return_value=1000):
+                exec(compile(code, 'Select Linux runner', 'exec'), {})
+            labels = json.loads(output.read_text().split('=', 1)[1])
+            return labels, requests
+
+    def test_unavailable_expired_future_and_zero_count_use_hosted_linux(self):
+        for value in ({}, {'timestamp': 699, 'online': 4}, {'timestamp': 1001, 'online': 4},
+                      {'timestamp': 1000, 'online': 0}, {'timestamp': 'invalid', 'online': 4}):
+            with self.subTest(value=value):
+                labels, requests = self.select(value)
+                self.assertEqual(labels, 'ubuntu-latest')
+                self.assertEqual(requests, [])
+
+    def test_missing_yaml_and_invalid_yaml_use_hosted_without_installing(self):
+        self.assertEqual(self.select({'timestamp': 1000, 'online': 4}, missing_yaml=True)[0], 'ubuntu-latest')
+        self.assertEqual(self.select({'timestamp': 1000, 'online': 4}, source='jobs: [unterminated')[0], 'ubuntu-latest')
+        for source in ('- not-a-workflow', 'permissions: {}\n---\njobs: {}', ''):
+            self.assertEqual(self.select({'timestamp': 1000, 'online': 4}, source=source)[0], 'ubuntu-latest')
+
+    def test_provider_self_tests_use_hosted_for_unresolvable_pr_refs(self):
+        labels, requests = self.select({'timestamp': 1000, 'online': 4}, provider=True)
+        self.assertEqual(labels, 'ubuntu-latest')
+        self.assertEqual(requests, [])
+
+    def test_moved_branch_does_not_replace_the_executed_workflow(self):
+        labels, _ = self.select({'timestamp': 1000, 'online': 4}, moved=True)
+        self.assertEqual(labels, 'ubuntu-latest')
+
+    def test_fork_missing_head_and_unknown_events_stay_hosted(self):
+        for event, head in [('pull_request', 'external/maestro'),
+                            ('pull_request_target', 'external/maestro'),
+                            ('pull_request', ''), ('unknown', 'Orchestration-Maestro/maestro')]:
+            with self.subTest(event=event, head=head):
+                labels, requests = self.select({'timestamp': 1000, 'online': 4}, event=event, head=head)
+                self.assertEqual(labels, 'ubuntu-latest')
+                self.assertEqual(requests, [])
+
+    def test_same_repository_pull_requests_keep_aws(self):
+        for event in ('pull_request', 'pull_request_target'):
+            with self.subTest(event=event):
+                labels, _ = self.select({'timestamp': 1000, 'online': 4}, event=event)
+                self.assertEqual(labels, ['self-hosted', 'linux', 'maestro-aws'])
+
+    def test_fresh_availability_and_secret_free_caller_use_aws(self):
+        for source in ('run: |\n  token = secrets.token_hex(32)\n', 'token: ${{ secrets.GITHUB_TOKEN }}'):
+            labels, requests = self.select({'timestamp': 700, 'online': 4}, source)
+            self.assertEqual(labels, ['self-hosted', 'linux', 'maestro-aws'])
+            self.assertEqual(len(requests), 2)
+
+    def test_secret_bearing_caller_and_unverifiable_policy_stay_hosted(self):
+        cases = [{'source': 'token: ${{ secrets.KEY }}'}, {'source': 'secrets: inherit'},
+                 {'source': '"secrets": inherit'}, {'source': r'"\u0073ecrets": inherit'},
+                 {'source': "token: ${{ format('}}{0}', secrets.KEY) }}"},
+                 {'source': "token: ${{ format('it''s }}{0}', secrets.KEY) }}"},
+                 {'source': "token: ${{ format('unterminated')"}, {'moved': True},
+                 {'corrupt': True}, {'offline': True}]
+        for options in cases:
+            with self.subTest(options=options):
+                self.assertEqual(self.select({'timestamp': 1000, 'online': 4}, **options)[0], 'ubuntu-latest')
+
+
+if __name__ == '__main__':
+    unittest.main()
