@@ -2115,15 +2115,14 @@ jobs:
               records = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
               if not records:
                   raise SystemExit('Instruction benchmark produced no measurements')
-              if require_comparison:
-                  for record in records:
-                      profiles = [profile for profile in record['profiles'] if profile['tool'] == 'Callgrind']
-                      if not profiles:
-                          raise SystemExit('Instruction benchmark has no Callgrind profile')
-                      for profile in profiles:
-                          metric = profile['summaries']['total']['summary']['Callgrind']['Ir']
-                          if 'Both' not in metric['metrics'] or metric.get('diffs') is None:
-                              raise SystemExit('Instruction benchmark has no main instruction comparison')
+              for record in records:
+                  profiles = [profile for profile in record['profiles'] if profile['tool'] == 'Callgrind']
+                  if not profiles:
+                      raise SystemExit('Instruction benchmark has no Callgrind profile')
+                  for profile in profiles:
+                      metric = profile['summaries']['total']['summary']['Callgrind']['Ir']
+                      if require_comparison and ('Both' not in metric['metrics'] or metric.get('diffs') is None):
+                          raise SystemExit('Instruction benchmark has no main instruction comparison')
               return {(record['module_path'], record.get('id')) for record in records}
 
           if mode == 'features':

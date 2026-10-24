@@ -108,6 +108,8 @@ jobs:
                   path.write_text(json.dumps({'module_path': 'bench::parse', 'id': None, 'profiles': []}) + '\n', encoding='utf-8')
                   with self.assertRaises(SystemExit):
                       namespace['identities'](path)
+                  with self.assertRaises(SystemExit):
+                      namespace['identities'](path, False)
                   path.write_text('', encoding='utf-8')
                   with self.assertRaises(SystemExit):
                       namespace['identities'](path)
