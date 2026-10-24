@@ -319,8 +319,10 @@ jobs:
                   assert result.returncode == expected, (result.returncode, result.stdout, result.stderr)
                   return result
               diff = pathlib.Path(temporary) / 'changes.diff'
-              lines = original.splitlines()
-              diff.write_text('--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1,' + str(len(lines)) + ' @@\n' + ''.join('+' + line + '\n' for line in lines), encoding='utf-8')
+              def write_diff(text):
+                  lines = text.splitlines()
+                  diff.write_text('--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1,' + str(len(lines)) + ' @@\n' + ''.join('+' + line + '\n' for line in lines), encoding='utf-8')
+              write_diff(original)
               mutation = ['cargo', 'mutants', '--workspace', '--no-config', '--cargo-arg=--locked',
                           '--test-tool=nextest', '--shard=0/1', '--in-diff', str(diff), '--output', temporary,
                           '--', '--user-config-file', 'none', '--ignore-default-filter']
@@ -336,6 +338,7 @@ jobs:
                   print('PASS native empty mutation selection exits successfully without outcomes.json', flush=True)
                   run(mutation)
                   source.write_text(original.replace('assert_eq!(double(21), 42);', 'assert_eq!(double(0), 0);'), encoding='utf-8')
+                  write_diff(source.read_text(encoding='utf-8'))
                   run(mutation, 2)
                   outcomes = json.loads((pathlib.Path(temporary) / 'mutants.out/outcomes.json').read_text(encoding='utf-8'))
                   survivors = [entry['scenario']['Mutant'] for entry in outcomes['outcomes'] if entry['summary'] == 'MissedMutant']
