@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.1...v0.15.2) (2026-10-24)
+
+
+### Continuous Integration
+
+* scan main and weekly instead of pull requests ([#175](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/175)) ([790ddd1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/790ddd17f18d753447304e4e08420867d0d41d52))
+* select isolated ephemeral Linux runners with fallback ([#178](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/178)) ([95512e9](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/95512e926d3109c7ba4d472fb9238df80b12615c))
+
 ## [0.15.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.0...v0.15.1) (2026-10-21)
 
 
