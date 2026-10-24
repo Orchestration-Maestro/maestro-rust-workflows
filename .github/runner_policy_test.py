@@ -38,6 +38,7 @@ class RunnerPolicyTests(unittest.TestCase):
         require_secret_free('token: ${{ secrets.GITHUB_TOKEN }}')
         require_secret_free("token: ${{ secrets['GITHUB_TOKEN'] }}")
         require_secret_free('permissions: &read {contents: read}\njobs: {a: *read, b: *read}')
+        require_secret_free('jobs: &cycle {again: *cycle}')
 
     def test_repository_secret_references_and_inheritance_are_refused(self):
         for source in ('token: ${{ secrets.KEY }}', 'secrets: inherit', '"secrets": inherit', "'secrets': inherit", r'"\u0073ecrets": inherit',
@@ -91,6 +92,8 @@ class RunnerPolicyTests(unittest.TestCase):
     def test_missing_yaml_and_invalid_yaml_use_hosted_without_installing(self):
         self.assertEqual(self.select({'timestamp': 1000, 'online': 4}, missing_yaml=True)[0], 'ubuntu-latest')
         self.assertEqual(self.select({'timestamp': 1000, 'online': 4}, source='jobs: [unterminated')[0], 'ubuntu-latest')
+        for source in ('- not-a-workflow', 'permissions: {}\n---\njobs: {}', ''):
+            self.assertEqual(self.select({'timestamp': 1000, 'online': 4}, source=source)[0], 'ubuntu-latest')
 
     def test_provider_self_tests_use_hosted_for_unresolvable_pr_refs(self):
         labels, requests = self.select({'timestamp': 1000, 'online': 4}, provider=True)
