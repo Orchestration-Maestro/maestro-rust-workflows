@@ -49,8 +49,7 @@ jobs:
           reports = list(pathlib.Path('findings').glob('*/survivors.json'))
           for path in reports:
               for mutant in json.loads(path.read_text(encoding='utf-8')):
-                  start = mutant['span']['start']
-                  survivors[mutant['package']].append(f"{mutant['file']}:{start['line']}:{start['column']}: {mutant['name']} => {mutant['replacement']}")
+                  survivors[mutant['package']].append(mutant['name'])
           def gh(*args, body=None):
               return subprocess.run(['gh', *args, '-R', os.environ['REPOSITORY']], input=body,
                                     check=True, capture_output=True, text=True).stdout

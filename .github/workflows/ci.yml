@@ -2249,7 +2249,7 @@ jobs:
           else:
               raise SystemExit('Mutation run did not produce outcomes.json')
           (results / 'survivors.json').write_text(json.dumps(survivors), encoding='utf-8')
-          lines = [f"{item['file']}:{item['span']['start']['line']}:{item['span']['start']['column']}: {item['name']} => {item['replacement']}" for item in survivors]
+          lines = [item['name'] for item in survivors]
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
               output.write('### Mutation survivors\n\n```text\n' + ('\n'.join(lines) if lines else 'None') + '\n```\n')
           if survivors:

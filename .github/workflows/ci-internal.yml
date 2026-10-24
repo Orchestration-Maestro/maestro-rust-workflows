@@ -125,7 +125,7 @@ jobs:
               def test_survivor_fails_and_names_source_line(self):
                   directory = self.root / 'quality-results/mutants.out'
                   directory.mkdir(parents=True)
-                  mutant = dict(package='sample', file='src/lib.rs', name='replace add -> u32 with 0', replacement='0', span=dict(start=dict(line=4, column=5)))
+                  mutant = dict(package='sample', file='src/lib.rs', name='src/lib.rs:4:5: replace add -> u32 with 0', replacement='0', span=dict(start=dict(line=4, column=5)))
                   for summary, expected in [('MissedMutant', 1), ('CaughtMutant', 0)]:
                       (directory / 'outcomes.json').write_text(json.dumps({'outcomes': [dict(scenario=dict(Mutant=mutant), summary=summary)]}), encoding='utf-8')
                       result = self.shell(body('Mutation survivor summary'))
@@ -174,7 +174,7 @@ jobs:
                   for shard in range(6):
                       directory = self.root / f'findings/shard-{shard}'
                       directory.mkdir(parents=True)
-                      mutant = dict(package='sample', file='src/lib.rs', name='replace add with 0', replacement='0', span=dict(start=dict(line=4, column=5)))
+                      mutant = dict(package='sample', file='src/lib.rs', name='src/lib.rs:4:5: replace add with 0', replacement='0', span=dict(start=dict(line=4, column=5)))
                       (directory / 'survivors.json').write_text(json.dumps([mutant] if shard == 0 else []), encoding='utf-8')
                   tools = self.root / 'tools'
                   tools.mkdir()
