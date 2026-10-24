@@ -20,12 +20,13 @@ class RunnerPolicyTests(unittest.TestCase):
         require_secret_free('token: ${{ secrets.GITHUB_TOKEN }}')
 
     def test_repository_secret_references_and_inheritance_are_refused(self):
-        for source in ('token: ${{ secrets.KEY }}', 'secrets: inherit',
+        for source in ('token: ${{ secrets.KEY }}', 'secrets: inherit', '"secrets": inherit', "'secrets': inherit", r'"\u0073ecrets": inherit',
+                       "token: ${{ format('}}{0}', secrets.KEY) }}",
                        'token: ${{ toJSON(secrets) }}', "token: ${{ secrets['KEY'] }}"):
             with self.subTest(source=source), self.assertRaises(ValueError):
                 require_secret_free(source)
 
-    def select(self, availability, source='permissions: {contents: read}', corrupt=False, offline=False):
+    def select(self, availability, source='permissions: {contents: read}', corrupt=False, offline=False, moved=False):
         workflow = WORKFLOW.read_text()
         step = workflow.split('      - name: Select Linux runner\n', 1)[1].split('      - name: ', 1)[0]
         body = re.search(r"          python3 - <<'PYTHON'\n(.*?)          PYTHON", step, re.DOTALL)[1]
@@ -39,13 +40,16 @@ class RunnerPolicyTests(unittest.TestCase):
             if isinstance(request, str):
                 return io.BytesIO(b'corrupt' if corrupt else (ROOT / 'runner_policy.py').read_bytes())
             import base64
-            return io.BytesIO(json.dumps({'content': base64.b64encode(source.encode()).decode()}).encode())
+            selected = source
+            if moved:
+                selected = 'token: ${{ secrets.KEY }}' if 'ref=' + '1'*40 in request.full_url else 'permissions: {contents: read}'
+            return io.BytesIO(json.dumps({'content': base64.b64encode(selected.encode()).decode()}).encode())
 
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / 'output'
             env = {'RUNNER_AVAILABILITY': json.dumps(availability), 'GITHUB_OUTPUT': str(output),
                    'CALLER_WORKFLOW': 'Orchestration-Maestro/maestro/.github/workflows/check.yml@refs/heads/main',
-                   'GH_TOKEN': 'synthetic-job-token'}
+                   'CALLER_WORKFLOW_SHA': '1'*40, 'GH_TOKEN': 'synthetic-job-token'}
             with patch.dict(os.environ, env), patch('urllib.request.urlopen', side_effect=urlopen), patch('time.time', return_value=1000):
                 exec(compile(code, 'Select Linux runner', 'exec'), {})
             labels = json.loads(output.read_text().split('=', 1)[1])
@@ -59,6 +63,10 @@ class RunnerPolicyTests(unittest.TestCase):
                 self.assertEqual(labels, 'ubuntu-latest')
                 self.assertEqual(requests, [])
 
+    def test_moved_branch_does_not_replace_the_executed_workflow(self):
+        labels, _ = self.select({'timestamp': 1000, 'online': 4}, moved=True)
+        self.assertEqual(labels, 'ubuntu-latest')
+
     def test_fresh_availability_and_secret_free_caller_use_aws(self):
         for source in ('token = secrets.token_hex(32)', 'token: ${{ secrets.GITHUB_TOKEN }}'):
             labels, requests = self.select({'timestamp': 700, 'online': 4}, source)
@@ -67,6 +75,8 @@ class RunnerPolicyTests(unittest.TestCase):
 
     def test_secret_bearing_caller_and_unverifiable_policy_stay_hosted(self):
         cases = [{'source': 'token: ${{ secrets.KEY }}'}, {'source': 'secrets: inherit'},
+                 {'source': '"secrets": inherit'}, {'source': r'"\u0073ecrets": inherit'},
+                 {'source': "token: ${{ format('}}{0}', secrets.KEY) }}"}, {'moved': True},
                  {'corrupt': True}, {'offline': True}]
         for options in cases:
             with self.subTest(options=options):
