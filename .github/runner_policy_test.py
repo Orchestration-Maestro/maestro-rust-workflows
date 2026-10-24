@@ -15,8 +15,26 @@ WORKFLOW = ROOT / 'workflows/ci.yml'
 
 
 class RunnerPolicyTests(unittest.TestCase):
+    authored_witnesses = [
+        'jobs:\n  on:\n    secrets: inherit\n  yes:\n    steps: [{run: echo safe}]\n',
+        'env:\n  ON: "${{ secrets.KEY }}"\n  YES: safe\n',
+        '"\\u0073ecrets": inherit',
+        'jobs:\n  first: &shared\n    secrets: inherit\n  second:\n    <<: *shared\n',
+        'Secrets: inherit',
+    ]
+
+    def test_every_authored_mapping_pair_is_checked_by_the_policy(self):
+        for source in self.authored_witnesses:
+            with self.subTest(source=source), self.assertRaises(ValueError):
+                require_secret_free(source)
+
+    def test_every_authored_mapping_pair_selects_hosted(self):
+        for source in self.authored_witnesses:
+            with self.subTest(source=source):
+                self.assertEqual(self.select({'timestamp': 1000, 'online': 4}, source)[0], 'ubuntu-latest')
+
     def test_python_random_tokens_are_not_repository_secrets(self):
-        require_secret_free('token = secrets.token_hex(32)')
+        require_secret_free('run: |\n  token = secrets.token_hex(32)\n')
         require_secret_free('token: ${{ secrets.GITHUB_TOKEN }}')
         require_secret_free("token: ${{ secrets['GITHUB_TOKEN'] }}")
         require_secret_free('permissions: &read {contents: read}\njobs: {a: *read, b: *read}')
@@ -84,7 +102,7 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertEqual(labels, 'ubuntu-latest')
 
     def test_fresh_availability_and_secret_free_caller_use_aws(self):
-        for source in ('token = secrets.token_hex(32)', 'token: ${{ secrets.GITHUB_TOKEN }}'):
+        for source in ('run: |\n  token = secrets.token_hex(32)\n', 'token: ${{ secrets.GITHUB_TOKEN }}'):
             labels, requests = self.select({'timestamp': 700, 'online': 4}, source)
             self.assertEqual(labels, ['self-hosted', 'linux', 'maestro-aws'])
             self.assertEqual(len(requests), 2)

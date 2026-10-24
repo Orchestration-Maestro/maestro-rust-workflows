@@ -30,24 +30,26 @@ def expression_code(value):
 def require_secret_free(source):
     """Refuse decoded secret keys and non-automatic secret expressions."""
     try:
-        pending = [yaml.safe_load(source)]
+        root = yaml.compose(source, Loader=yaml.SafeLoader)
     except yaml.YAMLError as error:
         raise ValueError('unverifiable workflow YAML') from error
-    seen = set()
+    if not isinstance(root, yaml.MappingNode):
+        raise TypeError('workflow root is not a mapping')
+    pending, seen = [root], set()
     while pending:
-        value = pending.pop()
-        if isinstance(value, (dict, list)):
-            if id(value) in seen:
-                continue
-            seen.add(id(value))
-        if isinstance(value, dict):
-            if any(isinstance(key, str) and key.lower() == 'secrets' for key in value):
-                raise ValueError('workflow declares or inherits secrets')
-            pending.extend(value.values())
-        elif isinstance(value, list):
-            pending.extend(value)
-        elif isinstance(value, str):
-            for expression in expression_code(value):
+        node = pending.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            for key, value in node.value:
+                if isinstance(key, yaml.ScalarNode) and key.value.casefold() == 'secrets':
+                    raise ValueError('workflow declares or inherits secrets')
+                pending.extend((key, value))
+        elif isinstance(node, yaml.SequenceNode):
+            pending.extend(node.value)
+        elif isinstance(node, yaml.ScalarNode):
+            for expression in expression_code(node.value):
                 allowed = re.sub(r"\bsecrets\s*(?:\.\s*GITHUB_TOKEN\b|\[\s*'GITHUB_TOKEN'\s*\])", '', expression, flags=re.IGNORECASE)
                 if re.search(r'\bsecrets\b', allowed, re.IGNORECASE):
                     raise ValueError('workflow references repository secrets')
