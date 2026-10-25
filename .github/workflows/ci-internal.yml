@@ -156,12 +156,13 @@ jobs:
                   self.assertEqual(commands[0][:5], ['diff', '--no-ext-diff', '--no-renames', '--relative', '--unified=0'])
                   mutation = commands[1]
                   self.assertEqual(mutation[mutation.index('--shard') + 1], '5/6')
-                  for flag in ['--in-diff', '--workspace', '--no-config', '--cargo-arg=--locked', '--ignore-default-filter']:
+                  for flag in ['--in-diff', '--workspace', '--no-config', '--copy-vcs=true', '--cargo-arg=--locked', '--ignore-default-filter']:
                       self.assertIn(flag, mutation)
                   self.assertNotIn('--test-workspace=true', mutation)
                   result, commands = invoke({'nightly': True})
                   self.assertEqual(result.returncode, 0, result.stderr)
                   self.assertNotIn('--in-diff', commands[0])
+                  self.assertIn('--copy-vcs=true', commands[0])
                   result, commands = invoke({'base': ''})
                   self.assertNotEqual(result.returncode, 0)
                   self.assertEqual(commands, [])
@@ -299,6 +300,7 @@ jobs:
           import json
           import os
           import pathlib
+          import shutil
           import subprocess
           import tempfile
           import yaml
@@ -317,8 +319,8 @@ jobs:
               fixture = root / 'fixtures/quality'
               source = fixture / 'src/lib.rs'
               original = source.read_text(encoding='utf-8')
-              def run(command, expected=0):
-                  result = subprocess.run(command, cwd=fixture, env=env, capture_output=True, text=True)
+              def run(command, expected=0, cwd=fixture):
+                  result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True)
                   print('+ ' + ' '.join(command), flush=True)
                   print(result.stdout + result.stderr, flush=True)
                   assert result.returncode == expected, (result.returncode, result.stdout, result.stderr)
@@ -328,7 +330,7 @@ jobs:
                   lines = text.splitlines()
                   diff.write_text('--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1,' + str(len(lines)) + ' @@\n' + ''.join('+' + line + '\n' for line in lines), encoding='utf-8')
               write_diff(original)
-              mutation = ['cargo', 'mutants', '--workspace', '--no-config', '--cargo-arg=--locked',
+              mutation = ['cargo', 'mutants', '--workspace', '--no-config', '--copy-vcs=true', '--cargo-arg=--locked',
                           '--test-tool=nextest', '--shard=0/1', '--in-diff', str(diff), '--output', temporary,
                           '--', '--user-config-file', 'none', '--ignore-default-filter']
               bench = ['cargo', 'bench', '--locked', '--bench', 'instructions', '--', '--home=' + temporary + '/instructions', '--output-format=json']
@@ -341,6 +343,17 @@ jobs:
                   assert not (pathlib.Path(temporary) / 'empty/mutants.out/outcomes.json').exists()
                   diff.write_text(full_diff, encoding='utf-8')
                   print('PASS native empty mutation selection exits successfully without outcomes.json', flush=True)
+                  tracked = pathlib.Path(temporary) / 'tracked'
+                  shutil.copytree(fixture, tracked, ignore=shutil.ignore_patterns('target'))
+                  (tracked / 'tests').mkdir(exist_ok=True)
+                  (tracked / 'tests/tracked.rs').write_text('#[test]\nfn tracked_source_is_visible() {\n    let listed = std::process::Command::new("git")\n        .args(["ls-files", "-z", "--", "src/lib.rs"])\n        .current_dir(env!("CARGO_MANIFEST_DIR")).output().unwrap();\n    assert!(listed.status.success());\n    assert_eq!(listed.stdout, b"src/lib.rs\\0");\n}\n', encoding='utf-8')
+                  run(['git', 'init', '--quiet'], cwd=tracked)
+                  run(['git', 'add', '--', 'Cargo.toml', 'Cargo.lock', 'src', 'benches', 'tests'], cwd=tracked)
+                  without_vcs = [arg for arg in mutation if arg != '--copy-vcs=true']
+                  missing_git = run(without_vcs, 4, cwd=tracked)
+                  assert 'listed.status.success()' in missing_git.stdout + missing_git.stderr
+                  run(mutation, cwd=tracked)
+                  print('PASS mutation scratch retains tracked Git sources; no-VCS control fails baseline', flush=True)
                   run(mutation)
                   source.write_text(original.replace('assert_eq!(double(21), 42);', 'assert_eq!(double(0), 0);'), encoding='utf-8')
                   write_diff(source.read_text(encoding='utf-8'))

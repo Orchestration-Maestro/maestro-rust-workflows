@@ -2133,7 +2133,7 @@ jobs:
           if mode == 'features':
               run(['cargo', 'hack', 'check', '--workspace', '--all-targets', '--each-feature', '--locked'])
           elif mode == 'mutation':
-              command = ['cargo', 'mutants', '--workspace', '--no-config',
+              command = ['cargo', 'mutants', '--workspace', '--no-config', '--copy-vcs=true',
                          '--test-tool=nextest', '--cargo-arg=--locked', '--shard', f"{args['shard']}/6",
                          '--output', str(results)]
               if not args['nightly']:
