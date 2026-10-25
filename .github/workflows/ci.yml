@@ -747,7 +747,7 @@ jobs:
   tests:
     needs: declaration
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1030,10 +1030,15 @@ jobs:
       - name: All test shards passed
         env:
           RESULT: ${{ needs.tests.result }}
+          DECLARATION_RESULT: ${{ needs.declaration.result }}
+          COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
         shell: python
         run: |
           import os
-          assert os.environ['RESULT'] == 'success'
+          assert os.environ['DECLARATION_RESULT'] == 'success'
+          expected = {'false': 'skipped', 'true': 'success'}
+          assert os.environ['COLLECT_COVERAGE'] in expected
+          assert os.environ['RESULT'] == expected[os.environ['COLLECT_COVERAGE']]
       - name: Download shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -1525,7 +1530,7 @@ jobs:
   targets:
     name: Check (${{ matrix.target }})
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
+    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1601,7 +1606,7 @@ jobs:
   browser:
     name: Wasm and browser build
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -1689,7 +1694,7 @@ jobs:
   browser-tests:
     name: Chromium browser tests
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true' }}
+    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
