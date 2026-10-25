@@ -14,7 +14,7 @@ be documented, and documentation warnings fail the check. Tests run on Linux
 for now; macOS and Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
 
-Pull requests run declaration validation, formatting, Clippy, docs, the
+After declaration validation, pull requests run formatting, Clippy, docs,
 dependency and source checks, and declared Windows target checks in parallel.
 Test shards, coverage, other foreign-target checks (including macOS),
 wasm/browser builds and Chromium tests run on merge groups and main pushes,

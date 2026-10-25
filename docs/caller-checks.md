@@ -86,9 +86,9 @@ tests that must bind a fixed local port are not displaced by an outbound
 connection that the kernel assigned that port. Without it nothing runs.
 
 An absent file runs the standard checks without isolation, search tool
-installation or optional jobs. Pull requests run declaration validation,
-formatting, Clippy, docs, dependency/source checks and declared Windows target
-checks in parallel. Merge groups and main pushes also run tests, coverage and
+installation or optional jobs. After declaration validation, pull requests
+run formatting, Clippy, docs, dependency/source checks and declared Windows
+target checks in parallel. Merge groups and main pushes also run tests, coverage and
 all declared foreign-target checks. Other foreign-target checks (including
 macOS), wasm/browser builds and Chromium tests run only on those full events.
 An unreadable file, malformed TOML,
