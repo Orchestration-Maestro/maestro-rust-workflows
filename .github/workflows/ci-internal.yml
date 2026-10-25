@@ -60,7 +60,7 @@ jobs:
     name: Workflow seam proofs
     outputs:
       targets: ${{ steps.cases.outputs.targets }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, maestro-aws]
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -208,6 +208,11 @@ jobs:
                       (directory / 'ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n' + text, encoding='utf-8')
                       result = self.shell(body('Read caller declaration'), PATH=str(tools) + os.pathsep + os.environ['PATH'])
                       self.assertEqual(result.returncode == 0, valid, result.stderr)
+
+              def test_native_runtime_proofs_use_the_aws_image(self):
+                  internal = yaml.safe_load(pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8'))
+                  self.assertEqual(internal['jobs']['seams']['runs-on'], ['self-hosted', 'linux', 'maestro-aws'])
+                  self.assertIn('Quality runtime proofs', [step['name'] for step in internal['jobs']['seams']['steps']])
 
               def test_sanitizers_and_miri_cover_declared_tests_on_pinned_nightly(self):
                   tools = self.root / 'tools'
