@@ -113,14 +113,35 @@ jobs:
                   path.write_text('', encoding='utf-8')
                   with self.assertRaises(SystemExit):
                       namespace['identities'](path)
+                  measurement = dict(module_path='bench::parse', id=None, profiles=[dict(tool='Callgrind',
+                      summaries={'total': {'summary': {'Callgrind': {'Ir': {'metrics': {'Left': 100}}}}}})])
+                  path.write_text(json.dumps(measurement) + '\n', encoding='utf-8')
+                  self.assertEqual(namespace['identities'](path, False), {('bench::parse', None)})
+                  with self.assertRaises(SystemExit):
+                      namespace['identities'](path)
+                  metric = measurement['profiles'][0]['summaries']['total']['summary']['Callgrind']['Ir']
+                  metric['metrics'] = {'Both': [100, 100]}
+                  path.write_text(json.dumps(measurement) + '\n', encoding='utf-8')
+                  with self.assertRaises(SystemExit):
+                      namespace['identities'](path)
+                  metric['diffs'] = {}
+                  path.write_text(json.dumps(measurement) + '\n', encoding='utf-8')
+                  self.assertEqual(namespace['identities'](path), {('bench::parse', None)})
 
               def test_merge_and_nightly_matrices_preserve_all_shards(self):
-                  for nightly_mode, expected in [('false', ['mutation'] * 6 + ['features']), ('true', ['mutation'] * 6 + ['address', 'thread', 'miri', 'instructions'])]:
-                      result = self.shell(body('Select quality jobs'), NIGHTLY=nightly_mode, MIRI_CRATES='["sample"]', BENCHMARKS='[{"package":"sample","bench":"speed"}]')
+                  for nightly_mode, miri, benchmarks, seed, modes in [
+                          ('false', '[]', '[]', 'false', ['mutation'] * 6 + ['features']),
+                          ('true', '[]', '[]', 'false', ['mutation'] * 6 + ['address', 'thread']),
+                          ('true', '["sample"]', '[{"package":"sample","bench":"speed"}]', 'false',
+                           ['mutation'] * 6 + ['address', 'thread', 'miri', 'instructions']),
+                          ('true', '[]', '[{"package":"sample","bench":"speed"}]', 'true', ['instructions'])]:
+                      result = self.shell(body('Select quality jobs'), NIGHTLY=nightly_mode, MIRI_CRATES=miri, BENCHMARKS=benchmarks, SEED=seed)
                       self.assertEqual(result.returncode, 0, result.stderr)
                       jobs = json.loads((self.root / 'output').read_text(encoding='utf-8').splitlines()[-1].removeprefix('matrix='))['include']
-                      self.assertEqual([job['mode'] for job in jobs], expected)
-                      self.assertEqual([job['shard'] for job in jobs if job['mode'] == 'mutation'], list(range(6)))
+                      self.assertEqual(jobs, [dict(mode=mode, shard=index if mode == 'mutation' else 0) for index, mode in enumerate(modes)])
+                  result = self.shell(body('Select quality jobs'), NIGHTLY='true', MIRI_CRATES='[]', BENCHMARKS='[]', SEED='true')
+                  self.assertNotEqual(result.returncode, 0)
+                  self.assertIn('without declared benchmarks', result.stderr)
 
               def test_survivor_fails_and_names_source_line(self):
                   directory = self.root / 'quality-results/mutants.out'
@@ -191,6 +212,53 @@ jobs:
                   self.assertEqual(commands[1][:3], ['issue', 'comment', '17'])
                   self.assertFalse(any(command[:2] == ['issue', 'create'] for command in commands))
 
+              def test_nightly_report_accounts_for_each_outcome(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  gh = self.root / 'gh-source'
+                  gh.write_text('#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ["COMMAND_LOG"],"a",encoding="utf-8") as out: out.write(json.dumps(dict(args=sys.argv[1:],body=sys.stdin.read() if "--body-file" in sys.argv else ""))+"\\n")\nprint("[]" if sys.argv[1:3]==["issue","list"] else "created")\nsys.exit(int(os.environ.get("API_STATUS","0")))\n', encoding='utf-8')
+                  subprocess.run(['install', '-m', '0700', str(gh), str(tools / 'gh')], check=True)
+                  script = self.root / 'report.py'
+                  script.write_text(body('File mutation survivors', nightly), encoding='utf-8')
+                  reports = []
+                  for shard in range(6):
+                      directory = self.root / f'findings/shard-{shard}'
+                      directory.mkdir(parents=True)
+                      reports.append(directory / 'survivors.json')
+                  cases = [('clean', 'success', '0', 0), ('survivors', 'failure', '0', 1),
+                           ('missing', 'success', '0', 1), ('failed', 'failure', '0', 1),
+                           ('api', 'failure', '7', 1)]
+                  for case, scan, api, expected in cases:
+                      for shard, report in enumerate(reports):
+                          mutants = [dict(package=package, name=f'src/lib.rs:{shard + 4}:5: replace add with 0')
+                                     for package in ['alpha', 'beta']] if case in ('survivors', 'api') else []
+                          report.write_text(json.dumps(mutants), encoding='utf-8')
+                      if case == 'missing':
+                          reports[-1].unlink()
+                      log = self.root / 'commands'
+                      log.write_text('', encoding='utf-8')
+                      result = subprocess.run(['python3', str(script)], cwd=self.root,
+                                              env=self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH'],
+                                                  'COMMAND_LOG': str(log), 'REPOSITORY': 'example/caller', 'SCAN': scan,
+                                                  'RUN_URL': 'https://example.test/run', 'API_STATUS': api}, capture_output=True, text=True)
+                      self.assertEqual(result.returncode == 0, expected == 0, (case, result.stderr))
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      if case == 'survivors':
+                          creates = [command for command in commands if command['args'][:2] == ['issue', 'create']]
+                          self.assertEqual([command['args'][3] for command in creates],
+                                           ['Mutation survivors in alpha', 'Mutation survivors in beta'])
+                          for command in creates:
+                              self.assertIn('https://example.test/run', command['body'])
+                              for shard in range(6):
+                                  self.assertIn(f'src/lib.rs:{shard + 4}:5: replace add with 0', command['body'])
+                      elif case in ('clean', 'missing', 'failed'):
+                          self.assertEqual(commands, [])
+                          if case != 'clean':
+                              self.assertIn('mutation reports', result.stderr)
+                      else:
+                          self.assertEqual(len(commands), 1)
+                          self.assertIn('returned non-zero exit status 7', result.stderr)
+
               def test_caller_quality_declarations_validate_packages_and_benchmarks(self):
                   tools = self.root / 'tools'
                   tools.mkdir()
@@ -201,14 +269,40 @@ jobs:
                       path.chmod(0o700)
                   directory = self.root / '.github'
                   directory.mkdir()
-                  declarations = [('miri_crates=["sample"]\ninstruction_benchmarks=[{package="sample",bench="speed"}]\n', True),
-                                  ('miri_crates=["unknown"]\n', False), ('miri_crates=true\n', False),
-                                  ('instruction_benchmarks=[{package="sample",bench="missing"}]\n', False),
-                                  ('instruction_benchmarks=[{package="sample",bench="speed",extra=true}]\n', False)]
-                  for text, valid in declarations:
+                  declarations = [('', [], []), ('miri_crates=[]\ninstruction_benchmarks=[]\n', [], []),
+                      ('miri_crates=["sample","sample"]\ninstruction_benchmarks=[{package="sample",bench="other"},{package="sample",bench="speed"}]\n',
+                       ['sample'], [dict(package='sample', bench='other'), dict(package='sample', bench='speed')])]
+                  metadata['packages'][0]['targets'] += [dict(name='other', kind=['bench']), dict(name='library', kind=['lib'])]
+                  cargo = tools / 'cargo'
+                  cargo.write_text('#!/usr/bin/env python3\nprint(' + repr(json.dumps(metadata)) + ')\n', encoding='utf-8')
+                  for text, miri, benchmarks in declarations:
                       (directory / 'ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n' + text, encoding='utf-8')
                       result = self.shell(body('Read caller declaration'), PATH=str(tools) + os.pathsep + os.environ['PATH'])
-                      self.assertEqual(result.returncode == 0, valid, result.stderr)
+                      self.assertEqual(result.returncode, 0, result.stderr)
+                      values = dict(line.split('=', 1) for line in (self.root / 'output').read_text(encoding='utf-8').splitlines())
+                      self.assertEqual(json.loads(values['miri_crates']), miri)
+                      self.assertEqual(json.loads(values['instruction_benchmarks']), benchmarks)
+                  (directory / 'ci.toml').unlink()
+                  result = self.shell(body('Read caller declaration'), PATH=str(tools) + os.pathsep + os.environ['PATH'])
+                  self.assertEqual(result.returncode, 0, result.stderr)
+                  values = dict(line.split('=', 1) for line in (self.root / 'output').read_text(encoding='utf-8').splitlines())
+                  self.assertEqual((values['miri_crates'], values['instruction_benchmarks']), ('[]', '[]'))
+                  invalid = [('miri_crates=["unknown"]', 'miri_crates'), ('miri_crates=true', 'miri_crates'),
+                      ('miri_crates=[1]', 'miri_crates'), ('instruction_benchmarks=true', 'must be an array'),
+                      ('instruction_benchmarks=[1]', 'requires package and bench strings'),
+                      ('instruction_benchmarks=[{package="sample"}]', 'requires package and bench strings'),
+                      ('instruction_benchmarks=[{package=1,bench="speed"}]', 'requires package and bench strings'),
+                      ('instruction_benchmarks=[{package="sample",bench=1}]', 'requires package and bench strings'),
+                      ('instruction_benchmarks=[{package="sample",bench="speed",extra=true}]', 'requires package and bench strings'),
+                      ('instruction_benchmarks=[{package="unknown",bench="speed"}]', 'workspace benchmark targets'),
+                      ('instruction_benchmarks=[{package="sample",bench="missing"}]', 'workspace benchmark targets'),
+                      ('instruction_benchmarks=[{package="sample",bench="library"}]', 'workspace benchmark targets'),
+                      ('miri_crates=[', '.github/ci.toml:')]
+                  for text, diagnostic in invalid:
+                      (directory / 'ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n' + text + '\n', encoding='utf-8')
+                      result = self.shell(body('Read caller declaration'), PATH=str(tools) + os.pathsep + os.environ['PATH'])
+                      self.assertNotEqual(result.returncode, 0)
+                      self.assertIn(diagnostic, result.stderr)
 
               def test_runtime_proof_routes_respect_runner_admission(self):
                   internal = yaml.safe_load(pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8'))
@@ -263,6 +357,96 @@ jobs:
                       result = self.shell(body('Instruction baseline identity'), BASELINE_MODE='seed', GITHUB_EVENT_NAME=event, GITHUB_REF=ref, DEFAULT_BRANCH='main')
                       self.assertNotEqual(result.returncode, 0)
                       self.assertIn('only by workflow_dispatch on the default branch', result.stderr)
+
+              def test_instruction_baseline_lifecycle_and_identity(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  recorder = '\n'.join([
+                      '#!/usr/bin/env python3', 'import json,os,pathlib,sys',
+                      'args=sys.argv[1:]; tool=pathlib.Path(sys.argv[0]).name',
+                      'with open(os.environ["COMMAND_LOG"],"a",encoding="utf-8") as out: out.write(json.dumps(dict(tool=tool,args=args,cwd=os.getcwd()))+"\\n")',
+                      'if tool == "git":',
+                      '    if args[:2] == ["worktree","add"]: pathlib.Path(args[3]).mkdir(parents=True)',
+                      '    elif args[:1] == ["rev-parse"]: print("" if "--show-prefix" in args else "main-revision" if "refs/remotes/origin/main" in args else "head-revision")',
+                      'elif tool == "cargo" and args[0] == "metadata": print(os.environ["METADATA"])',
+                      'elif tool == "cargo":',
+                      '    comparing="--baseline=main" in args',
+                      '    if comparing and os.environ.get("TOOL_FAILURE") == "true": sys.exit(9)',
+                      '    module="bench::changed" if comparing and os.environ.get("MISMATCH") == "true" else "bench::parse"',
+                      '    metric={"metrics":{"Both":[100,100]},"diffs":{}} if comparing else {"metrics":{"Left":100}}',
+                      '    print(json.dumps(dict(module_path=module,id=None,profiles=[dict(tool="Callgrind",summaries={"total":{"summary":{"Callgrind":{"Ir":metric}}}})])))',
+                      'else: print("fixture version")', ''])
+                  for name in ['git', 'cargo', 'valgrind', 'rustc']:
+                      source = self.root / 'tool-source'
+                      source.write_text(recorder, encoding='utf-8')
+                      subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
+                  log = self.root / 'commands'
+                  env = self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'COMMAND_LOG': str(log)}
+                  script = self.root / 'quality.py'
+                  script.write_text(execution, encoding='utf-8')
+                  benchmark = dict(package='sample', bench='speed')
+                  for kind, mismatch, failure in [('seed', False, False), ('fresh', False, False),
+                                                   ('saved', False, False), ('saved', True, False), ('saved', False, True)]:
+                      import shutil
+                      shutil.rmtree(self.root / 'quality-results', ignore_errors=True)
+                      baseline = self.root / 'baseline'
+                      baseline.mkdir(exist_ok=True)
+                      (baseline / 'main-revision.txt').write_text('saved-revision\n', encoding='utf-8')
+                      measurement = dict(module_path='bench::parse', id=None, profiles=[dict(tool='Callgrind',
+                          summaries={'total': {'summary': {'Callgrind': {'Ir': {'metrics': {'Left': 100}}}}}})])
+                      (baseline / 'baseline-0.jsonl').write_text(json.dumps(measurement) + '\n', encoding='utf-8')
+                      log.write_text('', encoding='utf-8')
+                      args = dict(mode='instructions', baseline_mode=kind, baseline_directory=str(baseline), benchmarks=[benchmark])
+                      result = subprocess.run(['python3', str(script), json.dumps(args)], cwd=self.root,
+                                              env=env | {'MISMATCH': str(mismatch).lower(), 'TOOL_FAILURE': str(failure).lower()},
+                                              capture_output=True, text=True)
+                      self.assertEqual(result.returncode == 0, not (mismatch or failure), result.stderr)
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      benches = [command for command in commands if command['tool'] == 'cargo']
+                      self.assertEqual([('--baseline=main' in command['args']) for command in benches],
+                                       [False] if kind == 'seed' else [False, True] if kind == 'fresh' else [True] if mismatch or failure else [True, False])
+                      if kind == 'fresh':
+                          self.assertEqual(benches[0]['cwd'], str(self.root / 'quality-results/main'))
+                          self.assertEqual(benches[1]['cwd'], str(self.root))
+                          self.assertIn(['fetch', '--no-tags', 'origin', 'main'], [command['args'] for command in commands])
+                          self.assertEqual((self.root / 'quality-results/main-revision.txt').read_text(encoding='utf-8'), 'main-revision\n')
+                      elif kind == 'saved':
+                          self.assertEqual((self.root / 'quality-results/main-revision.txt').read_text(encoding='utf-8'), 'saved-revision\n')
+                      self.assertEqual((baseline / 'main-revision.txt').read_text(encoding='utf-8'),
+                                       'head-revision\n' if kind in ('saved', 'seed') and not (mismatch or failure) else 'saved-revision\n')
+                      if mismatch or failure:
+                          self.assertEqual(json.loads((baseline / 'baseline-0.jsonl').read_text(encoding='utf-8')), measurement)
+                          self.assertIn('set differs from main' if mismatch else 'exit status 9', result.stderr)
+                      elif kind != 'seed':
+                          self.assertIn('--callgrind-limits=ir=5%', next(command['args'] for command in benches if '--baseline=main' in command['args']))
+                  manifest = self.root / 'Cargo.toml'
+                  source = self.root / 'speed.rs'
+                  manifest.write_text('[package]\nname="sample"\nversion="0.1.0"\n', encoding='utf-8')
+                  source.write_text('fn main() {}\n', encoding='utf-8')
+                  metadata = dict(packages=[dict(name='sample', manifest_path=str(manifest),
+                      targets=[dict(name='speed', kind=['bench'], src_path=str(source))])])
+                  keys = []
+                  for content in ['fn main() {}\n', 'fn main() { changed(); }\n']:
+                      source.write_text(content, encoding='utf-8')
+                      result = self.shell(body('Instruction baseline identity'), **env, METADATA=json.dumps(metadata),
+                                          BASELINE_MODE='fresh', GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main',
+                                          DEFAULT_BRANCH='main', BENCHMARKS=json.dumps([benchmark]), GITHUB_RUN_ID='12', GITHUB_RUN_ATTEMPT='1')
+                      self.assertEqual(result.returncode, 0, result.stderr)
+                      keys.append(dict(line.split('=', 1) for line in (self.root / 'output').read_text(encoding='utf-8').splitlines()))
+                  self.assertNotEqual(keys[0]['prefix'], keys[1]['prefix'])
+                  save = next(step['if'] for step in workflow['jobs']['quality-set']['steps']
+                              if step.get('name') == 'Save successful main instruction baseline')
+                  for event, branch, seed, success, expected in [
+                          ('schedule', 'main', False, True, True), ('workflow_dispatch', 'main', True, True, True),
+                          ('workflow_dispatch', 'main', False, True, False), ('pull_request', 'main', True, True, False),
+                          ('schedule', 'branch', False, True, False), ('schedule', 'main', False, False, False)]:
+                      expression = save.removeprefix('$' + '{{').removesuffix('}}').strip()
+                      for old, new in {'success()': repr(success), 'matrix.mode': repr('instructions'),
+                                       'github.ref': repr('refs/heads/' + branch),
+                                       "format('refs/heads/{0}', github.event.repository.default_branch)": repr('refs/heads/main'),
+                                       'github.event_name': repr(event), 'inputs.seed-instruction-baseline': repr(seed)}.items():
+                          expression = expression.replace(old, new)
+                      self.assertEqual(eval(expression.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}}), expected)
 
               def test_mutation_bound_is_platform_owned(self):
                   job = workflow['jobs']['quality-set']
@@ -1072,7 +1256,7 @@ jobs:
                       assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M)
                       assert '        continue-on-error: true\n' in step
                       count += 1
-              assert count == 14
+              assert count == 16
               assert not re.search(r'^    continue-on-error:', workflow, re.M)
 
           snapshot_only_transfers_fail_open()
