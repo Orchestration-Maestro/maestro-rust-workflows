@@ -4,7 +4,11 @@ The shared CI always checks formatting, Clippy warnings, documentation and
 tests. One additional required job checks licenses, dependency use, spelling,
 secrets, workflows and at least 80% line coverage, with embedded defaults and
 checksum-verified tool releases. Only the caller declaration may extend those
-defaults or raise coverage. The optional caller declaration adds isolated tests, real search tools,
+defaults or raise coverage. Changed-line mutation shards and each-feature
+checks gate merge groups and main pushes, not pull-request heads.
+The caller-scheduled nightly workflow adds full mutation issue reporting,
+sanitizers, declared Miri packages and instruction benchmarks.
+The optional caller declaration adds isolated tests, real search tools,
 caller-pinned build and test tools, additional locked manifest provisioning, wasm builds, native foreign-target checks, the
 fixed browser build recipe hook, a warm test filter for compile-starting tests, and a [nightly fuzz job](docs/caller-checks.md#nightly-fuzz-job) for declared targets. Optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
 use shared verified runtime pins, not caller-selected browser versions. Its spec is

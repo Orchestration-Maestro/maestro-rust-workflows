@@ -68,6 +68,406 @@ jobs:
           persist-credentials: false
       - name: Ephemeral runner policy
         run: python3 -m unittest discover -s .github -p runner_policy_test.py
+      - name: Quality gates at workflow seam
+        shell: python
+        run: |
+          import ast
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import tempfile
+          import unittest
+          import yaml
+
+          workflow = yaml.safe_load(pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8'))
+          nightly = yaml.safe_load(pathlib.Path('.github/workflows/quality-nightly.yml').read_text(encoding='utf-8'))
+
+          def body(name, document=workflow):
+              return next(step['run'] for job in document['jobs'].values() for step in job.get('steps', []) if step.get('name') == name)
+
+          execution = body('Prepare quality execution').split("<<'PYTHON'\n", 1)[1].split('\nPYTHON', 1)[0]
+
+          class QualityGates(unittest.TestCase):
+              def setUp(self):
+                  self.temporary = tempfile.TemporaryDirectory()
+                  self.addCleanup(self.temporary.cleanup)
+                  self.root = pathlib.Path(self.temporary.name)
+                  self.env = os.environ | {'GITHUB_OUTPUT': str(self.root / 'output'), 'GITHUB_STEP_SUMMARY': str(self.root / 'summary')}
+
+              def shell(self, source, **env):
+                  return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', source], cwd=self.root,
+                                        env=self.env | env, capture_output=True, text=True)
+
+              def test_missing_instruction_comparison_cannot_pass(self):
+                  tree = ast.parse(execution)
+                  function = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == 'identities')
+                  namespace = {'json': json}
+                  exec(compile(ast.Module(body=[function], type_ignores=[]), 'instruction comparison', 'exec'), namespace)
+                  path = self.root / 'current.jsonl'
+                  path.write_text(json.dumps({'module_path': 'bench::parse', 'id': None, 'profiles': []}) + '\n', encoding='utf-8')
+                  with self.assertRaises(SystemExit):
+                      namespace['identities'](path)
+                  with self.assertRaises(SystemExit):
+                      namespace['identities'](path, False)
+                  path.write_text('', encoding='utf-8')
+                  with self.assertRaises(SystemExit):
+                      namespace['identities'](path)
+                  measurement = dict(module_path='bench::parse', id=None, profiles=[dict(tool='Callgrind',
+                      summaries={'total': {'summary': {'Callgrind': {'Ir': {'metrics': {'Left': 100}}}}}})])
+                  path.write_text(json.dumps(measurement) + '\n', encoding='utf-8')
+                  self.assertEqual(namespace['identities'](path, False), {('bench::parse', None)})
+                  with self.assertRaises(SystemExit):
+                      namespace['identities'](path)
+                  metric = measurement['profiles'][0]['summaries']['total']['summary']['Callgrind']['Ir']
+                  metric['metrics'] = {'Both': [100, 100]}
+                  path.write_text(json.dumps(measurement) + '\n', encoding='utf-8')
+                  with self.assertRaises(SystemExit):
+                      namespace['identities'](path)
+                  metric['diffs'] = {}
+                  path.write_text(json.dumps(measurement) + '\n', encoding='utf-8')
+                  self.assertEqual(namespace['identities'](path), {('bench::parse', None)})
+
+              def test_merge_and_nightly_matrices_preserve_all_shards(self):
+                  for nightly_mode, miri, benchmarks, seed, modes in [
+                          ('false', '[]', '[]', 'false', ['mutation'] * 6 + ['features']),
+                          ('true', '[]', '[]', 'false', ['mutation'] * 6 + ['address', 'thread']),
+                          ('true', '["sample"]', '[{"package":"sample","bench":"speed"}]', 'false',
+                           ['mutation'] * 6 + ['address', 'thread', 'miri', 'instructions']),
+                          ('true', '[]', '[{"package":"sample","bench":"speed"}]', 'true', ['instructions'])]:
+                      result = self.shell(body('Select quality jobs'), NIGHTLY=nightly_mode, MIRI_CRATES=miri, BENCHMARKS=benchmarks, SEED=seed)
+                      self.assertEqual(result.returncode, 0, result.stderr)
+                      jobs = json.loads((self.root / 'output').read_text(encoding='utf-8').splitlines()[-1].removeprefix('matrix='))['include']
+                      self.assertEqual(jobs, [dict(mode=mode, shard=index if mode == 'mutation' else 0) for index, mode in enumerate(modes)])
+                  result = self.shell(body('Select quality jobs'), NIGHTLY='true', MIRI_CRATES='[]', BENCHMARKS='[]', SEED='true')
+                  self.assertNotEqual(result.returncode, 0)
+                  self.assertIn('without declared benchmarks', result.stderr)
+
+              def test_survivor_fails_and_names_source_line(self):
+                  directory = self.root / 'quality-results/mutants.out'
+                  directory.mkdir(parents=True)
+                  mutant = dict(package='sample', file='src/lib.rs', name='src/lib.rs:4:5: replace add -> u32 with 0', replacement='0', span=dict(start=dict(line=4, column=5)))
+                  for summary, expected in [('MissedMutant', 1), ('CaughtMutant', 0)]:
+                      (directory / 'outcomes.json').write_text(json.dumps({'outcomes': [dict(scenario=dict(Mutant=mutant), summary=summary)]}), encoding='utf-8')
+                      result = self.shell(body('Mutation survivor summary'))
+                      self.assertEqual(result.returncode, expected, result.stderr)
+                  self.assertIn('src/lib.rs:4:5', (self.root / 'summary').read_text(encoding='utf-8'))
+                  (directory / 'outcomes.json').unlink()
+                  self.assertNotEqual(self.shell(body('Mutation survivor summary')).returncode, 0)
+
+              def test_mutation_command_is_diff_limited_and_feature_check_is_exhaustive(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  log = self.root / 'commands'
+                  recorder = '#!/usr/bin/env python3\nimport json,os,pathlib,sys\nwith open(os.environ["COMMAND_LOG"],"a",encoding="utf-8") as out: out.write(json.dumps(sys.argv[1:])+"\\n")\nsys.exit(int(os.environ.get("COMMAND_STATUS","0")))\n'
+                  for tool in ['cargo', 'git']:
+                      path = tools / tool
+                      path.write_text(recorder, encoding='utf-8')
+                      path.chmod(0o700)
+                  script = self.root / 'quality.py'
+                  script.write_text(execution, encoding='utf-8')
+                  args = dict(mode='mutation', shard=5, nightly=False, base='abc123', miri=[], benchmarks=[])
+                  def invoke(changes, status='0'):
+                      log.write_text('', encoding='utf-8')
+                      result = subprocess.run(['python3', str(script), json.dumps(args | changes)], cwd=self.root,
+                                              env=self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'COMMAND_LOG': str(log), 'COMMAND_STATUS': status}, capture_output=True, text=True)
+                      return result, [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                  result, commands = invoke({})
+                  self.assertEqual(result.returncode, 0, result.stderr)
+                  self.assertEqual(commands[0][:5], ['diff', '--no-ext-diff', '--no-renames', '--relative', '--unified=0'])
+                  mutation = commands[1]
+                  self.assertEqual(mutation[mutation.index('--shard') + 1], '5/6')
+                  for flag in ['--in-diff', '--workspace', '--no-config', '--copy-vcs=true', '--cargo-arg=--locked', '--ignore-default-filter']:
+                      self.assertIn(flag, mutation)
+                  self.assertNotIn('--test-workspace=true', mutation)
+                  result, commands = invoke({'nightly': True})
+                  self.assertEqual(result.returncode, 0, result.stderr)
+                  self.assertNotIn('--in-diff', commands[0])
+                  self.assertIn('--copy-vcs=true', commands[0])
+                  result, commands = invoke({'base': ''})
+                  self.assertNotEqual(result.returncode, 0)
+                  self.assertEqual(commands, [])
+                  result, commands = invoke({'mode': 'features'})
+                  self.assertEqual(commands, [['hack', 'check', '--workspace', '--all-targets', '--each-feature', '--locked']])
+                  self.assertEqual(result.returncode, 0, result.stderr)
+                  self.assertNotEqual(invoke({'mode': 'features'}, '42')[0].returncode, 0)
+
+              def test_nightly_reuses_existing_crate_issue(self):
+                  for shard in range(6):
+                      directory = self.root / f'findings/shard-{shard}'
+                      directory.mkdir(parents=True)
+                      mutant = dict(package='sample', file='src/lib.rs', name='src/lib.rs:4:5: replace add with 0', replacement='0', span=dict(start=dict(line=4, column=5)))
+                      (directory / 'survivors.json').write_text(json.dumps([mutant] if shard == 0 else []), encoding='utf-8')
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  gh = tools / 'gh'
+                  gh.write_text('#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ["COMMAND_LOG"],"a",encoding="utf-8") as out: out.write(json.dumps(sys.argv[1:])+"\\n")\nprint(json.dumps([{"number":17,"title":"Mutation survivors in sample"}]) if sys.argv[1:3]==["issue","list"] else "https://example.test/issue/17")\n', encoding='utf-8')
+                  gh.chmod(0o700)
+                  script = self.root / 'report.py'
+                  script.write_text(body('File mutation survivors', nightly), encoding='utf-8')
+                  result = subprocess.run(['python3', str(script)], cwd=self.root,
+                                          env=self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'COMMAND_LOG': str(self.root / 'commands'), 'REPOSITORY': 'example/caller', 'SCAN': 'failure', 'RUN_URL': 'https://example.test/run'}, capture_output=True, text=True)
+                  self.assertNotEqual(result.returncode, 0)
+                  commands = [json.loads(line) for line in (self.root / 'commands').read_text(encoding='utf-8').splitlines()]
+                  self.assertEqual(commands[1][:3], ['issue', 'comment', '17'])
+                  self.assertFalse(any(command[:2] == ['issue', 'create'] for command in commands))
+
+              def test_nightly_report_accounts_for_each_outcome(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  gh = self.root / 'gh-source'
+                  gh.write_text('#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ["COMMAND_LOG"],"a",encoding="utf-8") as out: out.write(json.dumps(dict(args=sys.argv[1:],body=sys.stdin.read() if "--body-file" in sys.argv else ""))+"\\n")\nprint("[]" if sys.argv[1:3]==["issue","list"] else "created")\nsys.exit(int(os.environ.get("API_STATUS","0")))\n', encoding='utf-8')
+                  subprocess.run(['install', '-m', '0700', str(gh), str(tools / 'gh')], check=True)
+                  script = self.root / 'report.py'
+                  script.write_text(body('File mutation survivors', nightly), encoding='utf-8')
+                  reports = []
+                  for shard in range(6):
+                      directory = self.root / f'findings/shard-{shard}'
+                      directory.mkdir(parents=True)
+                      reports.append(directory / 'survivors.json')
+                  cases = [('clean', 'success', '0', 0), ('survivors', 'failure', '0', 1),
+                           ('missing', 'success', '0', 1), ('failed', 'failure', '0', 1),
+                           ('api', 'failure', '7', 1)]
+                  for case, scan, api, expected in cases:
+                      for shard, report in enumerate(reports):
+                          mutants = [dict(package=package, name=f'src/lib.rs:{shard + 4}:5: replace add with 0')
+                                     for package in ['alpha', 'beta']] if case in ('survivors', 'api') else []
+                          report.write_text(json.dumps(mutants), encoding='utf-8')
+                      if case == 'missing':
+                          reports[-1].unlink()
+                      log = self.root / 'commands'
+                      log.write_text('', encoding='utf-8')
+                      result = subprocess.run(['python3', str(script)], cwd=self.root,
+                                              env=self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH'],
+                                                  'COMMAND_LOG': str(log), 'REPOSITORY': 'example/caller', 'SCAN': scan,
+                                                  'RUN_URL': 'https://example.test/run', 'API_STATUS': api}, capture_output=True, text=True)
+                      self.assertEqual(result.returncode == 0, expected == 0, (case, result.stderr))
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      if case == 'survivors':
+                          creates = [command for command in commands if command['args'][:2] == ['issue', 'create']]
+                          self.assertEqual([command['args'][3] for command in creates],
+                                           ['Mutation survivors in alpha', 'Mutation survivors in beta'])
+                          for command in creates:
+                              self.assertIn('https://example.test/run', command['body'])
+                              for shard in range(6):
+                                  self.assertIn(f'src/lib.rs:{shard + 4}:5: replace add with 0', command['body'])
+                      elif case in ('clean', 'missing', 'failed'):
+                          self.assertEqual(commands, [])
+                          if case != 'clean':
+                              self.assertIn('mutation reports', result.stderr)
+                      else:
+                          self.assertEqual(len(commands), 1)
+                          self.assertIn('returned non-zero exit status 7', result.stderr)
+
+              def test_caller_quality_declarations_validate_packages_and_benchmarks(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  metadata = {'packages': [{'name': 'sample', 'targets': [{'name': 'speed', 'kind': ['bench']}]}]}
+                  for name, output in [('cargo', json.dumps(metadata)), ('rustc', 'x86_64-unknown-linux-gnu')]:
+                      path = tools / name
+                      path.write_text('#!/usr/bin/env python3\nprint(' + repr(output) + ')\n', encoding='utf-8')
+                      path.chmod(0o700)
+                  directory = self.root / '.github'
+                  directory.mkdir()
+                  declarations = [('', [], []), ('miri_crates=[]\ninstruction_benchmarks=[]\n', [], []),
+                      ('miri_crates=["sample","sample"]\ninstruction_benchmarks=[{package="sample",bench="other"},{package="sample",bench="speed"}]\n',
+                       ['sample'], [dict(package='sample', bench='other'), dict(package='sample', bench='speed')])]
+                  metadata['packages'][0]['targets'] += [dict(name='other', kind=['bench']), dict(name='library', kind=['lib'])]
+                  cargo = tools / 'cargo'
+                  cargo.write_text('#!/usr/bin/env python3\nprint(' + repr(json.dumps(metadata)) + ')\n', encoding='utf-8')
+                  for text, miri, benchmarks in declarations:
+                      (directory / 'ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n' + text, encoding='utf-8')
+                      result = self.shell(body('Read caller declaration'), PATH=str(tools) + os.pathsep + os.environ['PATH'])
+                      self.assertEqual(result.returncode, 0, result.stderr)
+                      values = dict(line.split('=', 1) for line in (self.root / 'output').read_text(encoding='utf-8').splitlines())
+                      self.assertEqual(json.loads(values['miri_crates']), miri)
+                      self.assertEqual(json.loads(values['instruction_benchmarks']), benchmarks)
+                  (directory / 'ci.toml').unlink()
+                  result = self.shell(body('Read caller declaration'), PATH=str(tools) + os.pathsep + os.environ['PATH'])
+                  self.assertEqual(result.returncode, 0, result.stderr)
+                  values = dict(line.split('=', 1) for line in (self.root / 'output').read_text(encoding='utf-8').splitlines())
+                  self.assertEqual((values['miri_crates'], values['instruction_benchmarks']), ('[]', '[]'))
+                  invalid = [('miri_crates=["unknown"]', 'miri_crates'), ('miri_crates=true', 'miri_crates'),
+                      ('miri_crates=[1]', 'miri_crates'), ('instruction_benchmarks=true', 'must be an array'),
+                      ('instruction_benchmarks=[1]', 'requires package and bench strings'),
+                      ('instruction_benchmarks=[{package="sample"}]', 'requires package and bench strings'),
+                      ('instruction_benchmarks=[{package=1,bench="speed"}]', 'requires package and bench strings'),
+                      ('instruction_benchmarks=[{package="sample",bench=1}]', 'requires package and bench strings'),
+                      ('instruction_benchmarks=[{package="sample",bench="speed",extra=true}]', 'requires package and bench strings'),
+                      ('instruction_benchmarks=[{package="unknown",bench="speed"}]', 'workspace benchmark targets'),
+                      ('instruction_benchmarks=[{package="sample",bench="missing"}]', 'workspace benchmark targets'),
+                      ('instruction_benchmarks=[{package="sample",bench="library"}]', 'workspace benchmark targets'),
+                      ('miri_crates=[', '.github/ci.toml:')]
+                  for text, diagnostic in invalid:
+                      (directory / 'ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n' + text + '\n', encoding='utf-8')
+                      result = self.shell(body('Read caller declaration'), PATH=str(tools) + os.pathsep + os.environ['PATH'])
+                      self.assertNotEqual(result.returncode, 0)
+                      self.assertIn(diagnostic, result.stderr)
+
+              def test_runtime_proof_routes_respect_runner_admission(self):
+                  internal = yaml.safe_load(pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8'))
+                  self.assertEqual(internal['jobs']['seams']['runs-on'], 'ubuntu-latest')
+                  proof = next(step for step in internal['jobs']['seams']['steps'] if step['name'] == 'Quality runtime proofs')
+                  self.assertEqual(proof['if'], "runner.environment == 'self-hosted'")
+                  self.assertIn('src/lib.rs:5', proof['run'])
+                  self.assertIn('--callgrind-limits=ir=5%', proof['run'])
+
+              def test_sanitizers_and_miri_cover_declared_tests_on_pinned_nightly(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  cargo = tools / 'cargo'
+                  log = self.root / 'commands'
+                  cargo.write_text('#!/usr/bin/env python3\nimport json,os,sys\nwith open(os.environ["COMMAND_LOG"],"a",encoding="utf-8") as out: out.write(json.dumps(dict(args=sys.argv[1:],toolchain=os.environ.get("RUSTUP_TOOLCHAIN"),flags=os.environ.get("RUSTFLAGS")))+"\\n")\n', encoding='utf-8')
+                  cargo.chmod(0o700)
+                  script = self.root / 'quality.py'
+                  script.write_text(execution, encoding='utf-8')
+                  pin = workflow['env']['QUALITY_NIGHTLY_TOOLCHAIN']
+                  self.assertEqual(pin, 'nightly-2026-08-15')
+                  self.assertEqual(workflow['jobs']['fuzz']['env']['RUSTUP_TOOLCHAIN'], pin)
+                  for mode in ['miri', 'address', 'thread']:
+                      log.write_text('', encoding='utf-8')
+                      args = dict(mode=mode, toolchain=pin, miri=['sample'])
+                      result = subprocess.run(['python3', str(script), json.dumps(args)], cwd=self.root,
+                                              env=self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'COMMAND_LOG': str(log)}, capture_output=True, text=True)
+                      self.assertEqual(result.returncode, 0, result.stderr)
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      self.assertEqual({command['toolchain'] for command in commands}, {pin})
+                      if mode == 'miri':
+                          self.assertEqual([command['args'] for command in commands], [['miri', 'setup'], ['miri', 'test', '--locked', '-p', 'sample']])
+                      else:
+                          self.assertEqual({command['flags'] for command in commands}, {f'-Zsanitizer={mode}'})
+                          self.assertIn('--all-targets', commands[0]['args'])
+                          self.assertIn('--doc', commands[1]['args'])
+                          self.assertTrue(all('--workspace' in command['args'] and '-Zbuild-std' in command['args'] and '--locked' in command['args'] for command in commands))
+
+              def test_saved_baseline_is_required_and_prs_cannot_seed(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  valgrind = tools / 'valgrind'
+                  valgrind.write_text('#!/bin/sh\nprintf "valgrind fixture\\n"\n', encoding='utf-8')
+                  valgrind.chmod(0o700)
+                  script = self.root / 'quality.py'
+                  script.write_text(execution, encoding='utf-8')
+                  args = dict(mode='instructions', baseline_mode='saved', baseline_directory=str(self.root / 'empty'), benchmarks=[])
+                  result = subprocess.run(['python3', str(script), json.dumps(args)], cwd=self.root,
+                                          env=self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH']}, capture_output=True, text=True)
+                  self.assertNotEqual(result.returncode, 0)
+                  self.assertIn('No successful main instruction baseline', result.stderr)
+                  for event, ref in [('pull_request', 'refs/heads/main'), ('workflow_dispatch', 'refs/heads/branch')]:
+                      result = self.shell(body('Instruction baseline identity'), BASELINE_MODE='seed', GITHUB_EVENT_NAME=event, GITHUB_REF=ref, DEFAULT_BRANCH='main')
+                      self.assertNotEqual(result.returncode, 0)
+                      self.assertIn('only by workflow_dispatch on the default branch', result.stderr)
+
+              def test_instruction_baseline_lifecycle_and_identity(self):
+                  tools = self.root / 'tools'
+                  tools.mkdir()
+                  recorder = '\n'.join([
+                      '#!/usr/bin/env python3', 'import json,os,pathlib,sys',
+                      'args=sys.argv[1:]; tool=pathlib.Path(sys.argv[0]).name',
+                      'with open(os.environ["COMMAND_LOG"],"a",encoding="utf-8") as out: out.write(json.dumps(dict(tool=tool,args=args,cwd=os.getcwd()))+"\\n")',
+                      'if tool == "git":',
+                      '    if args[:2] == ["worktree","add"]: pathlib.Path(args[3]).mkdir(parents=True)',
+                      '    elif args[:1] == ["rev-parse"]: print("" if "--show-prefix" in args else "main-revision" if "refs/remotes/origin/main" in args else "head-revision")',
+                      'elif tool == "cargo" and args[0] == "metadata": print(os.environ["METADATA"])',
+                      'elif tool == "cargo":',
+                      '    comparing="--baseline=main" in args',
+                      '    if comparing and os.environ.get("TOOL_FAILURE") == "true": sys.exit(9)',
+                      '    module="bench::changed" if comparing and os.environ.get("MISMATCH") == "true" else "bench::parse"',
+                      '    metric={"metrics":{"Both":[100,100]},"diffs":{}} if comparing else {"metrics":{"Left":100}}',
+                      '    print(json.dumps(dict(module_path=module,id=None,profiles=[dict(tool="Callgrind",summaries={"total":{"summary":{"Callgrind":{"Ir":metric}}}})])))',
+                      'else: print("fixture version")', ''])
+                  for name in ['git', 'cargo', 'valgrind', 'rustc']:
+                      source = self.root / 'tool-source'
+                      source.write_text(recorder, encoding='utf-8')
+                      subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
+                  log = self.root / 'commands'
+                  env = self.env | {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'COMMAND_LOG': str(log)}
+                  script = self.root / 'quality.py'
+                  script.write_text(execution, encoding='utf-8')
+                  benchmark = dict(package='sample', bench='speed')
+                  for kind, mismatch, failure in [('seed', False, False), ('fresh', False, False),
+                                                   ('saved', False, False), ('saved', True, False), ('saved', False, True)]:
+                      import shutil
+                      shutil.rmtree(self.root / 'quality-results', ignore_errors=True)
+                      baseline = self.root / 'baseline'
+                      baseline.mkdir(exist_ok=True)
+                      (baseline / 'main-revision.txt').write_text('saved-revision\n', encoding='utf-8')
+                      measurement = dict(module_path='bench::parse', id=None, profiles=[dict(tool='Callgrind',
+                          summaries={'total': {'summary': {'Callgrind': {'Ir': {'metrics': {'Left': 100}}}}}})])
+                      (baseline / 'baseline-0.jsonl').write_text(json.dumps(measurement) + '\n', encoding='utf-8')
+                      log.write_text('', encoding='utf-8')
+                      args = dict(mode='instructions', baseline_mode=kind, baseline_directory=str(baseline), benchmarks=[benchmark])
+                      result = subprocess.run(['python3', str(script), json.dumps(args)], cwd=self.root,
+                                              env=env | {'MISMATCH': str(mismatch).lower(), 'TOOL_FAILURE': str(failure).lower()},
+                                              capture_output=True, text=True)
+                      self.assertEqual(result.returncode == 0, not (mismatch or failure), result.stderr)
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      benches = [command for command in commands if command['tool'] == 'cargo']
+                      self.assertEqual([('--baseline=main' in command['args']) for command in benches],
+                                       [False] if kind == 'seed' else [False, True] if kind == 'fresh' else [True] if mismatch or failure else [True, False])
+                      if kind == 'fresh':
+                          self.assertEqual(benches[0]['cwd'], str(self.root / 'quality-results/main'))
+                          self.assertEqual(benches[1]['cwd'], str(self.root))
+                          self.assertIn(['fetch', '--no-tags', 'origin', 'main'], [command['args'] for command in commands])
+                          self.assertEqual((self.root / 'quality-results/main-revision.txt').read_text(encoding='utf-8'), 'main-revision\n')
+                      elif kind == 'saved':
+                          self.assertEqual((self.root / 'quality-results/main-revision.txt').read_text(encoding='utf-8'), 'saved-revision\n')
+                      self.assertEqual((baseline / 'main-revision.txt').read_text(encoding='utf-8'),
+                                       'head-revision\n' if kind in ('saved', 'seed') and not (mismatch or failure) else 'saved-revision\n')
+                      if mismatch or failure:
+                          self.assertEqual(json.loads((baseline / 'baseline-0.jsonl').read_text(encoding='utf-8')), measurement)
+                          self.assertIn('set differs from main' if mismatch else 'exit status 9', result.stderr)
+                      elif kind != 'seed':
+                          self.assertIn('--callgrind-limits=ir=5%', next(command['args'] for command in benches if '--baseline=main' in command['args']))
+                  manifest = self.root / 'Cargo.toml'
+                  source = self.root / 'speed.rs'
+                  manifest.write_text('[package]\nname="sample"\nversion="0.1.0"\n', encoding='utf-8')
+                  source.write_text('fn main() {}\n', encoding='utf-8')
+                  metadata = dict(packages=[dict(name='sample', manifest_path=str(manifest),
+                      targets=[dict(name='speed', kind=['bench'], src_path=str(source))])])
+                  keys = []
+                  for content in ['fn main() {}\n', 'fn main() { changed(); }\n']:
+                      source.write_text(content, encoding='utf-8')
+                      result = self.shell(body('Instruction baseline identity'), **(env | {
+                          'METADATA': json.dumps(metadata), 'BASELINE_MODE': 'fresh', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
+                          'GITHUB_REF': 'refs/heads/main', 'DEFAULT_BRANCH': 'main', 'BENCHMARKS': json.dumps([benchmark]),
+                          'GITHUB_RUN_ID': '12', 'GITHUB_RUN_ATTEMPT': '1'}))
+                      self.assertEqual(result.returncode, 0, result.stderr)
+                      keys.append(dict(line.split('=', 1) for line in (self.root / 'output').read_text(encoding='utf-8').splitlines()))
+                  self.assertNotEqual(keys[0]['prefix'], keys[1]['prefix'])
+                  save = next(step['if'] for step in workflow['jobs']['quality-set']['steps']
+                              if step.get('name') == 'Save successful main instruction baseline')
+                  for event, branch, seed, success, expected in [
+                          ('schedule', 'main', False, True, True), ('workflow_dispatch', 'main', True, True, True),
+                          ('workflow_dispatch', 'main', False, True, False), ('pull_request', 'main', True, True, False),
+                          ('schedule', 'branch', False, True, False), ('schedule', 'main', False, False, False)]:
+                      expression = save.removeprefix('$' + '{{').removesuffix('}}').strip()
+                      for old, new in {'success()': repr(success), 'matrix.mode': repr('instructions'),
+                                       'github.ref': repr('refs/heads/' + branch),
+                                       "format('refs/heads/{0}', github.event.repository.default_branch)": repr('refs/heads/main'),
+                                       'github.event_name': repr(event), 'inputs.seed-instruction-baseline': repr(seed)}.items():
+                          expression = expression.replace(old, new)
+                      self.assertEqual(eval(expression.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}}), expected)
+
+              def test_mutation_bound_is_platform_owned(self):
+                  job = workflow['jobs']['quality-set']
+                  unbounded = next(step for step in job['steps'] if step.get('name') == 'Run quality gate')
+                  bounded = next(step for step in job['steps'] if step.get('name') == 'Run nightly test gate')
+                  self.assertNotIn('timeout-minutes', unbounded)
+                  self.assertEqual(bounded['timeout-minutes'], 45)
+                  self.assertIn("matrix.mode == 'miri'", bounded['if'])
+                  self.assertIn("matrix.mode == 'address'", bounded['if'])
+                  self.assertIn("matrix.mode == 'thread'", bounded['if'])
+
+              def test_successful_empty_mutation_shard_publishes_no_survivors(self):
+                  (self.root / 'quality-results').mkdir()
+                  for status in ['success', 'failure', 'skipped']:
+                      result = self.shell(body('Mutation survivor summary'), MUTATION_RUN_RESULT=status)
+                      self.assertEqual(result.returncode == 0, status == 'success', result.stderr)
+                      if status == 'success':
+                          self.assertEqual(json.loads((self.root / 'quality-results/survivors.json').read_text(encoding='utf-8')), [])
+
+          unittest.main()
       - name: Toolchain
         working-directory: fixtures/sample
         run: |
@@ -83,8 +483,87 @@ jobs:
           import textwrap
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
           step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == 'Coverage tools')
-          match = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
+          match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(match[1])], check=True)
+      - name: Quality runtime proofs
+        if: runner.environment == 'self-hosted'
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import shutil
+          import subprocess
+          import tempfile
+          import yaml
+
+          root = pathlib.Path.cwd()
+          workflow = yaml.safe_load((root / '.github/workflows/ci.yml').read_text(encoding='utf-8'))
+          def body(name):
+              return next(step['run'] for job in workflow['jobs'].values() for step in job.get('steps', []) if step.get('name') == name)
+
+          with tempfile.TemporaryDirectory() as temporary:
+              env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path'}
+              for mode in ['mutation', 'instructions']:
+                  subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Quality tools')], env=env | {'MODE': mode}, check=True)
+              paths = pathlib.Path(env['GITHUB_PATH']).read_text(encoding='utf-8').splitlines()
+              env['PATH'] = os.pathsep.join(paths + [os.environ['PATH']])
+              fixture = root / 'fixtures/quality'
+              source = fixture / 'src/lib.rs'
+              original = source.read_text(encoding='utf-8')
+              def run(command, expected=0, cwd=fixture):
+                  result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True)
+                  print('+ ' + ' '.join(command), flush=True)
+                  print(result.stdout + result.stderr, flush=True)
+                  assert result.returncode == expected, (result.returncode, result.stdout, result.stderr)
+                  return result
+              diff = pathlib.Path(temporary) / 'changes.diff'
+              def write_diff(text):
+                  lines = text.splitlines()
+                  diff.write_text('--- /dev/null\n+++ b/src/lib.rs\n@@ -0,0 +1,' + str(len(lines)) + ' @@\n' + ''.join('+' + line + '\n' for line in lines), encoding='utf-8')
+              write_diff(original)
+              mutation = ['cargo', 'mutants', '--workspace', '--no-config', '--copy-vcs=true', '--cargo-arg=--locked',
+                          '--test-tool=nextest', '--shard=0/1', '--in-diff', str(diff), '--output', temporary,
+                          '--', '--user-config-file', 'none', '--ignore-default-filter']
+              bench = ['cargo', 'bench', '--locked', '--bench', 'instructions', '--', '--home=' + temporary + '/instructions', '--output-format=json']
+              try:
+                  full_diff = diff.read_text(encoding='utf-8')
+                  diff.write_text('', encoding='utf-8')
+                  empty = mutation.copy()
+                  empty[empty.index('--output') + 1] = temporary + '/empty'
+                  run(empty)
+                  assert not (pathlib.Path(temporary) / 'empty/mutants.out/outcomes.json').exists()
+                  diff.write_text(full_diff, encoding='utf-8')
+                  print('PASS native empty mutation selection exits successfully without outcomes.json', flush=True)
+                  tracked = pathlib.Path(temporary) / 'tracked'
+                  shutil.copytree(fixture, tracked, ignore=shutil.ignore_patterns('target'))
+                  (tracked / 'tests').mkdir(exist_ok=True)
+                  (tracked / 'tests/tracked.rs').write_text('#[test]\nfn tracked_source_is_visible() {\n    let listed = std::process::Command::new("git")\n        .args(["ls-files", "-z", "--", "src/lib.rs"])\n        .current_dir(env!("CARGO_MANIFEST_DIR")).output().unwrap();\n    assert!(listed.status.success());\n    assert_eq!(listed.stdout, b"src/lib.rs\\0");\n}\n', encoding='utf-8')
+                  run(['git', 'init', '--quiet'], cwd=tracked)
+                  run(['git', 'add', '--', 'Cargo.toml', 'Cargo.lock', 'src', 'benches', 'tests'], cwd=tracked)
+                  without_vcs = [arg for arg in mutation if arg != '--copy-vcs=true']
+                  missing_git = run(without_vcs, 4, cwd=tracked)
+                  assert 'listed.status.success()' in missing_git.stdout + missing_git.stderr
+                  run(mutation, cwd=tracked)
+                  print('PASS mutation scratch retains tracked Git sources; no-VCS control fails baseline', flush=True)
+                  run(mutation)
+                  source.write_text(original.replace('assert_eq!(double(21), 42);', 'assert_eq!(double(0), 0);'), encoding='utf-8')
+                  write_diff(source.read_text(encoding='utf-8'))
+                  run(mutation, 2)
+                  outcomes = json.loads((pathlib.Path(temporary) / 'mutants.out/outcomes.json').read_text(encoding='utf-8'))
+                  survivors = [entry['scenario']['Mutant'] for entry in outcomes['outcomes'] if entry['summary'] == 'MissedMutant']
+                  assert any(item['file'] == 'src/lib.rs' and item['span']['start']['line'] == 5 for item in survivors), survivors
+                  print('PASS weakened-test mutation gate names src/lib.rs:5', flush=True)
+                  source.write_text(original, encoding='utf-8')
+                  run(bench + ['--save-baseline=main'])
+                  run(bench + ['--baseline=main', '--callgrind-limits=ir=5%'])
+                  source.write_text(original.replace('value * 2', 'let mut value = value;\n    for _ in 0..1000 { value = std::hint::black_box(value); }\n    value * 2'), encoding='utf-8')
+                  regression = subprocess.run(bench + ['--baseline=main', '--callgrind-limits=ir=5%'], cwd=fixture, env=env, capture_output=True, text=True)
+                  print(regression.stdout + regression.stderr, flush=True)
+                  assert regression.returncode != 0 and 'regress' in (regression.stdout + regression.stderr).lower(), (regression.returncode, regression.stdout, regression.stderr)
+                  print('PASS instruction-count regression above 5% fails', flush=True)
+              finally:
+                  source.write_text(original, encoding='utf-8')
       - name: Compile cache in every Rust job
         shell: python
         run: |
@@ -97,10 +576,10 @@ jobs:
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               assert document['permissions'] == {'contents': 'read'}
               assert set(document['jobs']) == {'declaration', 'quality', 'docs', 'tests', 'checks', 'advisories',
-                                               'targets', 'browser', 'browser-tests', 'fuzz', 'tests-result'}
+                                               'targets', 'browser', 'browser-tests', 'fuzz', 'tests-result', 'test-build', 'quality-set'}
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
-              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests', 'test-build'}
               stages = ['Compile cache identity', 'Restore compile cache', 'Compile cache',
                         'Compile cache statistics', 'Seal compile cache', 'Save compile cache']
               for name in owners:
@@ -330,6 +809,10 @@ jobs:
                   prefixes = [snapshot_keys(CACHE_ENABLED=enabled, CACHE_COVERAGE=coverage, SHARD=shard)['prefix']
                               for shard in writers]
                   assert len(prefixes) == len(set(prefixes)), 'at most one writer per actual shape'
+              archive = snapshot_keys(CACHE_JOB='test-build', SHARD='archive')
+              assert archive['prefix'] == snapshot_keys(SHARD='1')['prefix']
+              assert archive['writer'] == 'true'
+              assert snapshot_keys(SHARD='1', TEST_ARCHIVE='test-binaries.tar.zst')['writer'] == 'false'
               assert snapshot_keys(CACHE_WARM='true', SHARD='warm')['writer'] == 'true'
               assert snapshot_keys(CACHE_WARM='true', SHARD='warm', GITHUB_EVENT_NAME='pull_request')['writer'] == 'false'
               assert 'CACHE_DEFAULT_BRANCH: $' + '{{ github.event.repository.default_branch }}' in workflow
@@ -552,7 +1035,7 @@ jobs:
           def cache_error_artifacts_are_selected_and_scoped():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
-              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests', 'test-build'}
               uploads = {name: job.split('      - name: Upload compile cache errors\n')[1].split('      - name:', 1)[0]
                          for name, job in jobs.items() if '      - name: Upload compile cache errors\n' in job}
               assert set(uploads) == owners
@@ -774,7 +1257,7 @@ jobs:
                       assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M)
                       assert '        continue-on-error: true\n' in step
                       count += 1
-              assert count == 14
+              assert count == 16
               assert not re.search(r'^    continue-on-error:', workflow, re.M)
 
           snapshot_only_transfers_fail_open()
@@ -1277,7 +1760,7 @@ jobs:
           def advisory_issues_open_once(temporary):
               source = pathlib.Path('.github/workflows/advisories.yml').read_text(encoding='utf-8')
               step = next(s for s in source.split('      - name: ')[1:] if s.splitlines()[0] == 'Open advisory issues')
-              code = textwrap.dedent(re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE).group(1))
+              code = textwrap.dedent(re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE).group(1))
               fake, recorded = fake_tool(pathlib.Path(temporary) / 'fake-gh', 'gh')
               findings = [{'id': 'RUSTSEC-2025-0141', 'title': 'Bincode is unmaintained', 'crates': ['bincode 1.3.3']},
                           {'id': 'yanked once_cell 0.0.1', 'title': 'detected yanked crate', 'crates': ['once_cell 0.0.1']}]
@@ -1973,6 +2456,19 @@ jobs:
           permit('ci', 'tests', 'Tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
+          for job in ['test-build', 'quality-set']:
+              names = ['Coverage tools', 'Search tools', 'Mise bootstrap', 'Test tools']
+              names += ['Compile cache'] if job == 'test-build' else ['Quality tools']
+              for name in names:
+                  permit('ci', job, name, 'timeout-minutes', '10')
+                  if name != 'Test tools':
+                      permit('ci', job, name, '--retry', '3')
+          for name in ['Archive tests', 'Archive isolated tests']:
+              permit('ci', 'test-build', name, 'timeout-minutes', '45')
+          permit('ci', 'quality-set', 'Run nightly test gate', 'timeout-minutes', '45')
+          permit('ci', 'test-build', 'Archive tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
+          permit('ci', 'test-build', 'Archive isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
+          permit('ci', 'test-build', 'Archive isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
           permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
 
@@ -2061,7 +2557,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 59)
+                  self.assertEqual(len(report.splitlines()), 83)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2099,7 +2595,7 @@ jobs:
               def test_download_retry_changes_are_rejected_per_call(self):
                   source = files['.github/workflows/ci.yml']
                   positions = [match.start() for match in re.finditer('--retry 3', source)]
-                  self.assertEqual(len(positions), 9)
+                  self.assertEqual(len(positions), 10)
                   self.assert_policy(files, True)
                   for offset in positions:
                       for replacement in ['', '--retry 2', '--retry 3 --retry 3']:
@@ -2269,7 +2765,7 @@ jobs:
                   candidate = source.replace('run: &sccache-stats |\n', 'run: &sccache-stats |\n          timeout 3 true\n', 1)
                   self.assertNotEqual(candidate, source)
                   owners = [row[1] for row in collect({'.github/workflows/ci.yml': candidate}) if row[3] == 'timeout']
-                  self.assertCountEqual(owners, ['quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'])
+                  self.assertCountEqual(owners, ['quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests', 'test-build'])
 
               def test_literal_fixture_values_are_not_policy(self):
                   source = ('jobs:\n  new:\n'
@@ -2323,7 +2819,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 59)
+                  self.assertEqual(len(report.splitlines()), 83)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
@@ -2372,7 +2868,7 @@ jobs:
           import textwrap
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
           step = workflow.split('      - name: Search tools\n', 1)[1]
-          command = re.search(r'        run: \|\n((?:          .*\n|\n)+)', step)[1]
+          command = re.search(r'        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step)[1]
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(command)], check=True)
       - name: Caller checks at workflow seam
         id: cases
@@ -2487,7 +2983,7 @@ jobs:
           def job_run_defaults_preserve_pipeline_failures():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests'}
+              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests', 'test-build', 'quality-set'}
               defaults = {name: re.search(r'^    defaults:\n(.*?)^    steps:', job, re.MULTILINE | re.DOTALL)
                           for name, job in jobs.items()}
               assert {name for name, match in defaults.items() if match} == expected
@@ -2790,7 +3286,7 @@ jobs:
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'warm_test_filter': json.dumps('none()'), 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
+              assert values == {'warm_test_filter': json.dumps('none()'), 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'miri_crates': '[]', 'instruction_benchmarks': '[]'}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
@@ -3088,9 +3584,9 @@ jobs:
           def coverage_matrix_splits_doctests_from_partitions():
               tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
               matrix = re.search(r'        shard: (.*)', tests)[1]
-              assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,\"doctests\"]' || '[1,2,3,4]') }}"
-              assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}" in tests
-              assert '    needs: declaration\n' in tests and '      fail-fast: false\n' in tests
+              assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || '[1,2,3,4,5,6,\"doctests\"]') }}"
+              assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/6)', matrix.shard) }}" in tests
+              assert '    needs: [declaration, test-build]\n' in tests and '      fail-fast: false\n' in tests
               assert 'advisory-scan' in tests and "inputs.working-directory != '.'" in tests
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -3108,8 +3604,8 @@ jobs:
                           assert result.returncode == 0, result.stderr
                           selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                           choices = re.findall(r"'(\[.*?\])'", matrix)
-                          legs = json.loads(choices[1 if selected['coverage'] == 'true' else 2])
-                          assert legs == ([1, 2, 3, 4] if event == 'pull_request' else [1, 2, 3, 4, 'doctests'])
+                          legs = json.loads(choices[1])
+                          assert legs == [1, 2, 3, 4, 5, 6, 'doctests']
 
           coverage_matrix_splits_doctests_from_partitions()
           print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -3314,6 +3810,18 @@ jobs:
                   assert result.returncode != 0
                   assert result.stderr.strip() == 'Missing or unexpected shard coverage reports'
 
+              for coverage in ['false', 'true', '']:
+                  for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
+                      for status in ['success', 'failure', 'cancelled', 'skipped']:
+                          result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                                                  env=os.environ | {'RESULT': status, 'COLLECT_COVERAGE': coverage,
+                                                                    'DECLARATION_RESULT': declaration_status},
+                                                  capture_output=True, text=True)
+                          expected = declaration_status == 'success' and (
+                              (coverage == 'false' and status == 'skipped') or
+                              (coverage == 'true' and status == 'success'))
+                          assert (result.returncode == 0) == expected, (coverage, declaration_status, status)
+
           failed_shard_and_missing_coverage_stay_distinct()
           print('PASS failed_shard_and_missing_coverage_stay_distinct')
 
@@ -3515,8 +4023,8 @@ jobs:
               job = jobs['fuzz']
               assert "    if: $" + "{{ !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}\n" in job
               assert 'fuzz-scan' not in jobs['declaration'] and 'fuzz-scan' not in jobs['advisories']
-              assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: nightly-2026-09-15\n' in job
-              assert workflow.count('nightly-') == 1 and workflow.count('/cargo-fuzz/') == 1
+              assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: *quality-nightly-toolchain\n' in job
+              assert len(re.findall(r'nightly-[0-9]{4}-[0-9]{2}-[0-9]{2}', workflow)) == 1 and workflow.count('/cargo-fuzz/') == 1
               assert '        env:\n          FUZZ_SCAN: true\n        run: *check-tools\n' in job
               steps = re.findall(r'^      - name: (.+)$', job, re.MULTILINE)
               assert steps.index('Fuzz licences') < steps.index('Fuzz target'), steps
@@ -4047,38 +4555,51 @@ jobs:
           print('PASS test_tools_follow_only_caller_pins')
 
           def event_policy_keeps_pull_requests_fast():
-              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-              slow = {'tests', 'targets', 'browser', 'browser-tests'}
-              for event in ['pull_request', 'merge_group', 'push']:
-                  for warm, advisory, fuzz in [(False, False, False), (True, False, False),
-                                                (False, True, False), (False, False, True)]:
-                      with tempfile.TemporaryDirectory() as temporary:
-                          output = pathlib.Path(temporary) / 'selection'
-                          result = execute('Select test packages', root / 'fixtures/sample', {
-                              'TEST_EVENT': 'push' if warm else event, 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
-                          assert result.returncode == 0, result.stderr
-                          values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-                      for name in slow | {'quality', 'docs', 'checks'}:
-                          expression = document['jobs'][name]['if'].removeprefix('$' + '{{').removesuffix('}}').strip()
-                          context = {'inputs.warm-cache': warm, 'inputs.advisory-scan': advisory,
-                                     'inputs.fuzz-scan': fuzz, 'github.event_name': event,
-                                     'github.repository_id': 'caller', 'inputs.working-directory': '.',
-                                     'needs.declaration.outputs.coverage': values['coverage'],
-                                     'needs.declaration.outputs.targets': '[{}]',
-                                     'needs.declaration.outputs.wasm_crates': '["sample"]',
-                                     'needs.declaration.outputs.browser_build': 'true',
-                                     'needs.declaration.outputs.browser_tests': 'true'}
-                          for key, value in context.items():
-                              expression = expression.replace(key, repr(value))
-                          expression = expression.replace('&&', ' and ').replace('||', ' or ')
-                          expression = re.sub(r'!(?!=)', ' not ', expression).strip()
-                          expected = not advisory and not fuzz
-                          if name in slow:
-                              expected &= event != 'pull_request' or warm
-                              expected &= not warm or name == 'tests' or (name == 'targets' and event == 'push')
+              import itertools
+              import yaml
+              document = yaml.safe_load(workflow)
+              slow = {'test-build', 'tests', 'targets', 'browser', 'browser-tests', 'quality-set'}
+              for event, declared, packages, warm, scan, producer, cancelled in itertools.product(
+                      ['pull_request', 'merge_group', 'push'], [False, True], ['[]', '["sample"]'],
+                      [False, True], ['', 'advisory', 'fuzz', 'quality', 'seed'],
+                      ['success', 'skipped', 'failure', 'cancelled'], [False, True]):
+                  coverage = 'true' if warm or event != 'pull_request' else 'false'
+                  for name in slow | {'quality', 'docs', 'checks'}:
+                      expression = document['jobs'][name]['if'].removeprefix('$' + '{{').removesuffix('}}').strip()
+                      context = {'inputs.warm-cache': warm, 'inputs.advisory-scan': scan == 'advisory',
+                                 'inputs.fuzz-scan': scan == 'fuzz', 'inputs.quality-scan': scan == 'quality',
+                                 'inputs.seed-instruction-baseline': scan == 'seed', 'github.event_name': event,
+                                 'github.repository_id': 'caller', 'inputs.working-directory': '.',
+                                 'needs.declaration.outputs.coverage': coverage,
+                                 'needs.declaration.outputs.enabled': str(declared).lower(),
+                                 'needs.declaration.outputs.packages': packages,
+                                 'needs.test-build.result': producer,
+                                 'needs.declaration.outputs.targets': '[{}]',
+                                 'needs.declaration.outputs.wasm_crates': '["sample"]',
+                                 'needs.declaration.outputs.browser_build': 'true',
+                                 'needs.declaration.outputs.browser_tests': 'true'}
+                      for key, value in context.items():
+                          expression = expression.replace(key, repr(value))
+                      expression = expression.replace('cancelled()', repr(cancelled))
+                      expression = expression.replace('&&', ' and ').replace('||', ' or ')
+                      expression = re.sub(r'!(?!=)', ' not ', expression).strip()
+                      expected = scan not in ('advisory', 'fuzz', 'quality', 'seed')
+                      if name == 'quality-set':
+                          expected = not warm and scan not in ('advisory', 'fuzz') and (
+                              scan in ('quality', 'seed') or event != 'pull_request')
+                      elif name in slow:
+                          expected &= coverage == 'true'
+                          if name == 'test-build':
+                              expected &= not warm and packages != '[]'
+                          elif name == 'tests':
+                              expected &= not cancelled and producer in ('success', 'skipped')
+                              expected &= warm or producer == 'success' or packages == '[]'
                           else:
-                              expected &= not warm
-                          assert bool(eval(expression, {'__builtins__': {}})) == expected, (name, event, warm, advisory, fuzz)
+                              expected &= not warm or (name == 'targets' and event == 'push')
+                      else:
+                          expected &= not warm
+                      assert bool(eval(expression, {'__builtins__': {}})) == expected, (
+                          name, event, declared, packages, warm, scan, producer, cancelled)
 
           event_policy_keeps_pull_requests_fast()
           print('PASS event_policy_keeps_pull_requests_fast')
@@ -4096,17 +4617,6 @@ jobs:
               aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
               assert 'name: Tests (ubuntu-latest)' in aggregate
               assert 'needs: [tests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
-              for coverage in ['false', 'true', '']:
-                  for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
-                      for status in ['success', 'failure', 'cancelled', 'skipped']:
-                          result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                                  env=os.environ | {'RESULT': status, 'COLLECT_COVERAGE': coverage,
-                                                                    'DECLARATION_RESULT': declaration_status},
-                                                  capture_output=True, text=True)
-                          expected = declaration_status == 'success' and (
-                              (coverage == 'false' and status == 'skipped') or
-                              (coverage == 'true' and status == 'success'))
-                          assert (result.returncode == 0) == expected, (coverage, declaration_status, status)
 
           removed_shard_lists_fail_clearly()
           print('PASS removed_shard_lists_fail_clearly')
@@ -5079,6 +5589,95 @@ jobs:
           reusable_calls_complete_independently()
           print('PASS reusable_calls_complete_independently')
 
+          def archive_shards_run_without_compiling_the_checkout():
+              import shutil
+              for route, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
+                  for preserve_paths in [False, True]:
+                      with tempfile.TemporaryDirectory() as temporary:
+                          directory = pathlib.Path(temporary)
+                          producer, replacement = directory / 'checkout', directory / 'replacement'
+                          for checkout in [producer, replacement]:
+                              shutil.copytree(root / 'fixtures/sample', checkout, ignore=shutil.ignore_patterns('target'))
+                          env = {'RUNNER_TEMP': temporary, 'SHARD': 'archive', 'BUILD_TEST_ARCHIVE': 'true',
+                                 'TEST_PACKAGES': '["sample"]', 'COLLECT_COVERAGE': coverage}
+                          if preserve_paths:
+                              producer_cargo, consumer_cargo = directory / 'producer-cargo', directory / 'consumer-cargo'
+                              producer_cargo.mkdir()
+                              consumer_cargo.mkdir()
+                              manifest = producer / 'Cargo.toml'
+                              manifest.write_text(manifest.read_text(encoding='utf-8') + '\n[dependencies]\naccesskit = "=0.24.1"\n', encoding='utf-8')
+                              lock_env = {key: value for key, value in os.environ.items()
+                                          if key not in credential_names and not key.endswith('_API_KEY')}
+                              subprocess.run(['cargo', 'generate-lockfile'], cwd=producer,
+                                             env=lock_env | {'CARGO_HOME': str(producer_cargo)}, check=True, capture_output=True)
+                              shutil.copyfile(producer / 'Cargo.toml', replacement / 'Cargo.toml')
+                              shutil.copyfile(producer / 'Cargo.lock', replacement / 'Cargo.lock')
+                              env['CARGO_HOME'] = str(producer_cargo)
+                              (producer / 'src/bin').mkdir()
+                              (producer / 'src/bin/archive-child.rs').write_text('fn main() { println!("archived child"); }\n', encoding='utf-8')
+                              (producer / 'tests').mkdir()
+                              (producer / 'tests/runtime.rs').write_text('''
+              #[test]
+              fn archived_executables_remain_available() {
+                  let cargo = std::process::Command::new(env!("CARGO")).arg("--version").output().unwrap();
+                  assert!(cargo.status.success());
+                  let metadata = std::process::Command::new(env!("CARGO"))
+                      .args(["metadata", "--offline", "--locked", "--format-version", "1"])
+                      .current_dir(env!("CARGO_MANIFEST_DIR")).output().unwrap();
+                  assert!(metadata.status.success(), "{}", String::from_utf8_lossy(&metadata.stderr));
+                  let child = std::process::Command::new(env!("CARGO_BIN_EXE_archive-child")).output().unwrap();
+                  assert!(child.status.success());
+                  assert_eq!(child.stdout, b"archived child\\n");
+              }
+              ''', encoding='utf-8')
+                          result = execute(route, producer, env)
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          shutil.copyfile(producer / 'test-binaries.tar.zst', replacement / 'test-binaries.tar.zst')
+                          shutil.rmtree(producer)
+                          if preserve_paths:
+                              shutil.copytree(producer_cargo / 'registry/index', consumer_cargo / 'registry/index')
+                              env['CARGO_HOME'] = str(consumer_cargo)
+                              replacement.rename(producer)
+                          shard = producer if preserve_paths else replacement
+                          archive = shard / 'test-binaries.tar.zst'
+                          (shard / 'src/lib.rs').write_text('compile_error!("archive shards must not compile");\n', encoding='utf-8')
+                          result = execute(route, shard, env | {'BUILD_TEST_ARCHIVE': 'false', 'SHARD': '1', 'SHARD_COUNT': '1', 'TEST_ARCHIVE': str(archive)})
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          assert f'{2 if preserve_paths else 1} passed' in result.stdout + result.stderr, result.stdout + result.stderr
+                          assert 'Compiling sample' not in result.stdout + result.stderr
+                          print(f'PASS archive runtime route={route} coverage={coverage} embedded={preserve_paths}', flush=True)
+                          if coverage == 'true':
+                              assert (shard / 'shard-1.lcov').is_file()
+              print('PASS archive_shards_run_without_compiling_the_checkout')
+          archive_shards_run_without_compiling_the_checkout()
+
+          def test_archive_build_once_and_shards_only_execute():
+              for route, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                             'RUNNER_TEMP': temporary, 'SHARD': 'archive', 'COLLECT_COVERAGE': coverage,
+                             'TEST_PACKAGES': '["sample"]', 'BUILD_TEST_ARCHIVE': 'true'}
+                      result = execute(route, directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                      assert commands[0] == ['fetch', '--locked'], commands
+                      expected = ['llvm-cov', 'nextest-archive'] if coverage == 'true' else ['nextest', 'archive']
+                      assert commands[1][:2] == expected and '--archive-file' in commands[1], commands
+                      log.write_text('', encoding='utf-8')
+                      env.update(BUILD_TEST_ARCHIVE='false', TEST_ARCHIVE=str(directory / 'test-binaries.tar.zst'), SHARD='6', SHARD_COUNT='6')
+                      result = execute(route, directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                      assert commands[0] == ['fetch', '--locked'], commands
+                      assert len(commands) == 2 and '--archive-file' in commands[1], commands
+                      assert commands[1][commands[1].index('--partition') + 1] == 'count:6/6', commands
+                      assert '--workspace-remap' in commands[1] and '--locked' not in commands[1], commands
+              print('PASS test_archive_build_once_and_shards_only_execute')
+
+          test_archive_build_once_and_shards_only_execute()
+
           def workflow_safety_is_unchanged():
               assert re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + ['cargo test --workspace --locked'] == [
                   'cargo fmt --all --check',
@@ -5184,7 +5783,7 @@ jobs:
           exec(compile(tree, 'fake gh', 'exec'))
           nightly = (root / '.github/workflows/fuzz.yml').read_text(encoding='utf-8')
           step = next(s for s in nightly.split('      - name: ')[1:] if s.splitlines()[0] == 'Open fuzz issues')
-          code = textwrap.dedent(re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE).group(1))
+          code = textwrap.dedent(re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE).group(1))
           titles = ['Fuzz out-of-memory in hungry', 'Fuzz crash in planted at src/lib.rs:5:5', 'Fuzz timeout in stalled']
 
           def findings_match_planted_defects():

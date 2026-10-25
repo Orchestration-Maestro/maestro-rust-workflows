@@ -19,11 +19,14 @@ dependency and source checks. Test shards, coverage, foreign-target checks
 (including macOS and Windows), wasm/browser builds and Chromium tests run on
 merge groups and main pushes, not on pull-request heads.
 
-Tests run with checksum-pinned cargo-nextest 0.9.148 on four Linux runners,
-using automatic count partitions rather than package lists. Doctests run in a
-parallel `Doctests` matrix leg. The aggregate `Tests (ubuntu-latest)` requires
-all five legs to succeed on full runs and accepts event-skipped shards on
-pull requests.
+Tests run with checksum-pinned cargo-nextest 0.9.148 on six Linux runners,
+using automatic count partitions rather than package lists. The `Build test archive` job compiles the selected test graph; numbered shards download that
+nextest archive and only execute tests. Coverage uses an instrumented archive.
+Optional warm builds retain their separate compilation route. Doctests run once with `cargo test --doc` in a separate `Doctests` matrix leg on full
+runs, so numbered shards do not compile doctests. The aggregate
+`Tests (ubuntu-latest)` requires all six shards and `Doctests`
+to succeed on full runs. Pull requests require a successful declaration and
+event-skipped tests, preserving the required-check name.
 Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-diagnostics)
 and the reporter log after isolated tests fail or time out.
 
@@ -33,7 +36,7 @@ suite with coverage. See [test selection and retries](docs/caller-checks.md#pull
 for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov
-nextest`. Only the four numeric shards upload LCOV; the aggregate counts a source line as covered
+nextest`. Only the six numeric shards upload LCOV; the aggregate counts a source line as covered
 if any shard covers it and enforces the union's 80% floor (or caller's higher
 threshold). Missing shard reports fail. Undeclared callers retain single-job
 coverage in `Dependency, source and coverage checks`.
@@ -80,8 +83,8 @@ and reusable calls without splitting the shared restore prefix. GitHub's
 branch/default-branch visibility and newest-compatible-prefix lookup apply.
 Only pushes to the caller's default branch save snapshots. Pull-request and
 merge-group jobs restore but never save. Each test shape has one writer per
-call: the warm build, or shard 1 plus the separate plain doctest leg when the
-numeric shards use coverage. Other compiling jobs each write their own shape.
+call: the warm build, or the archive producer plus the separate plain doctest
+leg when the numeric shards use coverage. Other compiling jobs each write their own shape.
 A default-branch push warm call also runs the declared target checks to seed
 the Linux and macOS shapes. Warm pull-request calls skip targets because they
 cannot save.
@@ -226,3 +229,29 @@ for asset in source.tar.gz sbom.spdx.json SHA256SUMS; do
 done
 sha256sum -c SHA256SUMS
 ```
+
+## Quality gates
+
+Merge groups and main pushes run six changed-line mutation shards and a workspace
+`cargo hack check --each-feature --all-targets --locked`. Mutation testing uses
+cargo-mutants 27.1.0 with `--in-diff` and no caller mutation exclusions. Each
+mutant runs its package’s tests; nightly generation covers every workspace member. A survivor fails the shard; its job summary names the source
+file, line, replacement and mutation. Download `quality-…-mutation-N` artifacts
+for `outcomes.json`, diffs and logs. Infrastructure and baseline-test failures
+also fail; they are not treated as caught mutants.
+
+The reusable [nightly quality workflow](.github/workflows/quality-nightly.yml)
+runs full-workspace mutations, full-suite address/thread sanitizers, optional
+Miri packages and optional instruction benchmarks. It updates one open mutation
+issue per crate, using the caller's automatic token. Callers supply their own
+schedule and manual trigger, plus `issues: write`; no App secret is required.
+See [nightly quality settings](docs/caller-checks.md#nightly-quality-jobs).
+
+Tools are checksum-pinned: cargo-hack 0.6.45 and Gungraun 0.20.0, the maintained
+name of iai-callgrind. Sanitizers and Miri use nightly-2026-08-15. Instruction
+benchmarks fail above 5% against the last successful nightly `main` baseline.
+Manual runs compare with freshly measured `main`; baseline seeding requires an
+explicit default-branch manual run. The runner
+image must provide Valgrind; no job installs system packages or changes the
+runner sandbox. All jobs use the existing verified AWS selection and hosted
+fallback policy, retaining the four-CPU/16-GiB AWS envelope.

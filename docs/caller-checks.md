@@ -130,22 +130,23 @@ GitHub eviction can remove even the newest snapshot of a shape.
 
 ## Test shards
 
-Tests use checksum-pinned cargo-nextest 0.9.148 with four automatic
-`--partition count:N/4` partitions. The caller's `.config/nextest.toml` supplies
+Tests use checksum-pinned cargo-nextest 0.9.148 with six automatic
+`--partition count:N/6` partitions. The caller's `.config/nextest.toml` supplies
 test-suite runner metadata such as resource groups for fixed-port tests. Shared
 CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
-run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
-for merge groups and main pushes. These full runs use `--workspace`.
-Pull requests skip test shards and doctests.
+run once with `cargo test --locked --doc` in a separate `Doctests` matrix leg
+for merge groups and main pushes. Pull requests skip shards and doctests. One archive producer compiles the unit/integration test binaries;
+the numbered shards consume that archive without rebuilding the test graph. Package
+selection is unchanged; full runs use `--workspace`.
 
 Declared callers run `cargo llvm-cov nextest` in the same isolated environment
-with their opted-in tools. Only the four numeric shards upload LCOV, without
+with their opted-in tools. Only the six numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including `Doctests`, to succeed on full runs. On pull requests it requires a
 successful declaration and event-skipped shards. On full runs it downloads all
-four reports, counts each source line once (covered if any shard hits it), and enforces
+six reports, counts each source line once (covered if any shard hits it), and enforces
 `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. PRs skip coverage for all callers.
@@ -419,7 +420,7 @@ routes pass it to child builds, including dependencies outside the checkout.
 Explicit Bash run defaults preserve runner failures through log capture. A failed
 runner fails its test step, so coverage uploads run only after success; a missing
 report after success fails the upload separately. The required aggregate accepts
-only successful matrix legs, including `Doctests`, and requires the four numeric
+only successful matrix legs, including `Doctests`, and requires the six numeric
 reports when merging coverage.
 
 The original home and auth file are never read, moved or modified. Only the
@@ -596,8 +597,81 @@ cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warning
 
 There is no Linux fallback for Apple/MSVC targets. These compile checks do not
 restore macOS/Windows runtime tests, which remain a before-first-release
-requirement. All opted-in jobs run in both ordinary pull requests and merge
-queue checks. Declaration errors fail CI even when dependent jobs skip.
+requirement. These opted-in jobs run on merge groups and main pushes, not
+ordinary pull requests. Declaration errors fail CI even when dependent jobs skip.
+
+## Nightly quality jobs
+
+Declare Miri packages and Gungraun benchmarks in the same `.github/ci.toml`:
+
+```toml
+wasm_crates = []
+check_targets = []
+miri_crates = ["my-logic"]
+instruction_benchmarks = [{ package = "my-parser", bench = "parse" }]
+```
+
+Both new arrays default to empty. Package names must belong to the workspace;
+each benchmark must be a declared Cargo `bench` target. Use `gungraun = "=0.20.0"` for its harness so it matches the pinned runner. The `main` branch
+must contain each benchmark too. A missing main target, empty measurements,
+changed benchmark set or missing instruction comparison fails rather than
+creating a passing baseline.
+
+Add a caller workflow, selecting the immutable shared-workflow release commit:
+
+```yaml
+name: Nightly quality
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+    inputs:
+      seed-instruction-baseline:
+        description: Seed the instruction baseline after first adoption or harness changes
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  issues: write
+jobs:
+  quality:
+    uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/quality-nightly.yml@<release-commit>
+    with:
+      seed-instruction-baseline: ${{ inputs.seed-instruction-baseline || false }}
+```
+
+The time above is an example caller schedule, not a shared deadline. The reusable
+workflow runs on the caller's checked-out revision. Its nightly mode runs six
+full-workspace mutation shards and both sanitizers, even without a declaration.
+Miri runs each declared package's tests. AddressSanitizer and ThreadSanitizer
+rebuild the standard library and run all test targets plus doctests, using the
+shared pinned nightly. Jobs keep the isolated test environment and install the
+caller's declared tools before executing tests. Their `quality-…` artifacts
+include the full diagnostic log, including failures.
+
+Instruction counts use Gungraun (formerly iai-callgrind) with the runner image's
+Valgrind. Scheduled runs restore the last successful main measurements, apply
+`--callgrind-limits=ir=5%`, and advance the baseline only after success. Immutable
+cache keys include the main revision, compiler, Valgrind and harness identity; only
+default-branch scheduled runs or explicit manual seeds can save them. A missing
+baseline fails with a seed instruction, not a passing first measurement. Run
+`workflow_dispatch` on the default branch with `seed-instruction-baseline: true`
+after adoption or a harness/compiler/Valgrind change. Seeding runs only the instruction
+benchmarks and makes no comparison.
+
+Ordinary manual runs compare the checked-out revision with freshly fetched
+`main`. Artifacts record the baseline's exact revision and both measurements.
+Pull requests never update the saved main baseline.
+
+The issue reporter groups full-mutation survivors by crate. It comments on an
+existing open `Mutation survivors in <crate>` issue or creates one with `bug`
+and `needs-triage`. The job stays red while survivors exist. Missing mutation
+reports and tool/build failures also fail; no issue is filed for them as if
+they were survivors. Empty mutation selections have a canonical empty
+`survivors.json` after a successful tool exit, even when the tool writes no
+native `outcomes.json`. Failed or skipped executions cannot use that case.
+Both the caller's nightly workflow and its reusable
+workflows must pass the existing runner policy and executing-ref allowlist.
 
 ## Nightly fuzz job
 
@@ -643,7 +717,7 @@ workflow code; callers' pull requests do not.
 `.github/workflows/fuzz.yml` calls the workflow in that mode for Maestro's
 `main` every night at 04:41 UTC and on manual dispatch. Each target job installs
 cargo-fuzz 0.13.2, a checksum-verified release that only this job downloads,
-and the `nightly-2026-09-15` toolchain, which replaces the caller's
+and the `nightly-2026-08-15` toolchain, which replaces the caller's
 `rust-toolchain.toml` for that job only. It fuzzes on Linux x86_64
 (`--target x86_64-unknown-linux-gnu`).
 

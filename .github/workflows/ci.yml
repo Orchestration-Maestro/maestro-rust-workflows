@@ -43,7 +43,18 @@ on:
         description: Run only the fuzz job of the checked-out caller (scheduled fuzz workflow)
         type: boolean
         default: false
+      quality-scan:
+        description: Run the nightly quality set (called by the caller's scheduled workflow)
+        type: boolean
+        default: false
+      seed-instruction-baseline:
+        description: Seed the instruction baseline only from an explicit default-branch manual run
+        type: boolean
+        default: false
     outputs:
+      linux-runner:
+        description: Verified Linux runner labels for the nightly issue reporter
+        value: ${{ jobs.declaration.outputs.linux_runner }}
       advisories:
         description: Undeclared advisories from the advisory scan, as a JSON list
         value: ${{ jobs.advisories.outputs.findings }}
@@ -54,6 +65,9 @@ concurrency:
 
 permissions:
   contents: read
+
+env:
+  QUALITY_NIGHTLY_TOOLCHAIN: &quality-nightly-toolchain nightly-2026-08-15
 
 defaults:
   run:
@@ -86,6 +100,9 @@ jobs:
       quality_config: ${{ steps.config.outputs.quality_config }}
       fuzz_manifest: ${{ steps.config.outputs.fuzz_manifest }}
       fuzz_targets: ${{ steps.config.outputs.fuzz_targets }}
+      miri_crates: ${{ steps.config.outputs.miri_crates }}
+      instruction_benchmarks: ${{ steps.config.outputs.instruction_benchmarks }}
+      quality_matrix: ${{ steps.quality-matrix.outputs.matrix }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -176,11 +193,11 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(warm_test_filter=json.dumps('none()'), additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(warm_test_filter=json.dumps('none()'), additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]', miri_crates='[]', instruction_benchmarks='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'warm_test_filter', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'warm_test_filter', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs', 'miri_crates', 'instruction_benchmarks'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -323,6 +340,20 @@ jobs:
                   if crate not in packages:
                       raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
               values.update(browser_test_crates=json.dumps(sorted(set(browser_tests))))
+              miri = config.get('miri_crates', [])
+              if not isinstance(miri, list) or any(type(name) is not str or name not in packages for name in miri):
+                  raise SystemExit(f'{path}: miri_crates must name workspace packages')
+              benchmarks = config.get('instruction_benchmarks', [])
+              if not isinstance(benchmarks, list):
+                  raise SystemExit(f'{path}: instruction_benchmarks must be an array')
+              bench_targets = {(package['name'], target['name']) for package in metadata['packages']
+                               for target in package['targets'] if 'bench' in target['kind']}
+              for entry in benchmarks:
+                  if not isinstance(entry, dict) or set(entry) != {'package', 'bench'} or any(type(value) is not str for value in entry.values()):
+                      raise SystemExit(f'{path}: instruction_benchmarks requires package and bench strings')
+                  if (entry['package'], entry['bench']) not in bench_targets:
+                      raise SystemExit(f'{path}: instruction_benchmarks must name workspace benchmark targets')
+              values.update(miri_crates=json.dumps(sorted(set(miri))), instruction_benchmarks=json.dumps(benchmarks))
               inputs = config.get('test_inputs', {})
               if not isinstance(inputs, dict) or any(not isinstance(names, list) or any(type(name) is not str for name in names) for names in inputs.values()):
                   raise SystemExit(f'{path}: test_inputs must map repository paths to arrays of package names')
@@ -458,11 +489,40 @@ jobs:
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
 
+      - name: Select quality jobs
+        id: quality-matrix
+        env:
+          NIGHTLY: ${{ inputs.quality-scan }}
+          MIRI_CRATES: ${{ steps.config.outputs.miri_crates }}
+          BENCHMARKS: ${{ steps.config.outputs.instruction_benchmarks }}
+          SEED: ${{ inputs.seed-instruction-baseline }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          nightly = os.environ['NIGHTLY'] == 'true'
+          jobs = [dict(mode='mutation', shard=index) for index in range(6)]
+          if nightly:
+              jobs += [dict(mode='address', shard=0), dict(mode='thread', shard=0)]
+              if json.loads(os.environ['MIRI_CRATES']):
+                  jobs.append(dict(mode='miri', shard=0))
+              if json.loads(os.environ['BENCHMARKS']):
+                  jobs.append(dict(mode='instructions', shard=0))
+          else:
+              jobs.append(dict(mode='features', shard=0))
+          if os.environ.get('SEED') == 'true':
+              if not json.loads(os.environ['BENCHMARKS']):
+                  raise SystemExit('Cannot seed an instruction baseline without declared benchmarks')
+              jobs = [dict(mode='instructions', shard=0)]
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('matrix=' + json.dumps(dict(include=jobs)) + '\n')
+          PYTHON
+
   quality:
     needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.quality-scan && !inputs.seed-instruction-baseline && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -501,7 +561,7 @@ jobs:
           import os
           import subprocess
           shape = os.environ['CACHE_JOB']
-          if shape == 'tests':
+          if shape in ('tests', 'test-build'):
               coverage = os.environ['CACHE_WARM'] == 'true' or (os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true' and os.environ.get('SHARD', '') not in ('', 'doctests'))
               shape = 'tests-coverage' if coverage else 'tests-plain'
           elif shape == 'targets':
@@ -515,7 +575,7 @@ jobs:
           writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
           if os.environ['CACHE_JOB'] == 'tests':
               shard = os.environ.get('SHARD', '')
-              writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
+              writer = writer and not os.environ.get('TEST_ARCHIVE') and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\n')
           PYTHON
@@ -684,7 +744,7 @@ jobs:
     needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.quality-scan && !inputs.seed-instruction-baseline && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -745,18 +805,20 @@ jobs:
         with: *sccache-save
 
   tests:
-    needs: declaration
-    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}
-    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    needs: [declaration, test-build]
+    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/6)', matrix.shard) }}
+    if: ${{ needs.declaration.outputs.coverage == 'true' && !cancelled() && (needs.test-build.result == 'success' || (needs.test-build.result == 'skipped' && (inputs.warm-cache || needs.declaration.outputs.packages == '[]'))) && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.quality-scan && !inputs.seed-instruction-baseline && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,"doctests"]' || '[1,2,3,4]') }}
+        shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || '[1,2,3,4,5,6,"doctests"]') }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       WARM_CACHE: ${{ inputs.warm-cache }}
       WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
+      SHARD_COUNT: 6
+      TEST_ARCHIVE: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && 'test-binaries.tar.zst' || '' }}
       SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
@@ -778,7 +840,7 @@ jobs:
           # The deletion overlaps the toolchain, tools and compilation; the build needs the space minutes later.
           sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc >/dev/null 2>&1 &
       - name: Test toolchain
-        run: |
+        run: &test-toolchain |
           rustup show
           toolchain=$(rustup show active-toolchain)
           echo "RUSTUP_TOOLCHAIN=${toolchain%% *}" >> "$GITHUB_ENV"
@@ -800,7 +862,7 @@ jobs:
         run: *sccache-install
       - name: Coverage tools
         timeout-minutes: 10
-        run: |
+        run: &coverage-tools-step |
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-coverage-tools.XXXXXX")
           while read -r url digest binary; do
             archive=$(mktemp)
@@ -817,7 +879,7 @@ jobs:
           echo "$bin" >> "$GITHUB_PATH"
       - name: Fetch additional locked manifests
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
-        run: |
+        run: &additional-manifests-step |
           python3 - <<'PYTHON'
           import json
           import os
@@ -829,24 +891,39 @@ jobs:
               if result.returncode:
                   sys.exit(result.returncode)
           PYTHON
+      - name: Download test archive
+        if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && needs.declaration.outputs.packages != '[]' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: test-binaries-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ inputs.working-directory || '.' }}
       - name: Tests
         timeout-minutes: 45
         if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}
-        run: |
+        run: &base-tests |
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
-          if [ "${SHARD:-}" != doctests ]; then
-            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/4" --no-tests pass 2>&1 | tee nextest.log
+          if [ "${BUILD_TEST_ARCHIVE:-false}" = true ]; then
+            "$TOOLS/cargo-nextest" nextest archive --locked "${packages[@]}" --archive-file test-binaries.tar.zst
+            exit 0
           fi
-          if [[ "$SHARD" == doctests || ( "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
+          if [ -n "${TEST_ARCHIVE:-}" ]; then
+            run_packages=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
+          else
+            run_packages=(--locked "${packages[@]}")
+          fi
+          if [ "${SHARD:-}" != doctests ]; then
+            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${run_packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/${SHARD_COUNT:-4}" --no-tests pass 2>&1 | tee nextest.log
+          fi
+          if [[ "$SHARD" == doctests || ( "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true && -z "${TEST_ARCHIVE:-}" ) ]]; then
             cargo test --locked --doc "${packages[@]}"
           fi
       - name: Search tools
         timeout-minutes: 10
         if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
-        run: |
+        run: &search-tools-step |
           # Digests: ripgrep's release .sha256 file and fd's GitHub release asset digest.
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-search-bin.XXXXXX")
           while read -r url digest binary; do
@@ -883,7 +960,7 @@ jobs:
         if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         env:
           CARGO_COVERAGE_MIN_LINES: ''
-        run: |
+        run: &isolated-tests |
           python3 - <<'PYTHON'
           import os
           names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
@@ -907,7 +984,11 @@ jobs:
           trap 'rm -rf "$isolation"' EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
           run_isolated() {
+          # llvm-cov extracts nextest's target/ prefix inside its own target directory.
+          local coverage_target="$PWD/target/llvm-cov-target"
+          if [ "${BUILD_TEST_ARCHIVE:-false}" = true ]; then coverage_target="$coverage_target/target"; fi
           env -i PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+            CARGO_LLVM_COV_TARGET_DIR="$coverage_target" \
             HOME="$isolation/home" TMPDIR="$isolation/tmp" TMP="$isolation/tmp" TEMP="$isolation/tmp" \
             XDG_CONFIG_HOME="$isolation/config" XDG_DATA_HOME="$isolation/data" \
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
@@ -919,30 +1000,49 @@ jobs:
             SCCACHE_SKIP_CACHE_CHECK="${SCCACHE_SKIP_CACHE_CHECK-}" SCCACHE_ERROR_LOG="${SCCACHE_ERROR_LOG-}" SCCACHE_LOG="${SCCACHE_LOG-}" \
             "$@"
           }
+          if [ -n "${QUALITY_SCRIPT:-}" ]; then
+            run_isolated python3 "$QUALITY_SCRIPT" "$QUALITY_JOB_ARGS"
+            exit 0
+          fi
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
+          if [ "${BUILD_TEST_ARCHIVE:-false}" = true ]; then
+            if [ "${COLLECT_COVERAGE:-false}" = true ]; then
+              run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest-archive --workspace --locked --archive-file test-binaries.tar.zst
+            else
+              run_isolated "$TOOLS/cargo-nextest" nextest archive --locked "${packages[@]}" --archive-file test-binaries.tar.zst
+            fi
+            exit 0
+          fi
+          coverage_packages=(--workspace --locked)
+          if [ -n "${TEST_ARCHIVE:-}" ]; then
+            run_packages=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
+            coverage_packages=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
+          else
+            run_packages=(--locked "${packages[@]}")
+          fi
           if [ "${SHARD:-}" != doctests ]; then
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
             elif [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
-              partition=(--partition "count:$SHARD/4")
+              partition=(--partition "count:$SHARD/${SHARD_COUNT:-4}")
               report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
               if [ "${WARM_CACHE:-false}" = true ]; then
                 partition=(-E "${WARM_TEST_FILTER-none()}")
                 report=(--no-report)
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked "${report[@]}" 2>&1 | tee nextest.log
+                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_packages[@]}" "${report[@]}" 2>&1 | tee nextest.log
             else
               partition=()
-              if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/4"); fi
+              if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/${SHARD_COUNT:-4}"); fi
               run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
-                --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
+                "${run_packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi
           fi
-          if [[ "${WARM_CACHE:-false}" != true && -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
+          if [[ "${WARM_CACHE:-false}" != true && -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true && -z "${TEST_ARCHIVE:-}" ) ) ]]; then
             run_isolated cargo test --locked --doc "${packages[@]}"
           fi
       - name: Print test diagnostics
@@ -1021,10 +1121,99 @@ jobs:
           path: ${{ inputs.working-directory || '.' }}/shard-${{ matrix.shard }}.lcov
           if-no-files-found: error
 
+  test-build:
+    name: Build test archive
+    needs: declaration
+    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.quality-scan && !inputs.seed-instruction-baseline && !inputs.warm-cache && needs.declaration.outputs.packages != '[]' }}
+    runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory || '.' }}
+    env:
+      BUILD_TEST_ARCHIVE: true
+      SHARD: archive
+      TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
+      COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
+      ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Test toolchain
+        run: *test-toolchain
+      - name: Compile cache identity
+        id: cache-identity
+        env: *sccache-identity-env
+        run: *sccache-identity
+      - name: Restore compile cache
+        id: cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-restore
+      - name: Compile cache
+        timeout-minutes: 10
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        run: *sccache-install
+      - name: Coverage tools
+        timeout-minutes: 10
+        run: *coverage-tools-step
+      - name: Search tools
+        timeout-minutes: 10
+        if: needs.declaration.outputs.enabled == 'true'
+        run: *search-tools-step
+      - name: Mise bootstrap
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *mise-bootstrap
+      - name: Test tools
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *caller-tools
+      - name: Fetch additional locked manifests
+        if: needs.declaration.outputs.additional_locked_manifests != '[]'
+        run: *additional-manifests-step
+      - name: Archive tests
+        timeout-minutes: 45
+        if: needs.declaration.outputs.enabled != 'true'
+        run: *base-tests
+      - name: Archive isolated tests
+        timeout-minutes: 45
+        if: needs.declaration.outputs.enabled == 'true'
+        run: *isolated-tests
+      - name: Compile cache statistics
+        id: cache-statistics
+        if: always()
+        run: *sccache-stats
+      - name: Upload compile cache errors
+        if: *sccache-artifact-condition
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: *sccache-artifact
+      - name: Seal compile cache
+        id: cache-seal
+        run: *sccache-seal
+      - name: Save compile cache
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-save
+      - name: Upload test archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-binaries-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ inputs.working-directory || '.' }}/test-binaries.tar.zst
+          if-no-files-found: error
+
   tests-result:
     name: Tests (ubuntu-latest)
     needs: [tests, declaration]
-    if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.quality-scan && !inputs.seed-instruction-baseline && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     steps:
       - name: All test shards passed
@@ -1050,6 +1239,7 @@ jobs:
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         env:
           QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
+          SHARD_COUNT: 6
         run: |
           python3 - <<'PYTHON'
           import json
@@ -1057,7 +1247,7 @@ jobs:
           import pathlib
           lines = {}
           reports = pathlib.Path('coverage')
-          expected = {f'shard-{shard}.lcov' for shard in range(1, 5)}
+          expected = {f'shard-{shard}.lcov' for shard in range(1, int(os.environ.get('SHARD_COUNT', 4)) + 1)}
           if {path.name for path in reports.glob('*.lcov')} != expected:
               raise SystemExit('Missing or unexpected shard coverage reports')
           for name in sorted(expected):
@@ -1086,7 +1276,7 @@ jobs:
   checks:
     name: Dependency, source and coverage checks
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.quality-scan && !inputs.seed-instruction-baseline && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -1374,7 +1564,7 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     env:
-      RUSTUP_TOOLCHAIN: nightly-2026-09-15
+      RUSTUP_TOOLCHAIN: *quality-nightly-toolchain
       QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
       FUZZ_MANIFEST: ${{ needs.declaration.outputs.fuzz_manifest }}
     steps:
@@ -1530,7 +1720,7 @@ jobs:
   targets:
     name: Check (${{ matrix.target }})
     needs: declaration
-    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
+    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.quality-scan && !inputs.seed-instruction-baseline && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1606,7 +1796,7 @@ jobs:
   browser:
     name: Wasm and browser build
     needs: declaration
-    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.quality-scan && !inputs.seed-instruction-baseline && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -1694,7 +1884,7 @@ jobs:
   browser-tests:
     name: Chromium browser tests
     needs: declaration
-    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true' }}
+    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.quality-scan && !inputs.seed-instruction-baseline && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -1798,3 +1988,292 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+
+  quality-set:
+    name: ${{ inputs.quality-scan && 'Nightly' || 'Merge gate' }} / ${{ matrix.mode }} (${{ matrix.shard }})
+    needs: declaration
+    if: ${{ (needs.declaration.outputs.coverage == 'true' || inputs.quality-scan || inputs.seed-instruction-baseline) && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.declaration.outputs.quality_matrix) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory || '.' }}
+    env:
+      BASELINE_MODE: ${{ inputs.seed-instruction-baseline && 'seed' || inputs.quality-scan && github.event_name == 'schedule' && 'saved' || 'fresh' }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      MODE: ${{ matrix.mode }}
+      SHARD: ${{ matrix.shard }}
+      QUALITY_BASE: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || '' }}
+      QUALITY_NIGHTLY: ${{ inputs.quality-scan }}
+      MIRI_CRATES: ${{ needs.declaration.outputs.miri_crates }}
+      INSTRUCTION_BENCHMARKS: ${{ needs.declaration.outputs.instruction_benchmarks }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
+          fetch-depth: 0
+      - name: Test toolchain
+        run: *test-toolchain
+      - name: Instruction baseline identity
+        id: instruction-identity
+        if: matrix.mode == 'instructions'
+        env:
+          BENCHMARKS: ${{ needs.declaration.outputs.instruction_benchmarks }}
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import subprocess
+          if os.environ['BASELINE_MODE'] == 'seed' and (os.environ['GITHUB_EVENT_NAME'] != 'workflow_dispatch' or os.environ['GITHUB_REF'] != 'refs/heads/' + os.environ['DEFAULT_BRANCH']):
+              raise SystemExit('Instruction baselines may be seeded only by workflow_dispatch on the default branch')
+          metadata = json.loads(subprocess.check_output(['cargo', 'metadata', '--no-deps', '--locked', '--format-version', '1'], text=True))
+          packages = {package['name']: package for package in metadata['packages']}
+          identity = hashlib.sha256(b'gungraun-0.20.0\0')
+          identity.update(subprocess.check_output(['rustc', '-vV']))
+          identity.update(subprocess.check_output(['valgrind', '--version']))
+          identity.update(subprocess.check_output(['git', 'rev-parse', '--show-prefix']))
+          for entry in json.loads(os.environ['BENCHMARKS']):
+              package = packages[entry['package']]
+              target = next(target for target in package['targets'] if target['name'] == entry['bench'] and 'bench' in target['kind'])
+              for value in [entry['package'].encode(), entry['bench'].encode(), pathlib.Path(package['manifest_path']).read_bytes(), pathlib.Path(target['src_path']).read_bytes()]:
+                  identity.update(len(value).to_bytes(8, 'big') + value)
+          prefix = 'maestro-instructions-v1-' + identity.hexdigest() + '-main-'
+          revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          key = prefix + revision + '-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT']
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'prefix={prefix}\nkey={key}\n')
+          PYTHON
+      - name: Restore instruction baseline
+        id: instruction-restore
+        if: matrix.mode == 'instructions' && env.BASELINE_MODE == 'saved'
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/maestro-instruction-baseline
+          key: ${{ steps.instruction-identity.outputs.key }}
+          restore-keys: ${{ steps.instruction-identity.outputs.prefix }}
+      - name: Coverage tools
+        timeout-minutes: 10
+        run: *coverage-tools-step
+      - name: Quality tools
+        timeout-minutes: 10
+        run: |
+          bin=$(mktemp -d "$RUNNER_TEMP/maestro-quality-tools.XXXXXX")
+          while read -r mode url digest binary; do
+            if [ "$MODE" != "$mode" ]; then continue; fi
+            archive=$(mktemp)
+            curl --fail --retry 3 --location "$url" --output "$archive"
+            printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+            unpack=$(mktemp -d)
+            tar -xzf "$archive" -C "$unpack"
+            find "$unpack" -type f -name "$binary" -exec cp '{}' "$bin/$binary" \;
+            test -x "$bin/$binary"
+            rm -rf "$archive" "$unpack"
+          done <<'TOOLS'
+          mutation https://github.com/sourcefrog/cargo-mutants/releases/download/v27.1.0/cargo-mutants-x86_64-unknown-linux-gnu.tar.gz dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e cargo-mutants
+          features https://github.com/taiki-e/cargo-hack/releases/download/v0.6.45/cargo-hack-x86_64-unknown-linux-musl.tar.gz b242dffcfd43317ac484dd2dbc3b9fc5f8a7eb3ba252af31b531503f0bad33d1 cargo-hack
+          instructions https://github.com/gungraun/gungraun/releases/download/v0.20.0/gungraun-runner-v0.20.0-x86_64-unknown-linux-gnu.tar.gz b3b39d4243e43597512a1f79016a1f38cbf90e5869c0c2535fe4097c69ed91aa gungraun-runner
+          TOOLS
+          echo "$bin" >> "$GITHUB_PATH"
+      - name: Search tools
+        timeout-minutes: 10
+        run: *search-tools-step
+      - name: Mise bootstrap
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *mise-bootstrap
+      - name: Test tools
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *caller-tools
+      - name: Quality nightly toolchain
+        if: matrix.mode == 'miri' || matrix.mode == 'address' || matrix.mode == 'thread'
+        run: |
+          rustup toolchain install "$QUALITY_NIGHTLY_TOOLCHAIN" --profile minimal --component rust-src
+          if [ "$MODE" = miri ]; then rustup component add miri --toolchain "$QUALITY_NIGHTLY_TOOLCHAIN"; fi
+      - name: Prepare quality execution
+        run: |
+          script="$RUNNER_TEMP/quality.py"
+          cat > "$script" <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          import subprocess
+          import sys
+
+          args = json.loads(sys.argv[1])
+          mode = args['mode']
+          root = pathlib.Path.cwd()
+          results = root / 'quality-results'
+          results.mkdir(exist_ok=True)
+
+
+          def run(command, **kwargs):
+              print('+ ' + ' '.join(command), flush=True)
+              return subprocess.run(command, check=True, **kwargs)
+
+
+          def identities(path, require_comparison=True):
+              records = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+              if not records:
+                  raise SystemExit('Instruction benchmark produced no measurements')
+              for record in records:
+                  profiles = [profile for profile in record['profiles'] if profile['tool'] == 'Callgrind']
+                  if not profiles:
+                      raise SystemExit('Instruction benchmark has no Callgrind profile')
+                  for profile in profiles:
+                      metric = profile['summaries']['total']['summary']['Callgrind']['Ir']
+                      if require_comparison and ('Both' not in metric['metrics'] or metric.get('diffs') is None):
+                          raise SystemExit('Instruction benchmark has no main instruction comparison')
+              return {(record['module_path'], record.get('id')) for record in records}
+
+          if mode == 'features':
+              run(['cargo', 'hack', 'check', '--workspace', '--all-targets', '--each-feature', '--locked'])
+          elif mode == 'mutation':
+              command = ['cargo', 'mutants', '--workspace', '--no-config', '--copy-vcs=true',
+                         '--test-tool=nextest', '--cargo-arg=--locked', '--shard', f"{args['shard']}/6",
+                         '--output', str(results)]
+              if not args['nightly']:
+                  base = args['base']
+                  if not base:
+                      raise SystemExit('Changed-line mutation requires a verified base revision')
+                  with (results / 'changes.diff').open('w', encoding='utf-8') as diff:
+                      run(['git', 'diff', '--no-ext-diff', '--no-renames', '--relative', '--unified=0', base, 'HEAD', '--', '.'], stdout=diff)
+                  command += ['--in-diff', str(results / 'changes.diff')]
+              run(command + ['--', '--user-config-file', 'none', '--ignore-default-filter'])
+          elif mode == 'miri':
+              os.environ['RUSTUP_TOOLCHAIN'] = args['toolchain']
+              run(['cargo', 'miri', 'setup'])
+              for package in args['miri']:
+                  run(['cargo', 'miri', 'test', '--locked', '-p', package])
+          elif mode in ('address', 'thread'):
+              os.environ['RUSTUP_TOOLCHAIN'] = args['toolchain']
+              os.environ['RUSTFLAGS'] = f'-Zsanitizer={mode}'
+              os.environ['RUSTDOCFLAGS'] = os.environ['RUSTFLAGS']
+              target = ['--target', 'x86_64-unknown-linux-gnu', '-Zbuild-std']
+              run(['cargo', 'test', '--workspace', '--all-targets', '--locked'] + target)
+              run(['cargo', 'test', '--workspace', '--doc', '--locked'] + target)
+          elif mode == 'instructions':
+              import shutil
+              run(['valgrind', '--version'])
+              kind = args['baseline_mode']
+              baseline_directory = pathlib.Path(args['baseline_directory'])
+              baseline_directory.mkdir(parents=True, exist_ok=True)
+              baseline = None
+              if kind == 'fresh':
+                  run(['git', 'fetch', '--no-tags', 'origin', 'main'])
+                  main = subprocess.check_output(['git', 'rev-parse', 'refs/remotes/origin/main'], text=True).strip()
+                  prefix = subprocess.check_output(['git', 'rev-parse', '--show-prefix'], text=True).strip()
+                  baseline = results / 'main'
+                  run(['git', 'worktree', 'add', '--detach', str(baseline), main])
+                  baseline_directory = results / 'instruction-baseline'
+                  baseline_directory.mkdir()
+                  (baseline_directory / 'main-revision.txt').write_text(main + '\n', encoding='utf-8')
+              elif kind == 'saved' and not (baseline_directory / 'main-revision.txt').is_file():
+                  raise SystemExit('No successful main instruction baseline; run the explicit default-branch workflow_dispatch seed first')
+              elif kind not in ('saved', 'seed'):
+                  raise SystemExit(f'Unknown instruction baseline mode: {kind}')
+              if kind != 'seed':
+                  shutil.copyfile(baseline_directory / 'main-revision.txt', results / 'main-revision.txt')
+              try:
+                  for index, benchmark in enumerate(args['benchmarks']):
+                      home = baseline_directory / f'benchmark-{index}'
+                      command = ['cargo', 'bench', '--locked', '-p', benchmark['package'], '--bench', benchmark['bench'], '--',
+                                 '--home=' + str(home), '--output-format=json']
+                      stored = baseline_directory / f'baseline-{index}.jsonl'
+                      if kind in ('fresh', 'seed'):
+                          with stored.open('w', encoding='utf-8') as output:
+                              run(command + ['--save-baseline=main'], cwd=baseline / prefix if baseline else root, stdout=output)
+                      if kind == 'seed':
+                          identities(stored, False)
+                          continue
+                      shutil.copyfile(stored, results / f'baseline-{index}.jsonl')
+                      with (results / f'current-{index}.jsonl').open('w', encoding='utf-8') as output:
+                          run(command + ['--baseline=main', '--callgrind-limits=ir=5%'], stdout=output)
+                      if identities(stored, False) != identities(results / f'current-{index}.jsonl'):
+                          raise SystemExit('Instruction benchmark set differs from main; no valid comparison')
+                      if kind == 'saved':
+                          with stored.open('w', encoding='utf-8') as output:
+                              run(command + ['--save-baseline=main'], stdout=output)
+                  if kind in ('saved', 'seed'):
+                      revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+                      (baseline_directory / 'main-revision.txt').write_text(revision + '\n', encoding='utf-8')
+              finally:
+                  if baseline:
+                      run(['git', 'worktree', 'remove', '--force', str(baseline)])
+          else:
+              raise SystemExit(f'Unknown quality mode: {mode}')
+          PYTHON
+          echo "QUALITY_SCRIPT=$script" >> "$GITHUB_ENV"
+          python3 - <<'PYTHON'
+          import json
+          import os
+          args = dict(mode=os.environ['MODE'], shard=int(os.environ['SHARD']), nightly=os.environ['QUALITY_NIGHTLY'] == 'true',
+                      base=os.environ['QUALITY_BASE'], toolchain=os.environ['QUALITY_NIGHTLY_TOOLCHAIN'], miri=json.loads(os.environ['MIRI_CRATES']),
+                      benchmarks=json.loads(os.environ['INSTRUCTION_BENCHMARKS']), baseline_mode=os.environ['BASELINE_MODE'],
+                      baseline_directory=os.environ['RUNNER_TEMP'] + '/maestro-instruction-baseline')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
+              output.write('QUALITY_JOB_ARGS=' + json.dumps(args) + '\n')
+          PYTHON
+      - name: Prepare isolated quality runner
+        env:
+          ISOLATED_TESTS: *isolated-tests
+        run: |
+          printf '%s\n' "$ISOLATED_TESTS" > "$RUNNER_TEMP/isolated-quality.sh"
+      - name: Run quality gate
+        id: quality-run
+        if: matrix.mode != 'miri' && matrix.mode != 'address' && matrix.mode != 'thread'
+        run: &run-quality-gate |
+          mkdir -p quality-results
+          bash -e -o pipefail "$RUNNER_TEMP/isolated-quality.sh" 2>&1 | tee quality-results/run.log
+      - name: Run nightly test gate
+        if: matrix.mode == 'miri' || matrix.mode == 'address' || matrix.mode == 'thread'
+        timeout-minutes: 45
+        run: *run-quality-gate
+      - name: Mutation survivor summary
+        if: always() && matrix.mode == 'mutation'
+        env:
+          MUTATION_RUN_RESULT: ${{ steps.quality-run.outcome }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          results = pathlib.Path('quality-results')
+          path = results / 'mutants.out/outcomes.json'
+          if path.is_file():
+              outcome = json.loads(path.read_text(encoding='utf-8'))
+              survivors = [entry['scenario']['Mutant'] for entry in outcome['outcomes'] if entry['summary'] == 'MissedMutant']
+          elif os.environ.get('MUTATION_RUN_RESULT') == 'success':
+              # The pinned tool exits successfully without a native report for empty selections.
+              survivors = []
+          else:
+              raise SystemExit('Mutation run did not produce outcomes.json')
+          (results / 'survivors.json').write_text(json.dumps(survivors), encoding='utf-8')
+          lines = [item['name'] for item in survivors]
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
+              output.write('### Mutation survivors\n\n```text\n' + ('\n'.join(lines) if lines else 'None') + '\n```\n')
+          if survivors:
+              raise SystemExit(f'{len(survivors)} mutation survivors; see the named lines in the job summary')
+          PYTHON
+      - name: Upload quality findings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: quality-${{ inputs.concurrency-key || 'root' }}-${{ matrix.mode }}-${{ matrix.shard }}
+          path: ${{ inputs.working-directory || '.' }}/quality-results
+          if-no-files-found: error
+      - name: Save successful main instruction baseline
+        if: ${{ success() && matrix.mode == 'instructions' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.seed-instruction-baseline)) }}
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/maestro-instruction-baseline
+          key: ${{ steps.instruction-identity.outputs.key }}

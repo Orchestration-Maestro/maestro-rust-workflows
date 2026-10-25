@@ -251,6 +251,35 @@
       "description": "Nextest filterset executed only by warm-cache builds to cache child compiles.",
       "type": "string",
       "default": "none()"
+    },
+    "miri_crates": {
+      "description": "Workspace package names whose tests run under Miri nightly.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "instruction_benchmarks": {
+      "description": "Workspace Gungraun benchmark targets, compared with main using the pinned runner.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "package",
+          "bench"
+        ],
+        "properties": {
+          "package": {
+            "type": "string"
+          },
+          "bench": {
+            "type": "string"
+          }
+        }
+      }
     }
   },
   "dependentRequired": {
