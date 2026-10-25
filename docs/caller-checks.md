@@ -711,7 +711,7 @@ workflow code; callers' pull requests do not.
 `.github/workflows/fuzz.yml` calls the workflow in that mode for Maestro's
 `main` every night at 04:41 UTC and on manual dispatch. Each target job installs
 cargo-fuzz 0.13.2, a checksum-verified release that only this job downloads,
-and the `nightly-2026-09-15` toolchain, which replaces the caller's
+and the `nightly-2026-08-15` toolchain, which replaces the caller's
 `rust-toolchain.toml` for that job only. It fuzzes on Linux x86_64
 (`--target x86_64-unknown-linux-gnu`).
 

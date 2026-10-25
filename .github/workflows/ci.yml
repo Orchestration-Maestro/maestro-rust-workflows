@@ -67,7 +67,7 @@ permissions:
   contents: read
 
 env:
-  QUALITY_NIGHTLY_TOOLCHAIN: &quality-nightly-toolchain nightly-2026-09-15
+  QUALITY_NIGHTLY_TOOLCHAIN: &quality-nightly-toolchain nightly-2026-08-15
 
 defaults:
   run:

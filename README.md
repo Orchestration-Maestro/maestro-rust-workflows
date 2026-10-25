@@ -249,7 +249,7 @@ schedule and manual trigger, plus `issues: write`; no App secret is required.
 See [nightly quality settings](docs/caller-checks.md#nightly-quality-jobs).
 
 Tools are checksum-pinned: cargo-hack 0.6.45 and Gungraun 0.20.0, the maintained
-name of iai-callgrind. Sanitizers and Miri use nightly-2026-09-15. Instruction
+name of iai-callgrind. Sanitizers and Miri use nightly-2026-08-15. Instruction
 benchmarks fail above 5% against the last successful nightly `main` baseline.
 Manual runs compare with freshly measured `main`; baseline seeding requires an
 explicit default-branch manual run. The runner
