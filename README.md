@@ -14,10 +14,11 @@ be documented, and documentation warnings fail the check. Tests run on Linux
 for now; macOS and Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
 
-Pull requests run declaration validation, formatting, Clippy, docs and the
-dependency and source checks. Test shards, coverage, foreign-target checks
-(including macOS and Windows), wasm/browser builds and Chromium tests run on
-merge groups and main pushes, not on pull-request heads.
+Pull requests run declaration validation, formatting, Clippy, docs, the
+dependency and source checks, and declared Windows target checks in parallel.
+Test shards, coverage, other foreign-target checks (including macOS),
+wasm/browser builds and Chromium tests run on merge groups and main pushes,
+not on pull-request heads. Those full events also keep the Windows check.
 
 Tests run with checksum-pinned cargo-nextest 0.9.148 on four Linux runners,
 using automatic count partitions rather than package lists. Doctests run in a

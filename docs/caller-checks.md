@@ -87,10 +87,11 @@ connection that the kernel assigned that port. Without it nothing runs.
 
 An absent file runs the standard checks without isolation, search tool
 installation or optional jobs. Pull requests run declaration validation,
-formatting, Clippy, docs and dependency/source checks. Merge groups and main
-pushes also run tests and coverage. Declared foreign-target checks (including
-macOS and Windows), wasm/browser builds and Chromium tests run only on those
-full events. An unreadable file, malformed TOML,
+formatting, Clippy, docs, dependency/source checks and declared Windows target
+checks in parallel. Merge groups and main pushes also run tests, coverage and
+all declared foreign-target checks. Other foreign-target checks (including
+macOS), wasm/browser builds and Chromium tests run only on those full events.
+An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
 member or non-boolean tool/build flag fails declaration validation. An empty
 present document is invalid. Integer and string booleans are not accepted.

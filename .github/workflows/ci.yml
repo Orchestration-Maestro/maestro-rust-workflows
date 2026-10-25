@@ -158,6 +158,8 @@ jobs:
           PYTHON
       - name: Read caller declaration
         id: config
+        env:
+          TEST_EVENT: ${{ inputs.warm-cache && 'push' || github.repository_id == '1404598722' && inputs.test-event || github.event_name }}
         run: |
           python3 - <<'PYTHON'
           import json
@@ -339,7 +341,8 @@ jobs:
                       raise SystemExit(f'{path}: check_targets contains unknown target {target!r}')
                   if target not in runners:
                       raise SystemExit(f'{path}: check_targets has no runner for {target!r}')
-                  targets.append(dict(target=target, runner=runners[target]))
+                  if os.environ.get('TEST_EVENT') != 'pull_request' or target == 'x86_64-pc-windows-msvc':
+                      targets.append(dict(target=target, runner=runners[target]))
               values.update(targets=json.dumps(targets))
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             browser_build=str(config.get('browser_build', False)).lower(),
@@ -1530,7 +1533,7 @@ jobs:
   targets:
     name: Check (${{ matrix.target }})
     needs: declaration
-    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
       matrix:
