@@ -85,8 +85,12 @@ set, every Linux test job runs
 tests that must bind a fixed local port are not displaced by an outbound
 connection that the kernel assigned that port. Without it nothing runs.
 
-An absent file runs the original four checks plus the dependency, source and
-coverage job, without isolation, search tool installation or optional jobs. An unreadable file, malformed TOML,
+An absent file runs the standard checks without isolation, search tool
+installation or optional jobs. Pull requests run declaration validation,
+formatting, Clippy, docs and dependency/source checks. Merge groups and main
+pushes also run tests and coverage. Declared foreign-target checks (including
+macOS and Windows), wasm/browser builds and Chromium tests run only on those
+full events. An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
 member or non-boolean tool/build flag fails declaration validation. An empty
 present document is invalid. Integer and string booleans are not accepted.
@@ -132,15 +136,16 @@ test-suite runner metadata such as resource groups for fixed-port tests. Shared
 CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
-run once with `cargo test --locked --doc`: on shard 1 for pull requests, or in
-a parallel `Doctests` matrix leg for merge groups and main pushes. Package
-selection is unchanged; full runs use `--workspace`.
+run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
+for merge groups and main pushes. These full runs use `--workspace`.
+Pull requests skip test shards and doctests.
 
 Declared callers run `cargo llvm-cov nextest` in the same isolated environment
 with their opted-in tools. Only the four numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
-including full-run `Doctests`, to succeed. It downloads all four reports, counts
-each source line once (covered if any shard hits it), and enforces
+including `Doctests`, to succeed on full runs. On pull requests it requires a
+successful declaration and event-skipped shards. On full runs it downloads all
+four reports, counts each source line once (covered if any shard hits it), and enforces
 `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. PRs skip coverage for all callers.
@@ -189,8 +194,9 @@ grep -RFn -- 'phase: waiting-for-child-exit' "$download/target/browser-author-di
 
 ### Pull-request selection and retries
 
-On pull requests, tests run only changed workspace crates and their reverse
-dependencies, without the coverage threshold. A crate manifest selects its
+Pull requests run fast checks only; they do not execute the selected tests.
+The declaration still computes changed workspace crates and their reverse
+dependencies for the self-test event mode. A crate manifest selects its
 crate; lockfile changes compare the resolved transitive dependency identities
 and features at base and head, selecting affected crates. Root manifest,
 toolchain or CI workflow/schema changes select everything. Non-test declaration
@@ -201,7 +207,7 @@ For paths outside a crate, fallback selection skips undeclared Markdown files
 and paths under `docs/`; other undeclared files select everything. The workflow
 and configuration rules above take precedence. Declared paths select their
 readers, including for Markdown changes.
-Every shard still fetches locked dependencies.
+Every enabled shard fetches locked dependencies.
 Merge groups and main pushes run the whole suite with coverage.
 
 `test_inputs` maps repository-relative files or directories outside the
@@ -383,7 +389,7 @@ Each value must name an existing `Cargo.toml` file by a relative path from the c
 
 Every test shard fetches each declared manifest with `cargo fetch --locked --manifest-path <path>` before starting its tests or declared coverage. Existing root-workspace fetching remains unchanged. The step is skipped when the list is omitted or empty. Cargo chooses the manifest's workspace and lockfile; a missing or stale lock fails provisioning with the manifest identified, Cargo's diagnostics visible and its nonzero status preserved. Provisioning may use the network and write Cargo's dependency cache; it does not generate, update or repair source manifests or lockfiles. Tests can subsequently build offline from the acquired sources, including by staging a temporary directory-source bundle; a cold, empty Cargo home alone does not contain that cache.
 
-Changes to this input select all workspace test packages on pull requests, like other test-affecting declaration changes. Merge groups and main pushes retain full tests and coverage. Adoption requires a release containing this input and the organization rules' version pin to that release.
+Changes to this input select all workspace test packages in the declaration's pull-request selection mode, like other test-affecting declaration changes. Pull requests skip execution; merge groups and main pushes run full tests and coverage. Adoption requires a release containing this input and the organization rules' version pin to that release.
 
 ## Isolated tests
 
