@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.3](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.2...v0.15.3) (2026-10-25)
+
+
+### Continuous Integration
+
+* run full tests only in the merge queue ([#184](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/184)) ([7e9447d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/7e9447d1359ad261833b359fd448bb4d7892e7fe))
+
 ## [0.15.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.1...v0.15.2) (2026-10-24)
 
 
