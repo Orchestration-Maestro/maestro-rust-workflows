@@ -3237,7 +3237,7 @@ jobs:
               assert 'name: $' + '{{ steps.diagnostics.outputs.artifact_name }}\n' in upload
               assert 'timeout-minutes: 45\n' in steps['Isolated tests']
               assert "if: $" + "{{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}\n" in steps['Tests']
-              assert "assert os.environ['RESULT'] == 'success'" in body('All test shards passed')
+              assert "expected = {'false': 'skipped', 'true': 'success'}\nassert os.environ['COLLECT_COVERAGE'] in expected\nassert os.environ['RESULT'] == expected[os.environ['COLLECT_COVERAGE']]" in body('All test shards passed')
 
           diagnostic_upload_is_unconditional_and_scoped()
           print('PASS diagnostic_upload_is_unconditional_and_scoped')
