@@ -60,7 +60,7 @@ jobs:
     name: Workflow seam proofs
     outputs:
       targets: ${{ steps.cases.outputs.targets }}
-    runs-on: [self-hosted, linux, maestro-aws]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -210,10 +210,13 @@ jobs:
                       result = self.shell(body('Read caller declaration'), PATH=str(tools) + os.pathsep + os.environ['PATH'])
                       self.assertEqual(result.returncode == 0, valid, result.stderr)
 
-              def test_native_runtime_proofs_use_the_aws_image(self):
+              def test_runtime_proof_routes_respect_runner_admission(self):
                   internal = yaml.safe_load(pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8'))
-                  self.assertEqual(internal['jobs']['seams']['runs-on'], ['self-hosted', 'linux', 'maestro-aws'])
-                  self.assertIn('Quality runtime proofs', [step['name'] for step in internal['jobs']['seams']['steps']])
+                  self.assertEqual(internal['jobs']['seams']['runs-on'], 'ubuntu-latest')
+                  proof = next(step for step in internal['jobs']['seams']['steps'] if step['name'] == 'Quality runtime proofs')
+                  self.assertEqual(proof['if'], "runner.environment == 'self-hosted'")
+                  self.assertIn('src/lib.rs:5', proof['run'])
+                  self.assertIn('--callgrind-limits=ir=5%', proof['run'])
 
               def test_sanitizers_and_miri_cover_declared_tests_on_pinned_nightly(self):
                   tools = self.root / 'tools'
@@ -298,6 +301,7 @@ jobs:
           match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(match[1])], check=True)
       - name: Quality runtime proofs
+        if: runner.environment == 'self-hosted'
         shell: python
         run: |
           import json
@@ -3349,13 +3353,14 @@ jobs:
                           expression = condition.removeprefix('$' + '{{').removesuffix('}}').strip()
                           for key, value in {'inputs.warm-cache': warm, 'github.event_name': event,
                                              'inputs.advisory-scan': advisory, 'inputs.fuzz-scan': fuzz,
-                                             'needs.declaration.outputs.targets': targets}.items():
+                                             'needs.declaration.outputs.targets': targets,
+                                             'needs.declaration.outputs.coverage': str(warm or event != 'pull_request').lower()}.items():
                               expression = expression.replace(key, repr(value))
                           expression = expression.replace('&&', ' and ').replace('||', ' or ')
                           expression = re.sub(r'!(?!=)', ' not ', expression).strip()
                           observed = eval(expression, {'__builtins__': {}})
                           assert observed == (not advisory and not fuzz and targets != '[]' and
-                                              (not warm or event == 'push')), (warm, event, advisory, fuzz, targets)
+                                              (not warm or event == 'push') and (warm or event != 'pull_request')), (warm, event, advisory, fuzz, targets)
               tests = jobs['tests']
               assert 'WARM_CACHE: $' + '{{ inputs.warm-cache }}' in tests
               assert "inputs.warm-cache && '[\"warm\"]'" in tests
@@ -3543,7 +3548,7 @@ jobs:
               assert 'name: $' + '{{ steps.diagnostics.outputs.artifact_name }}\n' in upload
               assert 'timeout-minutes: 45\n' in steps['Isolated tests']
               assert "if: $" + "{{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}\n" in steps['Tests']
-              assert "assert os.environ['RESULT'] == 'success'" in body('All test shards passed')
+              assert "expected = {'false': 'skipped', 'true': 'success'}\nassert os.environ['COLLECT_COVERAGE'] in expected\nassert os.environ['RESULT'] == expected[os.environ['COLLECT_COVERAGE']]" in body('All test shards passed')
 
           diagnostic_upload_is_unconditional_and_scoped()
           print('PASS diagnostic_upload_is_unconditional_and_scoped')
@@ -3619,6 +3624,18 @@ jobs:
                   result = execute('Merge coverage', directory)
                   assert result.returncode != 0
                   assert result.stderr.strip() == 'Missing or unexpected shard coverage reports'
+
+              for coverage in ['false', 'true', '']:
+                  for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
+                      for status in ['success', 'failure', 'cancelled', 'skipped']:
+                          result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                                                  env=os.environ | {'RESULT': status, 'COLLECT_COVERAGE': coverage,
+                                                                    'DECLARATION_RESULT': declaration_status},
+                                                  capture_output=True, text=True)
+                          expected = declaration_status == 'success' and (
+                              (coverage == 'false' and status == 'skipped') or
+                              (coverage == 'true' and status == 'success'))
+                          assert (result.returncode == 0) == expected, (coverage, declaration_status, status)
 
           failed_shard_and_missing_coverage_stay_distinct()
           print('PASS failed_shard_and_missing_coverage_stay_distinct')
@@ -4352,6 +4369,56 @@ jobs:
           test_tools_follow_only_caller_pins()
           print('PASS test_tools_follow_only_caller_pins')
 
+          def event_policy_keeps_pull_requests_fast():
+              import itertools
+              import yaml
+              document = yaml.safe_load(workflow)
+              slow = {'test-build', 'tests', 'targets', 'browser', 'browser-tests', 'quality-set'}
+              for event, declared, packages, warm, scan, producer, cancelled in itertools.product(
+                      ['pull_request', 'merge_group', 'push'], [False, True], ['[]', '["sample"]'],
+                      [False, True], ['', 'advisory', 'fuzz', 'quality', 'seed'],
+                      ['success', 'skipped', 'failure', 'cancelled'], [False, True]):
+                  coverage = 'true' if warm or event != 'pull_request' else 'false'
+                  for name in slow | {'quality', 'docs', 'checks'}:
+                      expression = document['jobs'][name]['if'].removeprefix('$' + '{{').removesuffix('}}').strip()
+                      context = {'inputs.warm-cache': warm, 'inputs.advisory-scan': scan == 'advisory',
+                                 'inputs.fuzz-scan': scan == 'fuzz', 'inputs.quality-scan': scan == 'quality',
+                                 'inputs.seed-instruction-baseline': scan == 'seed', 'github.event_name': event,
+                                 'github.repository_id': 'caller', 'inputs.working-directory': '.',
+                                 'needs.declaration.outputs.coverage': coverage,
+                                 'needs.declaration.outputs.enabled': str(declared).lower(),
+                                 'needs.declaration.outputs.packages': packages,
+                                 'needs.test-build.result': producer,
+                                 'needs.declaration.outputs.targets': '[{}]',
+                                 'needs.declaration.outputs.wasm_crates': '["sample"]',
+                                 'needs.declaration.outputs.browser_build': 'true',
+                                 'needs.declaration.outputs.browser_tests': 'true'}
+                      for key, value in context.items():
+                          expression = expression.replace(key, repr(value))
+                      expression = expression.replace('cancelled()', repr(cancelled))
+                      expression = expression.replace('&&', ' and ').replace('||', ' or ')
+                      expression = re.sub(r'!(?!=)', ' not ', expression).strip()
+                      expected = scan not in ('advisory', 'fuzz', 'quality', 'seed')
+                      if name == 'quality-set':
+                          expected = not warm and scan not in ('advisory', 'fuzz') and (
+                              scan in ('quality', 'seed') or event != 'pull_request')
+                      elif name in slow:
+                          expected &= coverage == 'true'
+                          if name == 'test-build':
+                              expected &= not warm and packages != '[]'
+                          elif name == 'tests':
+                              expected &= not cancelled and producer in ('success', 'skipped')
+                              expected &= warm or producer == 'success' or packages == '[]'
+                          else:
+                              expected &= not warm or (name == 'targets' and event == 'push')
+                      else:
+                          expected &= not warm
+                      assert bool(eval(expression, {'__builtins__': {}})) == expected, (
+                          name, event, declared, packages, warm, scan, producer, cancelled)
+
+          event_policy_keeps_pull_requests_fast()
+          print('PASS event_policy_keeps_pull_requests_fast')
+
           def removed_shard_lists_fail_clearly():
               import shutil
               with tempfile.TemporaryDirectory() as temporary:
@@ -4365,10 +4432,6 @@ jobs:
               aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
               assert 'name: Tests (ubuntu-latest)' in aggregate
               assert 'needs: [tests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
-              for status in ['success', 'failure', 'cancelled', 'skipped']:
-                  result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                          env=os.environ | {'RESULT': status}, capture_output=True, text=True)
-                  assert (result.returncode == 0) == (status == 'success')
 
           removed_shard_lists_fail_clearly()
           print('PASS removed_shard_lists_fail_clearly')
@@ -5254,7 +5317,7 @@ jobs:
                   section = workflow.split(f'  {name}:\n')[1]
                   assert 'needs: declaration' in section
               assert 'pull_request:' in workflow and 'merge_group:' in workflow
-              assert "if: $" + "{{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
+              assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
               # Each scan mode runs only the declaration and its own job.
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']

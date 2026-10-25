@@ -5,7 +5,7 @@ tests. One additional required job checks licenses, dependency use, spelling,
 secrets, workflows and at least 80% line coverage, with embedded defaults and
 checksum-verified tool releases. Only the caller declaration may extend those
 defaults or raise coverage. Changed-line mutation shards and each-feature
-checks also gate pull requests.
+checks gate merge groups and main pushes, not pull-request heads.
 The caller-scheduled nightly workflow adds full mutation issue reporting,
 sanitizers, declared Miri packages and instruction benchmarks.
 The optional caller declaration adds isolated tests, real search tools,
@@ -21,8 +21,9 @@ use shared verified runtime pins, not caller-selected browser versions. Its spec
   The caller's `.config/nextest.toml` is test-suite runner metadata (such as
   resource groups), not shared-CI settings. Shared-CI partitioning and coverage
   policy stay in the workflow; default test filters are ignored and CI allows
-  two retries, naming flaky passes in the summary. PRs select changed crates
-  and reverse dependencies; merge groups/main pushes run full coverage.
+  two retries, naming flaky passes in the summary. PRs run fast checks only;
+  merge groups/main pushes run tests, coverage, foreign-target checks and
+  browser jobs.
 - Test changes at the workflow seam in `.github/workflows/ci-internal.yml`.
   Keep the broken fixtures broken, and outside any root workspace.
 - Pin actions by full commit SHA. Do not add a gate program or checks beyond the specification.

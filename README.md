@@ -14,27 +14,26 @@ be documented, and documentation warnings fail the check. Tests run on Linux
 for now; macOS and Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
 
+Pull requests run declaration validation, formatting, Clippy, docs and the
+dependency and source checks. Test shards, coverage, foreign-target checks
+(including macOS and Windows), wasm/browser builds and Chromium tests run on
+merge groups and main pushes, not on pull-request heads.
+
 Tests run with checksum-pinned cargo-nextest 0.9.148 on six Linux runners,
 using automatic count partitions rather than package lists. The `Build test archive` job compiles the selected test graph; numbered shards download that
 nextest archive and only execute tests. Coverage uses an instrumented archive.
-Optional warm builds retain their separate compilation route. Doctests run once with `cargo test --doc` in a separate `Doctests` matrix leg on every
-call, so numbered shards do not compile doctests. The aggregate
+Optional warm builds retain their separate compilation route. Doctests run once with `cargo test --doc` in a separate `Doctests` matrix leg on full
+runs, so numbered shards do not compile doctests. The aggregate
 `Tests (ubuntu-latest)` requires all six shards and `Doctests`
-to succeed, preserving the required-check name.
+to succeed on full runs. Pull requests require a successful declaration and
+event-skipped tests, preserving the required-check name.
 Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-diagnostics)
 and the reporter log after isolated tests fail or time out.
 
-Pull requests test changed crates and their reverse dependencies, without a
-coverage floor. After workflow and configuration rules apply, fallback selection
-outside every crate skips undeclared Markdown files and paths under `docs/`;
-other undeclared paths select the whole workspace. See the detailed
-[selection rules](docs/caller-checks.md#pull-request-selection-and-retries).
-Callers can declare which packages' tests read a path,
-including Markdown
-([`test_inputs`](docs/caller-checks.md#pull-request-selection-and-retries)).
-Each nextest test can retry twice; flaky passes are named in
-job summaries, while permanent failures still fail. Merge groups and main
-pushes run the full suite with coverage.
+Each nextest test can retry twice; flaky passes are named in job summaries,
+while permanent failures still fail. Merge groups and main pushes run the full
+suite with coverage. See [test selection and retries](docs/caller-checks.md#pull-request-selection-and-retries)
+for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov
 nextest`. Only the six numeric shards upload LCOV; the aggregate counts a source line as covered
@@ -233,7 +232,7 @@ sha256sum -c SHA256SUMS
 
 ## Quality gates
 
-Every pull request runs six changed-line mutation shards and a workspace
+Merge groups and main pushes run six changed-line mutation shards and a workspace
 `cargo hack check --each-feature --all-targets --locked`. Mutation testing uses
 cargo-mutants 27.1.0 with `--in-diff` and no caller mutation exclusions. Each
 mutant runs its package’s tests; nightly generation covers every workspace member. A survivor fails the shard; its job summary names the source
