@@ -428,9 +428,10 @@ jobs:
                   keys = []
                   for content in ['fn main() {}\n', 'fn main() { changed(); }\n']:
                       source.write_text(content, encoding='utf-8')
-                      result = self.shell(body('Instruction baseline identity'), **env, METADATA=json.dumps(metadata),
-                                          BASELINE_MODE='fresh', GITHUB_EVENT_NAME='workflow_dispatch', GITHUB_REF='refs/heads/main',
-                                          DEFAULT_BRANCH='main', BENCHMARKS=json.dumps([benchmark]), GITHUB_RUN_ID='12', GITHUB_RUN_ATTEMPT='1')
+                      result = self.shell(body('Instruction baseline identity'), **(env | {
+                          'METADATA': json.dumps(metadata), 'BASELINE_MODE': 'fresh', 'GITHUB_EVENT_NAME': 'workflow_dispatch',
+                          'GITHUB_REF': 'refs/heads/main', 'DEFAULT_BRANCH': 'main', 'BENCHMARKS': json.dumps([benchmark]),
+                          'GITHUB_RUN_ID': '12', 'GITHUB_RUN_ATTEMPT': '1'}))
                       self.assertEqual(result.returncode, 0, result.stderr)
                       keys.append(dict(line.split('=', 1) for line in (self.root / 'output').read_text(encoding='utf-8').splitlines()))
                   self.assertNotEqual(keys[0]['prefix'], keys[1]['prefix'])
