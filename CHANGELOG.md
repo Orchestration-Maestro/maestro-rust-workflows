@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.3...v0.15.4) (2026-10-26)
+
+
+### Continuous Integration
+
+* check Windows targets on pull-request pushes ([#190](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/190)) ([94cba35](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/94cba35dd29070a54b23ac993fdc44f246386fcc))
+
 ## [0.15.3](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.2...v0.15.3) (2026-10-25)
 
 
