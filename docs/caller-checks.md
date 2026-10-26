@@ -491,11 +491,13 @@ invocations. An absent declaration, omitted key or empty array schedules no
 browser runtime job. Wrong types and unknown names fail declaration validation.
 The existing `wasm_crates` and `check_targets` arrays remain required.
 
-One Linux `browser-tests` job invokes `just browser-test` when a requested
-package is in the existing changed-package/reverse-dependency selection. A
-change to a nonempty browser request also selects this job without widening
-native package selection. Removing the request skips it. Merge groups and main
-pushes select the full requested suite; advisory-only runs never start Chromium.
+One Linux `browser-tests` job invokes `just browser-test` on merge groups and
+main pushes, which select the full requested suite. Ordinary pull requests skip
+it, and advisory-only runs never start Chromium. The pull-request selection rule
+is self-test behavior only: a requested package in the
+changed-package/reverse-dependency selection, or a change to a nonempty browser
+request, selects the job without widening native package selection, and
+removing the request skips it.
 `browser_build` and `test_tools` remain independent opt-ins. Native coverage
 selection and its floor do not change.
 
@@ -599,8 +601,9 @@ cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warning
 
 There is no Linux fallback for Apple/MSVC targets. These compile checks do not
 restore macOS/Windows runtime tests, which remain a before-first-release
-requirement. All opted-in jobs run in both ordinary pull requests and merge
-queue checks. Declaration errors fail CI even when dependent jobs skip.
+requirement. Merge groups and main pushes run every opted-in target check.
+Ordinary pull requests run only a declared `x86_64-pc-windows-msvc` check.
+Declaration errors fail CI even when dependent jobs skip.
 
 ## Nightly fuzz job
 
