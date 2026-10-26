@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.6](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.5...v0.15.6) (2026-10-26)
+
+
+### Continuous Integration
+
+* refresh Maestro coverage proof checkouts ([#201](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/201)) ([69afd56](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/69afd562e81418b9fb9ddf16bd51c4a35433fe2f))
+* use sixteen nextest test shards ([#196](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/196)) ([8442963](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/84429630f001d917a903f43b281d5951f5605f89))
+
 ## [0.15.5](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.4...v0.15.5) (2026-10-26)
 
 
