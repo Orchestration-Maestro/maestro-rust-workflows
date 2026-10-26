@@ -131,8 +131,8 @@ GitHub eviction can remove even the newest snapshot of a shape.
 
 ## Test shards
 
-Tests use checksum-pinned cargo-nextest 0.9.148 with four automatic
-`--partition count:N/4` partitions. The caller's `.config/nextest.toml` supplies
+Tests use checksum-pinned cargo-nextest 0.9.148 with eight automatic
+`--partition count:N/8` partitions. The caller's `.config/nextest.toml` supplies
 test-suite runner metadata such as resource groups for fixed-port tests. Shared
 CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails

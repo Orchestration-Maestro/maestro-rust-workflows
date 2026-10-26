@@ -55,6 +55,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  TEST_SHARD_COUNT: 8
+
 defaults:
   run:
     shell: bash
@@ -75,6 +78,8 @@ jobs:
       packages: ${{ steps.selection.outputs.packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
+      test_shard_count: ${{ env.TEST_SHARD_COUNT }}
+      test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       targets: ${{ steps.config.outputs.targets }}
       browser_test_crates: ${{ steps.config.outputs.browser_test_crates }}
@@ -458,6 +463,10 @@ jobs:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
               output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
+              shards = list(range(1, int(os.environ['TEST_SHARD_COUNT']) + 1))
+              if event != 'pull_request':
+                  shards.append('doctests')
+              output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
 
@@ -749,12 +758,12 @@ jobs:
 
   tests:
     needs: declaration
-    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}
+    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
     if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,"doctests"]' || '[1,2,3,4]') }}
+        shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.test_shards) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -841,7 +850,7 @@ jobs:
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
           if [ "${SHARD:-}" != doctests ]; then
-            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/4" --no-tests pass 2>&1 | tee nextest.log
+            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/$TEST_SHARD_COUNT" --no-tests pass 2>&1 | tee nextest.log
           fi
           if [[ "$SHARD" == doctests || ( "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
             cargo test --locked --doc "${packages[@]}"
@@ -930,7 +939,7 @@ jobs:
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
             elif [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
-              partition=(--partition "count:$SHARD/4")
+              partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT")
               report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
               if [ "${WARM_CACHE:-false}" = true ]; then
                 partition=(-E "${WARM_TEST_FILTER-none()}")
@@ -940,7 +949,7 @@ jobs:
                 --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked "${report[@]}" 2>&1 | tee nextest.log
             else
               partition=()
-              if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/4"); fi
+              if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT"); fi
               run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
                 --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi
@@ -1060,7 +1069,7 @@ jobs:
           import pathlib
           lines = {}
           reports = pathlib.Path('coverage')
-          expected = {f'shard-{shard}.lcov' for shard in range(1, 5)}
+          expected = {f'shard-{shard}.lcov' for shard in range(1, int(os.environ['TEST_SHARD_COUNT']) + 1)}
           if {path.name for path in reports.glob('*.lcov')} != expected:
               raise SystemExit('Missing or unexpected shard coverage reports')
           for name in sorted(expected):

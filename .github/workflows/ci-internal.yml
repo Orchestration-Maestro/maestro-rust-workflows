@@ -280,13 +280,13 @@ jobs:
           def snapshot_key_matches_consuming_shape():
               coverage = snapshot_keys()['prefix']
               assert snapshot_keys(CACHE_WARM='true', SHARD='warm', CACHE_COVERAGE='false')['prefix'] == coverage
-              for shard in ['1', '2', '3', '4']:
+              for shard in map(str, range(1, 9)):
                   assert snapshot_keys(SHARD=shard)['prefix'] == coverage
               plain = snapshot_keys(CACHE_COVERAGE='false')['prefix']
               assert plain != coverage and snapshot_keys(SHARD='doctests')['prefix'] == plain
               assert snapshot_keys(CACHE_COVERAGE='', SHARD='')['prefix'] == plain
               for event, collect in [('pull_request', 'false'), ('push', 'true'), ('merge_group', 'true')]:
-                  for shard in ['1', '2', '3', '4', 'doctests']:
+                  for shard in [*map(str, range(1, 9)), 'doctests']:
                       observed = snapshot_keys(CACHE_ENABLED='false', CACHE_COVERAGE=collect, SHARD=shard)['prefix']
                       assert observed == plain, (event, shard, 'undeclared tests must use the plain snapshot')
               assert 'CACHE_ENABLED: $' + '{{ needs.declaration.outputs.enabled }}' in workflow
@@ -305,7 +305,7 @@ jobs:
               for change in [dict(CALLER_REPOSITORY='other/caller'), dict(CALLER_DIRECTORY='nested'),
                              dict(HOST_OS='Windows'), dict(HOST_ARCH='ARM64'), dict(compiler=True)]:
                   assert snapshot_keys(**change)['prefix'] != base, change
-              for change in [dict(CACHE_CALL='warm'), dict(TEST_PACKAGES='["other"]'), dict(SHARD='4')]:
+              for change in [dict(CACHE_CALL='warm'), dict(TEST_PACKAGES='["other"]'), dict(SHARD='8')]:
                   assert snapshot_keys(**change)['prefix'] == base, change
               key = snapshot_keys(CALLER_DIRECTORY='space and é/child')['key']
               assert key.isascii() and len(key) < 512 and 'space' not in key
@@ -324,7 +324,7 @@ jobs:
               assert snapshot_keys(CACHE_DEFAULT_BRANCH='trunk')['writer'] == 'false'
               for enabled, coverage, expected in [('true', 'true', ['1', 'doctests']),
                                                   ('true', 'false', ['1']), ('false', 'true', ['1'])]:
-                  writers = [shard for shard in ['1', '2', '3', '4', 'doctests']
+                  writers = [shard for shard in [*map(str, range(1, 9)), 'doctests']
                              if snapshot_keys(CACHE_ENABLED=enabled, CACHE_COVERAGE=coverage, SHARD=shard)['writer'] == 'true']
                   assert writers == expected, (enabled, coverage, writers)
                   prefixes = [snapshot_keys(CACHE_ENABLED=enabled, CACHE_COVERAGE=coverage, SHARD=shard)['prefix']
@@ -341,7 +341,7 @@ jobs:
                   assert observed['key'] != base['key'] and observed['prefix'] == base['prefix'], change
               warm = snapshot_keys(CACHE_WARM='true', SHARD='warm', CACHE_CALL='warm')
               assert warm['prefix'] == base['prefix'] and warm['key'] != base['key']
-              assert len({snapshot_keys(CACHE_INDEX=str(index))['key'] for index in range(4)}) == 4
+              assert len({snapshot_keys(CACHE_INDEX=str(index))['key'] for index in range(8)}) == 8
               # Independent canonical-JSON digest pins field order and ASCII encoding.
               compiler = subprocess.check_output(['rustc', '-vV'], text=True)
               identity = json.dumps(['example/caller', '.', 'Linux', 'X64', compiler, 'tests-coverage'], separators=(',', ':'), ensure_ascii=True)
@@ -2535,6 +2535,7 @@ jobs:
           def execute(name, cwd, extra=None):
               env = {k: v for k, v in os.environ.items()
                      if k not in credential_names and not k.endswith('_API_KEY')}
+              env['TEST_SHARD_COUNT'] = '8'
               env.update(extra or {})
               if name in ['Tests', 'Isolated tests']:
                   env.update(toolchain_environment(cwd, env))
@@ -3088,8 +3089,11 @@ jobs:
           def coverage_matrix_splits_doctests_from_partitions():
               tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
               matrix = re.search(r'        shard: (.*)', tests)[1]
-              assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.coverage == 'true' && '[1,2,3,4,\"doctests\"]' || '[1,2,3,4]') }}"
-              assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/4)', matrix.shard) }}" in tests
+              assert 'env:\n  TEST_SHARD_COUNT: 8\n' in workflow
+              assert 'test_shard_count: $' + '{{ env.TEST_SHARD_COUNT }}' in workflow
+              assert 'test_shards: $' + '{{ steps.selection.outputs.test_shards }}' in workflow
+              assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.test_shards) }}"
+              assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}" in tests
               assert '    needs: declaration\n' in tests and '      fail-fast: false\n' in tests
               assert 'advisory-scan' in tests and "inputs.working-directory != '.'" in tests
               with tempfile.TemporaryDirectory() as temporary:
@@ -3107,9 +3111,8 @@ jobs:
                           result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
                           assert result.returncode == 0, result.stderr
                           selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-                          choices = re.findall(r"'(\[.*?\])'", matrix)
-                          legs = json.loads(choices[1 if selected['coverage'] == 'true' else 2])
-                          assert legs == ([1, 2, 3, 4] if event == 'pull_request' else [1, 2, 3, 4, 'doctests'])
+                          legs = json.loads(selected['test_shards'])
+                          assert legs == ([1, 2, 3, 4, 5, 6, 7, 8] if event == 'pull_request' else [1, 2, 3, 4, 5, 6, 7, 8, 'doctests'])
 
           coverage_matrix_splits_doctests_from_partitions()
           print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -3159,7 +3162,7 @@ jobs:
           def diagnostic_directory_reaches_isolated_runner():
               for caller in ['.', 'nested space/雪']:
                   for coverage in ['false', 'true']:
-                      for shard in ['1', '2', 'doctests']:
+                      for shard in [*map(str, range(1, 9)), 'doctests']:
                           with tempfile.TemporaryDirectory() as temporary:
                               directory = pathlib.Path(temporary) / caller
                               directory.mkdir(parents=True, exist_ok=True)
@@ -3180,7 +3183,7 @@ jobs:
                                   assert children[0]['args'] == ['test', '--locked', '--doc', '--workspace']
                               else:
                                   assert children[0]['tool'] == ('cargo-llvm-cov' if coverage == 'true' else 'cargo-nextest')
-                                  assert children[0]['args'][children[0]['args'].index('--partition') + 1] == f'count:{shard}/4'
+                                  assert children[0]['args'][children[0]['args'].index('--partition') + 1] == f'count:{shard}/8'
                                   if shard == '1' and coverage == 'false':
                                       assert children[1]['args'] == ['test', '--locked', '--doc', '--workspace']
                               assert (pathlib.Path(expected) / 'runner.txt').read_text(encoding='utf-8') == 'child marker'
@@ -3282,7 +3285,7 @@ jobs:
           def shard_runner_status_survives_log_capture():
               job_run_defaults_preserve_pipeline_failures()
               for step, coverage in [(step, coverage) for step in ['Tests', 'Isolated tests'] for coverage in ['false', 'true']]:
-                  for shard in range(1, 5):
+                  for shard in range(1, 9):
                       for status in [0, 42]:
                           with tempfile.TemporaryDirectory() as temporary:
                               directory = pathlib.Path(temporary)
@@ -3293,6 +3296,10 @@ jobs:
                               assert result.returncode == status, (step, shard, status, result.stdout, result.stderr)
                               assert (directory / 'nextest.log').read_text(encoding='utf-8') == 'runner stdout\nrunner stderr\n'
                               commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                              runners = [command for command in commands if '--partition' in command['args']]
+                              assert len(runners) == 1
+                              args = runners[0]['args']
+                              assert args[args.index('--partition') + 1] == f'count:{shard}/8'
                               doctests = [command for command in commands if command['args'][:1] == ['test']]
                               assert bool(doctests) == (shard == 1 and status == 0 and coverage == 'false'), commands
                               report = directory / f'shard-{shard}.lcov'
@@ -3675,7 +3682,7 @@ jobs:
               assert 'ADDITIONAL_LOCKED_MANIFESTS: $' + '{{ needs.declaration.outputs.additional_locked_manifests }}' in tests
               declaration_job = workflow.split('  declaration:\n', 1)[1].split('\n  quality:', 1)[0]
               assert 'additional_locked_manifests: $' + '{{ steps.config.outputs.additional_locked_manifests }}' in declaration_job
-              assert "fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.coverage" in tests
+              assert "fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.test_shards" in tests
               for name in ['Tests', 'Isolated tests']:
                   assert 'cargo fetch --locked\n' in body(name)
               with tempfile.TemporaryDirectory() as temporary:
@@ -3684,7 +3691,7 @@ jobs:
                   tools, log = install_recording_runner(directory, shutil.which('cargo'), manifest)
                   original_home = directory / 'ambient-home'
                   original_home.mkdir()
-                  routes = [('Tests', shard, 'false', None, ['sample']) for shard in range(1, 5)]
+                  routes = [('Tests', shard, 'false', None, ['sample']) for shard in range(1, 9)]
                   routes += [('Isolated tests', 1, 'false', None, ['sample']),
                              ('Isolated tests', 1, 'true', None, ['sample']),
                              ('Isolated tests', 2, 'true', None, ['sample']),
@@ -3725,15 +3732,15 @@ jobs:
                       elif route == 'Isolated tests' and coverage == 'true':
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                                      '--partition', f'count:{shard}/4', '--no-tests', 'pass', '--workspace', '--locked',
+                                      '--partition', f'count:{shard}/8', '--no-tests', 'pass', '--workspace', '--locked',
                                       '--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
                       else:
                           expected = ['nextest', 'run', '--user-config-file', 'none', '--ignore-default-filter', '--locked',
                                       '-p', 'sample', '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky']
                           if route == 'Tests':
-                              expected += ['--partition', f'count:{shard}/4', '--no-tests', 'pass']
+                              expected += ['--partition', f'count:{shard}/8', '--no-tests', 'pass']
                           else:
-                              expected += ['--no-tests', 'pass', '--partition', f'count:{shard}/4']
+                              expected += ['--no-tests', 'pass', '--partition', f'count:{shard}/8']
                       assert runners[0]['args'] == expected, runners[0]['args']
                       assert [c['args'] for c in runners[1:]] == ([['test', '--locked', '--doc', '-p', 'sample']] if shard == 1 and not threshold and coverage == 'false' else [])
                       print(f'PASS provisioning route {index}: {route}, shard {shard}, coverage {coverage}, threshold {threshold}', flush=True)
@@ -4163,22 +4170,28 @@ jobs:
                           f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
                       (crate / 'src/lib.rs').write_text(
                           f'//! ```\n//! assert_eq!({name}::value(), 1);\n//! ```\n'
-                          f'pub fn value() -> u8 {{ 1 }}\n#[test] fn unit_{name}() {{ assert_eq!(value(), 1); }}\n', encoding='utf-8')
-                      (crate / 'tests/proof.rs').write_text(
-                          f'#[test] fn integration_{name}() {{ assert_eq!({name}::value(), 1); }}\n', encoding='utf-8')
+                          'pub fn value() -> u8 { 1 }\n' + ''.join(
+                              f'#[test] fn unit_{name}_{index}() {{ assert_eq!(value(), 1); }}\n'
+                              for index in range(16)), encoding='utf-8')
+                      (crate / 'tests/proof.rs').write_text(''.join(
+                          f'#[test] fn integration_{name}_{index}() {{ assert_eq!({name}::value(), 1); }}\n'
+                          for index in range(16)), encoding='utf-8')
                   subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
                   (directory / '.config').mkdir()
                   (directory / '.config/nextest.toml').write_text('[profile.default]\ndefault-filter="none()"\n', encoding='utf-8')
                   for coverage in ['false', 'true']:
                       outputs = []
-                      for shard in range(1, 5):
+                      for shard in range(1, 9):
                           result = execute('Tests', directory, {'SHARD': str(shard), 'COLLECT_COVERAGE': coverage})
                           assert result.returncode == 0, result.stdout + result.stderr
+                          assert 'PASS' in result.stdout + result.stderr, shard
                           outputs.append(result.stdout + result.stderr)
                       combined = ''.join(outputs)
                       for name in 'abcde':
                           for kind in ['unit', 'integration']:
-                              assert len(re.findall(r'PASS[^\n]*\b' + kind + '_' + name + r'\b', combined)) == 1, combined
+                              for index in range(16):
+                                  identity = f'{kind}_{name}_{index}'
+                                  assert len(re.findall(r'PASS[^\n]*\b' + identity + r'\b', combined)) == 1, combined
                       assert combined.count('src/lib.rs - (line 1) ... ok') == (5 if coverage == 'false' else 0)
                       if coverage == 'true':
                           result = execute('Tests', directory, {'SHARD': 'doctests', 'COLLECT_COVERAGE': coverage})
@@ -4188,7 +4201,7 @@ jobs:
                   (directory / 'c/tests/proof.rs').write_text(
                       '#[test] fn failed() { panic!("shard failure"); }\n', encoding='utf-8')
                   failures = []
-                  for shard in range(1, 5):
+                  for shard in range(1, 9):
                       result = execute('Tests', directory, {'SHARD': str(shard)})
                       if result.returncode:
                           failures.append(result.stdout + result.stderr)
@@ -4208,19 +4221,27 @@ jobs:
                           encoding='utf-8')
                   report(1, [(1, 1), (2, 0)])
                   report(2, [(1, 0), (2, 1)])
-                  report(3, [(3, 1)])
-                  report(4, [(1, 0)])
+                  for shard in range(3, 8):
+                      report(shard, [(1, 0)])
+                  report(8, [(3, 1)])
                   result = execute('Merge coverage', directory)
                   assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
-                  report(3, [(3, 0)])
+                  report(8, [(3, 0)])
                   result = execute('Merge coverage', directory)
                   assert result.returncode != 0 and '66.67% (2/3)' in result.stdout and 'below threshold' in result.stderr
-                  report(3, [(3, 1), (4, 0)])
+                  report(8, [(3, 1), (4, 0)])
                   result = execute('Merge coverage', directory, {'QUALITY_CONFIG': '{"coverage_min_lines": 90}'})
                   assert result.returncode != 0 and 'minimum 90%' in result.stdout
-                  (reports / 'shard-4.lcov').unlink()
+                  for shard in range(1, 9):
+                      path = reports / f'shard-{shard}.lcov'
+                      content = path.read_text(encoding='utf-8')
+                      path.unlink()
+                      result = execute('Merge coverage', directory)
+                      assert result.returncode != 0 and 'Missing' in result.stderr, shard
+                      path.write_text(content, encoding='utf-8')
+                  report(9, [(1, 1)])
                   result = execute('Merge coverage', directory)
-                  assert result.returncode != 0 and 'Missing' in result.stderr
+                  assert result.returncode != 0 and 'unexpected' in result.stderr
 
           coverage_merge_uses_union_and_requires_all_reports()
           print('PASS coverage_merge_uses_union_and_requires_all_reports')
