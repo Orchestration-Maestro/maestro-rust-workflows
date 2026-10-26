@@ -132,8 +132,8 @@ GitHub eviction can remove even the newest snapshot of a shape.
 
 ## Test shards
 
-Tests use checksum-pinned cargo-nextest 0.9.148 with eight automatic
-`--partition count:N/8` partitions. The caller's `.config/nextest.toml` supplies
+Tests use checksum-pinned cargo-nextest 0.9.148 with sixteen automatic
+`--partition count:N/16` partitions. The caller's `.config/nextest.toml` supplies
 test-suite runner metadata such as resource groups for fixed-port tests. Shared
 CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
@@ -143,12 +143,12 @@ for merge groups and main pushes. These full runs use `--workspace`.
 Pull requests skip test shards and doctests.
 
 Declared callers run `cargo llvm-cov nextest` in the same isolated environment
-with their opted-in tools. Only the four numeric shards upload LCOV, without
+with their opted-in tools. Only the sixteen numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including `Doctests`, to succeed on full runs. On pull requests it requires a
 successful declaration and event-skipped shards. On full runs it downloads all
-four reports, counts each source line once (covered if any shard hits it), and enforces
-`coverage_min_lines` on the union. Missing reports or low coverage fail.
+sixteen reports, counts each source line once (covered if any shard hits it), and
+enforces `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. PRs skip coverage for all callers.
 
@@ -176,7 +176,7 @@ from running.
 
 Artifact names are
 `test-diagnostics-<repository-id>-<caller-digest>-shard-<shard>-run-<run-id>-attempt-<run-attempt>`.
-The shard field is `1` through `4`, or `doctests` for the parallel doctest leg
+The shard field is `1` through `16`, or `doctests` for the parallel doctest leg
 (`shard-doctests`). That leg normally has no `nextest.log`; the same missing-file
 tolerance applies. The caller digest is the full lowercase SHA-256 of the UTF-8 compact JSON array
 `[checkout-repository-or-github.repository, working-directory-or-".", concurrency-key-or-""]`,
@@ -421,7 +421,7 @@ routes pass it to child builds, including dependencies outside the checkout.
 Explicit Bash run defaults preserve runner failures through log capture. A failed
 runner fails its test step, so coverage uploads run only after success; a missing
 report after success fails the upload separately. On full runs the required aggregate accepts
-only successful matrix legs, including `Doctests`, and requires the four numeric
+only successful matrix legs, including `Doctests`, and requires the sixteen numeric
 reports when merging coverage. On pull requests the event skips the whole test
 matrix, and the aggregate accepts those skipped legs after a successful declaration.
 
