@@ -34,7 +34,7 @@ suite with coverage. See [test selection and retries](docs/caller-checks.md#pull
 for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov
-nextest`. Only the four numeric shards upload LCOV; the aggregate counts a source line as covered
+nextest`. Only the sixteen numeric shards upload LCOV; the aggregate counts a source line as covered
 if any shard covers it and enforces the union's 80% floor (or caller's higher
 threshold). Missing shard reports fail. Undeclared callers retain single-job
 coverage in `Dependency, source and coverage checks`.
