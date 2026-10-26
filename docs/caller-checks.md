@@ -146,8 +146,8 @@ with their opted-in tools. Only the sixteen numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including `Doctests`, to succeed on full runs. On pull requests it requires a
 successful declaration and event-skipped shards. On full runs it downloads all
-sixteen reports, counts each source line once (covered if any shard hits it), and enforces
-`coverage_min_lines` on the union. Missing reports or low coverage fail.
+sixteen reports, counts each source line once (covered if any shard hits it), and
+enforces `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. PRs skip coverage for all callers.
 
