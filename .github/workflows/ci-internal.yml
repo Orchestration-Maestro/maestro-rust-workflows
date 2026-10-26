@@ -85,6 +85,50 @@ jobs:
           step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == 'Coverage tools')
           match = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(match[1])], check=True)
+      - name: Eight-shard baseline regression evidence
+        shell: python
+        run: |
+          import ast
+          import pathlib
+          import re
+          import textwrap
+          import traceback
+
+          source = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+          section = source.split('      - name: Caller checks at workflow seam\n', 1)[1]
+          code = textwrap.dedent(re.search(r'^        run: \|\n((?:          .*\n|\n)+)', section, re.M)[1])
+          tree = ast.parse(code)
+          tree.body = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom, ast.Assign, ast.FunctionDef))]
+          namespace = {}
+          exec(compile(tree, 'workflow seam', 'exec'), namespace)
+          current = namespace['workflow']
+          baseline = current.replace('  TEST_SHARD_COUNT: 16\n', '  TEST_SHARD_COUNT: 8\n', 1)
+          assert baseline != current
+          original_execute = namespace['execute']
+          def baseline_execute(name, cwd, extra=None):
+              return original_execute(name, cwd, {'TEST_SHARD_COUNT': '8'} | (extra or {}))
+          for name in ['locked_manifests_precede_all_test_routes', 'partitions_run_every_test_once_and_doctests']:
+              print('BEGIN RED ' + name, flush=True)
+              namespace['workflow'] = baseline
+              namespace['body'].__defaults__ = (baseline,)
+              namespace['execute'] = baseline_execute
+              try:
+                  namespace[name]()
+              except AssertionError as error:
+                  traceback.print_exc()
+                  expected = 'count:1/8' if name.startswith('locked_') else '9/8'
+                  assert expected in str(error), str(error)
+                  print('EXPECTED BEHAVIORAL FAILURE ' + name + ': ' + expected, flush=True)
+              else:
+                  raise AssertionError('Eight-shard baseline unexpectedly passed: ' + name)
+              print('END RED ' + name, flush=True)
+              print('BEGIN GREEN ' + name, flush=True)
+              namespace['workflow'] = current
+              namespace['body'].__defaults__ = (current,)
+              namespace['execute'] = original_execute
+              namespace[name]()
+              print('PASS ' + name, flush=True)
+              print('END GREEN ' + name, flush=True)
       - name: Compile cache in every Rust job
         shell: python
         run: |
