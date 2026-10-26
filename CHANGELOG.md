@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.5](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.4...v0.15.5) (2026-10-26)
+
+
+### Continuous Integration
+
+* use eight nextest test shards ([#193](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/193)) ([848f71e](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/848f71ea925873b61e106dfd3b48005bed9d4ac4))
+
 ## [0.15.4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.3...v0.15.4) (2026-10-26)
 
 
