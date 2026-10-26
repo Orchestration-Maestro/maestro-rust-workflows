@@ -615,7 +615,7 @@ jobs:
                           assert (b'__llvm_covfun' in rlib) == instrumented, instrumented
                           stats(env, '0', misses)
 
-          def windows_target_check_stays_uncached():
+          def target_check_adds_no_compile_wrapper():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   shim = directory / 'shim'
@@ -724,7 +724,7 @@ jobs:
                        snapshot_size_bound_skips_only_ineligible_saves,
                        snapshot_seal_stops_before_measurement, cache_statistics_print_error_log,
                        cache_error_artifacts_are_selected_and_scoped, cache_wrapper_is_cargo_configuration,
-                       windows_target_check_stays_uncached, cache_install_selects_pinned_host_asset]:
+                       target_check_adds_no_compile_wrapper, cache_install_selects_pinned_host_asset]:
               test()
               print('PASS ' + test.__name__, flush=True)
 
