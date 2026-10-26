@@ -426,7 +426,7 @@ jobs:
                       expected = artifact(env)
                       stats(env, '0', '1')
                       sealed = shell(body('Seal compile cache'), env)
-                      assert sealed.returncode == 0 and 'eligible=true' in (directory / 'outputs').read_text(encoding='utf-8')
+                      assert sealed.returncode == 0 and 'eligible=true' in (directory / 'outputs').read_text(encoding='utf-8'), sealed.stdout + sealed.stderr
                   cache = pathlib.Path(env['SCCACHE_DIR'])
                   snapshot = directory / 'snapshot'
                   shutil.copytree(cache, snapshot)
@@ -453,7 +453,8 @@ jobs:
                   with tempfile.TemporaryDirectory() as temporary:
                       directory = pathlib.Path(temporary)
                       with daemon(directory) as env:
-                          assert compile_sample(env).returncode == 0
+                          built = compile_sample(env)
+                          assert built.returncode == 0, built.stdout + built.stderr
                       shutil.rmtree(directory / 'target')
                       with daemon(directory, outcome, matched) as env:
                           result = compile_sample(env)
@@ -496,9 +497,10 @@ jobs:
                       built = compile_sample(env)
                       assert built.returncode == 0, built.stderr
                       before = artifact(env)
-                      assert shell(body('Seal compile cache'), env).returncode == 0
+                      sealed = shell(body('Seal compile cache'), env)
+                      assert sealed.returncode == 0, sealed.stdout + sealed.stderr
                   action('save', directory, server)
-                  assert built.returncode == 0 and artifact(env) == before == warm_artifact
+                  assert artifact(env) == before == warm_artifact
 
           def snapshot_restart_preserves_isolated_local_policy():
               with tempfile.TemporaryDirectory() as temporary:
@@ -513,7 +515,8 @@ jobs:
                                             'OPENAI_API_KEY': 'not-a-credential-canary'}
                       warm = shell(command, isolated_env)
                       assert warm.returncode == 0, warm.stderr
-                      assert run([str(binary), '--stop-server'], env).returncode == 0
+                      stopped = run([str(binary), '--stop-server'], env)
+                      assert stopped.returncode == 0, stopped.stdout + stopped.stderr
                       shutil.rmtree(directory / 'target')
                       result = shell(command, isolated_env)
                       assert result.returncode == 0, result.stdout + result.stderr
@@ -612,7 +615,7 @@ jobs:
                           assert (b'__llvm_covfun' in rlib) == instrumented, instrumented
                           stats(env, '0', misses)
 
-          def windows_target_check_stays_uncached():
+          def target_check_adds_no_compile_wrapper():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   shim = directory / 'shim'
@@ -677,7 +680,7 @@ jobs:
                                   'PATH': str(shim) + os.pathsep + os.environ['PATH'], 'REAL_TAR': shutil.which('tar')}
                               result = shell(installer, env)
                               if corrupt or not platform:
-                                  assert result.returncode != 0, (host, arch, corrupt)
+                                  assert result.returncode != 0, f'{host} {arch} {corrupt}\n' + result.stdout + result.stderr
                                   assert not (directory / 'extract').exists() and not (directory / 'server').exists()
                                   assert not (directory / 'paths').exists() and not (directory / 'env').exists()
                                   if not platform:
@@ -712,7 +715,7 @@ jobs:
                       subprocess.run(['install', '-m', '0700', str(source), str(shim / tool)], check=True)
                   env = environment(directory) | {'PATH': str(shim) + os.pathsep + os.environ['PATH']}
                   result = shell(body('Compile cache'), env)
-                  assert result.returncode != 0
+                  assert result.returncode != 0, result.stdout + result.stderr
                   assert not trace.exists() and not (directory / 'daemon.sock').exists()
                   assert not (directory / 'env').exists() and not (directory / 'paths').exists()
 
@@ -721,7 +724,7 @@ jobs:
                        snapshot_size_bound_skips_only_ineligible_saves,
                        snapshot_seal_stops_before_measurement, cache_statistics_print_error_log,
                        cache_error_artifacts_are_selected_and_scoped, cache_wrapper_is_cargo_configuration,
-                       windows_target_check_stays_uncached, cache_install_selects_pinned_host_asset]:
+                       target_check_adds_no_compile_wrapper, cache_install_selects_pinned_host_asset]:
               test()
               print('PASS ' + test.__name__, flush=True)
 
@@ -1515,7 +1518,7 @@ jobs:
               result = execute('Embedded check defaults', root, env | {'QUALITY_CONFIG': json.dumps(extension)})
               assert result.returncode == 0, result.stderr
               result = execute('Licenses and dependencies', root / 'fixtures/disallowed-license', env)
-              assert result.returncode != 0, 'License exception must not match another version'
+              assert result.returncode != 0, 'License exception must not match another version\n' + result.stdout + result.stderr
               result = execute('Embedded check defaults', root, env)
               assert result.returncode == 0, result.stderr
               print('PASS quality_extensions_preserve_defaults')
@@ -1609,9 +1612,9 @@ jobs:
               result = execute('Unused dependencies', hakari_workspace('hakari-ok', hack_extra='other = { path = "../other" }\n'), env)
               assert result.returncode == 0, 'hakari package edges must pass\n' + result.stdout + result.stderr
               result = execute('Unused dependencies', hakari_workspace('hakari-real', member_extra='real = { path = "../real" }\n'), env)
-              assert result.returncode != 0 and 'real' in result.stdout + result.stderr, 'a real unused dependency must fail'
+              assert result.returncode != 0 and 'real' in result.stdout + result.stderr, 'a real unused dependency must fail\n' + result.stdout + result.stderr
               result = execute('Unused dependencies', hakari_workspace('hakari-none', config=False), env)
-              assert result.returncode != 0, 'without hakari config the unifier edge must fail'
+              assert result.returncode != 0, 'without hakari config the unifier edge must fail\n' + result.stdout + result.stderr
               print('PASS hakari_package_is_the_only_accepted_unused_dependency')
               # A stale generated feature unifier fails; a regenerated one passes; no hakari config skips the step.
               def unifier_workspace(name):
@@ -1631,12 +1634,12 @@ jobs:
               other = directory / 'other/Cargo.toml'
               other.write_text(other.read_text(encoding="utf-8").replace(', default-features = false', ''), encoding="utf-8")
               result = execute('Feature unifier', directory, env)
-              assert result.returncode != 0, 'a stale unifier must fail'
+              assert result.returncode != 0, 'a stale unifier must fail\n' + result.stdout + result.stderr
               regenerate(directory)
               result = execute('Feature unifier', directory, env)
               assert result.returncode == 0, 'a regenerated unifier must pass\n' + result.stdout + result.stderr
               result = execute('Feature unifier', hakari_workspace('unifier-none', config=False), env)
-              assert result.returncode == 0, 'without hakari config the step must skip'
+              assert result.returncode == 0, 'without hakari config the step must skip\n' + result.stdout + result.stderr
               print('PASS feature_unifier_verified_only_with_hakari_config')
               # An external coverage tool must not replace the toolchain's verified LLVM.
               directory = pathlib.Path(temporary) / 'coverage-tool'
@@ -1645,7 +1648,7 @@ jobs:
               fake.write_text('#!/bin/sh\nprintf \'{"data":[{"totals":{"lines":{"percent":100}}}]}\\n\'\n', encoding="utf-8")
               fake.chmod(0o755)
               result = execute('Coverage', directory, env | {'LLVM_COV': str(fake)})
-              assert result.returncode != 0, 'Coverage accepted an external LLVM override'
+              assert result.returncode != 0, 'Coverage accepted an external LLVM override\n' + result.stdout + result.stderr
               print('PASS coverage-tool: external LLVM override rejected')
               # LLVM flags must not hide the uncovered module from the denominator.
               source = directory / 'src/lib.rs'
@@ -1656,7 +1659,7 @@ jobs:
               source.write_text(text[:start] + 'pub mod uncovered;\n\n' + text[end:], encoding="utf-8")
               for key in ['LLVM_COV_FLAGS', 'CARGO_LLVM_COV_FLAGS']:
                   result = execute('Coverage', directory, env | {key: '-ignore-filename-regex=uncovered.rs'})
-                  assert result.returncode != 0, key + ': uncovered file excluded'
+                  assert result.returncode != 0, key + ': uncovered file excluded\n' + result.stdout + result.stderr
                   print(f'PASS {key}: exclusions rejected')
               # A caller actionlint runner allowlist cannot suppress correctness errors.
               workflow_path.write_text('name: Proof\non: push\npermissions:\n  contents: read\njobs:\n'
@@ -1677,7 +1680,7 @@ jobs:
               before_path = pathlib.Path(env['GITHUB_PATH']).read_text(encoding="utf-8")
               before = pathlib.Path(env['GITHUB_ENV']).read_text(encoding="utf-8")
               result = execute('Check tools', root, env | {'PATH': str(hostile) + ':' + env['PATH']})
-              assert result.returncode != 0
+              assert result.returncode != 0, result.stdout + result.stderr
               assert pathlib.Path(env['GITHUB_PATH']).read_text(encoding="utf-8") == before_path
               assert pathlib.Path(env['GITHUB_ENV']).read_text(encoding="utf-8") == before
               print('PASS check_tools_reject_corrupt_release')
@@ -2678,18 +2681,18 @@ jobs:
                   for value in ['"browser-case"', '1', '1.5', 'true', '{}', '[1]']:
                       path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=' + value, encoding='utf-8')
                       result, _ = declaration(directory)
-                      assert result.returncode != 0
+                      assert result.returncode != 0, result.stdout + result.stderr
                       assert result.stderr.strip() == '.github/ci.toml: browser_test_crates must be an array of strings', result.stderr
                   for name in ['', 'unknown', ' browser-case', 'Browser-case', '$(touch injected)']:
                       path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=' + json.dumps([name]), encoding='utf-8')
                       result, _ = declaration(directory)
-                      assert result.returncode != 0
+                      assert result.returncode != 0, result.stdout + result.stderr
                       assert result.stderr.strip() == f'.github/ci.toml: browser_test_crates contains unknown package {name!r}', result.stderr
                   assert not (directory / 'injected').exists()
                   path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=["browser-case"]', encoding='utf-8')
                   (directory / 'Cargo.toml').write_text('invalid manifest', encoding='utf-8')
                   result, _ = declaration(directory)
-                  assert result.returncode != 0 and '.github/ci.toml: caller metadata/toolchain failed' in result.stderr
+                  assert result.returncode != 0 and '.github/ci.toml: caller metadata/toolchain failed' in result.stderr, result.stdout + result.stderr
                   schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
                   assert schema['properties']['browser_test_crates']['type'] == 'array'
                   assert schema['properties']['browser_test_crates']['items'] == {'type': 'string'}
@@ -2723,7 +2726,7 @@ jobs:
                                             ('{"shared/"=["unknown"]}', "contains unknown package 'unknown'")]:
                       path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_inputs=' + value, encoding='utf-8')
                       result, _ = declaration(directory)
-                      assert result.returncode != 0, value
+                      assert result.returncode != 0, value + '\n' + result.stdout + result.stderr
                       assert result.stderr.strip() == '.github/ci.toml: test_inputs ' + diagnostic, (value, result.stderr)
                   schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
                   entry = schema['properties']['test_inputs']
@@ -2850,7 +2853,7 @@ jobs:
                       (directory / '.github/ci.toml').write_text(
                           'wasm_crates=[]\ncheck_targets=[]\nwarm_test_filter=' + value, encoding='utf-8')
                       result, values = declaration(directory)
-                      assert result.returncode != 0
+                      assert result.returncode != 0, result.stdout + result.stderr
                       assert result.stderr.strip() == '.github/ci.toml: warm_test_filter must be a string', result.stderr
                       assert values == {}
 
@@ -3318,7 +3321,7 @@ jobs:
                   directory = pathlib.Path(temporary)
                   (directory / 'coverage').mkdir()
                   result = execute('Merge coverage', directory)
-                  assert result.returncode != 0
+                  assert result.returncode != 0, result.stdout + result.stderr
                   assert result.stderr.strip() == 'Missing or unexpected shard coverage reports'
 
           failed_shard_and_missing_coverage_stay_distinct()
@@ -3362,7 +3365,7 @@ jobs:
                   for value, diagnostic in cases:
                       (directory / '.github/ci.toml').write_text(base + value, encoding='utf-8')
                       result, values = declaration(directory)
-                      assert result.returncode != 0 and not values, value
+                      assert result.returncode != 0 and not values, value + '\n' + result.stdout + result.stderr
                       assert '.github/ci.toml' in result.stderr, result.stderr
                       if diagnostic:
                           assert result.stderr.strip() == '.github/ci.toml: additional_locked_manifests ' + diagnostic, result.stderr
@@ -3391,7 +3394,7 @@ jobs:
                       (directory / '.github/ci.toml').write_text(
                           'wasm_crates=[]\ncheck_targets=[]\nadditional_locked_manifests=' + json.dumps([value]), encoding='utf-8')
                       result, values = declaration(directory)
-                      assert result.returncode != 0 and not values, value
+                      assert result.returncode != 0 and not values, value + '\n' + result.stdout + result.stderr
                       assert result.stderr.strip() == ('.github/ci.toml: additional_locked_manifests requires existing '
                                                        'repository-contained relative Cargo.toml files'), result.stderr
 
@@ -3494,7 +3497,7 @@ jobs:
                   for text, diagnostic in cases:
                       (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n' + text + '\n', encoding='utf-8')
                       result, values = declaration(directory)
-                      assert result.returncode != 0 and not values, text
+                      assert result.returncode != 0 and not values, text + '\n' + result.stdout + result.stderr
                       assert result.stderr.strip() == '.github/ci.toml: ' + diagnostic, (text, result.stderr)
               return len(cases)
 
@@ -3816,7 +3819,7 @@ jobs:
                   env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths)}
                   (directory / 'mise.toml').unlink()
                   result = execute('Test tools', directory, env)
-                  assert result.returncode != 0
+                  assert result.returncode != 0, result.stdout + result.stderr
                   assert 'mise.toml: caller tools require a pinned tool configuration' in result.stderr, result.stderr
                   (directory / 'mise.toml').write_text('[tools]\n', encoding='utf-8')
                   result = execute('Test tools', directory, env)
@@ -3946,7 +3949,7 @@ jobs:
                   for flag in ['1', '"true"', '[]']:
                       path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_tools=' + flag, encoding="utf-8")
                       result, values = declaration(directory)
-                      assert result.returncode != 0 and 'test_tools must be a boolean' in result.stderr
+                      assert result.returncode != 0 and 'test_tools must be a boolean' in result.stderr, result.stdout + result.stderr
                   assert workflow.count('digest=8f5f6660') == 1
                   browser = workflow.split('  browser:\n', 1)[1]
                   assert "if: needs.declaration.outputs.test_tools == 'true' || needs.declaration.outputs.browser_build == 'true'\n        run: *mise-bootstrap" in browser
@@ -4045,10 +4048,10 @@ jobs:
                       assert result.returncode == 0, result.stdout + result.stderr
                   (directory / 'mise.toml').unlink()
                   result = execute('Test tools', directory, env)
-                  assert result.returncode != 0
+                  assert result.returncode != 0, result.stdout + result.stderr
                   (directory / 'mise.toml').write_text('[tools]\njust="not-a-real-version"\n', encoding="utf-8")
                   result = execute('Test tools', directory, env)
-                  assert result.returncode != 0
+                  assert result.returncode != 0, result.stdout + result.stderr
 
           test_tools_follow_only_caller_pins()
           print('PASS test_tools_follow_only_caller_pins')
@@ -4138,7 +4141,7 @@ jobs:
                   (directory / '.github/ci.toml').write_text(
                       'wasm_crates=[]\ncheck_targets=[]\ntest_shards=[["sample"],[],[],[]]\n', encoding='utf-8')
                   result, values = declaration(directory)
-                  assert result.returncode != 0 and not values and 'test_shards was removed' in result.stderr
+                  assert result.returncode != 0 and not values and 'test_shards was removed' in result.stderr, result.stdout + result.stderr
               aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
               assert 'name: Tests (ubuntu-latest)' in aggregate
               assert 'needs: [tests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
@@ -4152,7 +4155,7 @@ jobs:
                           expected = declaration_status == 'success' and (
                               (coverage == 'false' and status == 'skipped') or
                               (coverage == 'true' and status == 'success'))
-                          assert (result.returncode == 0) == expected, (coverage, declaration_status, status)
+                          assert (result.returncode == 0) == expected, f'{coverage} {declaration_status} {status}\n' + result.stdout + result.stderr
 
           removed_shard_lists_fail_clearly()
           print('PASS removed_shard_lists_fail_clearly')
@@ -4228,20 +4231,20 @@ jobs:
                   assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
                   report(8, [(3, 0)])
                   result = execute('Merge coverage', directory)
-                  assert result.returncode != 0 and '66.67% (2/3)' in result.stdout and 'below threshold' in result.stderr
+                  assert result.returncode != 0 and '66.67% (2/3)' in result.stdout and 'below threshold' in result.stderr, result.stdout + result.stderr
                   report(8, [(3, 1), (4, 0)])
                   result = execute('Merge coverage', directory, {'QUALITY_CONFIG': '{"coverage_min_lines": 90}'})
-                  assert result.returncode != 0 and 'minimum 90%' in result.stdout
+                  assert result.returncode != 0 and 'minimum 90%' in result.stdout, result.stdout + result.stderr
                   for shard in range(1, 9):
                       path = reports / f'shard-{shard}.lcov'
                       content = path.read_text(encoding='utf-8')
                       path.unlink()
                       result = execute('Merge coverage', directory)
-                      assert result.returncode != 0 and 'Missing' in result.stderr, shard
+                      assert result.returncode != 0 and 'Missing' in result.stderr, f'shard {shard}\n' + result.stdout + result.stderr
                       path.write_text(content, encoding='utf-8')
                   report(9, [(1, 1)])
                   result = execute('Merge coverage', directory)
-                  assert result.returncode != 0 and 'unexpected' in result.stderr
+                  assert result.returncode != 0 and 'unexpected' in result.stderr, result.stdout + result.stderr
 
           coverage_merge_uses_union_and_requires_all_reports()
           print('PASS coverage_merge_uses_union_and_requires_all_reports')
@@ -4499,7 +4502,7 @@ jobs:
                   assert result.returncode == 0 and 'flaky_control' in summary.read_text(encoding='utf-8'), result.stderr
                   source.write_text('#[test] fn permanent_failure() { panic!("permanent"); }\n', encoding='utf-8')
                   result = execute('Isolated tests', directory, {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': 'false'})
-                  assert result.returncode != 0 and 'permanent_failure' in result.stdout
+                  assert result.returncode != 0 and 'permanent_failure' in result.stdout, result.stdout + result.stderr
 
           retries_report_flaky_tests_and_keep_failures()
           print('PASS retries_report_flaky_tests_and_keep_failures')
@@ -4532,7 +4535,7 @@ jobs:
                                'wasm_crates=[]\nwasm_crates=[]\ncheck_targets=[]']:
                       path.write_text(text, encoding="utf-8")
                       result, values = declaration(directory)
-                      assert result.returncode != 0, text
+                      assert result.returncode != 0, text + '\n' + result.stdout + result.stderr
                       assert '.github/ci.toml' in result.stderr
                       if 'extra=true' in text:
                           assert 'extra' in result.stderr
@@ -4543,11 +4546,11 @@ jobs:
                   path.unlink()
                   path.mkdir()  # A present path that cannot be read as a file is not absence.
                   result, values = declaration(directory)
-                  assert result.returncode != 0 and not values
+                  assert result.returncode != 0 and not values, result.stdout + result.stderr
                   path.rmdir()
                   path.symlink_to(directory / 'missing')
                   result, values = declaration(directory)
-                  assert result.returncode != 0 and not values
+                  assert result.returncode != 0 and not values, result.stdout + result.stderr
 
           declaration_types_are_checked()
           print('PASS declaration_types_are_checked')
@@ -4572,12 +4575,12 @@ jobs:
                                     '\u0085'+valid, valid+'\u0085']:
                           path.write_text(f'wasm_crates=[]\ncheck_targets=[]\n'.replace(f'{key}=[]', f'{key}=[{json.dumps(value)}]'), encoding="utf-8")
                           result, values = declaration(directory)
-                          assert result.returncode != 0 and not values, value
+                          assert result.returncode != 0 and not values, value + '\n' + result.stdout + result.stderr
                           assert key in result.stderr and '.github/ci.toml' in result.stderr
                           assert not (directory / 'marker').exists()
                   path.write_text('wasm_crates=[]\ncheck_targets=["x86_64-unknown-linux-gnu"]', encoding="utf-8")
                   result, values = declaration(directory)
-                  assert result.returncode != 0 and 'runner' in result.stderr and not values
+                  assert result.returncode != 0 and 'runner' in result.stderr and not values, result.stdout + result.stderr
 
           declared_members_are_literal_arguments()
           print('PASS declared_members_are_literal_arguments')
@@ -4635,7 +4638,7 @@ jobs:
                   for value in ['79', '101', 'true', '"80"', 'nan', 'inf']:
                       path.write_text(base + 'coverage_min_lines=' + value, encoding="utf-8")
                       result, values = declaration(directory)
-                      assert result.returncode != 0 and not values, value
+                      assert result.returncode != 0 and not values, value + '\n' + result.stdout + result.stderr
                       assert 'coverage_min_lines' in result.stderr
                   for text in ['spelling_words="word"', 'spelling_words=[1]', 'spelling_words=[""]',
                                'git_sources=["*"]', 'git_sources=["https://example.com/repo?prefix=true"]',
@@ -4645,7 +4648,7 @@ jobs:
                                'license_exceptions=[{package="sample", version="0.1.0", licenses=["MIT"], extra=true}]']:
                       path.write_text(base + text, encoding="utf-8")
                       result, values = declaration(directory)
-                      assert result.returncode != 0 and not values, text
+                      assert result.returncode != 0 and not values, text + '\n' + result.stdout + result.stderr
                   path.write_text(base + 'coverage_min_lines=90\nspelling_words=["Maestro"]\n'
                                   'git_sources=["https://github.com/example/repo"]\n'
                                   'license_exceptions=[{package="sample", version="0.1.0", licenses=["GPL-3.0-only"]}]', encoding="utf-8")
@@ -4684,12 +4687,12 @@ jobs:
                   ]:
                       path.write_text(base + text, encoding="utf-8")
                       result, values = declaration(directory)
-                      assert result.returncode != 0 and not values, key + ': control accepted'
+                      assert result.returncode != 0 and not values, key + ': control accepted\n' + result.stdout + result.stderr
                       assert key in result.stderr, result.stderr
                       print(f'PASS quality_strings_reject_controls: {key}', flush=True)
                   path.write_text(base + 'spelling_words=["\\uD800"]', encoding="utf-8")
                   result, values = declaration(directory)
-                  assert result.returncode != 0 and not values
+                  assert result.returncode != 0 and not values, result.stdout + result.stderr
                   assert '.github/ci.toml' in result.stderr and 'Unicode scalar' in result.stderr, result.stderr
                   print('PASS quality_strings_reject_surrogates', flush=True)
 
@@ -4702,7 +4705,7 @@ jobs:
                           for value in ['', 'secret-canary-do-not-print']:
                               result = execute('Isolated tests', root / 'fixtures/sample',
                                                {name: value, 'RUNNER_TEMP': temporary, 'SHARD': role, 'COLLECT_COVERAGE': 'true'})
-                              assert result.returncode != 0
+                              assert result.returncode != 0, result.stdout + result.stderr
                               assert name in result.stderr, result.stderr
                               assert 'secret-canary-do-not-print' not in result.stdout + result.stderr
                               assert 'Compiling' not in result.stderr
@@ -4902,10 +4905,10 @@ jobs:
                       assert result.returncode != 0, result.stdout + result.stderr
                   (directory / 'mise.toml').unlink()
                   result = execute('Browser tools', directory, {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(directory / 'paths')})
-                  assert result.returncode != 0
+                  assert result.returncode != 0, result.stdout + result.stderr
                   (directory / 'mise.toml').write_text('[tools]\n', encoding="utf-8")
                   result = execute('Browser tools', directory, env)
-                  assert result.returncode != 0, 'Missing caller just pin must fail'
+                  assert result.returncode != 0, 'Missing caller just pin must fail\n' + result.stdout + result.stderr
                   (directory / 'mise.toml').write_text('[tools]\njust="not-a-real-version"\n', encoding="utf-8")
                   result = execute('Browser tools', directory, {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(directory / 'paths')})
                   assert result.returncode != 0, result.stdout + result.stderr
@@ -4969,19 +4972,21 @@ jobs:
                       source.write_text('#!/bin/sh\necho "$*" >> ' + shlex.quote(str(trace)) + '\nexec ' + shlex.quote(shutil.which(extractor)) + ' "$@"\n', encoding='utf-8')
                       subprocess.run(['install', '-m', '0700', str(source), str(shim / extractor)], check=True)
                   # Only the downloader is replaced: production verification and unpacking remain real.
-                  for archive in ['chromium.zip', 'bindgen.tar.gz', 'playwright.tgz', 'playwright-core.tgz']:
-                      trace.unlink(missing_ok=True)
+                  def downloader(corrupt):
                       source.write_text('#!/usr/bin/env python3\n' + textwrap.dedent(f'''
                           import pathlib, shutil, sys
                           name = sys.argv[sys.argv.index('-o') + 1]
-                          if name == {archive!r}:
+                          if name == {corrupt!r}:
                               pathlib.Path(name).write_bytes(b'corrupted archive')
                           else:
                               shutil.copyfile(pathlib.Path({str(installed)!r}) / name, name)
                       '''), encoding='utf-8')
                       subprocess.run(['install', '-m', '0700', str(source), str(shim / 'curl')], check=True)
+                  for archive in ['chromium.zip', 'bindgen.tar.gz', 'playwright.tgz', 'playwright-core.tgz']:
+                      trace.unlink(missing_ok=True)
+                      downloader(archive)
                       result = execute('Browser runtime tools', directory, env | {'PATH': f'{shim}:' + os.environ['PATH']})
-                      assert result.returncode != 0, archive
+                      assert result.returncode != 0, archive + '\n' + result.stdout + result.stderr
                       unpacked = trace.read_text(encoding='utf-8') if trace.exists() else ''
                       if archive == 'chromium.zip':
                           assert not unpacked
@@ -4991,10 +4996,12 @@ jobs:
                           assert 'playwright' not in unpacked
                   source.write_text('#!/bin/sh\nexit 73\n', encoding='utf-8')
                   subprocess.run(['install', '-m', '0700', str(source), str(shim / 'curl')], check=True)
-                  assert execute('Browser runtime tools', directory, env | {'PATH': f'{shim}:' + os.environ['PATH']}).returncode == 73
+                  result = execute('Browser runtime tools', directory, env | {'PATH': f'{shim}:' + os.environ['PATH']})
+                  assert result.returncode == 73, f'exit {result.returncode}\n' + result.stdout + result.stderr
                   subprocess.run(['install', '-m', '0700', str(source), str(shim / 'unzip')], check=True)
-                  (shim / 'curl').unlink()
-                  assert execute('Browser runtime tools', directory, env | {'PATH': f'{shim}:' + os.environ['PATH']}).returncode == 73
+                  downloader(None)
+                  result = execute('Browser runtime tools', directory, env | {'PATH': f'{shim}:' + os.environ['PATH']})
+                  assert result.returncode == 73, f'exit {result.returncode}\n' + result.stdout + result.stderr
                   assert 'npm install' not in body('Browser runtime tools')
                   assert 'cli.js install chromium' not in body('Browser runtime tools')
                   print('PASS browser_test_downloads_verify_every_archive', flush=True)
@@ -5024,9 +5031,11 @@ jobs:
           def browser_test_setup_and_recipe_fail_closed(directory, env, values, cli):
               caller = directory / 'failing caller'
               caller.mkdir()
-              assert execute('Browser test tool pin', caller, env).returncode != 0
+              result = execute('Browser test tool pin', caller, env)
+              assert result.returncode != 0, result.stdout + result.stderr
               (caller / 'mise.toml').write_text('[tools]\n', encoding='utf-8')
-              assert execute('Browser test tool pin', caller, env).returncode != 0
+              result = execute('Browser test tool pin', caller, env)
+              assert result.returncode != 0, result.stdout + result.stderr
               selected = env | values | {'PATH': cli + os.pathsep + os.environ['PATH']}
               for recipe in ['other:\n    @true\n', 'browser-test:\n    @exit 17\n', 'browser-test:\n    @node -e "throw Error(\'binding mismatch\')"\n']:
                   (caller / 'justfile').write_text(recipe, encoding='utf-8')
@@ -5037,7 +5046,8 @@ jobs:
               source = caller / 'tool-failure'
               source.write_text('#!/bin/sh\nexit 73\n', encoding='utf-8')
               subprocess.run(['install', '-m', '0700', str(source), str(shim / 'mise')], check=True)
-              assert execute('Browser test caller tools', caller, env | {'PATH': str(shim) + os.pathsep + os.environ['PATH']}).returncode == 73
+              result = execute('Browser test caller tools', caller, env | {'PATH': str(shim) + os.pathsep + os.environ['PATH']})
+              assert result.returncode == 73, f'exit {result.returncode}\n' + result.stdout + result.stderr
               print('PASS browser_test_setup_and_recipe_fail_closed', flush=True)
 
           def workflow_failures_remain_required():
@@ -5110,7 +5120,7 @@ jobs:
                   curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\n'
                                   'printf "#!/bin/sh\\ntouch checksum-bypass-marker\\n" > "$2"\n', encoding="utf-8")
                   result = execute('Mise bootstrap', directory, env)
-                  assert result.returncode != 0
+                  assert result.returncode != 0, result.stdout + result.stderr
                   assert not (directory / 'checksum-bypass-marker').exists()
                   assert paths.read_text(encoding="utf-8") == before
 
