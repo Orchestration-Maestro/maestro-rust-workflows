@@ -114,15 +114,16 @@ still instrument workspace builds and send their compiles through the cache.
 | Jobs | Host | Restore | Save |
 | --- | --- | --- | --- |
 | Format and lint, Docs, Tests, Doctests, Dependency/source/coverage checks, Wasm and browser build, Chromium browser tests | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
-| Declared target checks | Linux, arm64 macOS | Every call that runs the job | Default-branch pushes only; one writer per host/target shape |
+| Declared target checks | Linux, arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
 | Declared target checks | x86_64 Windows | Never | Never |
 
 Windows checks run uncached because sccache expands response files beyond
 Windows' command-line limit; [Windows caching](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/166)
 tracks the upstream fix.
 
-A default-branch push with `warm-cache: true` also runs the declared target
-checks. Other warm calls skip them. Host-specific, checksum-pinned assets
+A push with `warm-cache: true`, including a feature-branch push, also runs the
+declared target checks; warm calls for other events skip them. Only
+default-branch pushes save those snapshots. Host-specific, checksum-pinned assets
 are listed in [Compile cache](../README.md#compile-cache).
 
 The 1 GiB native-payload bound applies to each save, not the repository's
@@ -419,9 +420,10 @@ The test setup exports Rustup's active toolchain before compilation; both test
 routes pass it to child builds, including dependencies outside the checkout.
 Explicit Bash run defaults preserve runner failures through log capture. A failed
 runner fails its test step, so coverage uploads run only after success; a missing
-report after success fails the upload separately. The required aggregate accepts
+report after success fails the upload separately. On full runs the required aggregate accepts
 only successful matrix legs, including `Doctests`, and requires the four numeric
-reports when merging coverage.
+reports when merging coverage. On pull requests the event skips the whole test
+matrix, and the aggregate accepts those skipped legs after a successful declaration.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
