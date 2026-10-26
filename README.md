@@ -63,9 +63,8 @@ requests per object. Incremental compilation stays disabled. See
 [Caller compile cache](docs/caller-checks.md#compile-cache) for wrapper settings
 and coverage behaviour. Pinned assets are `x86_64-unknown-linux-musl`,
 `aarch64-unknown-linux-musl` and `aarch64-apple-darwin`. Windows target
-checks run uncached because sccache expands response files beyond Windows'
-command-line limit; [Windows caching](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/166)
-tracks the upstream fix. The checks job's
+checks run uncached; [Caller compile cache](docs/caller-checks.md#compile-cache)
+explains why. The checks job's
 secret scan runs before restoration; isolated tests receive only non-secret
 local-cache and diagnostic settings, including after automatic server restarts.
 
@@ -82,7 +81,7 @@ branch/default-branch visibility and newest-compatible-prefix lookup apply.
 Only pushes to the caller's default branch save snapshots. Pull-request and
 merge-group jobs restore but never save. Each test shape has one writer per
 call: the warm build, or shard 1 plus the separate plain doctest leg when the
-numeric shards use coverage. Other compiling jobs each write their own shape.
+numeric shards use coverage. Other cached compiling jobs each write their own shape.
 A default-branch push warm call also runs the declared target checks to seed
 the Linux and macOS shapes. Warm pull-request calls skip targets because they
 cannot save.

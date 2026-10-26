@@ -114,15 +114,16 @@ still instrument workspace builds and send their compiles through the cache.
 | Jobs | Host | Restore | Save |
 | --- | --- | --- | --- |
 | Format and lint, Docs, Tests, Doctests, Dependency/source/coverage checks, Wasm and browser build, Chromium browser tests | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
-| Declared target checks | Linux, arm64 macOS | Every call that runs the job | Default-branch pushes only; one writer per host/target shape |
+| Declared target checks | Linux, arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
 | Declared target checks | x86_64 Windows | Never | Never |
 
 Windows checks run uncached because sccache expands response files beyond
 Windows' command-line limit; [Windows caching](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/166)
 tracks the upstream fix.
 
-A default-branch push with `warm-cache: true` also runs the declared target
-checks. Other warm calls skip them. Host-specific, checksum-pinned assets
+A push with `warm-cache: true`, including a feature-branch push, also runs the
+declared target checks; warm calls for other events skip them. Only
+default-branch pushes save those snapshots. Host-specific, checksum-pinned assets
 are listed in [Compile cache](../README.md#compile-cache).
 
 The 1 GiB native-payload bound applies to each save, not the repository's
@@ -419,9 +420,10 @@ The test setup exports Rustup's active toolchain before compilation; both test
 routes pass it to child builds, including dependencies outside the checkout.
 Explicit Bash run defaults preserve runner failures through log capture. A failed
 runner fails its test step, so coverage uploads run only after success; a missing
-report after success fails the upload separately. The required aggregate accepts
+report after success fails the upload separately. On full runs the required aggregate accepts
 only successful matrix legs, including `Doctests`, and requires the sixteen numeric
-reports when merging coverage.
+reports when merging coverage. On pull requests the event skips the whole test
+matrix, and the aggregate accepts those skipped legs after a successful declaration.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
@@ -489,11 +491,13 @@ invocations. An absent declaration, omitted key or empty array schedules no
 browser runtime job. Wrong types and unknown names fail declaration validation.
 The existing `wasm_crates` and `check_targets` arrays remain required.
 
-One Linux `browser-tests` job invokes `just browser-test` when a requested
-package is in the existing changed-package/reverse-dependency selection. A
-change to a nonempty browser request also selects this job without widening
-native package selection. Removing the request skips it. Merge groups and main
-pushes select the full requested suite; advisory-only runs never start Chromium.
+One Linux `browser-tests` job invokes `just browser-test` on merge groups and
+main pushes, which select the full requested suite. Ordinary pull requests skip
+it, and advisory-only runs never start Chromium. The pull-request selection rule
+is self-test behavior only: a requested package in the
+changed-package/reverse-dependency selection, or a change to a nonempty browser
+request, selects the job without widening native package selection, and
+removing the request skips it.
 `browser_build` and `test_tools` remain independent opt-ins. Native coverage
 selection and its floor do not change.
 
@@ -597,8 +601,9 @@ cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warning
 
 There is no Linux fallback for Apple/MSVC targets. These compile checks do not
 restore macOS/Windows runtime tests, which remain a before-first-release
-requirement. All opted-in jobs run in both ordinary pull requests and merge
-queue checks. Declaration errors fail CI even when dependent jobs skip.
+requirement. Merge groups and main pushes run every opted-in target check.
+Ordinary pull requests run only a declared `x86_64-pc-windows-msvc` check.
+Declaration errors fail CI even when dependent jobs skip.
 
 ## Nightly fuzz job
 
