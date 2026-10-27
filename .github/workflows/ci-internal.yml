@@ -258,10 +258,10 @@ jobs:
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               assert document['permissions'] == {'contents': 'read'}
               assert set(document['jobs']) == {'declaration', 'quality', 'docs', 'tests', 'checks', 'advisories',
-                                               'targets', 'browser', 'browser-tests', 'fuzz', 'tests-result'}
+                                               'targets', 'native-tests', 'browser', 'browser-tests', 'fuzz', 'tests-result'}
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
-              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'native-tests', 'browser', 'browser-tests'}
               stages = ['Compile cache identity', 'Restore compile cache', 'Compile cache',
                         'Compile cache statistics', 'Seal compile cache', 'Save compile cache']
               for name in owners:
@@ -271,7 +271,7 @@ jobs:
                   assert all(job.count('- name: ' + stage + '\n') == 1 for stage in stages), name
                   save = job.split('- name: Save compile cache\n', 1)[1].split('      - name:', 1)[0]
                   assert "steps.cache-identity.outputs.writer == 'true'" in save, (name, 'save must require the shared writer decision')
-                  if name == 'targets':
+                  if name in ('targets', 'native-tests'):
                       for stage in stages:
                           parsed = next(item for item in document['jobs'][name]['steps'] if item.get('name') == stage)
                           condition = parsed.get('if', '')
@@ -284,7 +284,8 @@ jobs:
                               assert condition == host, stage
                       upload = next(item for item in document['jobs'][name]['steps'] if item.get('name') == 'Upload compile cache errors')
                       assert upload['if'] == "always() && (steps.cache-statistics.outputs.write_errors == 'true' || (inputs.concurrency-key == 'maestro-proof' && steps.cache-statistics.outcome == 'success'))"
-                      check = next(item for item in document['jobs'][name]['steps'] if item.get('name') == 'Check target')
+                      work = 'Check target' if name == 'targets' else 'Native tests'
+                      check = next(item for item in document['jobs'][name]['steps'] if item.get('name') == work)
                       assert 'if' not in check
               for name in owners - {'quality'}:
                   assert 'env: *sccache-identity-env' in jobs[name]
@@ -716,7 +717,7 @@ jobs:
           def cache_error_artifacts_are_selected_and_scoped():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
-              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'native-tests', 'browser', 'browser-tests'}
               uploads = {name: job.split('      - name: Upload compile cache errors\n')[1].split('      - name:', 1)[0]
                          for name, job in jobs.items() if '      - name: Upload compile cache errors\n' in job}
               assert set(uploads) == owners
@@ -2097,6 +2098,7 @@ jobs:
                         'Approved nextest retry policy' if kind == '--retries' else
                         'Approved transient download retry' if kind == '--retry' else
                         'Approved test/coverage bound' if value == '45' else
+                        'Approved unsharded native test bound' if value == '90' else
                         'Approved installation bound; compiled-cache tool' if step == 'Compile cache' else
                         'Approved installation bound; fuzz tools' if job == 'fuzz' else
                         'Approved installation/self-test download bound')
@@ -2108,6 +2110,7 @@ jobs:
            'checks': ['Check tools', 'Compile cache'],
            'fuzz': ['Check tools'], 'advisories': ['Check tools'],
            'targets': ['Compile cache', 'Mise bootstrap', 'Test tools'],
+           'native-tests': ['Compile cache', 'Native test tools', 'Mise bootstrap', 'Test tools'],
            'browser': ['Compile cache', 'Browser mise bootstrap', 'Browser tools'],
            'browser-tests': ['Compile cache'],
           }.items():
@@ -2116,6 +2119,7 @@ jobs:
            'quality': ['Compile cache', 'Mise bootstrap'],
            'docs': ['Compile cache', 'Mise bootstrap'],
            'targets': ['Compile cache', 'Mise bootstrap'],
+           'native-tests': ['Compile cache', 'Native test tools', 'Mise bootstrap'],
            'tests': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap'],
            'checks': ['Check tools', 'Compile cache'],
            'fuzz': ['Check tools'], 'advisories': ['Check tools'],
@@ -2128,6 +2132,7 @@ jobs:
           for name in ['Tests', 'Isolated tests']:
               permit('ci', 'tests', name, 'timeout-minutes', '45')
           permit('ci', 'checks', 'Coverage', 'timeout-minutes', '45')
+          permit('ci', 'native-tests', 'Native tests', 'timeout-minutes', '90')
           for name in ['Coverage release installation', 'Search release installation proofs', 'Real search tools']:
               permit('ci-internal', 'seams', name, 'timeout-minutes', '10')
           for name in ['Coverage tools', 'Caller tools']:
@@ -2137,6 +2142,8 @@ jobs:
           permit('ci', 'tests', 'Tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
+          permit('ci', 'native-tests', 'Native tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
+          permit('ci', 'native-tests', 'Native tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
           permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
           permit('content', 'content', 'Mise bootstrap', '--retry', '3')
@@ -2226,7 +2233,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 60)
+                  self.assertEqual(len(report.splitlines()), 70)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2264,7 +2271,7 @@ jobs:
               def test_download_retry_changes_are_rejected_per_call(self):
                   source = files['.github/workflows/ci.yml']
                   positions = [match.start() for match in re.finditer('--retry 3', source)]
-                  self.assertEqual(len(positions), 9)
+                  self.assertEqual(len(positions), 10)
                   self.assert_policy(files, True)
                   for offset in positions:
                       for replacement in ['', '--retry 2', '--retry 3 --retry 3']:
@@ -2434,7 +2441,7 @@ jobs:
                   candidate = source.replace('run: &sccache-stats |\n', 'run: &sccache-stats |\n          timeout 3 true\n', 1)
                   self.assertNotEqual(candidate, source)
                   owners = [row[1] for row in collect({'.github/workflows/ci.yml': candidate}) if row[3] == 'timeout']
-                  self.assertCountEqual(owners, ['quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'])
+                  self.assertCountEqual(owners, ['quality', 'docs', 'tests', 'checks', 'targets', 'native-tests', 'browser', 'browser-tests'])
 
               def test_literal_fixture_values_are_not_policy(self):
                   source = ('jobs:\n  new:\n'
@@ -2488,7 +2495,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 60)
+                  self.assertEqual(len(report.splitlines()), 70)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
@@ -2652,7 +2659,7 @@ jobs:
           def job_run_defaults_preserve_pipeline_failures():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests'}
+              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'native-tests', 'browser', 'browser-tests'}
               defaults = {name: re.search(r'^    defaults:\n(.*?)^    steps:', job, re.MULTILINE | re.DOTALL)
                           for name, job in jobs.items()}
               assert {name for name, match in defaults.items() if match} == expected
@@ -4243,7 +4250,7 @@ jobs:
 
           def event_policy_keeps_pull_requests_fast():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-              slow = {'tests', 'browser', 'browser-tests'}
+              slow = {'tests', 'native-tests', 'browser', 'browser-tests'}
               for event in ['pull_request', 'merge_group', 'push']:
                   for warm, advisory, fuzz in [(False, False, False), (True, False, False),
                                                 (False, True, False), (False, False, True)]:
@@ -4260,6 +4267,7 @@ jobs:
                                      'github.repository_id': 'caller', 'inputs.working-directory': '.',
                                      'needs.declaration.outputs.coverage': values['coverage'],
                                      'needs.declaration.outputs.targets': '[{}]',
+                                     'needs.declaration.outputs.native_tests': '[{}]',
                                      'needs.declaration.outputs.wasm_crates': '["sample"]',
                                      'needs.declaration.outputs.browser_build': 'true',
                                      'needs.declaration.outputs.browser_tests': 'true'}
@@ -4316,6 +4324,58 @@ jobs:
 
           windows_checks_run_on_every_pull_request_push()
           print('PASS windows_checks_run_on_every_pull_request_push')
+
+          def native_tests_run_on_declared_hosts():
+              import shutil
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              job = document['jobs']['native-tests']
+              assert job['needs'] == 'declaration'
+              assert job['name'] == 'Tests ($' + '{{ matrix.runner }})'
+              assert job['runs-on'] == '$' + '{{ matrix.runner }}'
+              assert job['strategy'] == {'fail-fast': False, 'matrix': {'include': '$' + '{{ fromJSON(needs.declaration.outputs.native_tests) }}'}}
+              # Native tests run on the full events only, like the Linux shards.
+              assert "needs.declaration.outputs.coverage == 'true'" in job['if']
+              assert "needs.declaration.outputs.native_tests != '[]'" in job['if']
+              assert job['env']['COLLECT_COVERAGE'] == 'false' and 'SHARD' not in job['env']
+              steps = {step['name']: step for step in job['steps']}
+              tests = {step['name']: step for step in document['jobs']['tests']['steps']}
+              # One isolated test body: the native job runs the same locked nextest and doctest commands.
+              assert steps['Native tests']['run'] == tests['Isolated tests']['run']
+              assert steps['Fetch additional locked manifests']['run'] == tests['Fetch additional locked manifests']['run']
+              assert 'cargo test --locked --doc' in steps['Native tests']['run']
+              assert '"$TOOLS/cargo-nextest" nextest run' in steps['Native tests']['run']
+              assert 'continue-on-error' not in steps['Native tests']
+              for host in ['Darwin:arm64', 'MINGW*:x86_64']:
+                  assert host + ') tools=' in steps['Native test tools']['run']
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  path = directory / '.github/ci.toml'
+                  output = directory / 'output'
+                  windows = {'target': 'x86_64-pc-windows-msvc', 'runner': 'windows-latest'}
+                  apple = {'target': 'aarch64-apple-darwin', 'runner': 'macos-latest'}
+                  for event in ['pull_request', 'merge_group', 'push']:
+                      for line, expected in [('', []), ('native_test_targets=[]', []),
+                                             ('native_test_targets=["x86_64-pc-windows-msvc"]', [windows]),
+                                             ('native_test_targets=["x86_64-pc-windows-msvc","aarch64-apple-darwin"]', [windows, apple])]:
+                          path.write_text('wasm_crates=[]\ncheck_targets=[]\n' + line, encoding='utf-8')
+                          output.write_text('', encoding='utf-8')
+                          result = execute('Read caller declaration', directory, {'TEST_EVENT': event, 'GITHUB_OUTPUT': str(output)})
+                          assert result.returncode == 0, result.stderr
+                          values = dict(item.split('=', 1) for item in output.read_text(encoding='utf-8').splitlines())
+                          assert json.loads(values['native_tests']) == expected, (event, line, values['native_tests'])
+                  for value, message in [('"x86_64-pc-windows-msvc"', 'native_test_targets must be an array of strings'),
+                                         ('[1]', 'native_test_targets must be an array of strings'),
+                                         ('["x86_64-pc-windows-msvc","x86_64-pc-windows-msvc"]', 'native_test_targets entries must be unique'),
+                                         ('["aarch64-unknown-linux-gnu"]', "native_test_targets has no native test runner for 'aarch64-unknown-linux-gnu'"),
+                                         ('["x86_64-apple-darwin"]', "native_test_targets has no native test runner for 'x86_64-apple-darwin'")]:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\nnative_test_targets=' + value, encoding='utf-8')
+                      result = execute('Read caller declaration', directory, {'TEST_EVENT': 'merge_group', 'GITHUB_OUTPUT': str(output)})
+                      assert result.returncode != 0 and message in result.stderr, (value, result.stderr)
+
+          native_tests_run_on_declared_hosts()
+          print('PASS native_tests_run_on_declared_hosts')
 
           def removed_shard_lists_fail_clearly():
               import shutil
