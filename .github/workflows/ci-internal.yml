@@ -215,18 +215,13 @@ jobs:
                   subprocess.run(['cargo', 'clippy', '--all-targets', '--locked', '--', '-D', 'warnings'], cwd=directory, check=True)
                   for name, floor, shard in [('Coverage', '80', ''), ('Isolated tests', '80', ''),
                                              ('Isolated tests', '', '1')]:
-                      # Each route models a separate CI job, without another route's binaries.
-                      if (directory / 'target').exists():
-                          shutil.rmtree(directory / 'target')
                       env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
                                           'CARGO_COVERAGE_MIN_LINES': floor, 'COLLECT_COVERAGE': 'true',
                                           'SHARD': shard, 'TEST_SHARD_COUNT': '1'}
-                      # Only select LCOV output for single-job routes; keep the production command otherwise.
-                      command = body(name).replace('--fail-under-lines "$CARGO_COVERAGE_MIN_LINES"',
-                                                   '--fail-under-lines "$CARGO_COVERAGE_MIN_LINES" --lcov --output-path coverage.lcov')
+                      command = body(name)
                       result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
                                               cwd=directory, env=env, capture_output=True, text=True)
-                      report = directory / (f'shard-{shard}.lcov' if shard else 'coverage.lcov')
+                      report = directory / (f'shard-{shard}.lcov' if shard else 'single-coverage/shard-1.lcov')
                       assert result.returncode == 0, result.stdout + result.stderr + (report.read_text(encoding='utf-8') if report.exists() else '')
                       records = report.read_text(encoding='utf-8').split('end_of_record')
                       sources = [os.path.normpath(line[3:]) for record in records
@@ -2307,7 +2302,7 @@ jobs:
               def test_retry_changes_are_rejected_per_branch(self):
                   source = files['.github/workflows/ci.yml']
                   positions = [m.start() for m in re.finditer('--retries 2', source)]
-                  self.assertEqual(len(positions), 3)
+                  self.assertEqual(len(positions), 4)
                   for offset in positions:
                       for replacement in ['--retries 3', '--retries 0', '--retries 2 --retries 2']:
                           with self.subTest(offset=offset, replacement=replacement):
@@ -3276,9 +3271,12 @@ jobs:
                                           env=os.environ | {'GITHUB_ENV': str(exported), 'RUNNER_TEMP': temporary},
                                           capture_output=True, text=True)
                   assert result.returncode == 0, result.stdout + result.stderr
-                  assert dict(line.split('=', 1) for line in exported.read_text(encoding='utf-8').splitlines()) == {
-                      'PROOF_STEPS': str(pathlib.Path(temporary) / 'proof-steps'),
-                      'COVERAGE_IGNORE_FILENAME_REGEX': policy}
+                  exported_text = exported.read_text(encoding='utf-8')
+                  assert exported_text.startswith(f'PROOF_STEPS={temporary}/proof-steps\nCOVERAGE_IGNORE_FILENAME_REGEX={policy}\n')
+                  assert 'COVERAGE_MERGE<<COVERAGE_POLICY\n' + document['env']['COVERAGE_MERGE'] + 'COVERAGE_POLICY\n' in exported_text
+                  assert workflow.count('source = os.path.normpath(record[3:])') == 1
+                  for name in ['Coverage', 'Isolated tests', 'Merge coverage']:
+                      assert body(name).count('python3 -c "$COVERAGE_MERGE"') == 1, name
 
           coverage_exclusions_have_one_workflow_owner()
           print('PASS coverage_exclusions_have_one_workflow_owner')
@@ -3951,7 +3949,7 @@ jobs:
                       elif threshold:
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                                      '--partition', 'count:1/1', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--fail-under-lines', '80']
+                                      '--partition', 'count:1/1', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'single-coverage/shard-1.lcov')]
                       elif route == 'Isolated tests' and coverage == 'true':
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
