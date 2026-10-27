@@ -3429,7 +3429,15 @@ jobs:
               assert 'name: $' + '{{ steps.diagnostics.outputs.artifact_name }}\n' in upload
               assert 'timeout-minutes: 45\n' in steps['Isolated tests']
               assert "if: $" + "{{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}\n" in steps['Tests']
-              assert "expected = {'false': 'skipped', 'true': 'success'}\nassert os.environ['COLLECT_COVERAGE'] in expected\nassert os.environ['RESULT'] == expected[os.environ['COLLECT_COVERAGE']]" in body('All test shards passed')
+              for coverage in ['false', 'true']:
+                  for included in ['false', 'true']:
+                      for status in ['success', 'failure', 'cancelled', 'skipped']:
+                          result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                                                  env=os.environ | {'RESULT': status, 'COLLECT_COVERAGE': coverage,
+                                                                    'INCLUDED_TESTS': included, 'DECLARATION_RESULT': 'success'},
+                                                  capture_output=True, text=True)
+                          expected = 'success' if 'true' in (coverage, included) else 'skipped'
+                          assert (result.returncode == 0) == (status == expected), (coverage, included, status, result.stderr)
 
           diagnostic_upload_is_unconditional_and_scoped()
           print('PASS diagnostic_upload_is_unconditional_and_scoped')
@@ -4637,13 +4645,15 @@ jobs:
                       (crate / 'Cargo.toml').write_text(manifest, encoding='utf-8')
                       (crate / 'src/lib.rs').write_text('', encoding='utf-8')
                   (directory / 'docs').mkdir()
-                  for name in ['policy.md', 'bytes.md', 'escaped.md', 'line\nbreak.md', 'unrelated.md']:
+                  for name in ['policy.md', 'bytes.md', 'escaped.md', 'line\nbreak.md', 'commented.md', 'unrelated.md']:
                       (directory / 'docs' / name).write_text('base\n', encoding='utf-8')
                   (directory / 'crates/a/src/lib.rs').write_text(
                       'const _: &str = include_str!("../../../docs/policy.md");\n'
                       'const _: &[u8] = include_bytes! (\n r#"../../../docs/bytes.md"#\n);\n'
                       'const _: &str = include_str!("../../../docs/escap\\u{65}d.md");\n'
-                      'const _: &str = include_str!("../../../docs/line\nbreak.md");\n', encoding='utf-8')
+                      'const _: &str = include_str!("../../../docs/line\nbreak.md");\n'
+                      'const _: &str = include_str /* macro */ ! // bang\n'
+                      ' (/* outer /* nested */ comment */ "../../../docs/commented.md" /* end */);\n', encoding='utf-8')
                   command = ['cargo', 'generate-lockfile']
                   if os.environ.get('MAESTRO_LOCAL_CAPPED'):
                       command.insert(0, os.path.expanduser('~/.local/bin/capped'))
@@ -4657,6 +4667,7 @@ jobs:
                                                    ('docs/bytes.md', ['a', 'b'], 'true'),
                                                    ('docs/escaped.md', ['a', 'b'], 'true'),
                                                    ('docs/line\nbreak.md', ['a', 'b'], 'true'),
+                                                   ('docs/commented.md', ['a', 'b'], 'true'),
                                                    ('docs/unrelated.md', [], 'false'),
                                                    ('crates/c/src/lib.rs', ['c'], 'false')]:
                       (directory / changed).write_text('// changed\n', encoding='utf-8')
@@ -4678,6 +4689,47 @@ jobs:
 
           included_docs_run_only_readers_and_reverse_dependencies()
           print('PASS included_docs_run_only_readers_and_reverse_dependencies')
+
+          def included_readers_follow_member_roots():
+              from functools import partial
+              for nested in [False, True]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      manifest = '[package]\nname="root-reader"\nversion="0.1.0"\nedition="2024"\n'
+                      if nested:
+                          manifest += '[workspace]\nresolver="3"\nmembers=["crates/child"]\n'
+                      (directory / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+                      (directory / 'src').mkdir()
+                      (directory / 'src/lib.rs').write_text('' if nested else 'const _: &str = include_str!("../docs/policy.md");\n', encoding='utf-8')
+                      if nested:
+                          child = directory / 'crates/child'
+                          (child / 'src').mkdir(parents=True)
+                          (child / 'Cargo.toml').write_text('[package]\nname="child"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+                          (child / 'src/lib.rs').write_text('const _: &str = include_str!("../../../docs/policy.md");\n', encoding='utf-8')
+                      (directory / 'docs').mkdir()
+                      (directory / 'docs/policy.md').write_text('base\n', encoding='utf-8')
+                      command = ['cargo', 'generate-lockfile']
+                      if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                          command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+                      subprocess.run(command, cwd=directory, check=True)
+                      subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+                      git = partial(fixture_git, directory)
+                      git('add', '.')
+                      git('commit', '-qm', 'base')
+                      base = git('rev-parse', 'HEAD')
+                      (directory / 'docs/policy.md').write_text('changed\n', encoding='utf-8')
+                      git('add', '.')
+                      git('commit', '-qm', 'change')
+                      output = directory / '.git/selection'
+                      result = execute('Select test packages', directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                      assert json.loads(values['packages']) == (['child'] if nested else ['root-reader']), (nested, values)
+                      assert values['included_tests'] == 'true', (nested, values)
+                      assert values['coverage'] == 'false', values
+
+          included_readers_follow_member_roots()
+          print('PASS included_readers_follow_member_roots')
 
           def included_test_failures_remain_required():
               for included in ['false', 'true']:
