@@ -34,6 +34,19 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertEqual(workflow['permissions'], {'contents': 'read'})
         self.assertEqual(len(job['steps']), 1)
 
+    def test_rust_ci_uses_only_the_shared_selector(self):
+        import yaml
+        source = (ROOT / 'workflows/ci.yml').read_text()
+        workflow = yaml.safe_load(source)
+        runner = workflow['jobs']['linux-runner']
+        self.assertRegex(runner['uses'], r'^Orchestration-Maestro/maestro-rust-workflows/\.github/workflows/linux-runner\.yml@[0-9a-f]{40}$')
+        declaration = workflow['jobs']['declaration']
+        self.assertEqual(declaration['needs'], ['linux-runner'])
+        self.assertEqual(declaration['outputs']['linux_runner'], '${{ needs.linux-runner.outputs.labels }}')
+        self.assertNotIn('RUNNER_AVAILABILITY:', source)
+        self.assertNotIn('Select Linux runner', source)
+        self.assertEqual(workflow['permissions'], {'contents': 'read'})
+
     def test_every_authored_mapping_pair_is_checked_by_the_policy(self):
         for source in self.authored_witnesses:
             with self.subTest(source=source), self.assertRaises(ValueError):
