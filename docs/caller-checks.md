@@ -140,13 +140,13 @@ they cannot omit tests. Runner user configuration is not loaded. `test_shards` w
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
 run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
 for merge groups and main pushes. These full runs use `--workspace`.
-Pull requests skip test shards and doctests.
+Pull requests skip tests unless the [included-input rule](#pull-request-selection-and-retries) applies.
 
 Declared callers run `cargo llvm-cov nextest` in the same isolated environment
 with their opted-in tools. Only the sixteen numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including `Doctests`, to succeed on full runs. On pull requests it requires a
-successful declaration and event-skipped shards. On full runs it downloads all
+successful declaration and either event-skipped shards or successful included-input shards. On full runs it downloads all
 sixteen reports, counts each source line once (covered if any shard hits it), and
 enforces `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
@@ -391,7 +391,7 @@ Each value must name an existing `Cargo.toml` file by a relative path from the c
 
 Every test shard fetches each declared manifest with `cargo fetch --locked --manifest-path <path>` before starting its tests or declared coverage. Existing root-workspace fetching remains unchanged. The step is skipped when the list is omitted or empty. Cargo chooses the manifest's workspace and lockfile; a missing or stale lock fails provisioning with the manifest identified, Cargo's diagnostics visible and its nonzero status preserved. Provisioning may use the network and write Cargo's dependency cache; it does not generate, update or repair source manifests or lockfiles. Tests can subsequently build offline from the acquired sources, including by staging a temporary directory-source bundle; a cold, empty Cargo home alone does not contain that cache.
 
-Changes to this input select all workspace test packages in the declaration's pull-request selection mode, like other test-affecting declaration changes. Pull requests skip execution; merge groups and main pushes run full tests and coverage. Adoption requires a release containing this input and the organization rules' version pin to that release.
+Changes to this input select all workspace test packages in the declaration's pull-request selection mode, like other test-affecting declaration changes. Pull requests follow the [included-input rule](#pull-request-selection-and-retries); merge groups and main pushes run full tests and coverage. Adoption requires a release containing this input and the organization rules' version pin to that release.
 
 ## Isolated tests
 
@@ -422,8 +422,8 @@ Explicit Bash run defaults preserve runner failures through log capture. A faile
 runner fails its test step, so coverage uploads run only after success; a missing
 report after success fails the upload separately. On full runs the required aggregate accepts
 only successful matrix legs, including `Doctests`, and requires the sixteen numeric
-reports when merging coverage. On pull requests the event skips the whole test
-matrix, and the aggregate accepts those skipped legs after a successful declaration.
+reports when merging coverage. On pull requests the aggregate requires a successful
+declaration and either skipped shards or successful included-input shards.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
