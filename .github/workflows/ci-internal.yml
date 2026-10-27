@@ -201,7 +201,7 @@ jobs:
           def example_sources_are_measured():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary) / 'caller'
-                  shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+                  shutil.copytree(root / 'fixtures/example-coverage', directory, ignore=shutil.ignore_patterns('target'))
                   registry = directory / 'registry/src/fixture'
                   registry.mkdir(parents=True)
                   (registry / 'lib.rs').write_text('/// A dependency fixture.\npub fn answer() -> u32 { 42 }\n', encoding='utf-8')
@@ -210,6 +210,7 @@ jobs:
                                   '\n#[path = "../../registry/src/fixture/lib.rs"]\nmod dependency;\n'
                                   '#[test]\nfn dependency_runs() { assert_eq!(dependency::answer(), 42); }\n', encoding='utf-8')
                   toolchain = subprocess.check_output(['rustup', 'show', 'active-toolchain'], cwd=directory, text=True).split()[0]
+                  subprocess.run(['cargo', 'clippy', '--all-targets', '--locked', '--', '-D', 'warnings'], cwd=directory, check=True)
                   for name, floor, shard in [('Coverage', '80', ''), ('Isolated tests', '80', ''),
                                              ('Isolated tests', '', '1')]:
                       env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
