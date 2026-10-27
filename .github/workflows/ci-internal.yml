@@ -221,7 +221,7 @@ jobs:
                       command = body(name)
                       result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
                                               cwd=directory, env=env, capture_output=True, text=True)
-                      report = directory / (f'shard-{shard}.lcov' if shard else 'single-coverage/shard-1.lcov')
+                      report = directory / (f'shard-{shard}.lcov' if shard else 'target/single-coverage/shard-1.lcov')
                       assert result.returncode == 0, result.stdout + result.stderr + (report.read_text(encoding='utf-8') if report.exists() else '')
                       records = report.read_text(encoding='utf-8').split('end_of_record')
                       sources = [os.path.normpath(line[3:]) for record in records
@@ -3958,7 +3958,7 @@ jobs:
                       elif threshold:
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                                      '--partition', 'count:1/1', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'single-coverage/shard-1.lcov')]
+                                      '--partition', 'count:1/1', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
                       elif route == 'Isolated tests' and coverage == 'true':
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
