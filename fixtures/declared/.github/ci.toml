@@ -6,4 +6,5 @@ check_targets = [
   "x86_64-pc-windows-msvc",
 ]
 browser_build = true
+native_test_targets = ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
 browser_test_crates = ["declared"]

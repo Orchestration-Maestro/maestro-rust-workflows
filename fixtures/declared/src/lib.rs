@@ -30,7 +30,13 @@ mod tests {
             assert!(path.is_dir());
             assert_eq!(path.parent(), paths[0].parent());
             assert!(!paths[..index].contains(path));
-            assert_eq!(fs::read_dir(path).unwrap().count(), 0);
+            // Windows keeps its own profile caches below the home it is given.
+            let entries: Vec<_> = fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .filter(|name| !(cfg!(windows) && name == "AppData"))
+                .collect();
+            assert_eq!(entries, Vec::<std::ffi::OsString>::new(), "{path:?}");
         }
         assert_eq!(env::var("TMP").unwrap(), env::var("TMPDIR").unwrap());
         assert_eq!(env::var("TEMP").unwrap(), env::var("TMPDIR").unwrap());

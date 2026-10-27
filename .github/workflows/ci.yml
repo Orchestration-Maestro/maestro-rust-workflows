@@ -114,6 +114,7 @@ jobs:
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       targets: ${{ steps.config.outputs.targets }}
+      native_tests: ${{ steps.config.outputs.native_tests }}
       browser_test_crates: ${{ steps.config.outputs.browser_test_crates }}
       browser_tests: ${{ steps.selection.outputs.browser_tests }}
       browser_build: ${{ steps.config.outputs.browser_build }}
@@ -215,11 +216,11 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(warm_test_filter=json.dumps('none()'), additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(warm_test_filter=json.dumps('none()'), additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', native_tests='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'warm_test_filter', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'warm_test_filter', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs', 'native_test_targets'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -381,6 +382,17 @@ jobs:
                   if os.environ.get('TEST_EVENT') != 'pull_request' or target == 'x86_64-pc-windows-msvc':
                       targets.append(dict(target=target, runner=runners[target]))
               values.update(targets=json.dumps(targets))
+              # Tests run only where the runner executes the target natively.
+              native_runners = {'aarch64-apple-darwin': 'macos-latest', 'x86_64-pc-windows-msvc': 'windows-latest'}
+              native = config.get('native_test_targets', [])
+              if not isinstance(native, list) or any(type(item) is not str for item in native):
+                  raise SystemExit(f'{path}: native_test_targets must be an array of strings')
+              if len(set(native)) != len(native):
+                  raise SystemExit(f'{path}: native_test_targets entries must be unique')
+              for target in native:
+                  if target not in native_runners:
+                      raise SystemExit(f'{path}: native_test_targets has no native test runner for {target!r}')
+              values.update(native_tests=json.dumps([dict(target=target, runner=native_runners[target]) for target in native]))
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
@@ -912,7 +924,7 @@ jobs:
           echo "$bin" >> "$GITHUB_PATH"
       - name: Fetch additional locked manifests
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
-        run: |
+        run: &locked-manifests |
           python3 - <<'PYTHON'
           import json
           import os
@@ -978,7 +990,7 @@ jobs:
         if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         env:
           CARGO_COVERAGE_MIN_LINES: ''
-        run: |
+        run: &isolated-tests |
           python3 - <<'PYTHON'
           import os
           names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
@@ -994,15 +1006,30 @@ jobs:
           if found:
               raise SystemExit('Credential variables present: ' + ', '.join(found))
           PYTHON
-          cargo_home=$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd)
-          rustup_home=$(cd "${RUSTUP_HOME:-$HOME/.rustup}" && pwd)
+          # Windows programs read the paths below as native mixed-separator paths, never MSYS paths.
+          native() { if [ "${OS:-}" = Windows_NT ]; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
+          cargo_home=$(native "$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd)")
+          rustup_home=$(native "$(cd "${RUSTUP_HOME:-$HOME/.rustup}" && pwd)")
           diagnostics="$PWD/target/browser-author-diagnostics"
           mkdir -p "$diagnostics"
+          diagnostics=$(native "$diagnostics")
           isolation=$(mktemp -d "$RUNNER_TEMP/maestro-tests.XXXXXX")
-          trap 'rm -rf "$isolation"' EXIT
+          # Windows can keep its own profile caches open after the tests; the runner removes them.
+          trap 'rm -rf "$isolation" || [ "${OS:-}" = Windows_NT ]' EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
+          isolation=$(native "$isolation")
+          # Windows processes need these system locations; home and application data stay isolated.
+          system=()
+          if [ "${OS:-}" = Windows_NT ]; then
+            for name in SYSTEMROOT WINDIR SYSTEMDRIVE COMSPEC PATHEXT PROGRAMDATA PROGRAMFILES 'PROGRAMFILES(X86)' \
+              PROGRAMW6432 COMMONPROGRAMFILES 'COMMONPROGRAMFILES(X86)' COMMONPROGRAMW6432 NUMBER_OF_PROCESSORS \
+              PROCESSOR_ARCHITECTURE OS; do
+              if value=$(printenv "$name"); then system+=("$name=$value"); fi
+            done
+            system+=(USERPROFILE="$isolation/home" APPDATA="$isolation/config" LOCALAPPDATA="$isolation/data")
+          fi
           run_isolated() {
-          env -i PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+          env -i "${system[@]}" PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
             HOME="$isolation/home" TMPDIR="$isolation/tmp" TMP="$isolation/tmp" TEMP="$isolation/tmp" \
             XDG_CONFIG_HOME="$isolation/config" XDG_DATA_HOME="$isolation/data" \
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
@@ -1015,7 +1042,9 @@ jobs:
             "$@"
           }
           cargo fetch --locked
-          mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          # macOS ships Bash 3.2, which has no mapfile.
+          packages=()
+          while IFS= read -r -d '' argument; do packages+=("$argument"); done < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
           if [ "${SHARD:-}" != doctests ]; then
@@ -1666,6 +1695,146 @@ jobs:
           rustup target add "$TARGET"
           rustup component add clippy
           cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings
+      - name: Compile cache statistics
+        id: cache-statistics
+        if: always() && runner.os != 'Windows'
+        run: *sccache-stats
+      - name: Upload compile cache errors
+        if: *sccache-artifact-condition
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: *sccache-artifact
+      - name: Seal compile cache
+        if: *sccache-target-host
+        id: cache-seal
+        run: *sccache-seal
+      - name: Save compile cache
+        if: runner.os != 'Windows' && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-save
+
+  native-tests:
+    name: Tests (${{ matrix.runner }})
+    needs: declaration
+    if: ${{ needs.declaration.outputs.coverage == 'true' && needs.declaration.outputs.native_tests != '[]' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.declaration.outputs.native_tests) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
+      TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
+      COLLECT_COVERAGE: 'false'
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory || '.' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Test toolchain
+        run: |
+          rustup show
+          toolchain=$(rustup show active-toolchain)
+          echo "RUSTUP_TOOLCHAIN=${toolchain%% *}" >> "$GITHUB_ENV"
+      - name: Compile cache identity
+        if: *sccache-target-host
+        id: cache-identity
+        env: *sccache-identity-env
+        run: *sccache-identity
+      - name: Restore compile cache
+        if: *sccache-target-host
+        id: cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-restore
+      - name: Compile cache
+        if: *sccache-target-host
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        timeout-minutes: 10
+        run: *sccache-install
+      - name: Native test tools
+        timeout-minutes: 10
+        run: |
+          # Digests: each tool's GitHub release asset digest.
+          case "$(uname -s):$(uname -m)" in
+            Darwin:arm64) tools='
+          https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-universal-apple-darwin.tar.gz 6c23b7fb4ca82c571fc8dfedbab45bfa773d45918f933170c85d21cd7f4b852b cargo-nextest
+          https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz 3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4 rg
+          https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-aarch64-apple-darwin.tar.gz b67e1836c468e42e411984b56e52fa7abec08c2bd22c867398e7cc134aac5e12 fd' ;;
+            MINGW*:x86_64) tools='
+          https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-pc-windows-msvc.zip 7a931b4a9123fe5e641dd0f2b73d897f64bcf77bb06f080db17cb434b7eac782 cargo-nextest.exe
+          https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip 71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5 rg.exe
+          https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-pc-windows-msvc.zip a227701b8551c35a9931d9f6da75503cf86d88e182d71fb849a70864c5d57cd7 fd.exe' ;;
+            *) echo 'Unsupported native test host' >&2; exit 1 ;;
+          esac
+          bin=$(mktemp -d "$RUNNER_TEMP/maestro-native-tools.XXXXXX")
+          while read -r url digest binary; do
+            [ -n "$url" ] || continue
+            archive=$(mktemp)
+            curl --fail --retry 3 --location "$url" --output "$archive"
+            python3 - "$digest" "$archive" "$binary" "$bin" <<'PYTHON'
+          import gzip
+          import hashlib
+          import io
+          import pathlib
+          import sys
+          import tarfile
+          import zipfile
+          digest, archive, binary, directory = sys.argv[1:]
+          data = pathlib.Path(archive).read_bytes()
+          if hashlib.sha256(data).hexdigest() != digest:
+              raise SystemExit(f'{binary}: archive digest mismatch')
+          if zipfile.is_zipfile(io.BytesIO(data)):
+              with zipfile.ZipFile(io.BytesIO(data)) as source:
+                  names = [name for name in source.namelist() if name.split('/')[-1] == binary]
+                  content = source.read(names[0]) if len(names) == 1 else None
+          else:
+              with tarfile.TarFile(fileobj=gzip.GzipFile(fileobj=io.BytesIO(data))) as source:
+                  members = [member for member in source.getmembers() if member.isfile() and member.name.split('/')[-1] == binary]
+                  content = source.extractfile(members[0]).read() if len(members) == 1 else None
+          if content is None:
+              raise SystemExit(f'{binary}: the archive must hold exactly one {binary}')
+          target = pathlib.Path(directory) / binary
+          target.write_bytes(content)
+          target.chmod(0o755)
+          PYTHON
+            rm "$archive"
+          done <<< "$tools"
+          "$bin/rg" --version
+          "$bin/fd" --version
+          "$bin/cargo-nextest" nextest --version
+          if [ "${OS:-}" = Windows_NT ]; then
+            echo "TOOLS=$(cygpath -u "$bin")" >> "$GITHUB_ENV"
+            cygpath -w "$bin" >> "$GITHUB_PATH"
+          else
+            echo "TOOLS=$bin" >> "$GITHUB_ENV"
+            echo "$bin" >> "$GITHUB_PATH"
+          fi
+      - name: Mise bootstrap
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *mise-bootstrap
+      - name: Test tools
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *caller-tools
+      - name: Fetch additional locked manifests
+        if: needs.declaration.outputs.additional_locked_manifests != '[]'
+        run: *locked-manifests
+      - name: Native tests
+        timeout-minutes: 90
+        env:
+          CARGO_COVERAGE_MIN_LINES: ''
+        run: *isolated-tests
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && runner.os != 'Windows'

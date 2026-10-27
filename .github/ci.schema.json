@@ -23,6 +23,19 @@
         "type": "string"
       }
     },
+    "native_test_targets": {
+      "description": "Targets whose locked workspace tests and doctests run on their native runner in merge groups and main pushes.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "aarch64-apple-darwin",
+          "x86_64-pc-windows-msvc"
+        ]
+      },
+      "uniqueItems": true,
+      "default": []
+    },
     "test_tools": {
       "description": "Install caller mise.toml tools before every enabled caller-compiling operation, including isolated tests.",
       "type": "boolean",

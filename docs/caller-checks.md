@@ -75,7 +75,8 @@ same concurrency group with its called workflow; see GitHub's
 ## Declaration
 
 The `wasm_crates` and `check_targets` arrays are required, including when empty. `browser_build` and
-`test_tools` are optional booleans that default to `false`. The
+`test_tools` are optional booleans that default to `false`. `native_test_targets`
+is an optional array; see [native tests](#native-tests). The
 [schema](../.github/ci.schema.json) describes the parsed TOML shape; there is no
 version key or older-format reader.
 
@@ -604,10 +605,35 @@ cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warning
 | `x86_64-pc-windows-msvc` | `windows-latest` |
 
 There is no Linux fallback for Apple/MSVC targets. These compile checks do not
-restore macOS/Windows runtime tests, which remain a before-first-release
-requirement. Merge groups and main pushes run every opted-in target check.
+run tests; [native tests](#native-tests) do. Merge groups and main pushes run every opted-in target check.
 Ordinary pull requests run only a declared `x86_64-pc-windows-msvc` check.
 Declaration errors fail CI even when dependent jobs skip.
+
+## Native tests
+
+`native_test_targets` is an optional array of unique targets whose tests run on
+their own operating system:
+
+| Target | Runner | Check |
+| --- | --- | --- |
+| `aarch64-apple-darwin` | `macos-latest` | `Tests (macos-latest)` |
+| `x86_64-pc-windows-msvc` | `windows-latest` | `Tests (windows-latest)` |
+
+Any other target, a repeated target or a non-array value fails declaration
+validation. Merge groups and main pushes run one unpartitioned job per declared
+target; pull requests skip them, as they skip the Linux shards. Each job installs
+the host's checksum-verified cargo-nextest 0.9.148, ripgrep 15.2.0 and fd 10.5.0
+release archives, the caller's pinned tools when `test_tools = true` and the
+additional locked manifests, then runs the [isolated tests](#isolated-tests) step
+unchanged: the credential guard, fresh home, temporary and XDG directories, the
+locked nextest run with two retries and `cargo test --workspace --locked --doc`.
+On Windows the child also keeps the system locations Windows programs need
+(`SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, the program and program-data
+directories, the processor variables and `OS`), receives the fresh home as
+`USERPROFILE` and fresh configuration and data directories as `APPDATA` and
+`LOCALAPPDATA`, and reads every path in Windows form. The job has a 90-minute
+test bound. macOS restores and saves the compile cache like the target checks;
+Windows builds without it. A failing native test fails the shared CI.
 
 ## Nightly fuzz job
 

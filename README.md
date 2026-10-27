@@ -7,11 +7,12 @@ One shared Rust CI. The original checks remain required:
 | Format | `cargo fmt --all --check` | Linux |
 | Lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Linux |
 | Docs | `cargo doc --workspace --no-deps --locked` | Linux |
-| Tests | `cargo nextest run` partitions and `cargo test --doc` | Linux |
+| Tests | `cargo nextest run` partitions and `cargo test --doc` | Linux; declared macOS and Windows targets |
 
 Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
-be documented, and documentation warnings fail the check. Tests run on Linux
-for now; macOS and Windows return before the first release.
+be documented, and documentation warnings fail the check. Tests run on Linux;
+a caller declares the [native macOS and Windows test runs](docs/caller-checks.md#native-tests)
+it needs.
 A new push to a pull request cancels that pull request's older run.
 
 After declaration validation, pull requests run formatting, Clippy, docs,
@@ -19,7 +20,8 @@ dependency and source checks, and declared Windows target checks in parallel.
 Test shards, coverage, other foreign-target checks (including macOS),
 wasm/browser builds and Chromium tests run on merge groups and main pushes,
 not on ordinary pull-request heads; [included-input changes](docs/caller-checks.md#pull-request-selection-and-retries) also run reader tests on pull requests without coverage.
-Those full events also keep the Windows check.
+Those full events also keep the Windows check and run the declared native tests
+as `Tests (macos-latest)` and `Tests (windows-latest)`.
 
 Tests run with checksum-pinned cargo-nextest 0.9.148 on four Linux runners,
 using automatic count partitions rather than package lists. Doctests run in a
