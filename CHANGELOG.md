@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.6...v0.16.0) (2026-10-27)
+
+
+### Features
+
+* **ci:** add shared checks for content repositories ([#205](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/205)) ([40b06e7](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/40b06e7743c343b99bf39c992f6d91b99c9afe52))
+
 ## [0.15.6](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.5...v0.15.6) (2026-10-26)
 
 
