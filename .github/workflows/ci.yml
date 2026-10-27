@@ -57,6 +57,7 @@ permissions:
 
 env:
   TEST_SHARD_COUNT: 16
+  COVERAGE_IGNORE_FILENAME_REGEX: '(^|/)(tests|benches)/([^.]|\.[^./]|\.\.[^/])|(^|/)(target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$'
 
 defaults:
   run:
@@ -937,7 +938,9 @@ jobs:
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
           if [ "${SHARD:-}" != doctests ]; then
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
-              run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+              run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked \
+                --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
+                --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
             elif [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
               partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT")
               report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
@@ -946,7 +949,8 @@ jobs:
                 report=(--no-report)
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked "${report[@]}" 2>&1 | tee nextest.log
+                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked \
+                --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee nextest.log
             else
               partition=()
               if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT"); fi
@@ -1076,18 +1080,18 @@ jobs:
               source = None
               for record in (reports / name).read_text(encoding='utf-8').splitlines():
                   if record.startswith('SF:'):
-                      source = record[3:]
+                      source = os.path.normpath(record[3:])
                   elif record.startswith('DA:'):
                       if source is None:
                           raise SystemExit(f'{name}: line without source file')
                       line, hits, *_ = record[3:].split(',')
                       key = (source, int(line))
-                      lines[key] = lines.get(key, False) or int(hits) > 0
+                      lines[key] = lines.get(key, 0) + int(hits)
                   elif record == 'end_of_record':
                       source = None
           if not lines:
               raise SystemExit('No instrumented lines in shard coverage')
-          covered = sum(lines.values())
+          covered = sum(hits > 0 for hits in lines.values())
           percentage = covered * 100 / len(lines)
           threshold = json.loads(os.environ.get('QUALITY_CONFIG') or '{}').get('coverage_min_lines', 80)
           print(f'Merged line coverage: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')
@@ -1353,7 +1357,9 @@ jobs:
           for name in ${!LLVM_@}; do
             if [[ "$name" == LLVM_*_FLAGS ]]; then unset "$name"; fi
           done
-          "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+          "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked \
+            --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
+            --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && needs.declaration.outputs.enabled != 'true'

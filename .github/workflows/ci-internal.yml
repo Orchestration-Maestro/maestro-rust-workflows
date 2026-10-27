@@ -66,6 +66,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Shared coverage policy
+        run: python3 .github/extract-workflow-steps.py
       - name: Content checks at workflow seam
         shell: python
         run: |
@@ -178,6 +180,72 @@ jobs:
           step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == 'Coverage tools')
           match = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(match[1])], check=True)
+      - name: Example sources in coverage at workflow seam
+        shell: python
+        run: |
+          import ast
+          import os
+          import pathlib
+          import shutil
+          import subprocess
+          import tempfile
+          import textwrap
+
+          root = pathlib.Path.cwd()
+          workflow = (root / '.github/workflows/ci.yml').read_text(encoding='utf-8')
+          internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+          caller = internal.split('      - name: Caller checks at workflow seam\n', 1)[1]
+          caller = caller.split('        run: |\n', 1)[1].split('\n  native:', 1)[0]
+          tree = ast.parse(textwrap.dedent(caller))
+          tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
+          exec(compile(tree, 'workflow body resolver', 'exec'))
+
+          def example_sources_are_measured():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary) / 'caller'
+                  shutil.copytree(root / 'fixtures/example-coverage', directory, ignore=shutil.ignore_patterns('target'))
+                  registry = directory / 'registry/src/fixture'
+                  registry.mkdir(parents=True)
+                  (registry / 'lib.rs').write_text('/// A dependency fixture.\npub fn answer() -> u32 { 42 }\n', encoding='utf-8')
+                  test = directory / 'src/tests/coverage_example.rs'
+                  test.write_text(test.read_text(encoding='utf-8') +
+                                  '\n#[path = "../../registry/src/fixture/lib.rs"]\nmod dependency;\n'
+                                  '#[test]\nfn dependency_runs() { assert_eq!(dependency::answer(), 42); }\n', encoding='utf-8')
+                  toolchain = subprocess.check_output(['rustup', 'show', 'active-toolchain'], cwd=directory, text=True).split()[0]
+                  subprocess.run(['cargo', 'clippy', '--all-targets', '--locked', '--', '-D', 'warnings'], cwd=directory, check=True)
+                  for name, floor, shard in [('Coverage', '80', ''), ('Isolated tests', '80', ''),
+                                             ('Isolated tests', '', '1')]:
+                      env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
+                                          'CARGO_COVERAGE_MIN_LINES': floor, 'COLLECT_COVERAGE': 'true',
+                                          'SHARD': shard, 'TEST_SHARD_COUNT': '1'}
+                      # Only select LCOV output for single-job routes; keep the production command otherwise.
+                      command = body(name).replace('--fail-under-lines "$CARGO_COVERAGE_MIN_LINES"',
+                                                   '--fail-under-lines "$CARGO_COVERAGE_MIN_LINES" --lcov --output-path coverage.lcov')
+                      result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
+                                              cwd=directory, env=env, capture_output=True, text=True)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      report = directory / (f'shard-{shard}.lcov' if shard else 'coverage.lcov')
+                      records = report.read_text(encoding='utf-8').split('end_of_record')
+                      sources = [os.path.normpath(line[3:]) for record in records
+                                 for line in record.splitlines() if line.startswith('SF:')]
+                      print(f'{name} floor={floor} LCOV sources: {sources}', flush=True)
+                      example = [record for record in records if any(
+                          line.startswith('SF:') and os.path.normpath(line[3:]) == str(directory / 'examples/coverage.rs')
+                          for line in record.splitlines())]
+                      assert example, 'examples/coverage.rs missing from LCOV'
+                      assert any(line.startswith('DA:') and int(line.split(',')[1]) > 0
+                                 for record in example for line in record.splitlines()), example
+                      assert not any('/tests/' in source or '/registry/' in source for source in sources), sources
+                      print(f'PASS example_sources_are_measured: {name}, floor={floor}', flush=True)
+                      if shard:
+                          (directory / 'coverage').mkdir()
+                          shutil.copyfile(report, directory / 'coverage/shard-1.lcov')
+                          merged = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Merge coverage')],
+                                                  cwd=directory, env=env, capture_output=True, text=True)
+                          assert merged.returncode == 0, merged.stdout + merged.stderr
+                          print(merged.stdout, flush=True)
+
+          example_sources_are_measured()
       - name: Compile cache in every Rust job
         shell: python
         run: |
@@ -3159,6 +3227,30 @@ jobs:
           warm_cache_keeps_one_writer()
           print('PASS warm_cache_keeps_one_writer')
 
+          coverage_report_args = ['--no-default-ignore-filename-regex', '--ignore-filename-regex',
+                                  r'(^|/)(tests|benches)/([^.]|\.[^./]|\.\.[^/])|(^|/)(target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$']
+
+          def coverage_exclusions_have_one_workflow_owner():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              policy = document['env']['COVERAGE_IGNORE_FILENAME_REGEX']
+              assert policy == coverage_report_args[2]
+              assert workflow.count(policy) == 1
+              for name, count in [('Coverage', 1), ('Isolated tests', 2)]:
+                  assert body(name).count('--ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX"') == count, name
+              internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+              with tempfile.TemporaryDirectory() as temporary:
+                  exported = pathlib.Path(temporary) / 'env'
+                  result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Shared coverage policy', internal)],
+                                          env=os.environ | {'GITHUB_ENV': str(exported), 'RUNNER_TEMP': temporary},
+                                          capture_output=True, text=True)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert dict(line.split('=', 1) for line in exported.read_text(encoding='utf-8').splitlines()) == {
+                      'PROOF_STEPS': str(pathlib.Path(temporary) / 'proof-steps'),
+                      'COVERAGE_IGNORE_FILENAME_REGEX': policy}
+
+          coverage_exclusions_have_one_workflow_owner()
+          print('PASS coverage_exclusions_have_one_workflow_owner')
+
           def warm_cache_builds_without_tests_or_reports():
               for status in (0, 17):
                   with tempfile.TemporaryDirectory() as temporary:
@@ -3176,7 +3268,7 @@ jobs:
                       assert commands[1]['args'] == [
                           'llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                           '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                          '-E', 'none()', '--no-tests', 'pass', '--workspace', '--locked', '--no-report']
+                          '-E', 'none()', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--no-report']
                       assert commands[1]['home'] != os.environ.get('HOME')
                       assert not list(directory.glob('*.lcov'))
 
@@ -3825,12 +3917,11 @@ jobs:
                       if shard == 'doctests':
                           expected = ['test', '--locked', '--doc', '-p', 'sample']
                       elif threshold:
-                          expected = ['llvm-cov', '--workspace', '--locked', '--fail-under-lines', '80']
+                          expected = ['llvm-cov', '--workspace', '--locked'] + coverage_report_args + ['--fail-under-lines', '80']
                       elif route == 'Isolated tests' and coverage == 'true':
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                                      '--partition', f'count:{shard}/16', '--no-tests', 'pass', '--workspace', '--locked',
-                                      '--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
+                                      '--partition', f'count:{shard}/16', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
                       else:
                           expected = ['nextest', 'run', '--user-config-file', 'none', '--ignore-default-filter', '--locked',
                                       '-p', 'sample', '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky']
@@ -4312,10 +4403,17 @@ jobs:
                   directory = pathlib.Path(temporary)
                   reports = directory / 'coverage'
                   reports.mkdir()
-                  def report(shard, lines):
+                  def report(shard, lines, source='/src/lib.rs'):
                       (reports / f'shard-{shard}.lcov').write_text(
-                          'SF:/src/lib.rs\n' + ''.join(f'DA:{line},{hits}\n' for line, hits in lines) + 'end_of_record\n',
+                          f'SF:{source}\n' + ''.join(f'DA:{line},{hits}\n' for line, hits in lines) + 'end_of_record\n',
                           encoding='utf-8')
+                  for shard in range(1, 17):
+                      report(shard, [])
+                  report(1, [(line, 1) for line in range(1, 7)])
+                  report(2, [(line, 1) for line in range(1, 4)], '/caller/examples/coverage.rs')
+                  report(3, [(line, 0) for line in range(1, 4)], '/caller/src/tests/../../examples/coverage.rs')
+                  result = execute('Merge coverage', directory)
+                  assert result.returncode == 0 and '100.00% (9/9)' in result.stdout, result.stdout + result.stderr
                   report(1, [(1, 1), (2, 0)])
                   report(2, [(1, 0), (2, 1)])
                   for shard in range(3, 16):
