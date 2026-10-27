@@ -1,9 +1,6 @@
-//! Exercises the shipped example through the same source file.
-
-#[path = "../examples/coverage.rs"]
-mod example;
+//! Test-only sources stay outside the coverage denominator.
 
 #[test]
-fn example_runs() {
-    example::main();
+fn doubles_value() {
+    assert_eq!(sample::double(3), 6);
 }

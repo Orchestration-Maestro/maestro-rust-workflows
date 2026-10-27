@@ -205,9 +205,9 @@ jobs:
                   registry = directory / 'registry/src/fixture'
                   registry.mkdir(parents=True)
                   (registry / 'lib.rs').write_text('/// A dependency fixture.\npub fn answer() -> u32 { 42 }\n', encoding='utf-8')
-                  test = directory / 'tests/example.rs'
+                  test = directory / 'src/tests/coverage_example.rs'
                   test.write_text(test.read_text(encoding='utf-8') +
-                                  '\n#[path = "../registry/src/fixture/lib.rs"]\nmod dependency;\n'
+                                  '\n#[path = "../../registry/src/fixture/lib.rs"]\nmod dependency;\n'
                                   '#[test]\nfn dependency_runs() { assert_eq!(dependency::answer(), 42); }\n', encoding='utf-8')
                   toolchain = subprocess.check_output(['rustup', 'show', 'active-toolchain'], cwd=directory, text=True).split()[0]
                   for name, floor, shard in [('Coverage', '80', ''), ('Isolated tests', '80', ''),
@@ -223,9 +223,12 @@ jobs:
                       assert result.returncode == 0, result.stdout + result.stderr
                       report = directory / (f'shard-{shard}.lcov' if shard else 'coverage.lcov')
                       records = report.read_text(encoding='utf-8').split('end_of_record')
-                      sources = [line[3:] for record in records for line in record.splitlines() if line.startswith('SF:')]
+                      sources = [str(pathlib.Path(line[3:]).resolve()) for record in records
+                                 for line in record.splitlines() if line.startswith('SF:')]
                       print(f'{name} floor={floor} LCOV sources: {sources}', flush=True)
-                      example = next((record for record in records if 'SF:' + str(directory / 'examples/coverage.rs') + '\n' in record), None)
+                      example = next((record for record in records if any(
+                          line.startswith('SF:') and pathlib.Path(line[3:]).resolve() == directory / 'examples/coverage.rs'
+                          for line in record.splitlines())), None)
                       if example is None:
                           raw = subprocess.run([env['TOOLS'] + '/cargo-llvm-cov', 'llvm-cov', 'report',
                                                 '--no-default-ignore-filename-regex', '--lcov'],
