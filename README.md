@@ -147,6 +147,27 @@ The approved [shared CI spec](https://github.com/Orchestration-Maestro/.github/b
 defines the scope. Creating a release requests Quality sync, which owns eligible
 organization re-pins. Publication itself does not update consumer pins.
 
+## Content repositories
+
+For repositories with `stack=other`, the organization rules run
+`.github/workflows/content.yml` on pull requests and merge groups. Its stable
+job name is `Required content checks`. Callers do not need to copy a workflow.
+
+Each caller owns its spelling, EditorConfig, Markdown and YAML/JSON/TOML checks
+in its prek configuration, behind a `just check` recipe. The shared workflow
+does not duplicate those checks or their settings.
+
+Callers must provide a `justfile`, `.justfile` or `Justfile` and a `mise.toml`
+with exact version strings for `tools.just` and `tools.prek`. Missing files or
+unpinned tools fail with a message naming the requirement. The workflow
+bootstraps checksum-pinned mise, runs `mise install` for the caller's tools,
+then runs `mise exec -- just check`. A missing `check` recipe or a failed
+caller check fails the job.
+
+`ci-internal.yml` tests the workflow's events and stable job, caller-file
+requirements, verified mise bootstrap and failure propagation. This
+repository's broken Rust fixtures stay under its separate self-test.
+
 ## Self-test
 
 `ci-internal.yml` calls the shared workflow on `fixtures/sample`, which must
