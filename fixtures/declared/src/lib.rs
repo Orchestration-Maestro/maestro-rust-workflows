@@ -69,7 +69,10 @@ mod tests {
             .output()
             .unwrap();
         assert!(fd.status.success());
-        assert_eq!(String::from_utf8(fd.stdout).unwrap(), "./needle.txt\n");
+        assert_eq!(
+            String::from_utf8(fd.stdout).unwrap(),
+            format!(".{}needle.txt\n", std::path::MAIN_SEPARATOR)
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 }
