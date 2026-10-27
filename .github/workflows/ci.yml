@@ -937,16 +937,15 @@ jobs:
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
           if [ "${SHARD:-}" != doctests ]; then
-            if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
-              run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked \
-                --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
-                --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
-            elif [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
+            if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] || [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
               partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT")
               report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
               if [ "${WARM_CACHE:-false}" = true ]; then
                 partition=(-E "${WARM_TEST_FILTER-none()}")
                 report=(--no-report)
+              elif [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
+                partition=(--partition count:1/1)
+                report=(--fail-under-lines "$CARGO_COVERAGE_MIN_LINES")
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
                 --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked \
