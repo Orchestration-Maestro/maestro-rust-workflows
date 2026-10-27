@@ -178,6 +178,67 @@ jobs:
           step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == 'Coverage tools')
           match = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(match[1])], check=True)
+      - name: Example sources in coverage at workflow seam
+        shell: python
+        run: |
+          import ast
+          import os
+          import pathlib
+          import shutil
+          import subprocess
+          import tempfile
+          import textwrap
+
+          root = pathlib.Path.cwd()
+          workflow = (root / '.github/workflows/ci.yml').read_text(encoding='utf-8')
+          internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+          caller = internal.split('      - name: Caller checks at workflow seam\n', 1)[1]
+          caller = caller.split('        run: |\n', 1)[1].split('\n  native:', 1)[0]
+          tree = ast.parse(textwrap.dedent(caller))
+          tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
+          exec(compile(tree, 'workflow body resolver', 'exec'))
+
+          def example_sources_are_measured():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary) / 'caller'
+                  shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+                  registry = directory / 'registry/src/fixture'
+                  registry.mkdir(parents=True)
+                  (registry / 'lib.rs').write_text('/// A dependency fixture.\npub fn answer() -> u32 { 42 }\n', encoding='utf-8')
+                  test = directory / 'tests/example.rs'
+                  test.write_text(test.read_text(encoding='utf-8') +
+                                  '\n#[path = "../registry/src/fixture/lib.rs"]\nmod dependency;\n'
+                                  '#[test]\nfn dependency_runs() { assert_eq!(dependency::answer(), 42); }\n', encoding='utf-8')
+                  toolchain = subprocess.check_output(['rustup', 'show', 'active-toolchain'], cwd=directory, text=True).split()[0]
+                  for name, floor, shard in [('Coverage', '80', ''), ('Isolated tests', '80', ''),
+                                             ('Isolated tests', '', '1')]:
+                      env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
+                                          'CARGO_COVERAGE_MIN_LINES': floor, 'COLLECT_COVERAGE': 'true',
+                                          'SHARD': shard, 'TEST_SHARD_COUNT': '1'}
+                      # Only select LCOV output for single-job routes; keep the production command otherwise.
+                      command = body(name).replace('--fail-under-lines "$CARGO_COVERAGE_MIN_LINES"',
+                                                   '--fail-under-lines "$CARGO_COVERAGE_MIN_LINES" --lcov --output-path coverage.lcov')
+                      result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
+                                              cwd=directory, env=env, capture_output=True, text=True)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      report = directory / (f'shard-{shard}.lcov' if shard else 'coverage.lcov')
+                      records = report.read_text(encoding='utf-8').split('end_of_record')
+                      sources = [line[3:] for record in records for line in record.splitlines() if line.startswith('SF:')]
+                      print(f'{name} floor={floor} LCOV sources: {sources}', flush=True)
+                      example = next((record for record in records if 'SF:' + str(directory / 'examples/coverage.rs') + '\n' in record), None)
+                      assert example is not None, 'examples/coverage.rs missing from LCOV'
+                      assert any(line.startswith('DA:') and int(line.split(',')[1]) > 0 for line in example.splitlines()), example
+                      assert not any('/tests/' in source or '/registry/' in source for source in sources), sources
+                      print(f'PASS example_sources_are_measured: {name}, floor={floor}', flush=True)
+                      if shard:
+                          (directory / 'coverage').mkdir()
+                          shutil.copyfile(report, directory / 'coverage/shard-1.lcov')
+                          merged = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Merge coverage')],
+                                                  cwd=directory, env=env, capture_output=True, text=True)
+                          assert merged.returncode == 0, merged.stdout + merged.stderr
+                          print(merged.stdout, flush=True)
+
+          example_sources_are_measured()
       - name: Compile cache in every Rust job
         shell: python
         run: |
