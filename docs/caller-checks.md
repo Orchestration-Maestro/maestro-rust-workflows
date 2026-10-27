@@ -196,7 +196,7 @@ grep -RFn -- 'phase: waiting-for-child-exit' "$download/target/browser-author-di
 
 ### Pull-request selection and retries
 
-Pull requests run fast checks only, except that changes to literal `include_str!` or `include_bytes!` inputs under `crates/` also run test shards for the reading crates and their reverse dependencies, without coverage.
+Pull requests run fast checks only, except that changes to literal `include_str!` or `include_bytes!` inputs also run test shards for the reading crates and their reverse dependencies, without coverage.
 The declaration still computes changed workspace crates and their reverse
 dependencies for the self-test event mode. A crate manifest selects its
 crate; lockfile changes compare the resolved transitive dependency identities
