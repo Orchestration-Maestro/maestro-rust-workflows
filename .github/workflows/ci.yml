@@ -984,7 +984,8 @@ jobs:
           mkdir -p "$diagnostics"
           diagnostics=$(native "$diagnostics")
           isolation=$(mktemp -d "$RUNNER_TEMP/maestro-tests.XXXXXX")
-          trap 'rm -rf "$isolation"' EXIT
+          # Windows can keep its own profile caches open after the tests; the runner removes them.
+          trap 'rm -rf "$isolation" || [ "${OS:-}" = Windows_NT ]' EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
           isolation=$(native "$isolation")
           # Windows processes need these system locations; home and application data stay isolated.
@@ -1011,7 +1012,9 @@ jobs:
             "$@"
           }
           cargo fetch --locked
-          mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          # macOS ships Bash 3.2, which has no mapfile.
+          packages=()
+          while IFS= read -r -d '' argument; do packages+=("$argument"); done < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
           if [ "${SHARD:-}" != doctests ]; then
