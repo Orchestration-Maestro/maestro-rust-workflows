@@ -153,22 +153,20 @@ For repositories with `stack=other`, the organization rules run
 `.github/workflows/content.yml` on pull requests and merge groups. Its stable
 job name is `Required content checks`. Callers do not need to copy a workflow.
 
-The workflow checks spelling with typos, files against `.editorconfig`, and
-Markdown with rumdl. Markdown checks allow the organization's documentation
-HTML and omit line-length and first-heading rules. It parses every tracked
-YAML (including multiple documents), JSON and TOML file, including hidden files
-and paths with spaces. Generated, untracked files are not parsed.
+Each caller owns its spelling, EditorConfig, Markdown and YAML/JSON/TOML checks
+in its prek configuration, behind a `just check` recipe. The shared workflow
+does not duplicate those checks or their settings.
 
-If the repository has a `justfile`, `.justfile` or `Justfile`, the workflow
-installs checksum-pinned just and runs `just check` after the shared checks.
-A missing `check` recipe or a failed validator fails the job. The caller owns
-the recipe and any other tools it needs. Without a justfile, no caller command
-runs. All downloaded check tools and the YAML parser have fixed versions and
-embedded SHA-256 checksums.
+Callers must provide a `justfile`, `.justfile` or `Justfile` and a `mise.toml`
+with exact version strings for `tools.just` and `tools.prek`. Missing files or
+unpinned tools fail with a message naming the requirement. The workflow
+bootstraps checksum-pinned mise, runs `mise install` for the caller's tools,
+then runs `mise exec -- just check`. A missing `check` recipe or a failed
+caller check fails the job.
 
-`ci-internal.yml` tests the content workflow's shape and executes its steps on
-valid and deliberately broken files, plus passing and failing caller recipes.
-This repository's broken Rust fixtures stay under its separate self-test.
+`ci-internal.yml` tests the workflow's events and stable job, caller-file
+requirements, verified mise bootstrap and failure propagation. This
+repository's broken Rust fixtures stay under its separate self-test.
 
 ## Self-test
 

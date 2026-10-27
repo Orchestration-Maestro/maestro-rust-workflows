@@ -85,107 +85,80 @@ jobs:
               return textwrap.dedent(block[1]) if block else re.search(r'^        run: (.+)$', step, re.MULTILINE)[1]
 
           def content_run(name, directory, env=None):
-              command = ['python3', '-c'] if name == 'Parse content' else ['bash', '-e', '-o', 'pipefail', '-c']
-              return subprocess.run(command + [content_body(name)], cwd=directory,
+              return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', content_body(name)], cwd=directory,
                                     env=os.environ | (env or {}), capture_output=True, text=True)
 
-          def content_workflow_is_required():
+          def content_workflow_delegates_to_caller():
               assert all(re.search(r'^  ' + event + ':', content, re.MULTILINE)
                          for event in ['pull_request', 'merge_group', 'workflow_call'])
               assert re.findall(r'^  ([\w-]+):', content.split('\njobs:\n', 1)[1], re.MULTILINE) == ['content']
               assert '    name: Required content checks\n' in content
-              assert 'permissions:\n  contents: read\n' in content
-              assert 'persist-credentials: false' in content
+              assert 'permissions:\n  contents: read\n' in content and 'persist-credentials: false' in content
               assert re.findall(r'^    if: (.+)$', content, re.MULTILINE) == [
                   "$" + "{{ github.repository_id != '1404598722' }}"]
-              assert not re.search(r'^    continue-on-error:', content, re.MULTILINE)
+              assert not re.search(r'continue-on-error:', content)
               for action in re.findall(r'uses: (\S+)', content):
                   assert re.fullmatch(r'[^@]+@[0-9a-f]{40}', action), action
-              internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
-              assert 'Content checks at workflow seam' in internal
-
-          content_workflow_is_required()
-          print('PASS content_workflow_is_required', flush=True)
-
-          def content_checks_reject_bad_files():
+              assert content_body('Caller tools').strip() == 'mise install'
+              assert content_body('Caller check').strip() == 'mise exec -- just check'
+              assert not any(name in content for name in ['typos', 'editorconfig-checker', 'rumdl', 'PyYAML'])
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   paths = directory / 'paths'
-                  result = content_run('Content tools', root, {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths)})
+                  env = {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths)}
+                  result = content_run('Mise bootstrap', directory, env)
                   assert result.returncode == 0, result.stdout + result.stderr
-                  env = {'PATH': paths.read_text().strip() + os.pathsep + os.environ['PATH']}
-                  (directory / '.editorconfig').write_text('root = true\n[*]\ninsert_final_newline = true\ntrim_trailing_whitespace = true\n', encoding='utf-8')
-                  cases = [('Spelling', 'notes.txt', 'A correct sentence.\n', 'A mispelled sentence.\n'),
-                           ('EditorConfig', 'notes.txt', 'A sentence.\n', 'A sentence.  \n'),
-                           ('Markdown', 'nested/notes.md', '# Title\n\nA sentence.\n', '# Title\n\n# Title\n')]
-                  for name, filename, valid, invalid in cases:
-                      path = directory / filename
-                      path.parent.mkdir(exist_ok=True)
-                      path.write_text(valid, encoding='utf-8')
-                      result = content_run(name, directory, env)
-                      assert result.returncode == 0, result.stdout + result.stderr
-                      path.write_text(invalid, encoding='utf-8')
-                      result = content_run(name, directory, env)
-                      assert result.returncode != 0 and filename in result.stdout + result.stderr, result.stdout + result.stderr
-                      path.unlink()
-                  assert all('name: ' + name in content for name, *_ in cases)
-                  assert 'sha256sum --check --status' in content_body('Content tools')
+                  installed = pathlib.Path(paths.read_text().strip()) / 'mise'
+                  assert subprocess.check_output([str(installed), '--version'], text=True).startswith('2026.10.2 ')
+                  fake = directory / 'mise'
+                  fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\nexit "${STATUS:-0}"\n', encoding='utf-8')
+                  fake.chmod(0o755)
+                  calls = directory / 'calls'
+                  selected = {'PATH': str(directory) + os.pathsep + os.environ['PATH'], 'CALLS': str(calls)}
+                  for name, command in [('Caller tools', 'install'), ('Caller check', 'exec -- just check')]:
+                      for status in ['0', '73']:
+                          result = content_run(name, directory, selected | {'STATUS': status})
+                          assert result.returncode == int(status), result.stdout + result.stderr
+                          assert calls.read_text().splitlines()[-1] == command
+                  # A corrupted bootstrap download must not become executable or enter PATH.
+                  curl = directory / 'curl'
+                  curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\nprintf corrupt > "$2"\n', encoding='utf-8')
+                  curl.chmod(0o755)
+                  before = paths.read_text()
+                  result = content_run('Mise bootstrap', directory, env | selected)
+                  assert result.returncode != 0 and paths.read_text() == before, result.stdout + result.stderr
 
-          content_checks_reject_bad_files()
-          print('PASS content_checks_reject_bad_files', flush=True)
+          content_workflow_delegates_to_caller()
+          print('PASS content_workflow_delegates_to_caller', flush=True)
 
-          def content_parsers_check_every_tracked_file():
+          def content_requires_caller_files_and_pins():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
-                  subprocess.run(['git', 'init', '-q', str(directory)], check=True)
-                  files = {'nested space/.hidden.yml': '---\nfirst: true\n---\nsecond: [1, 2]\n',
-                           'data.YAML': 'name: valid\n', 'data.json': '{"valid": true}\n',
-                           'data.toml': 'valid = true\n'}
-                  for filename, text in files.items():
-                      path = directory / filename
-                      path.parent.mkdir(exist_ok=True)
-                      path.write_text(text, encoding='utf-8')
-                  subprocess.run(['git', 'add', '.'], cwd=directory, check=True)
-                  # Untracked generated output is not repository content.
-                  (directory / 'untracked.yaml').write_text('broken: [\n', encoding='utf-8')
-                  result = content_run('Parse content', directory)
-                  assert result.returncode == 0, result.stdout + result.stderr
-                  for filename, valid in files.items():
-                      path = directory / filename
-                      path.write_text('{broken = [\n', encoding='utf-8')
-                      result = content_run('Parse content', directory)
-                      assert result.returncode != 0 and filename in result.stdout + result.stderr, result.stdout + result.stderr
-                      path.write_text(valid, encoding='utf-8')
-                  result = content_run('Parse content', directory)
-                  assert result.returncode == 0, result.stdout + result.stderr
-
-          content_parsers_check_every_tracked_file()
-          print('PASS content_parsers_check_every_tracked_file', flush=True)
-
-          def content_validator_is_optional_and_fails_closed():
-              with tempfile.TemporaryDirectory() as temporary:
-                  directory = pathlib.Path(temporary)
-                  env = {'RUNNER_TEMP': temporary}
-                  result = content_run('Caller validator', directory, env)
-                  assert result.returncode == 0, result.stdout + result.stderr
-                  for filename in ['justfile', '.justfile', 'Justfile']:
-                      path = directory / filename
-                      path.write_text('check:\n    @printf validated > checked\n', encoding='utf-8')
-                      result = content_run('Caller validator', directory, env)
+                  result = content_run('Caller check files', directory)
+                  assert result.returncode != 0 and 'justfile' in result.stderr, result.stdout + result.stderr
+                  justfile = directory / 'justfile'
+                  justfile.touch()
+                  result = content_run('Caller check files', directory)
+                  assert result.returncode != 0 and 'mise.toml' in result.stderr, result.stdout + result.stderr
+                  config = directory / 'mise.toml'
+                  for text in ['[broken', '[tools]\n', '[tools]\njust="latest"\nprek="0.5.4"\n',
+                               '[tools]\njust="1.58.0"\nprek="0.5"\n', '[tools]\njust=3\nprek="0.5.4"\n']:
+                      config.write_text(text, encoding='utf-8')
+                      result = content_run('Caller check files', directory)
+                      assert result.returncode != 0 and 'mise.toml' in result.stderr, result.stdout + result.stderr
+                  config.write_text('[tools]\njust="1.58.0"\nprek="0.5.4"\n', encoding='utf-8')
+                  justfile.unlink()
+                  for name in ['justfile', '.justfile', 'Justfile']:
+                      path = directory / name
+                      path.touch()
+                      result = content_run('Caller check files', directory)
                       assert result.returncode == 0, result.stdout + result.stderr
-                      assert (directory / 'checked').read_text() == 'validated'
-                      (directory / 'checked').unlink()
                       path.unlink()
-                  path = directory / 'justfile'
-                  for recipe in ['other:\n    @true\n', 'check:\n    @exit 17\n']:
-                      path.write_text(recipe, encoding='utf-8')
-                      result = content_run('Caller validator', directory, env)
-                      assert result.returncode != 0, result.stdout + result.stderr
-                  steps = re.findall(r'^      - name: (.+)$', content, re.MULTILINE)
-                  assert steps.index('Caller validator') > steps.index('Parse content') > steps.index('Markdown')
+                  names = re.findall(r'^      - name: (.+)$', content, re.MULTILINE)
+                  assert names == ['Checkout', 'Caller check files', 'Mise bootstrap', 'Caller tools', 'Caller check']
 
-          content_validator_is_optional_and_fails_closed()
-          print('PASS content_validator_is_optional_and_fails_closed', flush=True)
+          content_requires_caller_files_and_pins()
+          print('PASS content_requires_caller_files_and_pins', flush=True)
       - name: Ephemeral runner policy
         run: python3 -m unittest discover -s .github -p runner_policy_test.py
       - name: Toolchain
@@ -2098,8 +2071,7 @@ jobs:
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
           permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
-          for name in ['Content tools', 'Caller validator']:
-              permit('content', 'content', name, '--retry', '3')
+          permit('content', 'content', 'Mise bootstrap', '--retry', '3')
 
           def require_recorded_controls(sources, reasons=authority):
               observed = collect(sources)
@@ -2186,7 +2158,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 61)
+                  self.assertEqual(len(report.splitlines()), 60)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2448,7 +2420,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 61)
+                  self.assertEqual(len(report.splitlines()), 60)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
