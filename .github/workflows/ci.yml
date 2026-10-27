@@ -1154,6 +1154,7 @@ jobs:
           https://github.com/zizmorcore/zizmor/releases/download/v1.30.1/zizmor-x86_64-unknown-linux-gnu.tar.gz e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a zizmor
           https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 actionlint
           https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz 3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522 cargo-llvm-cov
+          https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-unknown-linux-musl.tar.gz bf92cb81450872d960ffa13857a83084d557ec0cdc141663d263bb23ef756f97 cargo-nextest
           https://github.com/rust-fuzz/cargo-fuzz/releases/download/0.13.2/cargo-fuzz-0.13.2-x86_64-unknown-linux-musl.tar.gz b5b704018b63e0f151c17a057ac53b5111e1db545d1b9f72fee79f08a545931c cargo-fuzz
           https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64 76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf shfmt
           TOOLS
@@ -1356,7 +1357,8 @@ jobs:
           for name in ${!LLVM_@}; do
             if [[ "$name" == LLVM_*_FLAGS ]]; then unset "$name"; fi
           done
-          "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked \
+          PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
+            --retries 2 --flaky-result pass --final-status-level flaky --partition count:1/1 --no-tests pass --workspace --locked \
             --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
             --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
       - name: Compile cache statistics

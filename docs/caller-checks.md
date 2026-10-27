@@ -150,7 +150,10 @@ successful declaration and event-skipped shards. On full runs it downloads all
 sixteen reports, counts each source line once (covered if any shard hits it), and
 enforces `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
-for merge groups and main pushes. PRs skip coverage for all callers.
+for merge groups and main pushes. Both coverage modes run tests through nextest,
+so caller setup scripts run in either mode. Single-job coverage uses one partition
+(`count:1/1`) and enforces the coverage floor on that report; declared callers
+combine sixteen reports as described above. PRs skip coverage for all callers.
 
 ### Test diagnostics
 
