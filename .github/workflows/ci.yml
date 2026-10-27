@@ -79,6 +79,7 @@ jobs:
       packages: ${{ steps.selection.outputs.packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
+      included_tests: ${{ steps.selection.outputs.included_tests }}
       test_shard_count: ${{ env.TEST_SHARD_COUNT }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
@@ -367,6 +368,7 @@ jobs:
           import json
           import os
           import pathlib
+          import re
           import subprocess
           import tempfile
           import tomllib
@@ -379,6 +381,7 @@ jobs:
           roots = {p: pathlib.Path(packages[p]['manifest_path']).parent.relative_to(pathlib.Path.cwd()) for p in members}
           selected = set(members)
           browser_changed = False
+          included_readers = set()
           event = os.environ['TEST_EVENT']
           base = os.environ.get('BASE_REF')
           def declarations():
@@ -395,6 +398,13 @@ jobs:
           inputs = {pathlib.Path(key): {ids[name] for name in readers} for key, readers in config.get('test_inputs', {}).items()}
           if event == 'pull_request' and base:
               changed = subprocess.check_output(['git', 'diff', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
+              # Literal include paths are relative to the Rust source, not the package root.
+              changed_paths = {(pathlib.Path.cwd() / name).resolve() for name in changed}
+              literal_include = re.compile(r'\binclude_(?:str|bytes)\s*!\s*[(\[{]\s*(?:"([^"\\]*)"|r(#{0,255})"(.*?)"\2)', re.DOTALL)
+              for source in pathlib.Path('crates').rglob('*.rs'):
+                  for match in literal_include.finditer(source.read_text(encoding='utf-8')):
+                      if (source.parent / (match[1] if match[1] is not None else match[3])).resolve() in changed_paths:
+                          included_readers.update(p for p, root in roots.items() if source.is_relative_to(root))
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)
@@ -439,6 +449,8 @@ jobs:
                       return result
                   old, new = dependencies(before), dependencies(head)
                   selected.update(p for p in members if old.get(packages[p]['name']) != new[packages[p]['name']])
+              if included_readers:
+                  selected = set(included_readers)
               while True:
                   reverse = {n['id'] for n in head['resolve']['nodes'] if n['id'] in members and set(n['dependencies']) & selected}
                   if reverse <= selected:
@@ -464,6 +476,7 @@ jobs:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
               output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
+              output.write('included_tests=' + str(bool(included_readers)).lower() + '\n')
               shards = list(range(1, int(os.environ['TEST_SHARD_COUNT']) + 1))
               if event != 'pull_request':
                   shards.append('doctests')
@@ -760,7 +773,7 @@ jobs:
   tests:
     needs: declaration
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
-    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1047,6 +1060,7 @@ jobs:
         env:
           RESULT: ${{ needs.tests.result }}
           DECLARATION_RESULT: ${{ needs.declaration.result }}
+          INCLUDED_TESTS: ${{ needs.declaration.outputs.included_tests }}
           COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
         shell: python
         run: |
@@ -1054,7 +1068,8 @@ jobs:
           assert os.environ['DECLARATION_RESULT'] == 'success'
           expected = {'false': 'skipped', 'true': 'success'}
           assert os.environ['COLLECT_COVERAGE'] in expected
-          assert os.environ['RESULT'] == expected[os.environ['COLLECT_COVERAGE']]
+          required = 'success' if os.environ.get('INCLUDED_TESTS') == 'true' else expected[os.environ['COLLECT_COVERAGE']]
+          assert os.environ['RESULT'] == required
       - name: Download shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
