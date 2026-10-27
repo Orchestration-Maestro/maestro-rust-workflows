@@ -2098,6 +2098,8 @@ jobs:
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
           permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
+          for name in ['Content tools', 'Caller validator']:
+              permit('content', 'content', name, '--retry', '3')
 
           def require_recorded_controls(sources, reasons=authority):
               observed = collect(sources)
@@ -2184,7 +2186,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 59)
+                  self.assertEqual(len(report.splitlines()), 61)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2446,7 +2448,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 59)
+                  self.assertEqual(len(report.splitlines()), 61)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
