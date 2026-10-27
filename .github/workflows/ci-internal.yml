@@ -4637,12 +4637,13 @@ jobs:
                       (crate / 'Cargo.toml').write_text(manifest, encoding='utf-8')
                       (crate / 'src/lib.rs').write_text('', encoding='utf-8')
                   (directory / 'docs').mkdir()
-                  for name in ['policy.md', 'bytes.md', 'escaped.md', 'unrelated.md']:
+                  for name in ['policy.md', 'bytes.md', 'escaped.md', 'line\nbreak.md', 'unrelated.md']:
                       (directory / 'docs' / name).write_text('base\n', encoding='utf-8')
                   (directory / 'crates/a/src/lib.rs').write_text(
                       'const _: &str = include_str!("../../../docs/policy.md");\n'
                       'const _: &[u8] = include_bytes! (\n r#"../../../docs/bytes.md"#\n);\n'
-                      'const _: &str = include_str!("../../../docs/escap\\u{65}d.md");\n', encoding='utf-8')
+                      'const _: &str = include_str!("../../../docs/escap\\u{65}d.md");\n'
+                      'const _: &str = include_str!("../../../docs/line\nbreak.md");\n', encoding='utf-8')
                   command = ['cargo', 'generate-lockfile']
                   if os.environ.get('MAESTRO_LOCAL_CAPPED'):
                       command.insert(0, os.path.expanduser('~/.local/bin/capped'))
@@ -4655,6 +4656,7 @@ jobs:
                   for changed, expected, runs in [('docs/policy.md', ['a', 'b'], 'true'),
                                                    ('docs/bytes.md', ['a', 'b'], 'true'),
                                                    ('docs/escaped.md', ['a', 'b'], 'true'),
+                                                   ('docs/line\nbreak.md', ['a', 'b'], 'true'),
                                                    ('docs/unrelated.md', [], 'false'),
                                                    ('crates/c/src/lib.rs', ['c'], 'false')]:
                       (directory / changed).write_text('// changed\n', encoding='utf-8')
