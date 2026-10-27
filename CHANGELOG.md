@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.16.0...v0.16.1) (2026-10-27)
+
+
+### Bug Fixes
+
+* **ci:** measure example sources in coverage ([#209](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/209)) ([2839220](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/2839220aac0aea72335ea2ed01615900b1955e24))
+
 ## [0.16.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.15.6...v0.16.0) (2026-10-27)
 
 
