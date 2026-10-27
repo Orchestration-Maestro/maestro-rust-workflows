@@ -132,8 +132,10 @@ zizmor and actionlint (workflow
 security and correctness when workflows exist), plus at least 80% line coverage on merge groups and main pushes
 (measured in isolated nextest partitions, or in the single undeclared coverage
 job). Coverage measures library, binary and example sources exercised by those
-tests. It excludes whole path segments `tests/`, `benches/`, `target/`,
-`vendor/`, `registry/`, `git/checkouts/` and `toolchains/`, compiler sources under
+tests. It excludes `tests/` and `benches/` when their next path component is
+not `..`, so examples imported from a `src/tests/` module through parent paths
+remain measured. It also excludes whole path segments `target/`, `vendor/`,
+`registry/`, `git/checkouts/` and `toolchains/`, compiler sources under
 `rustc/<hash-or-version>/`, and files named `tests.rs`, `*_tests.rs` or
 `*-tests.rs`. All coverage routes disable the default ignore regex and use this
 explicit list: cargo-llvm-cov 0.9.1's defaults also exclude `examples/`
