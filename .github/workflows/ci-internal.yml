@@ -215,6 +215,9 @@ jobs:
                   subprocess.run(['cargo', 'clippy', '--all-targets', '--locked', '--', '-D', 'warnings'], cwd=directory, check=True)
                   for name, floor, shard in [('Coverage', '80', ''), ('Isolated tests', '80', ''),
                                              ('Isolated tests', '', '1')]:
+                      # Each route models a separate CI job, without another route's binaries.
+                      if (directory / 'target').exists():
+                          shutil.rmtree(directory / 'target')
                       env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
                                           'CARGO_COVERAGE_MIN_LINES': floor, 'COLLECT_COVERAGE': 'true',
                                           'SHARD': shard, 'TEST_SHARD_COUNT': '1'}
@@ -273,6 +276,7 @@ jobs:
                   print(f'PASS single_coverage_runs_setup_scripts: {name}', flush=True)
 
           single_coverage_runs_setup_scripts('Isolated tests')
+          single_coverage_runs_setup_scripts('Coverage')
           example_sources_are_measured()
       - name: Compile cache in every Rust job
         shell: python
@@ -2254,7 +2258,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 60)
+                  self.assertEqual(len(report.splitlines()), 61)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2339,7 +2343,7 @@ jobs:
                   start = candidate.index(coverage)
                   offset = candidate.index('--retries 2', start)
                   candidate = candidate[:offset] + candidate[offset:].replace('--retries 2', '', 1)
-                  self.assertEqual(candidate.count('--retries 2'), 3)
+                  self.assertEqual(candidate.count('--retries 2'), 4)
                   self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
 
               def test_deadline_after_steps_keeps_job_ownership(self):
@@ -2516,7 +2520,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 60)
+                  self.assertEqual(len(report.splitlines()), 61)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
