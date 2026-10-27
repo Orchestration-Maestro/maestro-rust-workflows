@@ -5680,7 +5680,7 @@ jobs:
           persist-credentials: false
           repository: Orchestration-Maestro/maestro
           path: maestro
-          ref: a402fd15c14ddb9ad40ef173e9dd2faf6dc2ab74
+          ref: 3e416ef4b096dffec41147bcdbba682a0eebbde7
       - name: Extract workflow steps
         working-directory: .
         run: python3 workflow/.github/extract-workflow-steps.py
