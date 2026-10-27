@@ -937,7 +937,9 @@ jobs:
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
           if [ "${SHARD:-}" != doctests ]; then
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
-              run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+              run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked \
+                --no-default-ignore-filename-regex --ignore-filename-regex '(^|/)(tests|benches|target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$' \
+                --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
             elif [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
               partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT")
               report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
@@ -946,7 +948,8 @@ jobs:
                 report=(--no-report)
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked "${report[@]}" 2>&1 | tee nextest.log
+                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked \
+                --no-default-ignore-filename-regex --ignore-filename-regex '(^|/)(tests|benches|target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$' "${report[@]}" 2>&1 | tee nextest.log
             else
               partition=()
               if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT"); fi
@@ -1353,7 +1356,9 @@ jobs:
           for name in ${!LLVM_@}; do
             if [[ "$name" == LLVM_*_FLAGS ]]; then unset "$name"; fi
           done
-          "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+          "$TOOLS/cargo-llvm-cov" llvm-cov --workspace --locked \
+            --no-default-ignore-filename-regex --ignore-filename-regex '(^|/)(tests|benches|target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$' \
+            --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && needs.declaration.outputs.enabled != 'true'

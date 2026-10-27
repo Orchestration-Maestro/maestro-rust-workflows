@@ -3220,6 +3220,9 @@ jobs:
           warm_cache_keeps_one_writer()
           print('PASS warm_cache_keeps_one_writer')
 
+          coverage_report_args = ['--no-default-ignore-filename-regex', '--ignore-filename-regex',
+                                  r'(^|/)(tests|benches|target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$']
+
           def warm_cache_builds_without_tests_or_reports():
               for status in (0, 17):
                   with tempfile.TemporaryDirectory() as temporary:
@@ -3237,7 +3240,7 @@ jobs:
                       assert commands[1]['args'] == [
                           'llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                           '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                          '-E', 'none()', '--no-tests', 'pass', '--workspace', '--locked', '--no-report']
+                          '-E', 'none()', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--no-report']
                       assert commands[1]['home'] != os.environ.get('HOME')
                       assert not list(directory.glob('*.lcov'))
 
@@ -3886,12 +3889,11 @@ jobs:
                       if shard == 'doctests':
                           expected = ['test', '--locked', '--doc', '-p', 'sample']
                       elif threshold:
-                          expected = ['llvm-cov', '--workspace', '--locked', '--fail-under-lines', '80']
+                          expected = ['llvm-cov', '--workspace', '--locked'] + coverage_report_args + ['--fail-under-lines', '80']
                       elif route == 'Isolated tests' and coverage == 'true':
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                                      '--partition', f'count:{shard}/16', '--no-tests', 'pass', '--workspace', '--locked',
-                                      '--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
+                                      '--partition', f'count:{shard}/16', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
                       else:
                           expected = ['nextest', 'run', '--user-config-file', 'none', '--ignore-default-filter', '--locked',
                                       '-p', 'sample', '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky']

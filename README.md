@@ -131,8 +131,14 @@ typos (spelling), gitleaks (checked-out source, before build-cache restore),
 zizmor and actionlint (workflow
 security and correctness when workflows exist), plus at least 80% line coverage on merge groups and main pushes
 (measured in isolated nextest partitions, or in the single undeclared coverage
-job). All check tools
-are exact release pins, verified against embedded SHA-256 checksums before
+job). Coverage measures library, binary and example sources exercised by those
+tests. It excludes whole path segments `tests/`, `benches/`, `target/`,
+`vendor/`, `registry/`, `git/checkouts/` and `toolchains/`, compiler sources under
+`rustc/<hash-or-version>/`, and files named `tests.rs`, `*_tests.rs` or
+`*-tests.rs`. All coverage routes disable the default ignore regex and use this
+explicit list: cargo-llvm-cov 0.9.1's defaults also exclude `examples/`
+(`src/report.rs:893-979`). Shared CI sets no custom build or vendor directories.
+All check tools are exact release pins, verified against embedded SHA-256 checksums before
 execution. Their defaults are embedded in the shared workflow, not loaded from
 consumer files. The caller declaration can add spelling words, exact-version
 license exceptions, named advisory exceptions tied to reported package versions,
