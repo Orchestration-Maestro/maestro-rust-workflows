@@ -79,6 +79,7 @@ jobs:
       packages: ${{ steps.selection.outputs.packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
+      included_tests: ${{ steps.selection.outputs.included_tests }}
       test_shard_count: ${{ env.TEST_SHARD_COUNT }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
@@ -364,9 +365,11 @@ jobs:
           BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           python3 - <<'PYTHON'
+          import ast
           import json
           import os
           import pathlib
+          import re
           import subprocess
           import tempfile
           import tomllib
@@ -379,6 +382,7 @@ jobs:
           roots = {p: pathlib.Path(packages[p]['manifest_path']).parent.relative_to(pathlib.Path.cwd()) for p in members}
           selected = set(members)
           browser_changed = False
+          included_readers = set()
           event = os.environ['TEST_EVENT']
           base = os.environ.get('BASE_REF')
           def declarations():
@@ -395,6 +399,51 @@ jobs:
           inputs = {pathlib.Path(key): {ids[name] for name in readers} for key, readers in config.get('test_inputs', {}).items()}
           if event == 'pull_request' and base:
               changed = subprocess.check_output(['git', 'diff', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
+              # Literal include paths are relative to the Rust source, not the package root.
+              changed_paths = {(pathlib.Path.cwd() / name).resolve() for name in changed}
+              # shortcut: static matching may overselect commented macros; use a Rust parser if that becomes costly.
+              literal_include = re.compile(r'("(?:[^"\\]|\\.)*")|r(#{0,255})"(.*?)"\2', re.DOTALL)
+              def skip_trivia(text, position):
+                  while position < len(text):
+                      trivia = re.match(r'\s+|//[^\n]*(?:\n|$)|/\*', text[position:])
+                      if not trivia:
+                          break
+                      position += trivia.end()
+                      if trivia[0] == '/*':
+                          depth = 1
+                          for delimiter in re.finditer(r'/\*|\*/', text[position:]):
+                              depth += 1 if delimiter[0] == '/*' else -1
+                              if depth == 0:
+                                  position += delimiter.end()
+                                  break
+                          else:
+                              return len(text)
+                  return position
+              scan_roots = {root for root in roots.values() if not any(
+                  root != parent and root.is_relative_to(parent) for parent in roots.values())}
+              for source in sorted(source for root in scan_roots for source in root.rglob('*.rs')):
+                  text = source.read_text(encoding='utf-8')
+                  for macro in re.finditer(r'\binclude_(?:str|bytes)\b', text):
+                      position = skip_trivia(text, macro.end())
+                      if text[position:position + 1] != '!':
+                          continue
+                      position = skip_trivia(text, position + 1)
+                      if text[position:position + 1] not in ('(', '[', '{'):
+                          continue
+                      match = literal_include.match(text, skip_trivia(text, position + 1))
+                      if not match:
+                          continue
+                      path = match[3]
+                      if match[1] is not None:
+                          # Normalize Rust's Unicode and continued-line escapes before decoding.
+                          literal = re.sub(r'\\(?:u\{([0-9a-fA-F_]+)\}|(\r?\n\s*)|.)',
+                                           lambda m: '\\U' + f'{int(m[1].replace("_", ""), 16):08x}' if m[1] else '' if m[2] else m[0],
+                                           match[1], flags=re.DOTALL)
+                          path = ast.literal_eval(literal.replace('\n', r'\n').replace('\r', r'\r'))
+                      if (source.parent / path).resolve() in changed_paths:
+                          owner = max((p for p, root in roots.items() if source.is_relative_to(root)),
+                                      key=lambda p: len(roots[p].parts))
+                          included_readers.add(owner)
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)
@@ -439,6 +488,8 @@ jobs:
                       return result
                   old, new = dependencies(before), dependencies(head)
                   selected.update(p for p in members if old.get(packages[p]['name']) != new[packages[p]['name']])
+              if included_readers:
+                  selected = set(included_readers)
               while True:
                   reverse = {n['id'] for n in head['resolve']['nodes'] if n['id'] in members and set(n['dependencies']) & selected}
                   if reverse <= selected:
@@ -464,6 +515,7 @@ jobs:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
               output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
+              output.write('included_tests=' + str(bool(included_readers)).lower() + '\n')
               shards = list(range(1, int(os.environ['TEST_SHARD_COUNT']) + 1))
               if event != 'pull_request':
                   shards.append('doctests')
@@ -760,7 +812,7 @@ jobs:
   tests:
     needs: declaration
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
-    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1047,6 +1099,7 @@ jobs:
         env:
           RESULT: ${{ needs.tests.result }}
           DECLARATION_RESULT: ${{ needs.declaration.result }}
+          INCLUDED_TESTS: ${{ needs.declaration.outputs.included_tests }}
           COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
         shell: python
         run: |
@@ -1054,7 +1107,8 @@ jobs:
           assert os.environ['DECLARATION_RESULT'] == 'success'
           expected = {'false': 'skipped', 'true': 'success'}
           assert os.environ['COLLECT_COVERAGE'] in expected
-          assert os.environ['RESULT'] == expected[os.environ['COLLECT_COVERAGE']]
+          required = 'success' if os.environ.get('INCLUDED_TESTS') == 'true' else expected[os.environ['COLLECT_COVERAGE']]
+          assert os.environ['RESULT'] == required
       - name: Download shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

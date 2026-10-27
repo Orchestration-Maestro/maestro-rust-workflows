@@ -18,13 +18,14 @@ After declaration validation, pull requests run formatting, Clippy, docs,
 dependency and source checks, and declared Windows target checks in parallel.
 Test shards, coverage, other foreign-target checks (including macOS),
 wasm/browser builds and Chromium tests run on merge groups and main pushes,
-not on pull-request heads. Those full events also keep the Windows check.
+not on ordinary pull-request heads; [included-input changes](docs/caller-checks.md#pull-request-selection-and-retries) also run reader tests on pull requests without coverage.
+Those full events also keep the Windows check.
 
 Tests run with checksum-pinned cargo-nextest 0.9.148 on four Linux runners,
 using automatic count partitions rather than package lists. Doctests run in a
 parallel `Doctests` matrix leg. The aggregate `Tests (ubuntu-latest)` requires
 all five legs to succeed on full runs and accepts event-skipped shards on
-pull requests.
+pull requests unless the included-input rule requires them to succeed.
 Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-diagnostics)
 and the reporter log after isolated tests fail or time out.
 
