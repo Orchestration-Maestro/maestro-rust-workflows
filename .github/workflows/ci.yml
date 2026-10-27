@@ -58,6 +58,36 @@ permissions:
 env:
   TEST_SHARD_COUNT: 16
   COVERAGE_IGNORE_FILENAME_REGEX: '(^|/)(tests|benches)/([^.]|\.[^./]|\.\.[^/])|(^|/)(target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$'
+  COVERAGE_MERGE: |
+    import json
+    import os
+    import pathlib
+    lines = {}
+    reports = pathlib.Path(os.environ.get('COVERAGE_REPORT_DIR', 'coverage'))
+    expected = {f'shard-{shard}.lcov' for shard in range(1, int(os.environ.get('COVERAGE_REPORT_COUNT') or os.environ['TEST_SHARD_COUNT']) + 1)}
+    if {path.name for path in reports.glob('*.lcov')} != expected:
+        raise SystemExit('Missing or unexpected shard coverage reports')
+    for name in sorted(expected):
+        source = None
+        for record in (reports / name).read_text(encoding='utf-8').splitlines():
+            if record.startswith('SF:'):
+                source = os.path.normpath(record[3:])
+            elif record.startswith('DA:'):
+                if source is None:
+                    raise SystemExit(f'{name}: line without source file')
+                line, hits, *_ = record[3:].split(',')
+                key = (source, int(line))
+                lines[key] = lines.get(key, 0) + int(hits)
+            elif record == 'end_of_record':
+                source = None
+    if not lines:
+        raise SystemExit('No instrumented lines in shard coverage')
+    covered = sum(hits > 0 for hits in lines.values())
+    percentage = covered * 100 / len(lines)
+    threshold = int(os.environ['CARGO_COVERAGE_MIN_LINES']) if os.environ.get('CARGO_COVERAGE_MIN_LINES') else json.loads(os.environ.get('QUALITY_CONFIG') or '{}').get('coverage_min_lines', 80)
+    print(f'Merged line coverage: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')
+    if percentage < threshold:
+        raise SystemExit('Merged line coverage is below threshold')
 
 defaults:
   run:
@@ -945,11 +975,15 @@ jobs:
                 report=(--no-report)
               elif [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
                 partition=(--partition count:1/1)
-                report=(--fail-under-lines "$CARGO_COVERAGE_MIN_LINES")
+                mkdir -p single-coverage
+                report=(--lcov --output-path "$PWD/single-coverage/shard-1.lcov")
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
                 --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked \
                 --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee nextest.log
+              if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] && [ "${WARM_CACHE:-false}" != true ]; then
+                COVERAGE_REPORT_DIR=single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
+              fi
             else
               partition=()
               if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT"); fi
@@ -1065,38 +1099,7 @@ jobs:
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         env:
           QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
-        run: |
-          python3 - <<'PYTHON'
-          import json
-          import os
-          import pathlib
-          lines = {}
-          reports = pathlib.Path('coverage')
-          expected = {f'shard-{shard}.lcov' for shard in range(1, int(os.environ['TEST_SHARD_COUNT']) + 1)}
-          if {path.name for path in reports.glob('*.lcov')} != expected:
-              raise SystemExit('Missing or unexpected shard coverage reports')
-          for name in sorted(expected):
-              source = None
-              for record in (reports / name).read_text(encoding='utf-8').splitlines():
-                  if record.startswith('SF:'):
-                      source = os.path.normpath(record[3:])
-                  elif record.startswith('DA:'):
-                      if source is None:
-                          raise SystemExit(f'{name}: line without source file')
-                      line, hits, *_ = record[3:].split(',')
-                      key = (source, int(line))
-                      lines[key] = lines.get(key, 0) + int(hits)
-                  elif record == 'end_of_record':
-                      source = None
-          if not lines:
-              raise SystemExit('No instrumented lines in shard coverage')
-          covered = sum(hits > 0 for hits in lines.values())
-          percentage = covered * 100 / len(lines)
-          threshold = json.loads(os.environ.get('QUALITY_CONFIG') or '{}').get('coverage_min_lines', 80)
-          print(f'Merged line coverage: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')
-          if percentage < threshold:
-              raise SystemExit('Merged line coverage is below threshold')
-          PYTHON
+        run: python3 -c "$COVERAGE_MERGE"
 
   checks:
     name: Dependency, source and coverage checks
@@ -1357,10 +1360,12 @@ jobs:
           for name in ${!LLVM_@}; do
             if [[ "$name" == LLVM_*_FLAGS ]]; then unset "$name"; fi
           done
+          mkdir -p single-coverage
           PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
             --retries 2 --flaky-result pass --final-status-level flaky --partition count:1/1 --no-tests pass --workspace --locked \
             --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
-            --fail-under-lines "$CARGO_COVERAGE_MIN_LINES"
+            --lcov --output-path "$PWD/single-coverage/shard-1.lcov"
+          COVERAGE_REPORT_DIR=single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && needs.declaration.outputs.enabled != 'true'

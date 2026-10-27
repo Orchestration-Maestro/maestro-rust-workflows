@@ -2164,6 +2164,7 @@ jobs:
           permit('ci', 'tests', 'Tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
+          permit('ci', 'checks', 'Coverage / "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
           permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
           permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
           permit('content', 'content', 'Mise bootstrap', '--retry', '3')
