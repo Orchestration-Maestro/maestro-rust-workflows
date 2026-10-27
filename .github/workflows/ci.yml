@@ -1079,18 +1079,18 @@ jobs:
               source = None
               for record in (reports / name).read_text(encoding='utf-8').splitlines():
                   if record.startswith('SF:'):
-                      source = record[3:]
+                      source = os.path.normpath(record[3:])
                   elif record.startswith('DA:'):
                       if source is None:
                           raise SystemExit(f'{name}: line without source file')
                       line, hits, *_ = record[3:].split(',')
                       key = (source, int(line))
-                      lines[key] = lines.get(key, False) or int(hits) > 0
+                      lines[key] = lines.get(key, 0) + int(hits)
                   elif record == 'end_of_record':
                       source = None
           if not lines:
               raise SystemExit('No instrumented lines in shard coverage')
-          covered = sum(lines.values())
+          covered = sum(hits > 0 for hits in lines.values())
           percentage = covered * 100 / len(lines)
           threshold = json.loads(os.environ.get('QUALITY_CONFIG') or '{}').get('coverage_min_lines', 80)
           print(f'Merged line coverage: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')

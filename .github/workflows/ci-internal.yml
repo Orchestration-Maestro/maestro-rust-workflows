@@ -223,14 +223,15 @@ jobs:
                       assert result.returncode == 0, result.stdout + result.stderr
                       report = directory / (f'shard-{shard}.lcov' if shard else 'coverage.lcov')
                       records = report.read_text(encoding='utf-8').split('end_of_record')
-                      sources = [str(pathlib.Path(line[3:]).resolve()) for record in records
+                      sources = [os.path.normpath(line[3:]) for record in records
                                  for line in record.splitlines() if line.startswith('SF:')]
                       print(f'{name} floor={floor} LCOV sources: {sources}', flush=True)
-                      example = next((record for record in records if any(
-                          line.startswith('SF:') and pathlib.Path(line[3:]).resolve() == directory / 'examples/coverage.rs'
-                          for line in record.splitlines())), None)
-                      assert example is not None, 'examples/coverage.rs missing from LCOV'
-                      assert any(line.startswith('DA:') and int(line.split(',')[1]) > 0 for line in example.splitlines()), example
+                      example = [record for record in records if any(
+                          line.startswith('SF:') and os.path.normpath(line[3:]) == str(directory / 'examples/coverage.rs')
+                          for line in record.splitlines())]
+                      assert example, 'examples/coverage.rs missing from LCOV'
+                      assert any(line.startswith('DA:') and int(line.split(',')[1]) > 0
+                                 for record in example for line in record.splitlines()), example
                       assert not any('/tests/' in source or '/registry/' in source for source in sources), sources
                       print(f'PASS example_sources_are_measured: {name}, floor={floor}', flush=True)
                       if shard:
@@ -4378,10 +4379,17 @@ jobs:
                   directory = pathlib.Path(temporary)
                   reports = directory / 'coverage'
                   reports.mkdir()
-                  def report(shard, lines):
+                  def report(shard, lines, source='/src/lib.rs'):
                       (reports / f'shard-{shard}.lcov').write_text(
-                          'SF:/src/lib.rs\n' + ''.join(f'DA:{line},{hits}\n' for line, hits in lines) + 'end_of_record\n',
+                          f'SF:{source}\n' + ''.join(f'DA:{line},{hits}\n' for line, hits in lines) + 'end_of_record\n',
                           encoding='utf-8')
+                  for shard in range(1, 17):
+                      report(shard, [])
+                  report(1, [(line, 1) for line in range(1, 7)])
+                  report(2, [(line, 1) for line in range(1, 4)], '/caller/examples/coverage.rs')
+                  report(3, [(line, 0) for line in range(1, 4)], '/caller/src/tests/../../examples/coverage.rs')
+                  result = execute('Merge coverage', directory)
+                  assert result.returncode == 0 and '100.00% (9/9)' in result.stdout, result.stdout + result.stderr
                   report(1, [(1, 1), (2, 0)])
                   report(2, [(1, 0), (2, 1)])
                   for shard in range(3, 16):

@@ -140,6 +140,9 @@ remain measured. It also excludes whole path segments `target/`, `vendor/`,
 `*-tests.rs`. All coverage routes disable the default ignore regex and use this
 explicit list: cargo-llvm-cov 0.9.1's defaults also exclude `examples/`
 (`src/report.rs:893-979`). Shared CI sets no custom build or vendor directories.
+The merged report normalizes `.` and `..` path components without consulting
+the filesystem and sums hits per source line, so imported and standalone
+paths to the same example count once.
 All check tools are exact release pins, verified against embedded SHA-256 checksums before
 execution. Their defaults are embedded in the shared workflow, not loaded from
 consumer files. The caller declaration can add spelling words, exact-version
