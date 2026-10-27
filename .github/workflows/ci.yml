@@ -1027,14 +1027,14 @@ jobs:
                 report=(--no-report)
               elif [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
                 partition=(--partition count:1/1)
-                mkdir -p single-coverage
-                report=(--lcov --output-path "$PWD/single-coverage/shard-1.lcov")
+                mkdir -p target/single-coverage
+                report=(--lcov --output-path "$PWD/target/single-coverage/shard-1.lcov")
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
                 --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked \
                 --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee nextest.log
               if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] && [ "${WARM_CACHE:-false}" != true ]; then
-                COVERAGE_REPORT_DIR=single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
+                COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
               fi
             else
               partition=()
@@ -1414,12 +1414,12 @@ jobs:
           for name in ${!LLVM_@}; do
             if [[ "$name" == LLVM_*_FLAGS ]]; then unset "$name"; fi
           done
-          mkdir -p single-coverage
+          mkdir -p target/single-coverage
           PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
             --retries 2 --flaky-result pass --final-status-level flaky --partition count:1/1 --no-tests pass --workspace --locked \
             --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
-            --lcov --output-path "$PWD/single-coverage/shard-1.lcov"
-          COVERAGE_REPORT_DIR=single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
+            --lcov --output-path "$PWD/target/single-coverage/shard-1.lcov"
+          COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && needs.declaration.outputs.enabled != 'true'
