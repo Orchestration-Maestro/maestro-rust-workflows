@@ -246,6 +246,35 @@ jobs:
                           print(merged.stdout, flush=True)
 
           example_sources_are_measured()
+
+          def single_coverage_runs_setup_scripts(name):
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary) / 'caller'
+                  shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.config').mkdir()
+                  (directory / '.config/nextest.toml').write_text(
+                      'experimental=["setup-scripts"]\n'
+                      '[scripts.setup.prepare]\ncommand="sh .config/prepare.sh"\n'
+                      '[[profile.default.scripts]]\nfilter="all()"\nsetup="prepare"\n'
+                      '[profile.default]\ndefault-filter="none()"\n', encoding='utf-8')
+                  (directory / '.config/prepare.sh').write_text(
+                      'echo WORKFLOW_SETUP=ready >> "$NEXTEST_ENV"\n', encoding='utf-8')
+                  (directory / 'src/lib.rs').write_text(
+                      '#[test]\nfn requires_setup() {\n'
+                      '    assert_eq!(std::env::var("WORKFLOW_SETUP").unwrap(), "ready");\n'
+                      '}\n', encoding='utf-8')
+                  toolchain = subprocess.check_output(['rustup', 'show', 'active-toolchain'], cwd=directory, text=True).split()[0]
+                  env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
+                                      'CARGO_COVERAGE_MIN_LINES': '100', 'COLLECT_COVERAGE': 'true',
+                                      'SHARD': '', 'TEST_SHARD_COUNT': '16'}
+                  result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body(name)],
+                                          cwd=directory, env=env, capture_output=True, text=True)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert 'requires_setup' in result.stderr + result.stdout
+                  assert '1 passed' in result.stderr + result.stdout
+                  print(f'PASS single_coverage_runs_setup_scripts: {name}', flush=True)
+
+          single_coverage_runs_setup_scripts('Isolated tests')
       - name: Compile cache in every Rust job
         shell: python
         run: |
@@ -3235,7 +3264,7 @@ jobs:
               policy = document['env']['COVERAGE_IGNORE_FILENAME_REGEX']
               assert policy == coverage_report_args[2]
               assert workflow.count(policy) == 1
-              for name, count in [('Coverage', 1), ('Isolated tests', 2)]:
+              for name, count in [('Coverage', 1), ('Isolated tests', 1)]:
                   assert body(name).count('--ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX"') == count, name
               internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
               with tempfile.TemporaryDirectory() as temporary:
@@ -3917,7 +3946,9 @@ jobs:
                       if shard == 'doctests':
                           expected = ['test', '--locked', '--doc', '-p', 'sample']
                       elif threshold:
-                          expected = ['llvm-cov', '--workspace', '--locked'] + coverage_report_args + ['--fail-under-lines', '80']
+                          expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
+                                      '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
+                                      '--partition', 'count:1/1', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--fail-under-lines', '80']
                       elif route == 'Isolated tests' and coverage == 'true':
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
