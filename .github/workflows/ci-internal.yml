@@ -669,7 +669,7 @@ jobs:
                   directory = pathlib.Path(temporary)
                   with daemon(directory) as env:
                       isolated = body('Isolated tests')
-                      setup = isolated[isolated.index('cargo_home='):isolated.index('cargo fetch --locked')]
+                      setup = isolated[isolated.index('native() {'):isolated.index('cargo fetch --locked')]
                       # Only the test daemon address is injected after isolation, never cache policy.
                       command = setup + '\nrun_isolated env\nrun_isolated env SCCACHE_SERVER_UDS="$SCCACHE_SERVER_UDS" cargo build --locked --manifest-path "$SAMPLE_MANIFEST" --target-dir "$CARGO_TARGET_DIR"\n'
                       isolated_env = env | {'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0],
