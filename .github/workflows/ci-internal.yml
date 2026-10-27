@@ -218,13 +218,11 @@ jobs:
                       env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
                                           'CARGO_COVERAGE_MIN_LINES': floor, 'COLLECT_COVERAGE': 'true',
                                           'SHARD': shard, 'TEST_SHARD_COUNT': '1'}
-                      # Only select LCOV output for single-job routes; keep the production command otherwise.
-                      command = body(name).replace('--fail-under-lines "$CARGO_COVERAGE_MIN_LINES"',
-                                                   '--fail-under-lines "$CARGO_COVERAGE_MIN_LINES" --lcov --output-path coverage.lcov')
+                      command = body(name)
                       result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
                                               cwd=directory, env=env, capture_output=True, text=True)
-                      assert result.returncode == 0, result.stdout + result.stderr
-                      report = directory / (f'shard-{shard}.lcov' if shard else 'coverage.lcov')
+                      report = directory / (f'shard-{shard}.lcov' if shard else 'target/single-coverage/shard-1.lcov')
+                      assert result.returncode == 0, result.stdout + result.stderr + (report.read_text(encoding='utf-8') if report.exists() else '')
                       records = report.read_text(encoding='utf-8').split('end_of_record')
                       sources = [os.path.normpath(line[3:]) for record in records
                                  for line in record.splitlines() if line.startswith('SF:')]
@@ -245,6 +243,66 @@ jobs:
                           assert merged.returncode == 0, merged.stdout + merged.stderr
                           print(merged.stdout, flush=True)
 
+          def single_coverage_runs_setup_scripts(name):
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary) / 'caller'
+                  shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.config').mkdir()
+                  (directory / '.config/nextest.toml').write_text(
+                      'experimental=["setup-scripts"]\n'
+                      '[scripts.setup.prepare]\ncommand="sh .config/prepare.sh"\n'
+                      '[[profile.default.scripts]]\nfilter="all()"\nsetup="prepare"\n'
+                      '[profile.default]\ndefault-filter="none()"\n', encoding='utf-8')
+                  (directory / '.config/prepare.sh').write_text(
+                      'echo WORKFLOW_SETUP=ready >> "$NEXTEST_ENV"\n', encoding='utf-8')
+                  (directory / 'src/lib.rs').write_text(
+                      '#[test]\nfn requires_setup() {\n'
+                      '    assert_eq!(std::env::var("WORKFLOW_SETUP").unwrap(), "ready");\n'
+                      '}\n', encoding='utf-8')
+                  toolchain = subprocess.check_output(['rustup', 'show', 'active-toolchain'], cwd=directory, text=True).split()[0]
+                  env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
+                                      'CARGO_COVERAGE_MIN_LINES': '100', 'COLLECT_COVERAGE': 'true',
+                                      'SHARD': '', 'TEST_SHARD_COUNT': '16'}
+                  result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body(name)],
+                                          cwd=directory, env=env, capture_output=True, text=True)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert 'requires_setup' in result.stderr + result.stdout
+                  assert '1 passed' in result.stderr + result.stdout
+                  print(f'PASS single_coverage_runs_setup_scripts: {name}', flush=True)
+
+          def coverage_retries_report_flaky_tests_and_keep_failures():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary) / 'caller'
+                  shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+                  source = directory / 'src/lib.rs'
+                  source.write_text('#[test] fn coverage_only_flaky() { assert_eq!(std::env::var("NEXTEST_ATTEMPT").unwrap(), "3"); }\n', encoding='utf-8')
+                  toolchain = subprocess.check_output(['rustup', 'show', 'active-toolchain'], cwd=directory, text=True).split()[0]
+                  env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
+                                      'CARGO_COVERAGE_MIN_LINES': '0'}
+                  result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Coverage')],
+                                          cwd=directory, env=env, capture_output=True, text=True)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  log = directory / 'nextest.log'
+                  assert log.exists(), 'Coverage must capture nextest output for its flaky summary'
+                  assert 'FLAKY' in log.read_text(encoding='utf-8')
+                  summary = directory / 'summary'
+                  checks = workflow.split('  checks:\n', 1)[1].split('\n  fuzz:', 1)[0]
+                  assert "if: always()" in checks.split('      - name: Coverage flaky test summary\n', 1)[1].split('      - name:', 1)[0]
+                  assert body('Coverage flaky test summary') == body('Flaky test summary')
+                  result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Coverage flaky test summary')],
+                                          cwd=directory, env=env | {'GITHUB_STEP_SUMMARY': str(summary)}, capture_output=True, text=True)
+                  assert result.returncode == 0 and 'coverage_only_flaky' in summary.read_text(encoding='utf-8'), result.stderr
+                  source.write_text('#[test] fn coverage_permanent_failure() { panic!("permanent"); }\n', encoding='utf-8')
+                  result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Coverage')],
+                                          cwd=directory, env=env, capture_output=True, text=True)
+                  assert result.returncode != 0, result.stdout + result.stderr
+                  assert 'coverage_permanent_failure' in log.read_text(encoding='utf-8')
+                  print('PASS coverage_retries_report_flaky_tests_and_keep_failures', flush=True)
+
+          coverage_retries_report_flaky_tests_and_keep_failures()
+
+          single_coverage_runs_setup_scripts('Isolated tests')
+          single_coverage_runs_setup_scripts('Coverage')
           example_sources_are_measured()
       - name: Compile cache in every Rust job
         shell: python
@@ -2144,6 +2202,7 @@ jobs:
           permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
           permit('ci', 'native-tests', 'Native tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
           permit('ci', 'native-tests', 'Native tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
+          permit('ci', 'checks', 'Coverage / "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
           permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
           permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
           permit('content', 'content', 'Mise bootstrap', '--retry', '3')
@@ -2233,7 +2292,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 70)
+                  self.assertEqual(len(report.splitlines()), 71)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2282,7 +2341,7 @@ jobs:
               def test_retry_changes_are_rejected_per_branch(self):
                   source = files['.github/workflows/ci.yml']
                   positions = [m.start() for m in re.finditer('--retries 2', source)]
-                  self.assertEqual(len(positions), 3)
+                  self.assertEqual(len(positions), 4)
                   for offset in positions:
                       for replacement in ['--retries 3', '--retries 0', '--retries 2 --retries 2']:
                           with self.subTest(offset=offset, replacement=replacement):
@@ -2318,7 +2377,7 @@ jobs:
                   start = candidate.index(coverage)
                   offset = candidate.index('--retries 2', start)
                   candidate = candidate[:offset] + candidate[offset:].replace('--retries 2', '', 1)
-                  self.assertEqual(candidate.count('--retries 2'), 3)
+                  self.assertEqual(candidate.count('--retries 2'), 4)
                   self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
 
               def test_deadline_after_steps_keeps_job_ownership(self):
@@ -2495,7 +2554,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 70)
+                  self.assertEqual(len(report.splitlines()), 71)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
@@ -3242,7 +3301,7 @@ jobs:
               policy = document['env']['COVERAGE_IGNORE_FILENAME_REGEX']
               assert policy == coverage_report_args[2]
               assert workflow.count(policy) == 1
-              for name, count in [('Coverage', 1), ('Isolated tests', 2)]:
+              for name, count in [('Coverage', 1), ('Isolated tests', 1)]:
                   assert body(name).count('--ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX"') == count, name
               internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
               with tempfile.TemporaryDirectory() as temporary:
@@ -3251,9 +3310,12 @@ jobs:
                                           env=os.environ | {'GITHUB_ENV': str(exported), 'RUNNER_TEMP': temporary},
                                           capture_output=True, text=True)
                   assert result.returncode == 0, result.stdout + result.stderr
-                  assert dict(line.split('=', 1) for line in exported.read_text(encoding='utf-8').splitlines()) == {
-                      'PROOF_STEPS': str(pathlib.Path(temporary) / 'proof-steps'),
-                      'COVERAGE_IGNORE_FILENAME_REGEX': policy}
+                  exported_text = exported.read_text(encoding='utf-8')
+                  assert exported_text.startswith(f'PROOF_STEPS={temporary}/proof-steps\nCOVERAGE_IGNORE_FILENAME_REGEX={policy}\n')
+                  assert 'COVERAGE_MERGE<<COVERAGE_POLICY\n' + document['env']['COVERAGE_MERGE'] + 'COVERAGE_POLICY\n' in exported_text
+                  assert workflow.count('source = os.path.normpath(record[3:])') == 1
+                  for name in ['Coverage', 'Isolated tests', 'Merge coverage']:
+                      assert body(name).count('python3 -c "$COVERAGE_MERGE"') == 1, name
 
           coverage_exclusions_have_one_workflow_owner()
           print('PASS coverage_exclusions_have_one_workflow_owner')
@@ -3932,7 +3994,9 @@ jobs:
                       if shard == 'doctests':
                           expected = ['test', '--locked', '--doc', '-p', 'sample']
                       elif threshold:
-                          expected = ['llvm-cov', '--workspace', '--locked'] + coverage_report_args + ['--fail-under-lines', '80']
+                          expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
+                                      '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
+                                      '--partition', 'count:1/1', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
                       elif route == 'Isolated tests' and coverage == 'true':
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
@@ -5740,7 +5804,7 @@ jobs:
           persist-credentials: false
           repository: Orchestration-Maestro/maestro
           path: maestro
-          ref: a402fd15c14ddb9ad40ef173e9dd2faf6dc2ab74
+          ref: 3e416ef4b096dffec41147bcdbba682a0eebbde7
       - name: Extract workflow steps
         working-directory: .
         run: python3 workflow/.github/extract-workflow-steps.py
@@ -5810,10 +5874,10 @@ jobs:
               print(f'QUALIFICATION {label} exit={result.returncode} seconds={time.monotonic()-start:.3f}',flush=True)
               if expected == 0:
                   assert result.returncode == 0, label
-                  assert 'FAMILY execution 26/26' in text and 'FAMILY loading 19/19' in text and 'COMPLETE 45/45' in text, label
+                  assert all(message in text for message in ('FAMILY execution 26/26', 'FAMILY loading 49/49', 'FAMILY contributions 194/194', 'COMPLETE 269/269')), label
               else:
                   assert result.returncode != 0 and all(message in text for message in diagnostic), label
-                  assert 'COMPLETE 45/45' not in text, label
+                  assert 'COMPLETE 269/269' not in text, label
               print('PASS '+label,flush=True)
 
           def restore():

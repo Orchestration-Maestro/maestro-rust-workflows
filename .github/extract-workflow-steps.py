@@ -22,3 +22,7 @@ with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
     policy = re.search(r"^  COVERAGE_IGNORE_FILENAME_REGEX: '([^'\n]+)'$", workflow, re.MULTILINE)
     assert policy, 'Missing workflow coverage exclusion policy'
     output.write(f'COVERAGE_IGNORE_FILENAME_REGEX={policy[1]}\n')
+    merge = re.search(r"^  COVERAGE_MERGE: \|\n((?:    .*\n|\n)+)", workflow, re.MULTILINE)
+    assert merge, 'Missing workflow coverage merge policy'
+    script = textwrap.dedent(merge[1]).rstrip() + '\n'
+    output.write('COVERAGE_MERGE<<COVERAGE_POLICY\n' + script + 'COVERAGE_POLICY\n')
