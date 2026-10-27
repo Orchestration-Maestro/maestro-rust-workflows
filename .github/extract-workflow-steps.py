@@ -18,3 +18,7 @@ for step in workflow.split('      - name: ')[1:]:
         (directory / name).write_text(body(name), encoding='utf-8')
 with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
     output.write(f'PROOF_STEPS={directory}\n')
+    # Extracted coverage bodies need the same policy as shared-workflow jobs.
+    policy = re.search(r"^  COVERAGE_IGNORE_FILENAME_REGEX: '([^'\n]+)'$", workflow, re.MULTILINE)
+    assert policy, 'Missing workflow coverage exclusion policy'
+    output.write(f'COVERAGE_IGNORE_FILENAME_REGEX={policy[1]}\n')

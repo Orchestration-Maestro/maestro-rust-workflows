@@ -67,7 +67,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Shared coverage policy
-        run: yq -r '"COVERAGE_IGNORE_FILENAME_REGEX=" + .env.COVERAGE_IGNORE_FILENAME_REGEX' .github/workflows/ci.yml >> "$GITHUB_ENV"
+        run: python3 .github/extract-workflow-steps.py
       - name: Content checks at workflow seam
         shell: python
         run: |
@@ -3241,9 +3241,12 @@ jobs:
               with tempfile.TemporaryDirectory() as temporary:
                   exported = pathlib.Path(temporary) / 'env'
                   result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Shared coverage policy', internal)],
-                                          env=os.environ | {'GITHUB_ENV': str(exported)}, capture_output=True, text=True)
+                                          env=os.environ | {'GITHUB_ENV': str(exported), 'RUNNER_TEMP': temporary},
+                                          capture_output=True, text=True)
                   assert result.returncode == 0, result.stdout + result.stderr
-                  assert exported.read_text(encoding='utf-8') == f'COVERAGE_IGNORE_FILENAME_REGEX={policy}\n'
+                  assert dict(line.split('=', 1) for line in exported.read_text(encoding='utf-8').splitlines()) == {
+                      'PROOF_STEPS': str(pathlib.Path(temporary) / 'proof-steps'),
+                      'COVERAGE_IGNORE_FILENAME_REGEX': policy}
 
           coverage_exclusions_have_one_workflow_owner()
           print('PASS coverage_exclusions_have_one_workflow_owner')
