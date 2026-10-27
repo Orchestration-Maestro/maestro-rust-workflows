@@ -66,6 +66,126 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Content checks at workflow seam
+        shell: python
+        run: |
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import tempfile
+          import textwrap
+
+          root = pathlib.Path.cwd()
+          content = (root / '.github/workflows/content.yml').read_text(encoding='utf-8')
+
+          def content_body(name):
+              step = next(s for s in content.split('      - name: ')[1:] if s.splitlines()[0] == name)
+              block = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
+              return textwrap.dedent(block[1]) if block else re.search(r'^        run: (.+)$', step, re.MULTILINE)[1]
+
+          def content_run(name, directory, env=None):
+              command = ['python3', '-c'] if name == 'Parse content' else ['bash', '-e', '-o', 'pipefail', '-c']
+              return subprocess.run(command + [content_body(name)], cwd=directory,
+                                    env=os.environ | (env or {}), capture_output=True, text=True)
+
+          def content_workflow_is_required():
+              assert all(re.search(r'^  ' + event + ':', content, re.MULTILINE)
+                         for event in ['pull_request', 'merge_group', 'workflow_call'])
+              assert re.findall(r'^  ([\w-]+):', content.split('\njobs:\n', 1)[1], re.MULTILINE) == ['content']
+              assert '    name: Required content checks\n' in content
+              assert 'permissions:\n  contents: read\n' in content
+              assert 'persist-credentials: false' in content
+              assert re.findall(r'^    if: (.+)$', content, re.MULTILINE) == [
+                  "$" + "{{ github.repository_id != '1404598722' }}"]
+              assert not re.search(r'^    continue-on-error:', content, re.MULTILINE)
+              for action in re.findall(r'uses: (\S+)', content):
+                  assert re.fullmatch(r'[^@]+@[0-9a-f]{40}', action), action
+              internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+              assert 'Content checks at workflow seam' in internal
+
+          content_workflow_is_required()
+          print('PASS content_workflow_is_required', flush=True)
+
+          def content_checks_reject_bad_files():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  paths = directory / 'paths'
+                  result = content_run('Content tools', root, {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  env = {'PATH': paths.read_text().strip() + os.pathsep + os.environ['PATH']}
+                  (directory / '.editorconfig').write_text('root = true\n[*]\ninsert_final_newline = true\ntrim_trailing_whitespace = true\n', encoding='utf-8')
+                  cases = [('Spelling', 'notes.txt', 'A correct sentence.\n', 'A mispelled sentence.\n'),
+                           ('EditorConfig', 'notes.txt', 'A sentence.\n', 'A sentence.  \n'),
+                           ('Markdown', 'nested/notes.md', '# Title\n\nA sentence.\n', '# Title\n\n# Title\n')]
+                  for name, filename, valid, invalid in cases:
+                      path = directory / filename
+                      path.parent.mkdir(exist_ok=True)
+                      path.write_text(valid, encoding='utf-8')
+                      result = content_run(name, directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      path.write_text(invalid, encoding='utf-8')
+                      result = content_run(name, directory, env)
+                      assert result.returncode != 0 and filename in result.stdout + result.stderr, result.stdout + result.stderr
+                      path.unlink()
+                  assert all('name: ' + name in content for name, *_ in cases)
+                  assert 'sha256sum --check --status' in content_body('Content tools')
+
+          content_checks_reject_bad_files()
+          print('PASS content_checks_reject_bad_files', flush=True)
+
+          def content_parsers_check_every_tracked_file():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  subprocess.run(['git', 'init', '-q', str(directory)], check=True)
+                  files = {'nested space/.hidden.yml': '---\nfirst: true\n---\nsecond: [1, 2]\n',
+                           'data.YAML': 'name: valid\n', 'data.json': '{"valid": true}\n',
+                           'data.toml': 'valid = true\n'}
+                  for filename, text in files.items():
+                      path = directory / filename
+                      path.parent.mkdir(exist_ok=True)
+                      path.write_text(text, encoding='utf-8')
+                  subprocess.run(['git', 'add', '.'], cwd=directory, check=True)
+                  # Untracked generated output is not repository content.
+                  (directory / 'untracked.yaml').write_text('broken: [\n', encoding='utf-8')
+                  result = content_run('Parse content', directory)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  for filename, valid in files.items():
+                      path = directory / filename
+                      path.write_text('{broken = [\n', encoding='utf-8')
+                      result = content_run('Parse content', directory)
+                      assert result.returncode != 0 and filename in result.stdout + result.stderr, result.stdout + result.stderr
+                      path.write_text(valid, encoding='utf-8')
+                  result = content_run('Parse content', directory)
+                  assert result.returncode == 0, result.stdout + result.stderr
+
+          content_parsers_check_every_tracked_file()
+          print('PASS content_parsers_check_every_tracked_file', flush=True)
+
+          def content_validator_is_optional_and_fails_closed():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  env = {'RUNNER_TEMP': temporary}
+                  result = content_run('Caller validator', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  for filename in ['justfile', '.justfile', 'Justfile']:
+                      path = directory / filename
+                      path.write_text('check:\n    @printf validated > checked\n', encoding='utf-8')
+                      result = content_run('Caller validator', directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      assert (directory / 'checked').read_text() == 'validated'
+                      (directory / 'checked').unlink()
+                      path.unlink()
+                  path = directory / 'justfile'
+                  for recipe in ['other:\n    @true\n', 'check:\n    @exit 17\n']:
+                      path.write_text(recipe, encoding='utf-8')
+                      result = content_run('Caller validator', directory, env)
+                      assert result.returncode != 0, result.stdout + result.stderr
+                  steps = re.findall(r'^      - name: (.+)$', content, re.MULTILINE)
+                  assert steps.index('Caller validator') > steps.index('Parse content') > steps.index('Markdown')
+
+          content_validator_is_optional_and_fails_closed()
+          print('PASS content_validator_is_optional_and_fails_closed', flush=True)
       - name: Ephemeral runner policy
         run: python3 -m unittest discover -s .github -p runner_policy_test.py
       - name: Toolchain

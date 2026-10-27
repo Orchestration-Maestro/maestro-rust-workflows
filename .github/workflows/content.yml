@@ -1,0 +1,86 @@
+name: Content checks
+
+on:
+  pull_request:
+  merge_group:
+  workflow_call:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  content:
+    name: Required content checks
+    # This repository exercises deliberately broken fixtures in ci-internal.yml.
+    if: ${{ github.repository_id != '1404598722' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Content tools
+        run: |
+          bin=$(mktemp -d "$RUNNER_TEMP/maestro-content-tools.XXXXXX")
+          while read -r url digest binary; do
+            archive=$(mktemp)
+            curl --fail --retry 3 --location "$url" --output "$archive"
+            printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+            tar -xzf "$archive" -C "$bin" "$binary"
+            test -x "$bin/$binary"
+            rm -f "$archive"
+          done <<'TOOLS'
+          https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-x86_64-unknown-linux-musl.tar.gz 93c301fd4120ff076e2cc2a6d6a61cab4a4bdb81899287c0938b452e56d1f454 ./typos
+          https://github.com/editorconfig-checker/editorconfig-checker/releases/download/v4.0.2/editorconfig-checker-linux-amd64.tar.gz 44efaef3ed14c6ab52eb87481d78e5e5c204796dccf26e2f4598a61ba17f8003 editorconfig-checker
+          https://github.com/rvben/rumdl/releases/download/v0.3.0/rumdl-v0.3.0-x86_64-unknown-linux-musl.tar.gz 6c90c398f04c11a09dcbd2da08bdaa6d53d9b14393e3cd32dbdf4da5620eec5c rumdl
+          TOOLS
+          echo "$bin" >> "$GITHUB_PATH"
+      - name: Spelling
+        run: typos .
+      - name: EditorConfig
+        run: editorconfig-checker -disable-indent-size
+      - name: Markdown
+        run: rumdl check --no-cache --disable MD013,MD041 --config 'MD033.allowed-elements = ["a", "br", "details", "h1", "img", "p", "picture", "source", "strong", "summary"]' .
+      - name: YAML parser
+        run: |
+          python3 -m venv "$RUNNER_TEMP/maestro-content-python"
+          "$RUNNER_TEMP/maestro-content-python/bin/pip" install --only-binary=:all: --no-deps --require-hashes -r /dev/stdin <<'REQUIREMENTS'
+          PyYAML==6.0.3 --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc
+          REQUIREMENTS
+          echo "$RUNNER_TEMP/maestro-content-python/bin" >> "$GITHUB_PATH"
+      - name: Parse content
+        shell: python
+        run: |
+          import json
+          import pathlib
+          import subprocess
+          import tomllib
+          import yaml
+
+          for name in subprocess.check_output(['git', 'ls-files', '-z']).decode().split('\0'):
+              path = pathlib.Path(name)
+              if path.suffix.lower() not in {'.yaml', '.yml', '.json', '.toml'}:
+                  continue
+              try:
+                  text = path.read_text(encoding='utf-8')
+                  if path.suffix.lower() in {'.yaml', '.yml'}:
+                      list(yaml.safe_load_all(text))
+                  elif path.suffix.lower() == '.json':
+                      json.loads(text)
+                  else:
+                      tomllib.loads(text)
+              except (OSError, ValueError, yaml.YAMLError) as error:
+                  raise SystemExit(f'{name}: {error}') from error
+      - name: Caller validator
+        run: |
+          if [ -f justfile ] || [ -f .justfile ] || [ -f Justfile ]; then
+            bin=$(mktemp -d "$RUNNER_TEMP/maestro-content-just.XXXXXX")
+            curl --fail --retry 3 --location https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz --output "$bin/just.tar.gz"
+            printf '%s  %s\n' 4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d "$bin/just.tar.gz" | sha256sum --check --status
+            tar -xzf "$bin/just.tar.gz" -C "$bin" just
+            "$bin/just" check
+          fi
