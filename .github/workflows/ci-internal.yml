@@ -4259,6 +4259,7 @@ jobs:
                                      'inputs.fuzz-scan': fuzz, 'github.event_name': event,
                                      'github.repository_id': 'caller', 'inputs.working-directory': '.',
                                      'needs.declaration.outputs.coverage': values['coverage'],
+                                     'needs.declaration.outputs.included_tests': values['included_tests'],
                                      'needs.declaration.outputs.targets': '[{}]',
                                      'needs.declaration.outputs.wasm_crates': '["sample"]',
                                      'needs.declaration.outputs.browser_build': 'true',
@@ -4673,6 +4674,20 @@ jobs:
 
           included_docs_run_only_readers_and_reverse_dependencies()
           print('PASS included_docs_run_only_readers_and_reverse_dependencies')
+
+          def included_test_failures_remain_required():
+              for included in ['false', 'true']:
+                  for status in ['success', 'failure', 'cancelled', 'skipped']:
+                      result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                                              env=os.environ | {'RESULT': status, 'COLLECT_COVERAGE': 'false',
+                                                                'INCLUDED_TESTS': included, 'DECLARATION_RESULT': 'success'},
+                                              capture_output=True, text=True)
+                      expected = status == ('success' if included == 'true' else 'skipped')
+                      assert (result.returncode == 0) == expected, (included, status, result.stderr)
+              assert 'INCLUDED_TESTS: $' + '{{ needs.declaration.outputs.included_tests }}' in workflow
+
+          included_test_failures_remain_required()
+          print('PASS included_test_failures_remain_required')
 
           def declared_test_inputs_select_their_readers():
               from functools import partial
