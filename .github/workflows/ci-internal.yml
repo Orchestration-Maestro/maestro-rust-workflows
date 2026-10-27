@@ -226,7 +226,11 @@ jobs:
                       sources = [line[3:] for record in records for line in record.splitlines() if line.startswith('SF:')]
                       print(f'{name} floor={floor} LCOV sources: {sources}', flush=True)
                       example = next((record for record in records if 'SF:' + str(directory / 'examples/coverage.rs') + '\n' in record), None)
-                      assert example is not None, 'examples/coverage.rs missing from LCOV'
+                      if example is None:
+                          raw = subprocess.run([env['TOOLS'] + '/cargo-llvm-cov', 'llvm-cov', 'report',
+                                                '--no-default-ignore-filename-regex', '--lcov'],
+                                               cwd=directory, env=env, capture_output=True, text=True)
+                          raise AssertionError('examples/coverage.rs missing from LCOV\n' + raw.stdout + raw.stderr)
                       assert any(line.startswith('DA:') and int(line.split(',')[1]) > 0 for line in example.splitlines()), example
                       assert not any('/tests/' in source or '/registry/' in source for source in sources), sources
                       print(f'PASS example_sources_are_measured: {name}, floor={floor}', flush=True)
