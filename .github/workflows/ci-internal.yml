@@ -223,8 +223,8 @@ jobs:
                                                    '--fail-under-lines "$CARGO_COVERAGE_MIN_LINES" --lcov --output-path coverage.lcov')
                       result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
                                               cwd=directory, env=env, capture_output=True, text=True)
-                      assert result.returncode == 0, result.stdout + result.stderr
                       report = directory / (f'shard-{shard}.lcov' if shard else 'coverage.lcov')
+                      assert result.returncode == 0, result.stdout + result.stderr + (report.read_text(encoding='utf-8') if report.exists() else '')
                       records = report.read_text(encoding='utf-8').split('end_of_record')
                       sources = [os.path.normpath(line[3:]) for record in records
                                  for line in record.splitlines() if line.startswith('SF:')]
@@ -244,8 +244,6 @@ jobs:
                                                   cwd=directory, env=env, capture_output=True, text=True)
                           assert merged.returncode == 0, merged.stdout + merged.stderr
                           print(merged.stdout, flush=True)
-
-          example_sources_are_measured()
 
           def single_coverage_runs_setup_scripts(name):
               with tempfile.TemporaryDirectory() as temporary:
@@ -275,6 +273,7 @@ jobs:
                   print(f'PASS single_coverage_runs_setup_scripts: {name}', flush=True)
 
           single_coverage_runs_setup_scripts('Isolated tests')
+          example_sources_are_measured()
       - name: Compile cache in every Rust job
         shell: python
         run: |
