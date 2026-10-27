@@ -1,4 +1,4 @@
-"""Exercise the deployed policy and the declaration's actual runner-selection body."""
+"""Exercise the deployed policy and the reusable runner-selection body."""
 import io
 import json
 import os
@@ -11,7 +11,7 @@ from unittest.mock import patch
 from runner_policy import require_secret_free
 
 ROOT = Path(__file__).resolve().parent
-WORKFLOW = ROOT / 'workflows/ci.yml'
+WORKFLOW = ROOT / 'workflows/linux-runner.yml'
 
 
 class RunnerPolicyTests(unittest.TestCase):
@@ -22,6 +22,30 @@ class RunnerPolicyTests(unittest.TestCase):
         'jobs:\n  first: &shared\n    secrets: inherit\n  second:\n    <<: *shared\n',
         'Secrets: inherit',
     ]
+
+    def test_reusable_selector_exposes_the_actual_step_output(self):
+        import yaml
+        workflow = yaml.safe_load(WORKFLOW.read_text())
+        call = workflow.get('on', workflow.get(True))['workflow_call']
+        self.assertEqual(call['outputs']['labels']['value'], '${{ jobs.select.outputs.labels }}')
+        job = workflow['jobs']['select']
+        self.assertEqual(job['runs-on'], 'ubuntu-latest')
+        self.assertEqual(job['outputs']['labels'], '${{ steps.runner.outputs.labels }}')
+        self.assertEqual(workflow['permissions'], {'contents': 'read'})
+        self.assertEqual(len(job['steps']), 1)
+
+    def test_rust_ci_uses_only_the_shared_selector(self):
+        import yaml
+        source = (ROOT / 'workflows/ci.yml').read_text()
+        workflow = yaml.safe_load(source)
+        runner = workflow['jobs']['linux-runner']
+        self.assertRegex(runner['uses'], r'^Orchestration-Maestro/maestro-rust-workflows/\.github/workflows/linux-runner\.yml@[0-9a-f]{40}$')
+        declaration = workflow['jobs']['declaration']
+        self.assertEqual(declaration['needs'], ['linux-runner'])
+        self.assertEqual(declaration['outputs']['linux_runner'], '${{ needs.linux-runner.outputs.labels }}')
+        self.assertNotIn('RUNNER_AVAILABILITY:', source)
+        self.assertNotIn('Select Linux runner', source)
+        self.assertEqual(workflow['permissions'], {'contents': 'read'})
 
     def test_every_authored_mapping_pair_is_checked_by_the_policy(self):
         for source in self.authored_witnesses:

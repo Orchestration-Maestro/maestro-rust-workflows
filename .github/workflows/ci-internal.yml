@@ -315,7 +315,7 @@ jobs:
               import subprocess
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               assert document['permissions'] == {'contents': 'read'}
-              assert set(document['jobs']) == {'declaration', 'quality', 'docs', 'tests', 'checks', 'advisories',
+              assert set(document['jobs']) == {'linux-runner', 'declaration', 'quality', 'docs', 'tests', 'checks', 'advisories',
                                                'targets', 'browser', 'browser-tests', 'fuzz', 'tests-result'}
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))

@@ -694,16 +694,32 @@ release, pin/ruleset read-back and required checks after repinning.
 
 ## Ephemeral Linux runners
 
-The hosted caller-declaration job selects the organization's `maestro-aws`
+The hosted reusable `linux-runner.yml` workflow selects the organization's `maestro-aws`
 runner group for x64 Linux jobs when its published online count is positive
 and no more than five minutes old. Missing, expired or invalid availability,
 or an exact caller-workflow revision that declares, inherits or references repository secrets,
-selects GitHub-hosted Linux instead. The declaration and the runner controller
+selects GitHub-hosted Linux instead. The selector and the runner controller
 use the same pinned secret-reference policy. The automatic job token is allowed.
 The selector uses the platform YAML parser without installing packages; a missing
 parser selects hosted Linux. The provider's own self-tests stay hosted because
 their synthetic PR refs cannot be admitted as pinned runner-group workflows.
-Native ARM Linux, Windows, macOS and CodeQL remain GitHub-hosted.
+Native ARM Linux, Windows and macOS remain GitHub-hosted. CodeQL adoption is
+separate from exposing the selector: its executing workflow must be admitted
+and its runtime qualified before AWS scans are claimed.
+
+The callable workflow returns `labels`, a JSON string consumed with
+`fromJSON(needs.linux-runner.outputs.labels)` in `runs-on`. It takes no inputs
+or repository secrets and needs only `contents: read`. Rust CI uses the same
+output through its declaration job. Standalone workflows call
+`Orchestration-Maestro/maestro-rust-workflows/.github/workflows/linux-runner.yml`
+at a reviewed immutable commit, never `./`: relative reusable references resolve
+in the caller repository. Scan permissions stay on the scan job, not Rust CI.
+
+Release adoption waits for the `pin-pending` barrier and an empty Maestro merge
+queue. Release through release-please, update immutable executing-workflow
+admission and caller pins, then verify fresh AWS selection, hosted overflow and
+successful CodeQL uploads. A selection-time check does not recover a queued job
+after host loss.
 
 Each AWS runner accepts one job. It has a separate unprivileged identity,
 filesystem and network namespace, with no access to the registration credential,

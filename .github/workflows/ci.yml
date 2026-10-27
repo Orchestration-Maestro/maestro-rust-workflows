@@ -94,8 +94,12 @@ defaults:
     shell: bash
 
 jobs:
+  linux-runner:
+    uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/linux-runner.yml@16023a289c483168c6b371002d310bd9db62c625
+
   declaration:
     name: Caller declaration
+    needs: [linux-runner]
     if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
     runs-on: ubuntu-latest
     defaults:
@@ -103,7 +107,7 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     outputs:
-      linux_runner: ${{ steps.runner.outputs.labels }}
+      linux_runner: ${{ needs.linux-runner.outputs.labels }}
       enabled: ${{ steps.config.outputs.enabled }}
       warm_test_filter: ${{ steps.config.outputs.warm_test_filter }}
       packages: ${{ steps.selection.outputs.packages }}
@@ -134,65 +138,6 @@ jobs:
           fetch-depth: 0
       - name: Toolchain
         run: rustup show
-      - name: Select Linux runner
-        id: runner
-        env:
-          RUNNER_AVAILABILITY: ${{ vars.MAESTRO_AWS_RUNNERS }}
-          CALLER_WORKFLOW: ${{ github.workflow_ref }}
-          CALLER_WORKFLOW_SHA: ${{ github.workflow_sha }}
-          PULL_REQUEST_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 - <<'PYTHON'
-          import base64
-          import json
-          import re
-          import hashlib
-          import os
-          import time
-          import urllib.parse
-          import urllib.request
-          labels = 'ubuntu-latest'
-          try:
-              if os.environ.get('GITHUB_REPOSITORY') == 'Orchestration-Maestro/maestro-rust-workflows':
-                  raise ValueError('provider self-tests use hosted runners')
-              event = os.environ['GITHUB_EVENT_NAME']
-              if event in ('pull_request', 'pull_request_target'):
-                  head = os.environ.get('PULL_REQUEST_HEAD_REPOSITORY')
-                  if not head or head != os.environ.get('GITHUB_REPOSITORY'):
-                      raise ValueError('fork or unverifiable pull request uses hosted runners')
-              elif event not in ('push', 'merge_group', 'schedule', 'workflow_dispatch', 'repository_dispatch'):
-                  raise ValueError('unverifiable workflow event')
-              availability = json.loads(os.environ.get('RUNNER_AVAILABILITY') or '{}')
-              age = time.time() - availability['timestamp']
-              if not 0 <= age <= 300 or availability['online'] <= 0:
-                  raise ValueError('no fresh online runner')
-              repository, workflow = os.environ['CALLER_WORKFLOW'].split('/.github/', 1)
-              path, _ = workflow.rsplit('@', 1)
-              ref = os.environ['CALLER_WORKFLOW_SHA']
-              if not re.fullmatch(r'[0-9a-f]{40}', ref):
-                  raise ValueError('unverifiable caller workflow revision')
-              url = f'https://api.github.com/repos/{repository}/contents/.github/{path}?ref=' + urllib.parse.quote(ref, safe='')
-              request = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN']})
-              with urllib.request.urlopen(request, timeout=20) as response:
-                  source = base64.b64decode(json.load(response)['content']).decode()
-              policy_url = 'https://raw.githubusercontent.com/Orchestration-Maestro/maestro-rust-workflows/01e654dd75e9c3cb82d258ea928c404c83077b43/.github/runner_policy.py'
-              with urllib.request.urlopen(policy_url, timeout=20) as response:
-                  policy = response.read()
-              if hashlib.sha256(policy).hexdigest() != '10eb5a27191cdc54851aa35a328d187a6b1ccc7fe81043730f04ea62c43bcdbd':
-                  raise ValueError('runner policy digest mismatch')
-              namespace = {}
-              exec(compile(policy, 'runner_policy.py', 'exec'), namespace)
-              namespace['require_secret_free'](source)
-              import yaml
-              print('Runner policy PyYAML: ' + yaml.__version__)
-              labels = ['self-hosted', 'linux', 'maestro-aws']
-          except (ImportError, KeyError, TypeError, ValueError, OSError):
-              print('Hosted Linux fallback: unavailable runner or unverified secret-free caller')
-          print('Linux runner selection: ' + json.dumps(labels))
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write('labels=' + json.dumps(labels) + '\n')
-          PYTHON
       - name: Read caller declaration
         id: config
         env:
