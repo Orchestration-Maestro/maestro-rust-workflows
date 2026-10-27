@@ -365,6 +365,7 @@ jobs:
           BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           python3 - <<'PYTHON'
+          import ast
           import json
           import os
           import pathlib
@@ -400,10 +401,15 @@ jobs:
               changed = subprocess.check_output(['git', 'diff', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
               # Literal include paths are relative to the Rust source, not the package root.
               changed_paths = {(pathlib.Path.cwd() / name).resolve() for name in changed}
-              literal_include = re.compile(r'\binclude_(?:str|bytes)\s*!\s*[(\[{]\s*(?:"([^"\\]*)"|r(#{0,255})"(.*?)"\2)', re.DOTALL)
+              literal_include = re.compile(r'\binclude_(?:str|bytes)\s*!\s*[(\[{]\s*(?:("(?:[^"\\]|\\.)*")|r(#{0,255})"(.*?)"\2)', re.DOTALL)
               for source in pathlib.Path('crates').rglob('*.rs'):
                   for match in literal_include.finditer(source.read_text(encoding='utf-8')):
-                      if (source.parent / (match[1] if match[1] is not None else match[3])).resolve() in changed_paths:
+                      path = match[3]
+                      if match[1] is not None:
+                          # Normalize Rust's Unicode and continued-line escapes before decoding.
+                          literal = re.sub(r'\\u\{([0-9a-fA-F_]+)\}', lambda m: '\\U' + f'{int(m[1].replace("_", ""), 16):08x}', match[1])
+                          path = ast.literal_eval(re.sub(r'\\\r?\n\s*', '', literal))
+                      if (source.parent / path).resolve() in changed_paths:
                           included_readers.update(p for p, root in roots.items() if source.is_relative_to(root))
               selected = set()
               for filename in changed:
