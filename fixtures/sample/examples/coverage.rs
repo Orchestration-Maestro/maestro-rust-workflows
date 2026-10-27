@@ -1,4 +1,4 @@
-//! An example exercised by the caller's integration tests.
+//! An example exercised by the caller's tests.
 
 /// Checks the public arithmetic operation.
 pub fn main() {
