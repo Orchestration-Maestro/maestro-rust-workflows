@@ -402,9 +402,37 @@ jobs:
               # Literal include paths are relative to the Rust source, not the package root.
               changed_paths = {(pathlib.Path.cwd() / name).resolve() for name in changed}
               # shortcut: static matching may overselect commented macros; use a Rust parser if that becomes costly.
-              literal_include = re.compile(r'\binclude_(?:str|bytes)\s*!\s*[(\[{]\s*(?:("(?:[^"\\]|\\.)*")|r(#{0,255})"(.*?)"\2)', re.DOTALL)
-              for source in pathlib.Path('crates').rglob('*.rs'):
-                  for match in literal_include.finditer(source.read_text(encoding='utf-8')):
+              literal_include = re.compile(r'("(?:[^"\\]|\\.)*")|r(#{0,255})"(.*?)"\2', re.DOTALL)
+              def skip_trivia(text, position):
+                  while position < len(text):
+                      trivia = re.match(r'\s+|//[^\n]*(?:\n|$)|/\*', text[position:])
+                      if not trivia:
+                          break
+                      position += trivia.end()
+                      if trivia[0] == '/*':
+                          depth = 1
+                          for delimiter in re.finditer(r'/\*|\*/', text[position:]):
+                              depth += 1 if delimiter[0] == '/*' else -1
+                              if depth == 0:
+                                  position += delimiter.end()
+                                  break
+                          else:
+                              return len(text)
+                  return position
+              scan_roots = {root for root in roots.values() if not any(
+                  root != parent and root.is_relative_to(parent) for parent in roots.values())}
+              for source in sorted(source for root in scan_roots for source in root.rglob('*.rs')):
+                  text = source.read_text(encoding='utf-8')
+                  for macro in re.finditer(r'\binclude_(?:str|bytes)\b', text):
+                      position = skip_trivia(text, macro.end())
+                      if text[position:position + 1] != '!':
+                          continue
+                      position = skip_trivia(text, position + 1)
+                      if text[position:position + 1] not in ('(', '[', '{'):
+                          continue
+                      match = literal_include.match(text, skip_trivia(text, position + 1))
+                      if not match:
+                          continue
                       path = match[3]
                       if match[1] is not None:
                           # Normalize Rust's Unicode and continued-line escapes before decoding.
@@ -413,7 +441,9 @@ jobs:
                                            match[1], flags=re.DOTALL)
                           path = ast.literal_eval(literal.replace('\n', r'\n').replace('\r', r'\r'))
                       if (source.parent / path).resolve() in changed_paths:
-                          included_readers.update(p for p, root in roots.items() if source.is_relative_to(root))
+                          owner = max((p for p, root in roots.items() if source.is_relative_to(root)),
+                                      key=lambda p: len(roots[p].parts))
+                          included_readers.add(owner)
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)
