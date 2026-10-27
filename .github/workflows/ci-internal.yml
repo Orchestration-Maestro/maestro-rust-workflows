@@ -5750,10 +5750,10 @@ jobs:
               print(f'QUALIFICATION {label} exit={result.returncode} seconds={time.monotonic()-start:.3f}',flush=True)
               if expected == 0:
                   assert result.returncode == 0, label
-                  assert 'FAMILY execution 26/26' in text and 'FAMILY loading 19/19' in text and 'COMPLETE 45/45' in text, label
+                  assert all(message in text for message in ('FAMILY execution 26/26', 'FAMILY loading 49/49', 'FAMILY contributions 194/194', 'COMPLETE 269/269')), label
               else:
                   assert result.returncode != 0 and all(message in text for message in diagnostic), label
-                  assert 'COMPLETE 45/45' not in text, label
+                  assert 'COMPLETE 269/269' not in text, label
               print('PASS '+label,flush=True)
 
           def restore():
