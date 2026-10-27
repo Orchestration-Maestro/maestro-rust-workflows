@@ -31,11 +31,12 @@ mod tests {
             assert_eq!(path.parent(), paths[0].parent());
             assert!(!paths[..index].contains(path));
             // Windows keeps its own profile caches below the home it is given.
-            let entries = fs::read_dir(path)
+            let entries: Vec<_> = fs::read_dir(path)
                 .unwrap()
-                .filter(|entry| !(cfg!(windows) && entry.as_ref().unwrap().file_name() == "AppData"))
-                .count();
-            assert_eq!(entries, 0);
+                .map(|entry| entry.unwrap().file_name())
+                .filter(|name| !(cfg!(windows) && name == "AppData"))
+                .collect();
+            assert_eq!(entries, Vec::<std::ffi::OsString>::new(), "{path:?}");
         }
         assert_eq!(env::var("TMP").unwrap(), env::var("TMPDIR").unwrap());
         assert_eq!(env::var("TEMP").unwrap(), env::var("TMPDIR").unwrap());
@@ -74,10 +75,7 @@ mod tests {
             .output()
             .unwrap();
         assert!(fd.status.success());
-        assert_eq!(
-            String::from_utf8(fd.stdout).unwrap(),
-            format!(".{}needle.txt\n", std::path::MAIN_SEPARATOR)
-        );
+        assert_eq!(String::from_utf8(fd.stdout).unwrap(), "./needle.txt\n");
         fs::remove_dir_all(directory).unwrap();
     }
 }

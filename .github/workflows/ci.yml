@@ -1773,20 +1773,23 @@ jobs:
             archive=$(mktemp)
             curl --fail --retry 3 --location "$url" --output "$archive"
             python3 - "$digest" "$archive" "$binary" "$bin" <<'PYTHON'
+          import gzip
           import hashlib
+          import io
           import pathlib
           import sys
           import tarfile
           import zipfile
           digest, archive, binary, directory = sys.argv[1:]
-          if hashlib.sha256(pathlib.Path(archive).read_bytes()).hexdigest() != digest:
+          data = pathlib.Path(archive).read_bytes()
+          if hashlib.sha256(data).hexdigest() != digest:
               raise SystemExit(f'{binary}: archive digest mismatch')
-          if zipfile.is_zipfile(archive):
-              with zipfile.ZipFile(archive) as source:
+          if zipfile.is_zipfile(io.BytesIO(data)):
+              with zipfile.ZipFile(io.BytesIO(data)) as source:
                   names = [name for name in source.namelist() if name.split('/')[-1] == binary]
                   content = source.read(names[0]) if len(names) == 1 else None
           else:
-              with tarfile.open(archive) as source:
+              with tarfile.TarFile(fileobj=gzip.GzipFile(fileobj=io.BytesIO(data))) as source:
                   members = [member for member in source.getmembers() if member.isfile() and member.name.split('/')[-1] == binary]
                   content = source.extractfile(members[0]).read() if len(members) == 1 else None
           if content is None:
