@@ -180,6 +180,34 @@ jobs:
           step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == 'Coverage tools')
           match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(match[1])], check=True)
+      - name: Archived shards at workflow seam
+        shell: python
+        run: |
+          import ast
+          import pathlib
+          import textwrap
+          source = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+          code = source.split('      - name: Caller checks at workflow seam\n', 1)[1]
+          code = code.split('        run: |\n', 1)[1].split('\n  native:', 1)[0]
+          tree = ast.parse(textwrap.dedent(code))
+          globals_needed = {'workflow', 'root', 'credential_names', 'coverage_report_args'}
+          tree.body = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef))
+                       or (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id in globals_needed
+                                                               for target in node.targets))]
+          exec(compile(tree, 'archive workflow seam', 'exec'))
+          production_body = body
+          def body(name, source=workflow):
+              return production_body(name, source).replace('nextest-archive --no-clean', 'nextest-archive')
+          try:
+              archived_shards_reuse_build_and_prepared_outputs()
+          except AssertionError as error:
+              assert str(error).count('Compiling sample ') >= 2, str(error)
+              print('PASS regression fails without preserving prepared compilation', flush=True)
+          else:
+              raise AssertionError('Archive regression did not detect repeated compilation')
+          body = production_body
+          archived_shards_reuse_build_and_prepared_outputs()
+          print('PASS archived_shards_reuse_build_and_prepared_outputs', flush=True)
       - name: Example sources in coverage at workflow seam
         shell: python
         run: |
@@ -3054,7 +3082,7 @@ jobs:
                       (directory / '.config').mkdir()
                       (directory / '.config/nextest.toml').write_text(
                           'experimental=["setup-scripts"]\n'
-                          '[profile.default.archive]\ninclude=[{path="prepared", on-missing="error"}]\n'
+                          '[profile.default.archive]\ninclude=[{path="prepared", relative-to="target", on-missing="error"}]\n'
                           '[scripts.setup.prepare]\ncommand="sh .config/prepare.sh"\n'
                           '[[profile.default.scripts]]\nfilter="all()"\nsetup="prepare"\n', encoding='utf-8')
                       (directory / '.config/prepare.sh').write_text(
@@ -3094,9 +3122,6 @@ jobs:
               assert 'matrix:' not in jobs['test-build']
               assert 'test_prepare' not in jobs['tests']
               assert "matrix.shard != 'doctests'" in jobs['tests']
-
-          archived_shards_reuse_build_and_prepared_outputs()
-          print('PASS archived_shards_reuse_build_and_prepared_outputs')
 
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')

@@ -185,7 +185,7 @@ directory, for example:
 
 ```toml
 [profile.default.archive]
-include = [{ path = "prepared", on-missing = "error" }]
+include = [{ path = "prepared", relative-to = "target", on-missing = "error" }]
 ```
 
 Nextest setup scripts still run in the shards to export per-run environment paths.
