@@ -4561,6 +4561,8 @@ jobs:
                           context = {'cancelled()': False, 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                                      'needs.declaration.outputs.test_prepare': json.dumps('echo ready'), 'inputs.warm-cache': warm, 'inputs.advisory-scan': advisory,
                                      'inputs.fuzz-scan': fuzz, 'github.event_name': event,
+                                     "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
+                                     'github.ref': 'refs/heads/main',
                                      'github.repository_id': 'caller', 'inputs.working-directory': '.',
                                      'needs.declaration.outputs.coverage': values['coverage'],
                                      'needs.declaration.outputs.included_tests': values['included_tests'],
@@ -4575,11 +4577,11 @@ jobs:
                           expected = not advisory and not fuzz
                           if name in slow:
                               expected &= event != 'pull_request' or warm
-                              expected &= not warm or name == 'tests'
+                              expected &= not warm or name == 'tests' or (event == 'push' and name in ('doctests', 'browser', 'browser-tests'))
                           elif name == 'targets':
                               expected &= not warm or event == 'push'
                           else:
-                              expected &= not warm
+                              expected &= not warm or (event == 'push' and name in ('quality', 'docs'))
                           assert bool(eval(expression, {'__builtins__': {}})) == expected, (name, event, warm, advisory, fuzz)
 
           event_policy_keeps_pull_requests_fast()
