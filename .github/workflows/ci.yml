@@ -961,6 +961,7 @@ jobs:
             (
               if [ "${COLLECT_COVERAGE:-false}" = true ]; then
                 eval "$("$TOOLS/cargo-llvm-cov" llvm-cov show-env --sh)"
+                export CARGO_TARGET_DIR="$CARGO_LLVM_COV_TARGET_DIR/llvm-cov-target"
               fi
               bash -e -o pipefail -c "$TEST_PREPARE"
             )
