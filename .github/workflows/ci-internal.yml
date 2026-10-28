@@ -3063,12 +3063,13 @@ jobs:
                       (directory / 'src/lib.rs').write_text(
                           '#[test] fn archive_requires_setup() {\n'
                           'assert_eq!(std::env::var("WORKFLOW_SETUP").unwrap(), "ready");\n}\n', encoding='utf-8')
-                      command = 'mkdir -p "${CARGO_TARGET_DIR:-target}"; echo ready > "${CARGO_TARGET_DIR:-target}/prepared"; echo once >> prepare-count'
+                      command = '"$TOOLS/cargo-nextest" nextest run --no-run --workspace --locked; mkdir -p "${CARGO_TARGET_DIR:-target}"; echo ready > "${CARGO_TARGET_DIR:-target}/prepared"; echo once >> prepare-count'
                       env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage,
                              'TEST_PREPARE': command, 'TEST_PACKAGES': '["sample"]',
                              'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0]}
                       result = execute('Build test archive', directory, env)
                       assert result.returncode == 0, result.stdout + result.stderr
+                      assert (result.stdout + result.stderr).count('Compiling sample ') == 1, result.stdout + result.stderr
                       assert (directory / 'test-binaries.tar.zst').is_file()
                       assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
                       shutil.rmtree(directory / 'target')
