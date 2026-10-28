@@ -3145,6 +3145,17 @@ jobs:
               fetch = next(step for step in tests.split('      - name: ')[1:] if step.startswith('Fetch additional locked manifests\n'))
               assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
 
+          def archived_shards_skip_compile_cache_lifecycle():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              steps = {step['name']: step for step in document['jobs']['tests']['steps']}
+              for name in ['Compile cache identity', 'Restore compile cache', 'Compile cache',
+                           'Compile cache statistics', 'Seal compile cache']:
+                  assert "(inputs.warm-cache || matrix.shard == 'doctests')" in steps[name]['if'], name
+              assert steps['Compile cache statistics']['if'].startswith('always() && ')
+
+          archived_shards_skip_compile_cache_lifecycle()
+          print('PASS archived_shards_skip_compile_cache_lifecycle')
+
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
