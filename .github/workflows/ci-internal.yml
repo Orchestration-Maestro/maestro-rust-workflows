@@ -2164,6 +2164,7 @@ jobs:
           for job, names in {
            'quality': ['Compile cache', 'Mise bootstrap', 'Test tools'],
            'docs': ['Compile cache', 'Mise bootstrap', 'Test tools'],
+           'test-build': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap', 'Test tools'],
            'tests': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap', 'Test tools'],
            'checks': ['Check tools', 'Compile cache'],
            'fuzz': ['Check tools'], 'advisories': ['Check tools'],
@@ -2176,6 +2177,7 @@ jobs:
            'quality': ['Compile cache', 'Mise bootstrap'],
            'docs': ['Compile cache', 'Mise bootstrap'],
            'targets': ['Compile cache', 'Mise bootstrap'],
+           'test-build': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap'],
            'tests': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap'],
            'checks': ['Check tools', 'Compile cache'],
            'fuzz': ['Check tools'], 'advisories': ['Check tools'],
@@ -2187,6 +2189,7 @@ jobs:
               permit('ci', 'browser-tests', 'Browser runtime tools', '--retry', '3', occurrence)
           for name in ['Tests', 'Isolated tests']:
               permit('ci', 'tests', name, 'timeout-minutes', '45')
+          permit('ci', 'test-build', 'Build test archive', 'timeout-minutes', '45')
           permit('ci', 'checks', 'Coverage', 'timeout-minutes', '45')
           for name in ['Coverage release installation', 'Search release installation proofs', 'Real search tools']:
               permit('ci-internal', 'seams', name, 'timeout-minutes', '10')
@@ -2495,7 +2498,7 @@ jobs:
                   candidate = source.replace('run: &sccache-stats |\n', 'run: &sccache-stats |\n          timeout 3 true\n', 1)
                   self.assertNotEqual(candidate, source)
                   owners = [row[1] for row in collect({'.github/workflows/ci.yml': candidate}) if row[3] == 'timeout']
-                  self.assertCountEqual(owners, ['quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'])
+                  self.assertCountEqual(owners, ['quality', 'docs', 'test-build', 'tests', 'checks', 'targets', 'browser', 'browser-tests'])
 
               def test_literal_fixture_values_are_not_policy(self):
                   source = ('jobs:\n  new:\n'
