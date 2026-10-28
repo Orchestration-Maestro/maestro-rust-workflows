@@ -3460,7 +3460,7 @@ jobs:
                                   assert observed == (excluded == 'none' and (not warm or
                                       (event == 'push' and ref == 'refs/heads/main'))), (name, warm, event, ref, excluded)
               doctests = document['jobs']['doctests']
-              assert doctests['env']['WARM_CACHE'] == 'false'
+              assert doctests['env']['WARM_CACHE'] == '$' + "{{ inputs.warm-cache && github.job != 'doctests' }}"
               assert doctests['steps'] == document['jobs']['tests']['steps']
               assert doctests['env']['SHARD'] == document['jobs']['tests']['env']['SHARD']
               assert next(step for step in document['jobs']['browser-tests']['steps'] if step.get('name') == 'Browser test recipe')['run'].strip() == 'just browser-test'
@@ -3507,7 +3507,7 @@ jobs:
                           assert observed == (not advisory and not fuzz and targets != '[]' and
                                               (not warm or event == 'push')), (warm, event, advisory, fuzz, targets)
               tests = jobs['tests']
-              assert 'WARM_CACHE: $' + '{{ inputs.warm-cache }}' in tests
+              assert 'WARM_CACHE: $' + "{{ inputs.warm-cache && github.job != 'doctests' }}" in tests
               assert "inputs.warm-cache && '[\"warm\"]'" in tests
               assert "if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'" in tests
               proof = (root / '.github/workflows/ci-proof.yml').read_text(encoding='utf-8')
