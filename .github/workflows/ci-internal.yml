@@ -3123,6 +3123,31 @@ jobs:
               assert 'test_prepare' not in jobs['tests']
               assert "matrix.shard != 'doctests'" in jobs['tests']
 
+          def archived_shards_provision_child_build_dependencies():
+              for route, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                             'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+                             'TEST_PACKAGES': '["sample"]', 'SHARD': '1', 'COLLECT_COVERAGE': coverage,
+                             'CARGO_COVERAGE_MIN_LINES': '', 'ADDITIONAL_LOCKED_MANIFESTS': '["fixture/Cargo.toml"]'}
+                      for step in ['Fetch additional locked manifests', route]:
+                          result = execute(step, directory, env)
+                          assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      assert [command['args'] for command in commands[:2]] == [
+                          ['fetch', '--locked', '--manifest-path', 'fixture/Cargo.toml'], ['fetch', '--locked']]
+                      assert len(commands) == 3, commands
+                      assert '--archive-file' in commands[2]['args']
+                      assert '--workspace' not in commands[2]['args'] and '--locked' not in commands[2]['args']
+              tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
+              fetch = next(step for step in tests.split('      - name: ')[1:] if step.startswith('Fetch additional locked manifests\n'))
+              assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
+
+          archived_shards_provision_child_build_dependencies()
+          print('PASS archived_shards_provision_child_build_dependencies')
+
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
@@ -4048,13 +4073,13 @@ jobs:
               fetch = next(s for s in tests.split('      - name: ')[1:] if s.startswith('Fetch additional locked manifests\n'))
               assert tests.index('name: Fetch additional locked manifests') < tests.index('name: Tests\n') < tests.index('name: Isolated tests\n')
               assert fetch.split('        run:', 1)[0].count('if:') == 1
-              assert "if: (inputs.warm-cache || matrix.shard == 'doctests') && needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
+              assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
               assert 'ADDITIONAL_LOCKED_MANIFESTS: $' + '{{ needs.declaration.outputs.additional_locked_manifests }}' in tests
               declaration_job = workflow.split('  declaration:\n', 1)[1].split('\n  quality:', 1)[0]
               assert 'additional_locked_manifests: $' + '{{ steps.config.outputs.additional_locked_manifests }}' in declaration_job
               assert "fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.test_shards" in tests
               for name in ['Tests', 'Isolated tests']:
-                  assert 'if [ -z "${TEST_ARCHIVE:-}" ]; then cargo fetch --locked; fi\n' in body(name)
+                  assert 'cargo fetch --locked\n' in body(name)
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   manifest, _ = independent_manifest_fixture(directory)
