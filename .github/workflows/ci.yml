@@ -1228,10 +1228,10 @@ jobs:
           PYTHON
       - name: Compile cache statistics
         id: cache-statistics
-        if: (inputs.warm-cache || matrix.shard == 'doctests') && always()
+        if: always()
         run: *sccache-stats
       - name: Upload compile cache errors
-        if: (inputs.warm-cache || matrix.shard == 'doctests') && always() && (steps.cache-statistics.outputs.write_errors == 'true' || (inputs.concurrency-key == 'maestro-proof' && steps.cache-statistics.outcome == 'success'))
+        if: *sccache-artifact-condition
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: *sccache-artifact
       - name: Seal compile cache
@@ -1239,7 +1239,7 @@ jobs:
         id: cache-seal
         run: *sccache-seal
       - name: Save compile cache
-        if: (inputs.warm-cache || matrix.shard == 'doctests') && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save

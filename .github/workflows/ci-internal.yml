@@ -178,7 +178,7 @@ jobs:
           import textwrap
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
           step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == 'Coverage tools')
-          match = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
+          match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(match[1])], check=True)
       - name: Example sources in coverage at workflow seam
         shell: python
@@ -2598,7 +2598,7 @@ jobs:
           import textwrap
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
           step = workflow.split('      - name: Search tools\n', 1)[1]
-          command = re.search(r'        run: \|\n((?:          .*\n|\n)+)', step)[1]
+          command = re.search(r'        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step)[1]
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(command)], check=True)
       - name: Caller checks at workflow seam
         id: cases
@@ -3314,7 +3314,7 @@ jobs:
                       print(f'PASS warm filter {value!r}: exit {result.returncode}\n{output}', flush=True)
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               save = next(step for step in document['jobs']['tests']['steps'] if step.get('name') == 'Save compile cache')
-              assert save['if'] == "(inputs.warm-cache || matrix.shard == 'doctests') && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'"
+              assert save['if'] == "steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'"
 
           warm_filter_failures_keep_job_red()
           print('PASS warm_filter_failures_keep_job_red')
