@@ -73,6 +73,12 @@ Compatibility prefixes identify the caller repository and directory, host,
 compiler and job shape. Coverage shards share a prefix with the optional
 `warm-cache: true` build, which compiles the full coverage test graph without
 producing a report. By default it runs no tests; an optional caller
+Numeric test shards download one nextest archive instead of compiling the workspace.
+The build job runs an optional caller `test_prepare` command once before archiving;
+callers include prepared target-directory outputs through their nextest archive
+configuration and make setup scripts reuse those outputs. Doctests keep their
+separate compile-and-run leg. See [test shards](docs/caller-checks.md#test-shards).
+
 [`warm_test_filter`](docs/caller-checks.md#warm-test-filter) runs selected tests
 to include their child compiles in an eligible snapshot. Plain selected-package builds and doctests
 share a plain shape. Other jobs use their own shape, including the native target

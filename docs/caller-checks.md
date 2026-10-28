@@ -151,10 +151,48 @@ sixteen reports, counts each source line once (covered if any shard hits it), an
 enforces `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. Both coverage modes run tests through nextest,
-so caller setup scripts run in either mode. Single-job coverage uses one partition
+so caller setup scripts run in either mode (reusing prepared archive outputs in shards). Single-job coverage uses one partition
 (`count:1/1`); declared callers combine sixteen reports. Both modes use the same
 line-counting policy: normalize source paths, count each line once, and enforce
 the coverage floor on the union of hits. PRs skip coverage for all callers.
+
+### Build once, test many
+
+One `Build test archive` job compiles the selected unit and integration tests with
+`cargo nextest archive` (or `cargo llvm-cov nextest-archive` for declared coverage).
+The numeric shards download that artifact and run `--archive-file`, keeping the
+same partitions, retries and coverage reports. They do not fetch or compile the
+workspace. The `Doctests` leg still compiles and runs doctests once; included-input
+PR runs use that leg too. Warm-cache runs keep their existing compile route.
+
+A caller that needs prepared files can declare one shell command:
+
+```toml
+# .github/ci.toml
+wasm_crates = []
+check_targets = []
+test_prepare = "sh .config/prepare-tests.sh"
+```
+
+The command runs once in the build job, from the caller's working directory,
+after its declared tools and locked dependencies are available. A failing command
+fails the build and required test result. The default is no command. For coverage,
+the command receives the instrumented build environment, including
+`CARGO_TARGET_DIR`. It must put prepared outputs inside that target directory.
+
+List those outputs in the caller's `.config/nextest.toml`, relative to the target
+directory, for example:
+
+```toml
+[profile.default.archive]
+include = [{ path = "prepared", on-missing = "error" }]
+```
+
+Nextest setup scripts still run in the shards to export per-run environment paths.
+They must reuse the archived outputs when their inputs match, rather than build
+them again. The caller owns output freshness and these archive includes; shared
+CI does not interpret its setup-script definitions. Archive names use the existing
+`concurrency-key`, which must distinguish multiple calls in one workflow.
 
 ### Test diagnostics
 
