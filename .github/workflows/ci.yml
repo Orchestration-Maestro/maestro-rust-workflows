@@ -1053,7 +1053,7 @@ jobs:
         timeout-minutes: 10
         run: *coverage-tools
       - name: Fetch additional locked manifests
-        if: (inputs.warm-cache || matrix.shard == 'doctests') && needs.declaration.outputs.additional_locked_manifests != '[]'
+        if: needs.declaration.outputs.additional_locked_manifests != '[]'
         run: *fetch-locked-manifests
       - name: Download test archive
         if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' }}
@@ -1065,7 +1065,7 @@ jobs:
         timeout-minutes: 45
         if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}
         run: |
-          if [ -z "${TEST_ARCHIVE:-}" ]; then cargo fetch --locked; fi
+          cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
@@ -1137,7 +1137,7 @@ jobs:
             SCCACHE_SKIP_CACHE_CHECK="${SCCACHE_SKIP_CACHE_CHECK-}" SCCACHE_ERROR_LOG="${SCCACHE_ERROR_LOG-}" SCCACHE_LOG="${SCCACHE_LOG-}" \
             "$@"
           }
-          if [ -z "${TEST_ARCHIVE:-}" ]; then cargo fetch --locked; fi
+          cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi

@@ -161,8 +161,8 @@ the coverage floor on the union of hits. PRs skip coverage for all callers.
 One `Build test archive` job compiles the selected unit and integration tests with
 `cargo nextest archive` (or `cargo llvm-cov nextest-archive` for declared coverage).
 The numeric shards download that artifact and run `--archive-file`, keeping the
-same partitions, retries and coverage reports. They do not fetch or compile the
-workspace. The `Doctests` leg still compiles and runs doctests once; included-input
+same partitions, retries and coverage reports. They do not compile the workspace. Existing locked dependency fetches remain
+available for tests that intentionally start child builds. The `Doctests` leg still compiles and runs doctests once; included-input
 PR runs use that leg too. Warm-cache runs keep their existing compile route.
 
 A caller that needs prepared files can declare one shell command:
