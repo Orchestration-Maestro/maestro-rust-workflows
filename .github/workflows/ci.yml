@@ -994,7 +994,6 @@ jobs:
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       TEST_PREPARE: ${{ fromJSON(needs.declaration.outputs.test_prepare) }}
-      CARGO_TARGET_DIR: ${{ runner.temp }}/maestro-test-prepare-build
     defaults:
       run:
         shell: bash
@@ -1046,6 +1045,7 @@ jobs:
         timeout-minutes: 45
         run: |
           export TEST_PREPARE_OUTPUT="$PWD/target/test-setup"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/maestro-test-prepare-build"
           mkdir -p "$TEST_PREPARE_OUTPUT"
           bash -e -o pipefail -c "$TEST_PREPARE"
           tar -C target -cf "$RUNNER_TEMP/test-setup.tar" test-setup
