@@ -1344,7 +1344,7 @@ jobs:
           if-no-files-found: error
 
   doctests:
-    name: Doctests
+    name: ${{ matrix.shard == 'doctests' && 'Doctests' }}
     needs: declaration
     if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
