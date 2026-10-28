@@ -3118,6 +3118,7 @@ jobs:
                                            'CARGO_COVERAGE_MIN_LINES': ''})
                           assert result.returncode == 0, result.stdout + result.stderr
                           assert 'Compiling' not in result.stdout + result.stderr
+                          assert 'error: cannot clean' not in result.stdout + result.stderr, result.stdout + result.stderr
                           if coverage == 'true':
                               assert (directory / f'shard-{shard}.lcov').is_file()
                       assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
