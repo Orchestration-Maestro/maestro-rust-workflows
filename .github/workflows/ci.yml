@@ -1159,6 +1159,9 @@ jobs:
               fi
               coverage_build_args=(--workspace --locked)
               if [ -n "${TEST_ARCHIVE:-}" ]; then
+                # Keep compile-time Cargo executable paths valid after archive extraction.
+                mkdir -p target/llvm-cov-target
+                ln -sfn target/debug target/llvm-cov-target/debug
                 coverage_build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
