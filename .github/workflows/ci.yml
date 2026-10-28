@@ -551,7 +551,6 @@ jobs:
               output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
               output.write('included_tests=' + str(bool(included_readers)).lower() + '\n')
               shards = list(range(1, int(os.environ['TEST_SHARD_COUNT']) + 1))
-              shards.append('doctests')
               output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
@@ -599,8 +598,8 @@ jobs:
           import os
           import subprocess
           shape = os.environ['CACHE_JOB']
-          if shape in ('tests', 'test-build'):
-              coverage = os.environ['CACHE_WARM'] == 'true' or (os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true' and (shape == 'test-build' or os.environ.get('SHARD', '') not in ('', 'doctests')))
+          if shape in ('tests', 'test-build', 'doctests'):
+              coverage = shape != 'doctests' and (os.environ['CACHE_WARM'] == 'true' or (os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true' and (shape == 'test-build' or os.environ.get('SHARD', '') not in ('', 'doctests'))))
               shape = 'tests-coverage' if coverage else 'tests-plain'
           elif shape == 'targets':
               shape += '-clippy-' + os.environ['CACHE_TARGET']
@@ -611,7 +610,7 @@ jobs:
           call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
           suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX']) + '-' + call
           writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
-          if os.environ['CACHE_JOB'] == 'tests':
+          if os.environ['CACHE_JOB'] in ('tests', 'doctests'):
               shard = os.environ.get('SHARD', '')
               writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
@@ -1006,7 +1005,7 @@ jobs:
       matrix:
         shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.test_shards) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
-    env:
+    env: &test-env
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       WARM_CACHE: ${{ inputs.warm-cache }}
       WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
@@ -1014,11 +1013,11 @@ jobs:
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       TEST_ARCHIVE: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && format('{0}/{1}/test-binaries.tar.zst', github.workspace, inputs.working-directory || '.') || '' }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
-    defaults:
+    defaults: &test-defaults
       run:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
-    steps:
+    steps: &test-steps
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1257,15 +1256,29 @@ jobs:
           path: ${{ inputs.working-directory || '.' }}/shard-${{ matrix.shard }}.lcov
           if-no-files-found: error
 
+  doctests:
+    name: Doctests
+    needs: declaration
+    if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [doctests]
+    env: *test-env
+    defaults: *test-defaults
+    steps: *test-steps
+
   tests-result:
     name: Tests (ubuntu-latest)
-    needs: [tests, declaration]
+    needs: [tests, doctests, declaration]
     if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     steps:
       - name: All test shards passed
         env:
           RESULT: ${{ needs.tests.result }}
+          DOCTEST_RESULT: ${{ needs.doctests.result }}
           DECLARATION_RESULT: ${{ needs.declaration.result }}
           INCLUDED_TESTS: ${{ needs.declaration.outputs.included_tests }}
           COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
@@ -1277,6 +1290,7 @@ jobs:
           assert os.environ['COLLECT_COVERAGE'] in expected
           required = 'success' if os.environ.get('INCLUDED_TESTS') == 'true' else expected[os.environ['COLLECT_COVERAGE']]
           assert os.environ['RESULT'] == required
+          assert os.environ['DOCTEST_RESULT'] == required
       - name: Download shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
