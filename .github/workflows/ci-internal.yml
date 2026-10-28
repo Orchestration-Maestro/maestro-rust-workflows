@@ -4048,13 +4048,13 @@ jobs:
               fetch = next(s for s in tests.split('      - name: ')[1:] if s.startswith('Fetch additional locked manifests\n'))
               assert tests.index('name: Fetch additional locked manifests') < tests.index('name: Tests\n') < tests.index('name: Isolated tests\n')
               assert fetch.split('        run:', 1)[0].count('if:') == 1
-              assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
+              assert "if: (inputs.warm-cache || matrix.shard == 'doctests') && needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
               assert 'ADDITIONAL_LOCKED_MANIFESTS: $' + '{{ needs.declaration.outputs.additional_locked_manifests }}' in tests
               declaration_job = workflow.split('  declaration:\n', 1)[1].split('\n  quality:', 1)[0]
               assert 'additional_locked_manifests: $' + '{{ steps.config.outputs.additional_locked_manifests }}' in declaration_job
               assert "fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.test_shards" in tests
               for name in ['Tests', 'Isolated tests']:
-                  assert 'cargo fetch --locked\n' in body(name)
+                  assert 'if [ -z "${TEST_ARCHIVE:-}" ]; then cargo fetch --locked; fi\n' in body(name)
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   manifest, _ = independent_manifest_fixture(directory)

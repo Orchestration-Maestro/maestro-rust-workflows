@@ -1158,7 +1158,9 @@ jobs:
                 report=(--lcov --output-path "$PWD/target/single-coverage/shard-1.lcov")
               fi
               coverage_build_args=(--workspace --locked)
-              if [ -n "${TEST_ARCHIVE:-}" ]; then coverage_build_args=("${build_args[@]}"); fi
+              if [ -n "${TEST_ARCHIVE:-}" ]; then
+                coverage_build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
+              fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
                 --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" \
                 --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee nextest.log
