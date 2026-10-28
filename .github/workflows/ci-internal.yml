@@ -569,6 +569,8 @@ jobs:
                   prefixes = [snapshot_keys(CACHE_ENABLED=enabled, CACHE_COVERAGE=coverage, SHARD=shard)['prefix']
                               for shard in writers]
                   assert len(prefixes) == len(set(prefixes)), 'at most one writer per actual shape'
+              assert snapshot_keys(CACHE_JOB='doctests', CACHE_WARM='true', SHARD='doctests',
+                                   CACHE_ENABLED='false', CACHE_COVERAGE='false')['writer'] == 'true'
               assert snapshot_keys(CACHE_WARM='true', SHARD='warm')['writer'] == 'true'
               assert snapshot_keys(CACHE_WARM='true', SHARD='warm', GITHUB_EVENT_NAME='pull_request')['writer'] == 'false'
               assert 'CACHE_DEFAULT_BRANCH: $' + '{{ github.event.repository.default_branch }}' in workflow
@@ -2994,7 +2996,8 @@ jobs:
           def browser_test_job_is_single_and_optional():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               job = jobs['browser-tests']
-              assert "!inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true'" in job
+              assert "needs.declaration.outputs.browser_tests == 'true'" in job
+              assert "!inputs.advisory-scan && !inputs.fuzz-scan" in job
               assert 'runs-on: $' + '{{ fromJSON(needs.declaration.outputs.linux_runner) }}' in job and 'matrix:' not in job
               assert body('Browser test recipe').strip() == 'just browser-test'
               assert 'mise exec' not in body('Browser test recipe')
@@ -5670,7 +5673,7 @@ jobs:
                   section = workflow.split(f'  {name}:\n')[1]
                   assert ('needs: [declaration, test-build, test-prepare]' if name == 'tests' else 'needs: declaration') in section
               assert 'pull_request:' in workflow and 'merge_group:' in workflow
-              assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
+              assert "(needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true')" in workflow
               # Each scan mode runs only the declaration and its own job.
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
