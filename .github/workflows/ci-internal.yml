@@ -3091,6 +3091,11 @@ jobs:
                       (directory / 'src/lib.rs').write_text(
                           '#[test] fn archive_requires_setup() {\n'
                           'assert_eq!(std::env::var("WORKFLOW_SETUP").unwrap(), "ready");\n}\n', encoding='utf-8')
+                      (directory / 'src/main.rs').write_text('fn main() {}\n', encoding='utf-8')
+                      (directory / 'tests').mkdir()
+                      (directory / 'tests/archived_binary.rs').write_text(
+                          '#[test] fn archived_binary_still_runs() {\n'
+                          'assert!(std::process::Command::new(env!("CARGO_BIN_EXE_sample")).status().unwrap().success());\n}\n', encoding='utf-8')
                       command = '"$TOOLS/cargo-nextest" nextest run --no-run --workspace --locked; mkdir -p "${CARGO_TARGET_DIR:-target}"; echo ready > "${CARGO_TARGET_DIR:-target}/prepared"; echo once >> prepare-count'
                       env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage,
                              'TEST_PREPARE': command, 'TEST_PACKAGES': '["sample"]',
