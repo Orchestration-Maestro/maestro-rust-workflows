@@ -1231,7 +1231,7 @@ jobs:
           PYTHON
       - name: Compile cache statistics
         id: cache-statistics
-        if: always()
+        if: always() && (inputs.warm-cache || matrix.shard == 'doctests')
         run: *sccache-stats
       - name: Upload compile cache errors
         if: *sccache-artifact-condition
