@@ -998,7 +998,7 @@ jobs:
                       assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M)
                       assert '        continue-on-error: true\n' in step
                       count += 1
-              assert count == 14
+              assert count == 16
               assert not re.search(r'^    continue-on-error:', workflow, re.M)
 
           snapshot_only_transfers_fail_open()
@@ -2290,7 +2290,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 61)
+                  self.assertEqual(len(report.splitlines()), 71)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2552,7 +2552,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 61)
+                  self.assertEqual(len(report.splitlines()), 71)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
