@@ -253,7 +253,7 @@
       "default": "none()"
     },
     "test_prepare": {
-      "description": "Shell command run once before archiving test binaries. Prepared outputs belong in nextest archive includes.",
+      "description": "Standalone shell command run beside the test build. Write reusable outputs to TEST_PREPARE_OUTPUT.",
       "type": "string",
       "default": ""
     }

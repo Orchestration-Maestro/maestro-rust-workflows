@@ -55,10 +55,10 @@ Pinned tool downloads use curl's `--retry 3` for transient failures without
 changing their pins or integrity checks.
 
 Numeric test shards download one nextest archive instead of compiling the workspace.
-The build job runs an optional caller `test_prepare` command once before archiving;
-callers include prepared target-directory outputs through their nextest archive
-configuration and make setup scripts reuse those outputs. Doctests keep their
-separate compile-and-run leg. See [test shards](docs/caller-checks.md#test-shards).
+An optional caller `test_prepare` command runs beside the host build and writes
+reusable outputs to `TEST_PREPARE_OUTPUT` (`target/test-setup`). Shards download
+those files separately and setup scripts reuse them. Doctests compile and run in
+parallel in their own leg. See [test shards](docs/caller-checks.md#test-shards).
 
 ## Compile cache
 
@@ -76,7 +76,7 @@ secret scan runs before restoration; isolated tests receive only non-secret
 local-cache and diagnostic settings, including after automatic server restarts.
 
 Compatibility prefixes identify the caller repository and directory, host,
-compiler and job shape. Coverage shards share a prefix with the optional
+compiler and job shape. The coverage archive build shares a prefix with the optional
 `warm-cache: true` build, which compiles the full coverage test graph without
 producing a report. By default it runs no tests; an optional caller
 [`warm_test_filter`](docs/caller-checks.md#warm-test-filter) runs selected tests
