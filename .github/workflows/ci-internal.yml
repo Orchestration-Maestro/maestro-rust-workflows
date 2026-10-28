@@ -3040,6 +3040,58 @@ jobs:
           test_prepare_command_is_validated_and_forwarded()
           print('PASS test_prepare_command_is_validated_and_forwarded')
 
+          def archived_shards_reuse_build_and_prepared_outputs():
+              import shutil
+              for coverage, route in [('false', 'Tests'), ('true', 'Isolated tests')]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary) / 'caller'
+                      shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+                      (directory / '.config').mkdir()
+                      (directory / '.config/nextest.toml').write_text(
+                          'experimental=["setup-scripts"]\n'
+                          '[profile.default.archive]\ninclude=[{path="prepared", on-missing="error"}]\n'
+                          '[scripts.setup.prepare]\ncommand="sh .config/prepare.sh"\n'
+                          '[[profile.default.scripts]]\nfilter="all()"\nsetup="prepare"\n', encoding='utf-8')
+                      (directory / '.config/prepare.sh').write_text(
+                          'test -n "$(find target -name prepared -type f)" || exit 41\n'
+                          'echo WORKFLOW_SETUP=ready >> "$NEXTEST_ENV"\n', encoding='utf-8')
+                      (directory / 'src/lib.rs').write_text(
+                          '#[test] fn archive_requires_setup() {\n'
+                          'assert_eq!(std::env::var("WORKFLOW_SETUP").unwrap(), "ready");\n}\n', encoding='utf-8')
+                      command = 'mkdir -p "${CARGO_TARGET_DIR:-target}"; echo ready > "${CARGO_TARGET_DIR:-target}/prepared"; echo once >> prepare-count'
+                      env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage,
+                             'TEST_PREPARE': command, 'TEST_PACKAGES': '["sample"]',
+                             'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0]}
+                      result = execute('Build test archive', directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      assert (directory / 'test-binaries.tar.zst').is_file()
+                      assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
+                      shutil.rmtree(directory / 'target')
+                      # A compile attempt must fail; only the archived binary can pass.
+                      (directory / 'src/lib.rs').write_text('compile_error!("shards must not compile");\n', encoding='utf-8')
+                      for shard in ['1', '2']:
+                          result = execute(route, directory, env | {'SHARD': shard, 'TEST_SHARD_COUNT': '2',
+                                           'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+                                           'CARGO_COVERAGE_MIN_LINES': ''})
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          assert 'Compiling' not in result.stdout + result.stderr
+                          if coverage == 'true':
+                              assert (directory / f'shard-{shard}.lcov').is_file()
+                      assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
+                      result = execute('Build test archive', directory, env | {'TEST_PREPARE': 'exit 43'})
+                      assert result.returncode == 43, result.stdout + result.stderr
+              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
+                                     workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+              assert 'needs: [declaration, test-build]' in jobs['tests']
+              assert 'name: Download test archive' in jobs['tests']
+              assert 'name: Upload test archive' in jobs['test-build']
+              assert 'matrix:' not in jobs['test-build']
+              assert 'test_prepare' not in jobs['tests']
+              assert "matrix.shard != 'doctests'" in jobs['tests']
+
+          archived_shards_reuse_build_and_prepared_outputs()
+          print('PASS archived_shards_reuse_build_and_prepared_outputs')
+
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
