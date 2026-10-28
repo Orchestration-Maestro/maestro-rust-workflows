@@ -315,11 +315,11 @@ jobs:
               import subprocess
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               assert document['permissions'] == {'contents': 'read'}
-              assert set(document['jobs']) == {'declaration', 'quality', 'docs', 'tests', 'checks', 'advisories',
+              assert set(document['jobs']) == {'declaration', 'quality', 'docs', 'test-build', 'tests', 'checks', 'advisories',
                                                'targets', 'browser', 'browser-tests', 'fuzz', 'tests-result'}
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
-              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              owners = {'quality', 'docs', 'test-build', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
               stages = ['Compile cache identity', 'Restore compile cache', 'Compile cache',
                         'Compile cache statistics', 'Seal compile cache', 'Save compile cache']
               for name in owners:
@@ -501,7 +501,9 @@ jobs:
               assert snapshot_keys(CACHE_WARM='true', SHARD='warm', CACHE_COVERAGE='false')['prefix'] == coverage
               for shard in map(str, range(1, 17)):
                   assert snapshot_keys(SHARD=shard)['prefix'] == coverage
+              assert snapshot_keys(CACHE_JOB='test-build', SHARD='')['prefix'] == coverage
               plain = snapshot_keys(CACHE_COVERAGE='false')['prefix']
+              assert snapshot_keys(CACHE_JOB='test-build', CACHE_COVERAGE='false', SHARD='')['prefix'] == plain
               assert plain != coverage and snapshot_keys(SHARD='doctests')['prefix'] == plain
               assert snapshot_keys(CACHE_COVERAGE='', SHARD='')['prefix'] == plain
               for event, collect in [('pull_request', 'false'), ('push', 'true'), ('merge_group', 'true')]:
@@ -530,7 +532,7 @@ jobs:
               assert key.isascii() and len(key) < 512 and 'space' not in key
 
           def snapshot_only_default_branch_writers_save():
-              jobs = ['quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests']
+              jobs = ['quality', 'docs', 'test-build', 'tests', 'checks', 'targets', 'browser', 'browser-tests']
               for job in jobs:
                   for event in ['pull_request', 'merge_group', 'workflow_dispatch', 'push']:
                       for ref in ['refs/pull/119/merge', 'refs/heads/feature', 'refs/heads/main', 'refs/tags/main']:
@@ -726,7 +728,7 @@ jobs:
                   directory = pathlib.Path(temporary)
                   with daemon(directory) as env:
                       isolated = body('Isolated tests')
-                      setup = isolated[isolated.index('cargo_home='):isolated.index('cargo fetch --locked')]
+                      setup = isolated[isolated.index('cargo_home='):isolated.index('if [ -z "${TEST_ARCHIVE:-}" ]')]
                       # Only the test daemon address is injected after isolation, never cache policy.
                       command = setup + '\nrun_isolated env\nrun_isolated env SCCACHE_SERVER_UDS="$SCCACHE_SERVER_UDS" cargo build --locked --manifest-path "$SAMPLE_MANIFEST" --target-dir "$CARGO_TARGET_DIR"\n'
                       isolated_env = env | {'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0],
@@ -774,7 +776,7 @@ jobs:
           def cache_error_artifacts_are_selected_and_scoped():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
-              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              owners = {'quality', 'docs', 'test-build', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
               uploads = {name: job.split('      - name: Upload compile cache errors\n')[1].split('      - name:', 1)[0]
                          for name, job in jobs.items() if '      - name: Upload compile cache errors\n' in job}
               assert set(uploads) == owners
@@ -2711,7 +2713,7 @@ jobs:
           def job_run_defaults_preserve_pipeline_failures():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests'}
+              expected = {'declaration', 'quality', 'docs', 'test-build', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests'}
               defaults = {name: re.search(r'^    defaults:\n(.*?)^    steps:', job, re.MULTILINE | re.DOTALL)
                           for name, job in jobs.items()}
               assert {name for name, match in defaults.items() if match} == expected
@@ -3095,7 +3097,7 @@ jobs:
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'warm_test_filter': json.dumps('none()'), 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
+              assert values == {'test_prepare': json.dumps(''), 'warm_test_filter': json.dumps('none()'), 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
@@ -3312,7 +3314,7 @@ jobs:
                       print(f'PASS warm filter {value!r}: exit {result.returncode}\n{output}', flush=True)
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               save = next(step for step in document['jobs']['tests']['steps'] if step.get('name') == 'Save compile cache')
-              assert save['if'] == "steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'"
+              assert save['if'] == "(inputs.warm-cache || matrix.shard == 'doctests') && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'"
 
           warm_filter_failures_keep_job_red()
           print('PASS warm_filter_failures_keep_job_red')
@@ -3425,7 +3427,7 @@ jobs:
               assert 'test_shards: $' + '{{ steps.selection.outputs.test_shards }}' in workflow
               assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.test_shards) }}"
               assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}" in tests
-              assert '    needs: declaration\n' in tests and '      fail-fast: false\n' in tests
+              assert '    needs: [declaration, test-build]\n' in tests and '      fail-fast: false\n' in tests
               assert 'advisory-scan' in tests and "inputs.working-directory != '.'" in tests
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -3443,7 +3445,7 @@ jobs:
                           assert result.returncode == 0, result.stderr
                           selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                           legs = json.loads(selected['test_shards'])
-                          assert legs == ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] if event == 'pull_request' else [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 'doctests'])
+                          assert legs == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 'doctests']
 
           coverage_matrix_splits_doctests_from_partitions()
           print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -4090,10 +4092,10 @@ jobs:
           def caller_tools_precede_compiling_operations():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              for job, consumer in [('quality', 'Lint'), ('docs', 'Docs'), ('tests', 'Isolated tests'),
+              for job, consumer in [('quality', 'Lint'), ('docs', 'Docs'), ('test-build', 'Build test archive'), ('tests', 'Isolated tests'),
                                     ('targets', 'Check target'), ('browser', 'Build wasm crates')]:
                   section = jobs[job]
-                  assert 'needs: declaration' in section, job
+                  assert ('needs: [declaration, test-build]' if job == 'tests' else 'needs: declaration') in section, job
                   bootstrap = next(s for s in section.split('      - name: ')[1:] if 'run: *mise-bootstrap' in s or 'run: &mise-bootstrap' in s)
                   install = next(s for s in section.split('      - name: ')[1:] if 'run: *caller-tools' in s or 'run: &caller-tools' in s)
                   assert section.index(bootstrap) < section.index(install) < section.index('- name: ' + consumer), job
@@ -4395,7 +4397,7 @@ jobs:
 
           def event_policy_keeps_pull_requests_fast():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-              slow = {'tests', 'browser', 'browser-tests'}
+              slow = {'test-build', 'tests', 'browser', 'browser-tests'}
               for event in ['pull_request', 'merge_group', 'push']:
                   for warm, advisory, fuzz in [(False, False, False), (True, False, False),
                                                 (False, True, False), (False, False, True)]:
@@ -4407,7 +4409,7 @@ jobs:
                           values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       for name in slow | {'targets', 'quality', 'docs', 'checks'}:
                           expression = document['jobs'][name]['if'].removeprefix('$' + '{{').removesuffix('}}').strip()
-                          context = {'inputs.warm-cache': warm, 'inputs.advisory-scan': advisory,
+                          context = {'cancelled()': False, 'needs.test-build.result': 'success', 'inputs.warm-cache': warm, 'inputs.advisory-scan': advisory,
                                      'inputs.fuzz-scan': fuzz, 'github.event_name': event,
                                      'github.repository_id': 'caller', 'inputs.working-directory': '.',
                                      'needs.declaration.outputs.coverage': values['coverage'],
@@ -5519,7 +5521,7 @@ jobs:
               assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
               for name in ['targets', 'browser', 'tests']:
                   section = workflow.split(f'  {name}:\n')[1]
-                  assert 'needs: declaration' in section
+                  assert ('needs: [declaration, test-build]' if name == 'tests' else 'needs: declaration') in section
               assert 'pull_request:' in workflow and 'merge_group:' in workflow
               assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
               # Each scan mode runs only the declaration and its own job.
