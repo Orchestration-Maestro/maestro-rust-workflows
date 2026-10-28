@@ -344,7 +344,7 @@ jobs:
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               assert document['permissions'] == {'contents': 'read'}
               assert set(document['jobs']) == {'declaration', 'quality', 'docs', 'test-build', 'tests', 'checks', 'advisories',
-                                               'targets', 'browser', 'browser-tests', 'fuzz', 'tests-result'}
+                                               'targets', 'browser', 'browser-tests', 'fuzz', 'doctests', 'tests-result'}
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
               owners = {'quality', 'docs', 'test-build', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
@@ -531,6 +531,7 @@ jobs:
                   assert snapshot_keys(SHARD=shard)['prefix'] == coverage
               assert snapshot_keys(CACHE_JOB='test-build', SHARD='')['prefix'] == coverage
               plain = snapshot_keys(CACHE_COVERAGE='false')['prefix']
+              assert snapshot_keys(CACHE_JOB='doctests', SHARD='doctests')['prefix'] == plain
               assert snapshot_keys(CACHE_JOB='test-build', CACHE_COVERAGE='false', SHARD='')['prefix'] == plain
               assert plain != coverage and snapshot_keys(SHARD='doctests')['prefix'] == plain
               assert snapshot_keys(CACHE_COVERAGE='', SHARD='')['prefix'] == plain
@@ -2233,6 +2234,11 @@ jobs:
           permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
           permit('content', 'content', 'Mise bootstrap', '--retry', '3')
 
+          # Doctests reuse the test route's step definitions and bounds.
+          for (path, job, step, kind, occurrence, value), reason in list(authority.items()):
+              if job == 'tests':
+                  authority[(path, 'doctests', step, kind, occurrence, value)] = reason
+
           def require_recorded_controls(sources, reasons=authority):
               observed = collect(sources)
               assert Counter(observed) == Counter(reasons.keys()) and all(reason.strip() for reason in reasons.values()), (
@@ -2318,7 +2324,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 71)
+                  self.assertEqual(len(report.splitlines()), 85)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2526,7 +2532,7 @@ jobs:
                   candidate = source.replace('run: &sccache-stats |\n', 'run: &sccache-stats |\n          timeout 3 true\n', 1)
                   self.assertNotEqual(candidate, source)
                   owners = [row[1] for row in collect({'.github/workflows/ci.yml': candidate}) if row[3] == 'timeout']
-                  self.assertCountEqual(owners, ['quality', 'docs', 'test-build', 'tests', 'checks', 'targets', 'browser', 'browser-tests'])
+                  self.assertCountEqual(owners, ['quality', 'docs', 'test-build', 'tests', 'doctests', 'checks', 'targets', 'browser', 'browser-tests'])
 
               def test_literal_fixture_values_are_not_policy(self):
                   source = ('jobs:\n  new:\n'
@@ -2580,7 +2586,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 71)
+                  self.assertEqual(len(report.splitlines()), 85)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
@@ -3161,6 +3167,23 @@ jobs:
           archived_shards_skip_compile_cache_lifecycle()
           print('PASS archived_shards_skip_compile_cache_lifecycle')
 
+          def doctests_run_independently_and_remain_required():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              jobs = document['jobs']
+              assert jobs['doctests']['needs'] == 'declaration'
+              assert jobs['doctests']['name'] == 'Doctests'
+              assert jobs['doctests']['strategy']['matrix']['shard'] == ['doctests']
+              for key in ['steps', 'defaults', 'env']:
+                  assert jobs['doctests'][key] == jobs['tests'][key], key
+              assert set(jobs['tests-result']['needs']) == {'tests', 'doctests', 'declaration'}
+              for tests, docs in [('success', 'success'), ('success', 'failure'), ('failure', 'success')]:
+                  result = execute('All test shards passed', root, {'RESULT': tests, 'DOCTEST_RESULT': docs,
+                                   'COLLECT_COVERAGE': 'true', 'DECLARATION_RESULT': 'success', 'INCLUDED_TESTS': 'false'})
+                  assert (result.returncode == 0) == (tests == docs == 'success')
+
+          doctests_run_independently_and_remain_required()
+          print('PASS doctests_run_independently_and_remain_required')
+
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
@@ -3515,7 +3538,7 @@ jobs:
                           assert result.returncode == 0, result.stderr
                           selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                           legs = json.loads(selected['test_shards'])
-                          assert legs == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 'doctests']
+                          assert legs == list(range(1, 17))
 
           coverage_matrix_splits_doctests_from_partitions()
           print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -3647,7 +3670,7 @@ jobs:
                   for included in ['false', 'true']:
                       for status in ['success', 'failure', 'cancelled', 'skipped']:
                           result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                                  env=os.environ | {'RESULT': status, 'COLLECT_COVERAGE': coverage,
+                                                  env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': status, 'COLLECT_COVERAGE': coverage,
                                                                     'INCLUDED_TESTS': included, 'DECLARATION_RESULT': 'success'},
                                                   capture_output=True, text=True)
                           expected = 'success' if 'true' in (coverage, included) else 'skipped'
@@ -4467,7 +4490,7 @@ jobs:
 
           def event_policy_keeps_pull_requests_fast():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-              slow = {'test-build', 'tests', 'browser', 'browser-tests'}
+              slow = {'test-build', 'tests', 'doctests', 'browser', 'browser-tests'}
               for event in ['pull_request', 'merge_group', 'push']:
                   for warm, advisory, fuzz in [(False, False, False), (True, False, False),
                                                 (False, True, False), (False, False, True)]:
@@ -4554,12 +4577,12 @@ jobs:
                   assert result.returncode != 0 and not values and 'test_shards was removed' in result.stderr, result.stdout + result.stderr
               aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
               assert 'name: Tests (ubuntu-latest)' in aggregate
-              assert 'needs: [tests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
+              assert 'needs: [tests, doctests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
               for coverage in ['false', 'true', '']:
                   for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
                       for status in ['success', 'failure', 'cancelled', 'skipped']:
                           result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                                  env=os.environ | {'RESULT': status, 'COLLECT_COVERAGE': coverage,
+                                                  env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': status, 'COLLECT_COVERAGE': coverage,
                                                                     'DECLARATION_RESULT': declaration_status},
                                                   capture_output=True, text=True)
                           expected = declaration_status == 'success' and (
@@ -4951,7 +4974,7 @@ jobs:
               for included in ['false', 'true']:
                   for status in ['success', 'failure', 'cancelled', 'skipped']:
                       result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                              env=os.environ | {'RESULT': status, 'COLLECT_COVERAGE': 'false',
+                                              env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': status, 'COLLECT_COVERAGE': 'false',
                                                                 'INCLUDED_TESTS': included, 'DECLARATION_RESULT': 'success'},
                                               capture_output=True, text=True)
                       expected = status == ('success' if included == 'true' else 'skipped')
