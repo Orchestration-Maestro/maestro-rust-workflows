@@ -3012,6 +3012,34 @@ jobs:
           browser_qualification_reuses_production_bodies()
           print('PASS browser_qualification_reuses_production_bodies')
 
+          def test_prepare_command_is_validated_and_forwarded():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  path = directory / '.github/ci.toml'
+                  for command in ['', 'sh .config/prepare.sh', 'printf "ready\\n"', 'echo λ']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_prepare=' + json.dumps(command), encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode == 0, result.stderr
+                      assert json.loads(values['test_prepare']) == command
+                  for value in ['true', '1', '[]', '{}']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_prepare=' + value, encoding='utf-8')
+                      result, _ = declaration(directory)
+                      assert result.returncode != 0
+                      assert result.stderr.strip() == '.github/ci.toml: test_prepare must be a string', result.stderr
+                  path.unlink()
+                  result, values = declaration(directory)
+                  assert result.returncode == 0 and json.loads(values['test_prepare']) == ''
+              schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
+              assert schema['properties']['test_prepare'] == {
+                  'description': 'Shell command run once before archiving test binaries. Prepared outputs belong in nextest archive includes.',
+                  'type': 'string', 'default': ''}
+
+          test_prepare_command_is_validated_and_forwarded()
+          print('PASS test_prepare_command_is_validated_and_forwarded')
+
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
