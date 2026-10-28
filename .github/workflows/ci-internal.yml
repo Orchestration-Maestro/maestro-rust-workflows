@@ -2751,7 +2751,7 @@ jobs:
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               expected = {'declaration', 'quality', 'docs', 'test-build', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests'}
-              defaults = {name: re.search(r'^    defaults:\n(.*?)^    steps:', job, re.MULTILINE | re.DOTALL)
+              defaults = {name: re.search(r'^    defaults:(?: &[\w-]+)?\n(.*?)^    steps:', job, re.MULTILINE | re.DOTALL)
                           for name, job in jobs.items()}
               assert {name for name, match in defaults.items() if match} == expected
               for name in expected:
@@ -3177,8 +3177,10 @@ jobs:
                   assert jobs['doctests'][key] == jobs['tests'][key], key
               assert set(jobs['tests-result']['needs']) == {'tests', 'doctests', 'declaration'}
               for tests, docs in [('success', 'success'), ('success', 'failure'), ('failure', 'success')]:
-                  result = execute('All test shards passed', root, {'RESULT': tests, 'DOCTEST_RESULT': docs,
-                                   'COLLECT_COVERAGE': 'true', 'DECLARATION_RESULT': 'success', 'INCLUDED_TESTS': 'false'})
+                  result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                                          env=os.environ | {'RESULT': tests, 'DOCTEST_RESULT': docs,
+                                          'COLLECT_COVERAGE': 'true', 'DECLARATION_RESULT': 'success', 'INCLUDED_TESTS': 'false'},
+                                          capture_output=True, text=True)
                   assert (result.returncode == 0) == (tests == docs == 'success')
 
           doctests_run_independently_and_remain_required()
