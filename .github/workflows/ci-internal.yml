@@ -3171,7 +3171,7 @@ jobs:
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               jobs = document['jobs']
               assert jobs['doctests']['needs'] == 'declaration'
-              assert jobs['doctests']['name'] == 'Doctests'
+              assert jobs['doctests']['name'] == '$' + "{{ matrix.shard == 'doctests' && 'Doctests' }}"
               assert jobs['doctests']['strategy']['matrix']['shard'] == ['doctests']
               for key in ['steps', 'defaults', 'env']:
                   assert jobs['doctests'][key] == jobs['tests'][key], key
