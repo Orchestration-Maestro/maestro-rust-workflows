@@ -966,7 +966,7 @@ jobs:
             )
           fi
           if [ "${COLLECT_COVERAGE:-false}" = true ]; then
-            "$TOOLS/cargo-llvm-cov" llvm-cov nextest-archive --user-config-file none \
+            "$TOOLS/cargo-llvm-cov" llvm-cov nextest-archive --no-clean --user-config-file none \
               --locked "${packages[@]}" --archive-file test-binaries.tar.zst
           else
             "$TOOLS/cargo-nextest" nextest archive --user-config-file none \
