@@ -3145,9 +3145,6 @@ jobs:
               fetch = next(step for step in tests.split('      - name: ')[1:] if step.startswith('Fetch additional locked manifests\n'))
               assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
 
-          archived_shards_provision_child_build_dependencies()
-          print('PASS archived_shards_provision_child_build_dependencies')
-
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
@@ -3249,6 +3246,9 @@ jobs:
               for name in ['cargo', 'cargo-nextest', 'cargo-llvm-cov']:
                   subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
               return tools, log
+
+          archived_shards_provision_child_build_dependencies()
+          print('PASS archived_shards_provision_child_build_dependencies')
 
           def warm_filter_runs_only_in_warm_mode():
               for value in warm_filters:
