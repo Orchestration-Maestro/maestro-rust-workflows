@@ -89,9 +89,12 @@ Only pushes to the caller's default branch save snapshots. Pull-request and
 merge-group jobs restore but never save. Each test shape has one writer per
 call: the warm build, or the archive build plus the separate plain doctest leg
 when the numeric shards use coverage. Other cached compiling jobs each write their own shape.
-A default-branch push warm call also runs the declared target checks to seed
-the Linux and macOS shapes. Warm pull-request calls skip targets because they
-cannot save.
+A default-branch push warm call also runs Format and lint, Docs, Doctests,
+Wasm and browser build, and Chromium browser tests when declared. These jobs
+use their normal commands, paths and compiler output modes, including running
+the doctests and browser tests, to seed exactly the shapes their readers need.
+Other warm calls skip these jobs because they cannot save. Declared Linux and
+macOS target checks also seed their shapes on push warm calls.
 
 Missing snapshots build cold. Failed restores discard partial data before
 startup, including warning-only failures with no matched-cache output. Only

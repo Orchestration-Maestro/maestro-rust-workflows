@@ -126,6 +126,15 @@ declared target checks; warm calls for other events skip them. Only
 default-branch pushes save those snapshots. Host-specific, checksum-pinned assets
 are listed in [Compile cache](../README.md#compile-cache).
 
+Only a default-branch push warm call also runs Format and lint, Docs,
+Doctests, Wasm and browser build, and declared Chromium browser tests.
+They run their existing checks, not substitute builds: the paths and compiler
+output modes match subsequent readers. Doctests use the plain test shape,
+not the instrumented coverage shape. Browser tests and doctests execute during
+these warm calls; the coverage warm build still uses its optional test filter.
+Other warm calls skip these additional jobs. No extra cache writer is enabled
+for pull requests, merge groups, feature branches or manual runs.
+
 The 1 GiB native-payload bound applies to each save, not the repository's
 10 GB cache allowance. Compressed snapshot sizes are measured separately;
 GitHub eviction can remove even the newest snapshot of a shape.
