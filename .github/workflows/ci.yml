@@ -68,6 +68,8 @@ env:
     if {path.name for path in reports.glob('*.lcov')} != expected:
         raise SystemExit('Missing or unexpected shard coverage reports')
     layout = json.loads(os.environ.get('COVERAGE_LAYOUT') or '{}')
+    if layout and os.environ.get('COVERAGE_CHECKOUT_ROOT'):
+        layout['checkout_root'] = os.environ['COVERAGE_CHECKOUT_ROOT']
     narrowed = os.environ.get('COVERAGE_SCOPE', 'full workspace') != 'full workspace'
     selected = set(json.loads(os.environ.get('TEST_PACKAGES') or '[]'))
     selected_lines = {}
@@ -1041,6 +1043,8 @@ jobs:
 
   test-build:
     needs: declaration
+    outputs:
+      coverage_checkout_root: ${{ steps.archive-root.outputs.path }}
     name: Build test archive
     if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
@@ -1148,6 +1152,9 @@ jobs:
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: *caller-tools
+      - name: Record archive checkout root
+        id: archive-root
+        run: printf 'path=%s\n' "$PWD" >> "$GITHUB_OUTPUT"
       - name: Build test archive
         timeout-minutes: 45
         run: |
@@ -1563,7 +1570,7 @@ jobs:
 
   tests-result:
     name: Tests (ubuntu-latest)
-    needs: [tests, doctests, declaration]
+    needs: [tests, doctests, declaration, test-build]
     if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     steps:
@@ -1602,6 +1609,7 @@ jobs:
           QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
           COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
           COVERAGE_LAYOUT: ${{ needs.declaration.outputs.coverage_layout }}
+          COVERAGE_CHECKOUT_ROOT: ${{ needs.test-build.outputs.coverage_checkout_root }}
           TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
         run: python3 -c "$COVERAGE_MERGE"
       - name: Upload full coverage manifest
