@@ -99,12 +99,9 @@ jobs:
                       raise RuntimeError('Run did not pass, but no failed suite job could be identified')
                   print(f'Full suite passed; no issue or revert: {link}')
               else:
-                  merged = [pr for pr in api(f'commits/{sha}/pulls') if pr['merge_commit_sha'] == sha
-                            and pr['merged_at'] and pr['base']['ref'] == 'main'
-                            and pr['base']['repo']['full_name'] == repository]
-                  if proof:
-                      # A proof branch models a landing without merging a defect into main.
-                      merged = [{'number': 0}]
+                  merged = [pr for pr in api(f'commits/{sha}/pulls') if
+                            (pr['head']['sha'] == sha if proof else pr['merge_commit_sha'] == sha and pr['merged_at'])
+                            and pr['base']['ref'] == 'main' and pr['base']['repo']['full_name'] == repository]
                   if len(merged) != 1:
                       raise RuntimeError('Cannot uniquely attribute the exact landing to a merged PR')
                   original = merged[0]['number']
