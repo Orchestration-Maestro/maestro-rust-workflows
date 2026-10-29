@@ -4607,8 +4607,10 @@ jobs:
                           output.write('\n# changed shared input\n' if target.suffix in ['.toml', '.lock'] else '\n')
                       git('add', '.')
                       git('commit', '-qm', path)
+                      if path == 'rust-toolchain.toml':
+                          target.unlink()  # The committed diff tests selection, not toolchain installation.
                       for event, comparison in [('merge_group', base), ('push', base),
-                                                ('merge_group', '0' * 40)]:
+                                                ('merge_group', '0' * 40), ('merge_group', '')]:
                           output = directory / '.git/selection'
                           output.write_text('', encoding='utf-8')
                           result = execute('Select test packages', directory, {
@@ -4625,6 +4627,15 @@ jobs:
                               expression = expression.replace(key, repr(value))
                           expression = re.sub(r'!(?!=)', ' not ', expression.replace('&&', ' and ').replace('||', ' or ')).strip()
                           assert bool(eval(expression, {'__builtins__': {}})) == should_run, (path, event, gate)
+                  git('reset', '--hard', base)
+                  manifest = directory / 'core/Cargo.toml'
+                  manifest.write_text(manifest.read_text(encoding='utf-8').replace('0.1.0', '0.2.0'), encoding='utf-8')
+                  output.write_text('', encoding='utf-8')
+                  result = execute('Select test packages', directory, {
+                      'TEST_EVENT': 'merge_group', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert 'browser_tests=true' in output.read_text(encoding='utf-8'), result.stdout
+                  assert 'Full-suite fallback:' in result.stdout, result.stdout
                   # Skips must not become failed shard dependencies; recipe failures must propagate.
                   aggregate = workflow.split('  tests-result:\n', 1)[1].split('\n  checks:', 1)[0]
                   assert 'browser-tests' not in aggregate
