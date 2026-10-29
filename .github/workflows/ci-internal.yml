@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   sample:
@@ -2812,7 +2813,20 @@ jobs:
                   command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
                   argv = [os.path.expanduser('~/.local/bin/capped'), 'bash', '-e', '-o', 'pipefail', '-c', command]
                   env['CARGO_BUILD_JOBS'] = '3'
-              return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
+              with tempfile.TemporaryDirectory() as selection_temp:
+                  if name == 'Select test packages' and env.get('TEST_EVENT') == 'merge_group' and 'RUNNER_TEMP' not in (extra or {}):
+                      baseline = pathlib.Path(selection_temp) / 'coverage-baseline'
+                      baseline.mkdir()
+                      import tomllib
+                      package_roots = {}
+                      for manifest in pathlib.Path(cwd).rglob('Cargo.toml'):
+                          if 'target' not in manifest.relative_to(cwd).parts:
+                              package = tomllib.loads(manifest.read_text(encoding='utf-8')).get('package', {})
+                              if 'name' in package:
+                                  package_roots[package['name']] = manifest.parent.relative_to(cwd).as_posix()
+                      (baseline / 'manifest.json').write_text(json.dumps({'head': env.get('BASE_REF'), 'package_roots': package_roots}), encoding='utf-8')
+                      env['RUNNER_TEMP'] = selection_temp
+                  return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
 
           credential_names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
           GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY OPENROUTER_API_KEY ZAI_API_KEY
@@ -3352,7 +3366,7 @@ jobs:
           print('PASS selected_archive_build_compiles_only_selected_packages')
 
           def selected_coverage_limits_tests_and_report_scope():
-              for step in ['Isolated tests', 'Coverage']:
+              for step in ['Isolated tests']:
                   with tempfile.TemporaryDirectory() as temporary:
                       directory = pathlib.Path(temporary)
                       tools, log = install_recording_runner(directory)
@@ -3383,9 +3397,9 @@ jobs:
                   reports.mkdir()
                   (reports / 'shard-1.lcov').write_text('SF:/sample/lib.rs\nDA:1,1\nDA:2,0\nend_of_record\n', encoding='utf-8')
                   result = execute('Merge coverage', directory, {
-                      'TEST_SHARD_COUNT': '1', 'COVERAGE_SCOPE': 'selected packages: sample'})
+                      'COVERAGE_REPORT_COUNT': '1', 'COVERAGE_SCOPE': 'full workspace'})
                   assert result.returncode != 0 and 'minimum 80%' in result.stdout, result.stdout + result.stderr
-                  assert 'Coverage scope: selected packages: sample' in result.stdout, result.stdout
+                  assert 'Coverage scope: full workspace' in result.stdout, result.stdout
 
           selected_coverage_limits_tests_and_report_scope()
           print('PASS selected_coverage_limits_tests_and_report_scope')
@@ -4750,6 +4764,144 @@ jobs:
           partitions_run_every_test_once_and_doctests()
           print('PASS partitions_run_every_test_once_and_doctests')
 
+          def coverage_baseline_download_requires_complete_manifest():
+              import zipfile
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'commit', '--allow-empty', '-qm', 'baseline')
+                  head = fixture_git(directory, 'rev-parse', 'HEAD')
+                  manifest = {'head': head, 'checkout_root': '/old/caller', 'package_roots': {'a': 'a'},
+                              'shard_count': 1, 'artifact_prefix': 'coverage-root-'}
+                  for name, records in [('manifest', {'manifest.json': json.dumps(manifest)}),
+                                        ('shard', {'shard-1.lcov': 'SF:/old/caller/a/src/lib.rs\nDA:1,1\nend_of_record\n'})]:
+                      with zipfile.ZipFile(directory / (name + '.zip'), 'w') as archive:
+                          for filename, text in records.items():
+                              archive.writestr(filename, text)
+                  artifacts = [{'id': 1, 'name': 'coverage-root-full', 'expired': False, 'workflow_run': {'id': 10}}]
+                  (directory / 'artifacts.json').write_text(json.dumps({'artifacts': artifacts}), encoding='utf-8')
+                  gh = directory / 'gh'
+                  gh.write_text('#!/usr/bin/env python3\nimport json,pathlib,sys\n'
+                      'root=pathlib.Path(__file__).parent\nurl=sys.argv[2]\n'
+                      'if (root/"deny").exists(): sys.exit(1)\n'
+                      'if "artifacts/1/zip" in url: sys.stdout.buffer.write((root/"manifest.zip").read_bytes())\n'
+                      'elif "artifacts/2/zip" in url: sys.stdout.buffer.write((root/"shard.zip").read_bytes())\n'
+                      'elif "/runs/10/artifacts" in url: print(json.dumps({"artifacts":[{"id":2,"name":"coverage-root-1","expired":False}]}))\n'
+                      'elif "/runs/10" in url: print(json.dumps({"conclusion":"success","event":"merge_group"}))\n'
+                      'else: print((root/"artifacts.json").read_text())\n', encoding='utf-8')
+                  gh.chmod(0o755)
+                  env = {'PATH': str(directory) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
+                         'BASE_REF': head, 'GITHUB_REPOSITORY': 'fixture/caller', 'COVERAGE_KEY': 'root'}
+                  result = execute('Find coverage baseline', directory, env)
+                  baseline = directory / 'coverage-baseline'
+                  assert result.returncode == 0 and (baseline / 'manifest.json').is_file(), result.stdout + result.stderr
+                  assert (baseline / 'shard-1.lcov').read_text(encoding='utf-8').startswith('SF:')
+                  for failure in ['expired', 'missing', 'denied']:
+                      if failure == 'expired':
+                          artifacts[0]['expired'] = True
+                      elif failure == 'missing':
+                          artifacts.clear()
+                      else:
+                          (directory / 'deny').touch()
+                      (directory / 'artifacts.json').write_text(json.dumps({'artifacts': artifacts}), encoding='utf-8')
+                      result = execute('Find coverage baseline', directory, env)
+                      assert result.returncode == 0 and not (baseline / 'manifest.json').exists(), result.stdout + result.stderr
+                      assert 'baseline' in (directory / 'coverage-baseline-reason').read_text(encoding='utf-8')
+
+          coverage_baseline_download_requires_complete_manifest()
+          print('PASS coverage_baseline_download_requires_complete_manifest')
+
+          def selected_coverage_merges_only_unchanged_baseline_packages():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  for folder in ['coverage', 'baseline']:
+                      (directory / folder).mkdir()
+                  layout = {'head': 'fixture', 'checkout_root': '/current/caller',
+                            'package_roots': {'selected': 'crates/a', 'unchanged': 'crates/b', 'nested': 'crates/a/nested'},
+                            'shard_count': 1}
+                  baseline = layout | {'checkout_root': '/old/runner/caller'}
+                  (directory / 'baseline/manifest.json').write_text(json.dumps(baseline), encoding='utf-8')
+                  def records(root, selected_hits, other_hits):
+                      return ''.join(f'SF:{root}/{path}/src/lib.rs\nDA:1,{hits}\nend_of_record\n'
+                                     for path, hits in [('crates/a', selected_hits), ('crates/b', other_hits),
+                                                        ('crates/a/nested', other_hits), ('external/dependency', 0)])
+                  (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 0, 0), encoding='utf-8')
+                  (directory / 'baseline/shard-1.lcov').write_text(records('/old/runner/caller', 1, 1), encoding='utf-8')
+                  env = {'TEST_SHARD_COUNT': '1', 'COVERAGE_REPORT_COUNT': '1',
+                         'COVERAGE_SCOPE': 'selected packages: selected', 'TEST_PACKAGES': '["selected"]',
+                         'COVERAGE_LAYOUT': json.dumps(layout), 'COVERAGE_BASELINE_DIR': str(directory / 'baseline')}
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode != 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
+                  assert 'Workspace line coverage (gate): 66.67% (2/3)' in result.stdout, result.stdout
+                  assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout, result.stdout
+                  result = execute('Merge coverage', directory, env | {'QUALITY_CONFIG': '{"coverage_min_lines": 60}'})
+                  assert result.returncode == 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
+                  (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 1, 0), encoding='utf-8')
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
+                  assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
+                  (directory / 'baseline/shard-1.lcov').unlink()
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode != 0 and 'baseline' in result.stderr.lower(), result.stdout + result.stderr
+
+          selected_coverage_merges_only_unchanged_baseline_packages()
+          print('PASS selected_coverage_merges_only_unchanged_baseline_packages')
+
+          def baseline_selection_includes_changes_before_group_base():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
+                  (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c"]\n', encoding='utf-8')
+                  for name in ['a', 'b', 'c']:
+                      (directory / name / 'src').mkdir(parents=True)
+                      (directory / name / 'Cargo.toml').write_text(
+                          f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+                      (directory / name / 'src/lib.rs').write_text('pub fn initial() {}\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'baseline')
+                  baseline_head = fixture_git(directory, 'rev-parse', 'HEAD')
+                  (directory / 'b/src/lib.rs').write_text('pub fn between() {}\n', encoding='utf-8')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'between baseline and base')
+                  base = fixture_git(directory, 'rev-parse', 'HEAD')
+                  (directory / 'a/src/lib.rs').write_text('pub fn selected() {}\n', encoding='utf-8')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'group head')
+                  baseline = directory / '.git/coverage-baseline'
+                  baseline.mkdir()
+                  manifest = baseline / 'manifest.json'
+                  manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'a', 'b': 'b', 'c': 'c'}}), encoding='utf-8')
+                  output = directory / '.git/selection'
+                  env = {'TEST_EVENT': 'merge_group', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                         'RUNNER_TEMP': str(directory / '.git')}
+                  result = execute('Select test packages', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                  assert json.loads(values['packages']) == ['a', 'b'], values
+                  assert json.loads(values['coverage_layout'])['package_roots'] == {'a': 'a', 'b': 'b', 'c': 'c'}
+                  manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'old'}}), encoding='utf-8')
+                  result = execute('Select test packages', directory, env)
+                  assert result.returncode == 0 and 'baseline package layout changed' in result.stdout, result.stdout + result.stderr
+                  manifest.unlink()
+                  output.write_text('', encoding='utf-8')
+                  result = execute('Select test packages', directory, env)
+                  values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                  assert result.returncode == 0 and 'no baseline manifest yet' in result.stdout, result.stdout + result.stderr
+                  assert json.loads(values['packages']) == ['a', 'b', 'c'], values
+                  manifest.write_text(json.dumps({'head': '0' * 40}), encoding='utf-8')
+                  result = execute('Select test packages', directory, env)
+                  assert result.returncode == 0 and 'baseline head is not an ancestor' in result.stdout, result.stdout + result.stderr
+                  manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'a', 'b': 'b', 'c': 'c'}}), encoding='utf-8')
+                  (directory / '.github/ci.toml').unlink()
+                  result = execute('Select test packages', directory, env)
+                  assert result.returncode == 0 and 'undeclared caller: full suite' in result.stdout, result.stdout + result.stderr
+
+          baseline_selection_includes_changes_before_group_base()
+          print('PASS baseline_selection_includes_changes_before_group_base')
+
           def coverage_merge_uses_union_and_requires_all_reports():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -4852,6 +5004,8 @@ jobs:
           def merge_group_nested_members_have_one_owner():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
                   (directory / 'src').mkdir()
                   (directory / 'src/lib.rs').write_text('pub fn root() {}\n', encoding='utf-8')
                   (directory / 'nested/src').mkdir(parents=True)
@@ -4885,6 +5039,8 @@ jobs:
               from functools import partial
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
                   names = ['a', 'b', 'c', 'build', 'dev', 'target', 'unrelated']
                   (directory / 'Cargo.toml').write_text(
                       '[workspace]\nresolver="3"\nmembers=' + json.dumps(names) + '\n', encoding='utf-8')

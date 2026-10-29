@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+* Callers updating the shared workflow release pin must grant `actions: read`
+  to the reusable-workflow call for the test-selection job. Narrowed merge-group
+  coverage uses a verified full-run baseline for unchanged packages and keeps
+  the workspace coverage floor; selected-package coverage is informational.
+
 ## [0.16.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.16.0...v0.16.1) (2026-10-27)
 
 
