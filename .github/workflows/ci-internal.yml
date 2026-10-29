@@ -3604,6 +3604,32 @@ jobs:
           coverage_exclusions_have_one_workflow_owner()
           print('PASS coverage_exclusions_have_one_workflow_owner')
 
+          def package_ownership_has_one_workflow_owner():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              assert 'PACKAGE_OWNER' in document['env'], 'missing workflow-level package ownership snippet'
+              helper = document['env']['PACKAGE_OWNER']
+              assert workflow.count('def package_owner(') == 1
+              assert len(re.findall(r'key=lambda [^:]+: len\([^)]*\.parts\)', workflow)) == 1
+              for consumer in [document['env']['COVERAGE_MERGE'], body('Select test packages')]:
+                  assert "exec(os.environ['PACKAGE_OWNER'])" in consumer and 'package_owner(' in consumer
+              namespace = {}
+              exec(helper, namespace)
+              roots = {'outer': pathlib.PurePosixPath('crates/a'), 'inner': pathlib.PurePosixPath('crates/a/nested')}
+              for source, owner in [('crates/a/nested/src/lib.rs', 'inner'), ('crates/a/src/lib.rs', 'outer'),
+                                    ('crates/b/src/lib.rs', None)]:
+                  assert namespace['package_owner'](pathlib.PurePosixPath(source), roots) == owner, source
+              internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+              with tempfile.TemporaryDirectory() as temporary:
+                  exported = pathlib.Path(temporary) / 'env'
+                  result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Shared coverage policy', internal)],
+                                          env=os.environ | {'GITHUB_ENV': str(exported), 'RUNNER_TEMP': temporary},
+                                          capture_output=True, text=True)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert 'PACKAGE_OWNER<<COVERAGE_POLICY\n' + helper + 'COVERAGE_POLICY\n' in exported.read_text(encoding='utf-8')
+
+          package_ownership_has_one_workflow_owner()
+          print('PASS package_ownership_has_one_workflow_owner')
+
           def warm_cache_builds_without_tests_or_reports():
               for status in (0, 17):
                   with tempfile.TemporaryDirectory() as temporary:
