@@ -1,4 +1,4 @@
-name: Maestro coverage proof
+name: Maestro merge-group selection proof
 
 on:
   push:
