@@ -735,8 +735,9 @@ default branch.
 The reporter needs `contents: read` and `actions: read` on the job token to
 read the exact run attempt and failed job logs. It uses the existing
 `RELEASE_APP_CLIENT_ID` organization variable and `RELEASE_APP_PRIVATE_KEY`
-secret to mint a repository-scoped App token with contents, issues and pull
-requests write access. The App must be installed in the caller repository and
+secret to mint a repository-scoped App token with contents, workflows, issues and pull
+requests write access. Workflow write access lets it revert a landing that
+changed CI files. The App must be installed in the caller repository and
 its secret must be available there. Do not substitute the automatic job token
 for these writes: it does not trigger required checks on the new revert PR.
 No credential is passed to the full-suite test jobs.
