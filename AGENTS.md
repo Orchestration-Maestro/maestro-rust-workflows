@@ -11,7 +11,8 @@ use shared verified runtime pins, not caller-selected browser versions. Its spec
 [One shared Rust CI](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md).
 
 - Accept only the optional `.github/ci.toml` declaration documented in
-  `docs/caller-checks.md`; no other consumer settings or command hooks. The
+  `docs/caller-checks.md`, including its single standalone `test_prepare` command;
+  no other caller settings or command hooks. The
   directory input is for the self-test, proof, and advisory and fuzz scans; organization
   rules use the root.
   The caller's `.config/nextest.toml` is test-suite runner metadata (such as
