@@ -4763,6 +4763,22 @@ jobs:
           partitions_run_every_test_once_and_doctests()
           print('PASS partitions_run_every_test_once_and_doctests')
 
+          def archive_checkout_root_is_the_coverage_source_root():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  output = directory / 'output'
+                  result = execute('Record archive checkout root', directory, {'GITHUB_OUTPUT': str(output)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert output.read_text(encoding='utf-8').strip() == 'path=' + str(directory)
+              build = workflow.split('\n  test-build:\n', 1)[1].split('\n  test-prepare:', 1)[0]
+              assert 'coverage_checkout_root: $' + '{{ steps.archive-root.outputs.path }}' in build
+              aggregate = workflow.split('\n  tests-result:\n', 1)[1].split('\n  checks:', 1)[0]
+              assert 'needs: [tests, doctests, declaration, test-build]' in aggregate
+              assert 'COVERAGE_CHECKOUT_ROOT: $' + '{{ needs.test-build.outputs.coverage_checkout_root }}' in aggregate
+
+          archive_checkout_root_is_the_coverage_source_root()
+          print('PASS archive_checkout_root_is_the_coverage_source_root')
+
           def coverage_baseline_transfer_requires_coverage():
               for name, owner in [('Upload coverage baseline', 'steps.selection'),
                                   ('Download coverage baseline', 'needs.declaration')]:
@@ -4853,6 +4869,12 @@ jobs:
                   (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 1, 0), encoding='utf-8')
                   result = execute('Merge coverage', directory, env)
                   assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
+                  assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
+                  (directory / 'coverage/shard-1.lcov').write_text(records('/build/caller', 1, 0), encoding='utf-8')
+                  result = execute('Merge coverage', directory, env | {
+                      'COVERAGE_LAYOUT': json.dumps(layout | {'checkout_root': '/home/runner/work/caller/caller'}),
+                      'COVERAGE_CHECKOUT_ROOT': '/build/caller'})
+                  assert result.returncode == 0 and 'Workspace line coverage (gate): 100.00% (3/3)' in result.stdout, result.stdout + result.stderr
                   assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
                   (directory / 'coverage/shard-1.lcov').write_text(
                       'SF:/current/caller/crates/b/src/lib.rs\nDA:1,0\nend_of_record\n', encoding='utf-8')
