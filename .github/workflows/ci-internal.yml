@@ -68,6 +68,12 @@ jobs:
           import os
           assert all(job['result'] == 'success' for job in json.loads(os.environ['RESULTS']).values())
 
+  shard-seams:
+    name: Shard count seam proofs
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-internal-shards.yml
+
   seams:
     name: Workflow seam proofs
     outputs:
@@ -3428,7 +3434,7 @@ jobs:
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'test_prepare': json.dumps(''), 'warm_test_filter': json.dumps('none()'), 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
+              assert values == {'test_prepare': json.dumps(''), 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
@@ -6959,7 +6965,7 @@ jobs:
 
   consumers:
     name: Required consumer tests
-    needs: [seams, native, fuzz-issues, browser-qualification]
+    needs: [seams, native, fuzz-issues, browser-qualification, shard-seams]
     if: always()
     runs-on: ubuntu-latest
     steps:
