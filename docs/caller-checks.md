@@ -42,8 +42,10 @@ A narrowed merge group combines fresh selected-package LCOV with unchanged
 packages' LCOV from the latest successful full run on main's ancestry.
 Narrowing requires a `.github/ci.toml` declaration; undeclared callers run the
 full suite. Selected-package coverage is reported separately, for information
-only; it has no per-package floor. Selection compares the baseline head with the group head,
-so packages changed since the baseline also run.
+only; it has no per-package floor. A selected package with no instrumented lines
+reports `N/A (0/0)`; only the workspace union is gated. Selection compares the
+baseline head with the group head, so packages changed since the baseline also
+run.
 
 A successful full aggregate publishes `coverage-<key>-full`, containing the
 source head, checkout root, package roots and shard count. The selector accepts

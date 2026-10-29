@@ -109,12 +109,11 @@ env:
         if {path.name for path in baseline_dir.glob('*.lcov')} != baseline_names:
             raise SystemExit('Missing or unexpected baseline coverage reports')
         selected_lines = read_reports(reports, expected, layout, selected)
-        if not selected_lines:
-            raise SystemExit('No instrumented lines in selected packages')
         lines = read_reports(baseline_dir, baseline_names, baseline, layout['package_roots'].keys() - selected)
         lines.update(selected_lines)
         selected_covered = sum(hits > 0 for hits in selected_lines.values())
-        print(f'Selected-package line coverage: {selected_covered * 100 / len(selected_lines):.2f}% ({selected_covered}/{len(selected_lines)}), information only')
+        selected_figure = f'{selected_covered * 100 / len(selected_lines):.2f}% ({selected_covered}/{len(selected_lines)})' if selected_lines else 'N/A (0/0)'
+        print(f'Selected-package line coverage: {selected_figure}, information only')
     else:
         lines = read_reports(reports, expected, layout, None)
     if not lines:
