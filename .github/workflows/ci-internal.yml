@@ -4694,8 +4694,7 @@ jobs:
                   git('add', '.')
                   git('commit', '-qm', 'unrelated')
                   assert select()['browser_tests'] == 'false'
-                  assert select('merge_group')['browser_tests'] == 'false'
-                  assert select('push')['browser_tests'] == 'true'
+                  assert select('merge_group')['browser_tests'] == select('push')['browser_tests'] == 'true'
                   git('reset', '--hard', base)
                   (directory / 'a/src/lib.rs').write_text('pub fn changed() {}\n', encoding='utf-8')
                   git('add', '.')
