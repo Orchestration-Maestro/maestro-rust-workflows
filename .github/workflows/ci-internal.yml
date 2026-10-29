@@ -4920,7 +4920,7 @@ jobs:
                   directory = pathlib.Path(temporary)
                   for folder in ['coverage', 'baseline']:
                       (directory / folder).mkdir()
-                  layout = {'head': 'fixture', 'checkout_root': '/current/caller',
+                  layout = {'head': 'fixture',
                             'package_roots': {'selected': 'crates/a', 'unchanged': 'crates/b', 'nested': 'crates/a/nested'},
                             'shard_count': 1}
                   baseline = layout | {'checkout_root': '/old/runner/caller'}
@@ -4933,7 +4933,8 @@ jobs:
                   (directory / 'baseline/shard-1.lcov').write_text(records('/old/runner/caller', 1, 1), encoding='utf-8')
                   env = {'TEST_SHARD_COUNT': '1', 'COVERAGE_REPORT_COUNT': '1',
                          'COVERAGE_SCOPE': 'selected packages: selected', 'TEST_PACKAGES': '["selected"]',
-                         'COVERAGE_LAYOUT': json.dumps(layout), 'COVERAGE_BASELINE_DIR': str(directory / 'baseline')}
+                         'COVERAGE_LAYOUT': json.dumps(layout), 'COVERAGE_CHECKOUT_ROOT': '/current/caller',
+                         'COVERAGE_BASELINE_DIR': str(directory / 'baseline')}
                   result = execute('Merge coverage', directory, env)
                   assert result.returncode != 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
                   assert 'Workspace line coverage (gate): 66.67% (2/3)' in result.stdout, result.stdout
@@ -4950,9 +4951,7 @@ jobs:
                   assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
                   assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
                   (directory / 'coverage/shard-1.lcov').write_text(records('/build/caller', 1, 0), encoding='utf-8')
-                  result = execute('Merge coverage', directory, env | {
-                      'COVERAGE_LAYOUT': json.dumps(layout | {'checkout_root': '/home/runner/work/caller/caller'}),
-                      'COVERAGE_CHECKOUT_ROOT': '/build/caller'})
+                  result = execute('Merge coverage', directory, env | {'COVERAGE_CHECKOUT_ROOT': '/build/caller'})
                   assert result.returncode == 0 and 'Workspace line coverage (gate): 100.00% (3/3)' in result.stdout, result.stdout + result.stderr
                   assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
                   (directory / 'coverage/shard-1.lcov').write_text(
@@ -5002,6 +5001,7 @@ jobs:
                   values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                   assert json.loads(values['packages']) == ['a', 'b'], values
                   assert json.loads(values['coverage_layout'])['package_roots'] == {'a': 'a', 'b': 'b', 'c': 'c'}
+                  assert 'checkout_root' not in json.loads(values['coverage_layout']), 'the selection layout names a checkout root'
                   manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'old'}}), encoding='utf-8')
                   result = execute('Select test packages', directory, env)
                   assert result.returncode == 0 and 'baseline package layout changed' in result.stdout, result.stdout + result.stderr
