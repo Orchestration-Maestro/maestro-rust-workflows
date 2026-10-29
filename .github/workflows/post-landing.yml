@@ -39,7 +39,6 @@ jobs:
         with:
           client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          permission-actions: read
           permission-contents: write
           permission-issues: write
           permission-pull-requests: write
@@ -49,7 +48,8 @@ jobs:
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ inputs.run-id }}
           PROOF: ${{ inputs.proof }}
-          GH_TOKEN: ${{ steps.token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
+          REPORT_TOKEN: ${{ steps.token.outputs.token }}
         run: |
           import base64
           import json
@@ -64,7 +64,9 @@ jobs:
           link = f'{server}/{repository}/actions/runs/{run_id}'
 
           def command(*argv, body=None):
-              result = subprocess.run(list(argv), input=body, capture_output=True, text=True)
+              token = os.environ['REPORT_TOKEN'] if argv[:2] in (('gh', 'issue'), ('gh', 'pr')) else os.environ['GH_TOKEN']
+              result = subprocess.run(list(argv), input=body, capture_output=True, text=True,
+                                      env=os.environ | {'GH_TOKEN': token})
               if result.returncode:
                   raise RuntimeError(f'{argv[0]} {argv[1]} failed: {result.stderr.strip()}')
               return result.stdout.strip()
@@ -140,7 +142,7 @@ jobs:
                               raise RuntimeError('Landing has no parent to revert')
                           command('git', '-c', 'user.name=Maestro CI', '-c', 'user.email=ci@users.noreply.github.com',
                                   '-c', 'commit.gpgsign=false', 'revert', '--no-edit', *(['-m', '1'] if len(parents) > 1 else []), sha)
-                          auth = base64.b64encode(f"x-access-token:{os.environ['GH_TOKEN']}".encode()).decode()
+                          auth = base64.b64encode(f"x-access-token:{os.environ['REPORT_TOKEN']}".encode()).decode()
                           command('git', '-c', f'http.extraheader=AUTHORIZATION: basic {auth}', 'push', 'origin', f'HEAD:refs/heads/{head}')
                       revert_body = f'Reverts #{original} after the full suite failed.\n\nFailure issue: {issue}\nCommit: {sha}\nRun: {link}\n\nUses the normal required checks and merge queue; never pushes to main.'
                       pr = command('gh', 'pr', 'create', '-R', repository, '--base', 'main', '--head', head,
