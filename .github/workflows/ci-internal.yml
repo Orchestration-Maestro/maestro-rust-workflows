@@ -4756,6 +4756,53 @@ jobs:
           partitions_run_every_test_once_and_doctests()
           print('PASS partitions_run_every_test_once_and_doctests')
 
+          def coverage_baseline_download_requires_complete_manifest():
+              import zipfile
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'commit', '--allow-empty', '-qm', 'baseline')
+                  head = fixture_git(directory, 'rev-parse', 'HEAD')
+                  manifest = {'head': head, 'checkout_root': '/old/caller', 'package_roots': {'a': 'a'},
+                              'shard_count': 1, 'artifact_prefix': 'coverage-root-'}
+                  for name, records in [('manifest', {'manifest.json': json.dumps(manifest)}),
+                                        ('shard', {'shard-1.lcov': 'SF:/old/caller/a/src/lib.rs\nDA:1,1\nend_of_record\n'})]:
+                      with zipfile.ZipFile(directory / (name + '.zip'), 'w') as archive:
+                          for filename, text in records.items():
+                              archive.writestr(filename, text)
+                  artifacts = [{'id': 1, 'name': 'coverage-root-full', 'expired': False, 'workflow_run': {'id': 10}}]
+                  (directory / 'artifacts.json').write_text(json.dumps({'artifacts': artifacts}), encoding='utf-8')
+                  gh = directory / 'gh'
+                  gh.write_text('#!/usr/bin/env python3\nimport json,pathlib,sys\n'
+                      'root=pathlib.Path(__file__).parent\nurl=sys.argv[2]\n'
+                      'if (root/"deny").exists(): sys.exit(1)\n'
+                      'if "artifacts/1/zip" in url: sys.stdout.buffer.write((root/"manifest.zip").read_bytes())\n'
+                      'elif "artifacts/2/zip" in url: sys.stdout.buffer.write((root/"shard.zip").read_bytes())\n'
+                      'elif "/runs/10/artifacts" in url: print(json.dumps({"artifacts":[{"id":2,"name":"coverage-root-1","expired":False}]}))\n'
+                      'elif "/runs/10" in url: print(json.dumps({"conclusion":"success","event":"merge_group"}))\n'
+                      'else: print((root/"artifacts.json").read_text())\n', encoding='utf-8')
+                  gh.chmod(0o755)
+                  env = {'PATH': str(directory) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
+                         'BASE_REF': head, 'GITHUB_REPOSITORY': 'fixture/caller', 'COVERAGE_KEY': 'root'}
+                  result = execute('Find coverage baseline', directory, env)
+                  baseline = directory / 'coverage-baseline'
+                  assert result.returncode == 0 and (baseline / 'manifest.json').is_file(), result.stdout + result.stderr
+                  assert (baseline / 'shard-1.lcov').read_text(encoding='utf-8').startswith('SF:')
+                  for failure in ['expired', 'missing', 'denied']:
+                      if failure == 'expired':
+                          artifacts[0]['expired'] = True
+                      elif failure == 'missing':
+                          artifacts.clear()
+                      else:
+                          (directory / 'deny').touch()
+                      (directory / 'artifacts.json').write_text(json.dumps({'artifacts': artifacts}), encoding='utf-8')
+                      result = execute('Find coverage baseline', directory, env)
+                      assert result.returncode == 0 and not (baseline / 'manifest.json').exists(), result.stdout + result.stderr
+                      assert 'baseline' in (directory / 'coverage-baseline-reason').read_text(encoding='utf-8')
+
+          coverage_baseline_download_requires_complete_manifest()
+          print('PASS coverage_baseline_download_requires_complete_manifest')
+
           def selected_coverage_merges_only_unchanged_baseline_packages():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
