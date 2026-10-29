@@ -2660,6 +2660,7 @@ jobs:
 
           source = pathlib.Path('.github/workflows/post-landing.yml').read_text(encoding='utf-8')
           assert '          permission-workflows: write\n' in source, 'Reverts must handle workflow-file landings'
+          assert '  report:\n    permissions:\n      contents: read\n      actions: read\n' in source, 'The reporter job must hold actions read'
           assert re.findall(r'^      ([\w-]+):$', source.split('    inputs:\n', 1)[1].split('    secrets:\n', 1)[0], re.M) == ['run-id'], 'The reusable reporter must take only the run id'
           step = source.split('      - name: Report and propose revert\n', 1)[1]
           code = textwrap.dedent(step.split('        run: |\n', 1)[1])
@@ -5105,8 +5106,6 @@ jobs:
                       if job.get('uses') == './.github/workflows/ci.yml':
                           assert job.get('permissions', {}).get('actions') == 'read', (path.name, name)
                   assert 'actions' not in document.get('permissions', {}), path.name
-                  if path.name == 'post-landing.yml':
-                      assert document['jobs']['report'].get('permissions', {}).get('actions') == 'read', path.name
 
           local_callers_grant_baseline_artifact_reads()
           print('PASS local_callers_grant_baseline_artifact_reads')
