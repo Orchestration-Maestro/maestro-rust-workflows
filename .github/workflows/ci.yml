@@ -58,10 +58,16 @@ permissions:
 env:
   TEST_SHARD_COUNT: 16
   COVERAGE_IGNORE_FILENAME_REGEX: '(^|/)(tests|benches)/([^.]|\.[^./]|\.\.[^/])|(^|/)(target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$'
+  PACKAGE_OWNER: |
+    # The deepest root wins, so a nested package owns its own files.
+    def package_owner(path, roots):
+        return max((package for package, root in roots.items() if path.is_relative_to(root)),
+                   key=lambda package: len(roots[package].parts), default=None)
   COVERAGE_MERGE: |
     import json
     import os
     import pathlib
+    exec(os.environ['PACKAGE_OWNER'])
     lines = {}
     reports = pathlib.Path(os.environ.get('COVERAGE_REPORT_DIR', 'coverage'))
     expected = {f'shard-{shard}.lcov' for shard in range(1, int(os.environ.get('COVERAGE_REPORT_COUNT') or os.environ['TEST_SHARD_COUNT']) + 1)}
@@ -75,8 +81,7 @@ env:
     selected_lines = {}
     def read_reports(directory, names, source_layout, wanted):
         result = {}
-        roots = sorted(((pathlib.Path(root), package) for package, root in source_layout.get('package_roots', {}).items()),
-                       key=lambda item: len(item[0].parts), reverse=True)
+        roots = {package: pathlib.Path(root) for package, root in source_layout.get('package_roots', {}).items()}
         for name in sorted(names):
             source = None
             include = False
@@ -89,7 +94,7 @@ env:
                             relative = pathlib.Path(source).relative_to(source_layout['checkout_root'])
                         except ValueError:
                             continue
-                        owner = next((package for root, package in roots if relative.is_relative_to(root)), None)
+                        owner = package_owner(relative, roots)
                         include = owner in wanted
                         source = relative.as_posix()
                 elif record.startswith('DA:'):
@@ -535,6 +540,7 @@ jobs:
           import subprocess
           import tempfile
           import tomllib
+          exec(os.environ['PACKAGE_OWNER'])
           def metadata(directory):
               return json.loads(subprocess.check_output(
                   ['cargo', 'metadata', '--format-version', '1', '--locked'], cwd=directory, text=True))
@@ -646,9 +652,7 @@ jobs:
                                            match[1], flags=re.DOTALL)
                           path = ast.literal_eval(literal.replace('\n', r'\n').replace('\r', r'\r'))
                       if (source.parent / path).resolve() in changed_paths:
-                          owner = max((p for p, root in roots.items() if source.is_relative_to(root)),
-                                      key=lambda p: len(roots[p].parts))
-                          included_readers.add(owner)
+                          included_readers.add(package_owner(source, roots))
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)
@@ -659,7 +663,7 @@ jobs:
                       continue
                   owners = {p for p, root in roots.items() if path.is_relative_to(root)}
                   if event == 'merge_group' and owners:
-                      owners = {max(owners, key=lambda p: len(roots[p].parts))}
+                      owners = {package_owner(path, roots)}
                   routes = [readers for key, readers in inputs.items() if path.is_relative_to(key)]
                   selected.update(owners, *routes)
                   if not owners and not routes and (event == 'merge_group' or (path.suffix not in ('.md',) and not filename.startswith('docs/'))):
