@@ -4645,6 +4645,80 @@ jobs:
           browser_merge_groups_follow_shared_package_selection()
           print('PASS browser_merge_groups_follow_shared_package_selection')
 
+          def merge_groups_select_graph_and_fail_closed():
+              from functools import partial
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  names = ['a', 'b', 'c', 'build', 'dev', 'target', 'unrelated']
+                  (directory / 'Cargo.toml').write_text(
+                      '[workspace]\nresolver="3"\nmembers=' + json.dumps(names) + '\n', encoding='utf-8')
+                  edges = {'b': ('dependencies', 'a'), 'c': ('dependencies', 'b'),
+                           'build': ('build-dependencies', 'a'), 'dev': ('dev-dependencies', 'a'),
+                           'target': ('target.\'cfg(windows)\'.dependencies', 'a')}
+                  for name in names:
+                      crate = directory / name
+                      (crate / 'src').mkdir(parents=True)
+                      manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n'
+                      if name in edges:
+                          section, dependency = edges[name]
+                          manifest += f'[{section}]\n{dependency}={{path="../{dependency}"}}\n'
+                      (crate / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+                      (crate / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+                  git = partial(fixture_git, directory)
+                  git('init', '--quiet')
+                  git('add', '.')
+                  git('commit', '-qm', 'base')
+                  base = git('rev-parse', 'HEAD')
+                  def select(base_ref=base, event='merge_group'):
+                      output = directory / '.git/selection'
+                      output.write_text('', encoding='utf-8')
+                      result = execute('Select test packages', directory, {
+                          'TEST_EVENT': event, 'BASE_REF': base_ref, 'GITHUB_OUTPUT': str(output)})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                      assert values['coverage'] == 'true'
+                      return json.loads(values['packages']), result.stdout
+                  source = directory / 'a/src/lib.rs'
+                  source.write_text('pub fn changed() {}\n', encoding='utf-8')
+                  git('add', '.')
+                  git('commit', '-qm', 'source')
+                  selected, log = select()
+                  assert selected == ['a', 'b', 'build', 'c', 'dev', 'target'], (selected, log)
+                  assert 'Coverage scope: selected packages' in log
+                  assert select(event='push')[0] == sorted(names)
+                  for filename in ['Cargo.lock', '.config/nextest.toml', 'rust-toolchain.toml',
+                                   '.github/workflows/check.yml', '.github/ci.toml', 'README.md',
+                                   'Cargo.toml', 'unknown/file', 'docs/guide.md']:
+                      git('reset', '--hard', base)
+                      path = directory / filename
+                      existed = path.exists()
+                      previous = path.read_text(encoding='utf-8') if existed else None
+                      path.parent.mkdir(parents=True, exist_ok=True)
+                      path.write_text((previous or '') + '\n# shared input\n', encoding='utf-8')
+                      git('add', '.')
+                      git('commit', '-qm', 'shared input')
+                      # Restore the runtime manifest/toolchain: selection uses the committed diff.
+                      if previous is not None:
+                          path.write_text(previous, encoding='utf-8')
+                      elif filename == 'rust-toolchain.toml':
+                          path.unlink()
+                      selected, log = select()
+                      assert selected == sorted(names), (filename, selected, log)
+                      assert 'Full-suite fallback:' in log and 'Coverage scope: full workspace' in log
+                  git('reset', '--hard', base)
+                  for invalid in ['', '0' * 40]:
+                      selected, log = select(base_ref=invalid)
+                      assert selected == sorted(names) and 'Full-suite fallback:' in log, log
+                  # Broken resolution must still enumerate and run every workspace member.
+                  manifest = directory / 'a/Cargo.toml'
+                  manifest.write_text(manifest.read_text(encoding='utf-8').replace('0.1.0', '0.2.0'), encoding='utf-8')
+                  selected, log = select()
+                  assert selected == sorted(names) and 'Full-suite fallback:' in log, log
+
+          merge_groups_select_graph_and_fail_closed()
+          print('PASS merge_groups_select_graph_and_fail_closed')
+
           def changed_packages_include_reverse_dependencies():
               from functools import partial
               with tempfile.TemporaryDirectory() as temporary:
@@ -4708,7 +4782,7 @@ jobs:
                   git('commit', '-qm', 'remove browser opt-in')
                   assert select()['browser_tests'] == 'false'
                   git('reset', '--hard', 'HEAD~1')
-                  assert json.loads(select('merge_group')['packages']) == ['a', 'b', 'c', 'd']
+                  assert json.loads(select('merge_group')['packages']) == ['a', 'b', 'c']
                   assert select('push')['coverage'] == 'true'
                   # Advisories follow dependency changes only on pull requests and merge groups.
                   assert [select(event)['check_advisories'] for event in ['pull_request', 'merge_group', 'push', 'schedule']] == ['false', 'false', 'true', 'true']

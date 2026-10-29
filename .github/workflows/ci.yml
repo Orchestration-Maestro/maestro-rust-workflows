@@ -406,14 +406,23 @@ jobs:
           def metadata(directory):
               return json.loads(subprocess.check_output(
                   ['cargo', 'metadata', '--format-version', '1', '--locked'], cwd=directory, text=True))
-          head = metadata('.')
+          event = os.environ['TEST_EVENT']
+          fallback = None
+          try:
+              head = metadata('.')
+          except (subprocess.CalledProcessError, ValueError, KeyError):
+              if event != 'merge_group':
+                  raise
+              # Enumeration without resolution keeps graph failures on the full-suite route.
+              head = json.loads(subprocess.check_output(
+                  ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))
+              fallback = 'workspace graph could not be resolved'
           packages = {p['id']: p for p in head['packages']}
           members = set(head['workspace_members'])
           roots = {p: pathlib.Path(packages[p]['manifest_path']).parent.relative_to(pathlib.Path.cwd()) for p in members}
           selected = set(members)
           browser_changed = False
           included_readers = set()
-          event = os.environ['TEST_EVENT']
           base = os.environ.get('BASE_REF')
           def declarations():
               try:
@@ -427,8 +436,22 @@ jobs:
           ids = {packages[p]['name']: p for p in members}
           # Declared paths outside every member select only the packages whose tests read them.
           inputs = {pathlib.Path(key): {ids[name] for name in readers} for key, readers in config.get('test_inputs', {}).items()}
-          if event == 'pull_request' and base:
-              changed = subprocess.check_output(['git', 'diff', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
+          if event == 'merge_group':
+              nodes = (head.get('resolve') or {}).get('nodes', [])
+              node_ids = {node['id'] for node in nodes}
+              if not members <= node_ids or any(not set(node['dependencies']) <= node_ids for node in nodes):
+                  fallback = fallback or 'workspace graph is incomplete'
+              if not base:
+                  fallback = fallback or 'merge-group base is absent'
+          changed = None
+          if event in ('pull_request', 'merge_group') and base and not fallback:
+              try:
+                  changed = subprocess.check_output(['git', 'diff', '--relative', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
+              except subprocess.CalledProcessError:
+                  if event != 'merge_group':
+                      raise
+                  fallback = 'merge-group diff could not be resolved'
+          if changed is not None:
               # Literal include paths are relative to the Rust source, not the package root.
               changed_paths = {(pathlib.Path.cwd() / name).resolve() for name in changed}
               # shortcut: static matching may overselect commented macros; use a Rust parser if that becomes costly.
@@ -477,6 +500,10 @@ jobs:
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)
+                  if event == 'merge_group' and (len(path.parts) == 1 or path.parts[0] in ('.config', '.github')):
+                      selected = set(members)
+                      fallback = f'shared input: {filename}'
+                      break
                   if filename in ('Cargo.toml', 'rust-toolchain', 'rust-toolchain.toml', '.github/ci.schema.json') or filename.startswith('.github/workflows/'):
                       selected = set(members)
                       break
@@ -485,8 +512,10 @@ jobs:
                   owners = {p for p, root in roots.items() if path.is_relative_to(root)}
                   routes = [readers for key, readers in inputs.items() if path.is_relative_to(key)]
                   selected.update(owners, *routes)
-                  if not owners and not routes and path.suffix not in ('.md',) and not filename.startswith('docs/'):
+                  if not owners and not routes and (event == 'merge_group' or (path.suffix not in ('.md',) and not filename.startswith('docs/'))):
                       selected = set(members)
+                      if event == 'merge_group':
+                          fallback = f'unknown path: {filename}'
                       break
               if '.github/ci.toml' in changed:
                   before, after = declarations()
@@ -519,13 +548,20 @@ jobs:
                   old, new = dependencies(before), dependencies(head)
                   selected.update(p for p in members if old.get(packages[p]['name']) != new[packages[p]['name']])
               if included_readers:
-                  selected = set(included_readers)
+                  if event == 'merge_group':
+                      selected.update(included_readers)
+                  else:
+                      selected = set(included_readers)
               while True:
                   reverse = {n['id'] for n in head['resolve']['nodes'] if n['id'] in members and set(n['dependencies']) & selected}
                   if reverse <= selected:
                       break
                   selected.update(reverse)
+          if event == 'merge_group' and fallback:
+              selected = set(members)
+              print(f'Full-suite fallback: {fallback}')
           names = sorted(packages[p]['name'] for p in selected)
+          print('Coverage scope: ' + ('full workspace' if selected == members else 'selected packages'))
           requested = set(config.get('browser_test_crates', []))
           browser_tests = bool(requested and (browser_changed or requested.intersection(names)))
           print(f'Selected test packages ({event}): {names}')
