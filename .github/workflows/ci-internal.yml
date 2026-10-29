@@ -3939,8 +3939,7 @@ jobs:
           def coverage_matrix_splits_doctests_from_partitions():
               tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
               matrix = re.search(r'        shard: (.*)', tests)[1]
-              assert 'env:\n  TEST_SHARD_COUNT: 16\n' in workflow
-              assert 'test_shard_count: $' + '{{ env.TEST_SHARD_COUNT }}' in workflow
+              assert 'test_shard_count: $' + '{{ steps.config.outputs.test_shard_count }}' in workflow
               assert 'test_shards: $' + '{{ steps.selection.outputs.test_shards }}' in workflow
               assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.test_shards) }}"
               assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}" in tests
