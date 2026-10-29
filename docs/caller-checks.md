@@ -18,8 +18,8 @@ The proof uses `12614d3236fba10d81afd2191a32ade98700f5e2`, which includes the
 native residency-helper compilation repair. Its parent,
 `cb438128e64e27be85dcafbdf3275dfa058e2781`, supplies the warm build and
 selected-package base.
-Changes to either `.github/workflows/ci.yml` or `.github/workflows/ci-proof.yml`
-schedule the proof; check its results before landing.
+The coverage proof runs only on pushes to `ci/228-merge-proof`, not on pull requests.
+Check its results before landing.
 
 ```toml
 wasm_crates = ["my-browser-library"]
@@ -28,6 +28,34 @@ browser_build = false
 browser_test_crates = []
 test_tools = false
 ```
+
+## Coverage baseline and caller permissions
+
+When updating the shared workflow release pin, callers grant `actions: read`
+to the reusable-workflow call. The shared Caller declaration job needs it to read
+coverage artifacts from earlier runs; all other jobs retain their existing
+permissions. A missing caller grant can prevent a reusable workflow from
+starting, so add the grant in the same PR as the release-pin update.
+
+The workspace coverage floor remains 80% (or the caller's higher floor).
+A narrowed merge group combines fresh selected-package LCOV with unchanged
+packages' LCOV from the latest successful full run on main's ancestry.
+Narrowing requires a `.github/ci.toml` declaration; undeclared callers run the
+full suite. Selected-package coverage is reported separately, for information
+only; it has no per-package floor. A selected package with no instrumented lines
+reports `N/A (0/0)`; only the workspace union is gated. Selection compares the
+baseline head with the group head, so packages changed since the baseline also
+run.
+
+A successful full aggregate publishes `coverage-<key>-full`, containing the
+source head, archive compiler checkout root, package roots and shard count. The
+aggregate uses the compiler job's root, even when its own runner has a different
+workspace path. The baseline lookup
+accepts only this manifest together with all of its run's LCOV shard artifacts. Missing
+or expired artifacts, unavailable API access and an unrelated baseline cause a
+logged full-suite fallback. Historical runs without a manifest are not used;
+the first full run after rollout supplies the initial baseline. Main pushes and
+full fallbacks retain full-workspace coverage.
 
 ## Warm test filter
 
@@ -148,7 +176,8 @@ CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
 run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
-for merge groups and main pushes. These full runs use `--workspace`.
+for merge groups and main pushes, using the selected packages described below.
+Main pushes always select every workspace package.
 Pull requests skip tests unless the [included-input rule](#pull-request-selection-and-retries) applies.
 
 Declared callers run `cargo llvm-cov nextest` in the same isolated environment
@@ -198,7 +227,15 @@ directory, replacing any inherited value. Callers may rely on it to locate
 prepared files during archived execution when `test_prepare` is declared. Warm-cache
 runs also receive this path, but do not run preparation or restore prepared files.
 Archived runs without `test_prepare` likewise have no prepared files restored.
-The variable alone does not guarantee files exist; callers must check for the
+
+Archived isolated numeric shards receive `TEST_ARCHIVE=1` on both plain and
+coverage routes. Warm-cache runs, direct non-archived runs, doctests and coverage
+runs that do not extract an archive leave it unset in the isolated environment.
+Callers may use `TEST_ARCHIVE=1` to require their declared prepared files and fail
+if any are missing, rather than silently rebuilding them in each shard.
+It identifies archived execution, not the presence of prepared files.
+
+`TEST_PREPARE_OUTPUT` alone does not guarantee files exist; callers must check for the
 files they need before reusing them. No nextest archive include is needed.
 Nextest setup scripts can export paths into that directory;
 they must reuse those files instead of preparing them again. The caller owns the
@@ -264,7 +301,25 @@ and paths under `docs/`; other undeclared files select everything. The workflow
 and configuration rules above take precedence. Declared paths select their
 readers, including for Markdown changes.
 Every enabled shard fetches locked dependencies.
-Merge groups and main pushes run the whole suite with coverage.
+Declared merge groups select workspace crates changed between the verified
+coverage baseline and the group head, plus every direct or transitive workspace
+dependent from locked Cargo metadata. Normal, build, development and
+target-specific dependency edges all count; unrelated crates are not selected.
+Changes to `Cargo.lock`, `.config/`, `.github/` (including the caller declaration),
+the toolchain or any root file select the full suite. Unknown paths, an absent or
+unreadable merge-group base, an unresolved dependency graph, or a selection with
+no workspace test packages also select the full suite and log the fallback reason. Unlike pull requests, merge groups do not
+skip undeclared documentation changes.
+
+Narrowed coverage tests run the selected packages. The aggregate filters their
+own source records and combines them with unchanged baseline packages for the
+workspace floor; selected-package coverage is informational. See
+[coverage baseline and caller permissions](#coverage-baseline-and-caller-permissions)
+for the artifact contract and fallback rules. Main pushes always test and measure
+the full workspace after every landing; that full-suite safeguard must be deployed before narrowed merge-group
+testing is enabled. Its failure reporting and revert handling live in the
+post-landing workflow. Release graph selection together with the single-build
+test archive so the shared test build compiles only selected packages.
 
 `test_inputs` maps repository-relative files or directories outside the
 workspace members to the exact package names whose tests read them. A change
@@ -482,6 +537,15 @@ declaration and either skipped shards or successful included-input shards.
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
 retain the runner's normal home and cache access.
+
+Before cleanup, the step kills every process still using the isolated
+directories: as its working directory, executable or open file, or through the
+isolated environment it inherited. Processes running the compile cache
+executable are left running for the statistics and seal steps. The log lists
+each stopped process as `Stopped test process <pid>: <command>`, so the test
+that leaked it can be found. If the directories still cannot be removed, the
+step logs `Could not remove <directory>`. Cleanup never changes the exit status
+of the test command, whether it passed or failed.
 
 ## Caller-pinned build and test tools
 
@@ -764,3 +828,54 @@ initial target; admission can delay replacements. Repository secrets are not
 passed to these jobs, and external contributors require approval before running.
 Availability is checked before scheduling; a host lost afterward fails or leaves
 an already-selected job queued, not silently rerun on another host.
+
+## Full suite after landing
+
+A caller can run `ci.yml` on every push to `main`, without `warm-cache` or scan
+inputs. Checkout uses the push's exact commit. This runs every test shard,
+doctests and declared browser tests, regardless of merge-group selection.
+Push runs have separate concurrency groups by commit: later landings cannot
+cancel a run or replace a queued landing.
+
+Maestro's `Full suite after landing` workflow owns that call. Its
+`Failed landing reports` workflow listens for completed main-push runs with
+`workflow_run` and calls `post-landing.yml` with the completed `run-id`.
+Keep both shared-workflow references pinned to reviewed commits. There is no
+new `.github/ci.toml` setting for test selection or commands; list the caller's
+reporting workflow in `privileged_trigger_workflows` for the existing trigger
+audit. GitHub activates `workflow_run` listeners only after they reach the
+default branch.
+
+The reporter needs `contents: read` and `actions: read` on the job token to
+read the exact run attempt and failed job logs. It uses the existing
+`RELEASE_APP_CLIENT_ID` organization variable and `RELEASE_APP_PRIVATE_KEY`
+secret to mint a repository-scoped App token with contents, workflows, issues and pull
+requests write access. Workflow write access lets it revert a landing that
+changed CI files. The App must be installed in the caller repository and
+its secret must be available there. Do not substitute the automatic job token
+for these writes: it does not trigger required checks on the new revert PR.
+No credential is passed to the full-suite test jobs.
+
+A failed suite creates one issue per landing commit, naming the exact merged
+PR (or every PR in a batched push), commit, failed-test log lines and original run. The reporter paginates jobs
+and reads only the current run attempt. It opens `ci/revert-<full-commit>` against
+`main`, reverting only that landing (first parent for a merge commit), from the
+current main tip. The PR links the original PR and failure issue. It uses the
+normal required checks and merge queue; the reporter never pushes to `main`
+or merges the revert. Existing issues and open or closed revert PRs are reused
+on repeated failure handling. If a push succeeded before PR creation failed,
+the next attempt reuses the landing's existing revert branch.
+
+A merge queue can squash several PRs in one push, and only the push's last
+commit gets a suite run. The reporter walks back from that commit to the
+previous commit with its own main-push run of the same workflow (within 50
+commits; it fails with the run link if none is found). When it finds more than
+one PR, the issue names all of them, newest first, and the reporter fails with
+the run link without a revert, because the failing PR is unknown. Revert the
+culprit in a normal reviewed PR.
+
+A passing suite creates neither artifact. Unknown or ambiguous PR attribution,
+unreadable logs, missing permissions and revert conflicts fail with the original
+run link. A conflict can leave the failure issue without a revert PR: resolve
+the conflict in a normal reviewed PR, not by force-pushing main. Non-suite job
+failures are reported as safeguard failures rather than blamed on another PR.

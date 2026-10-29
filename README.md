@@ -30,14 +30,20 @@ Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-di
 and the reporter log after isolated tests fail or time out.
 
 Each nextest test can retry twice; flaky passes are named in job summaries,
-while permanent failures still fail. Merge groups and main pushes run the full
-suite with coverage. See [test selection and retries](docs/caller-checks.md#pull-request-selection-and-retries)
+while permanent failures still fail. Declared merge groups test crates changed
+since a verified full-coverage baseline and every transitive workspace dependent,
+including build, development and target-specific dependencies. Shared inputs,
+an unavailable baseline or unresolved selection run the full suite. Undeclared
+callers and main pushes run the full suite. Narrowed runs combine fresh selected
+coverage with unchanged baseline packages to enforce the workspace floor;
+selected-package coverage is informational. See [test selection and retries](docs/caller-checks.md#pull-request-selection-and-retries)
 for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov
 nextest`. Only the sixteen numeric shards upload LCOV; the aggregate counts a
-source line as covered if any shard covers it and enforces the union's 80% floor
-(or caller's higher threshold). Missing shard reports fail. Undeclared callers
+source line as covered if any shard covers it and enforces the workspace union's
+80% floor (or caller's higher threshold), including unchanged baseline packages
+on narrowed runs. Missing shard reports fail. Undeclared callers
 retain single-job coverage in `Dependency, source and coverage checks`.
 
 For an independent workspace built by tests, extend the optional declaration:
@@ -126,7 +132,9 @@ checks, [additional locked manifests](docs/caller-checks.md#additional-locked-ma
 for independent workspace dependencies, a caller-pinned browser build recipe,
 optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
 with shared verified runtime pins, and a [nightly fuzz job](docs/caller-checks.md#nightly-fuzz-job)
-that files one issue per distinct finding. A repository's `rust-toolchain.toml`
+that files one issue per distinct finding. Callers can also run the
+[full suite after landing](docs/caller-checks.md#full-suite-after-landing), which files a
+failure issue and a revert proposal for a failed landing. A repository's `rust-toolchain.toml`
 selects its toolchain through rustup.
 
 Every caller also gets the dependency and source checks: cargo-deny

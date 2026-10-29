@@ -49,7 +49,7 @@ on:
         value: ${{ jobs.advisories.outputs.findings }}
 
 concurrency:
-  group: rust-ci-${{ github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
+  group: rust-ci-${{ github.event_name == 'push' && github.sha || github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -58,36 +58,81 @@ permissions:
 env:
   TEST_SHARD_COUNT: 16
   COVERAGE_IGNORE_FILENAME_REGEX: '(^|/)(tests|benches)/([^.]|\.[^./]|\.\.[^/])|(^|/)(target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$'
+  PACKAGE_OWNER: |
+    # The deepest root wins, so a nested package owns its own files.
+    def package_owner(path, roots):
+        return max((package for package, root in roots.items() if path.is_relative_to(root)),
+                   key=lambda package: len(roots[package].parts), default=None)
   COVERAGE_MERGE: |
     import json
     import os
     import pathlib
+    exec(os.environ['PACKAGE_OWNER'])
     lines = {}
     reports = pathlib.Path(os.environ.get('COVERAGE_REPORT_DIR', 'coverage'))
     expected = {f'shard-{shard}.lcov' for shard in range(1, int(os.environ.get('COVERAGE_REPORT_COUNT') or os.environ['TEST_SHARD_COUNT']) + 1)}
     if {path.name for path in reports.glob('*.lcov')} != expected:
         raise SystemExit('Missing or unexpected shard coverage reports')
-    for name in sorted(expected):
-        source = None
-        for record in (reports / name).read_text(encoding='utf-8').splitlines():
-            if record.startswith('SF:'):
-                source = os.path.normpath(record[3:])
-            elif record.startswith('DA:'):
-                if source is None:
-                    raise SystemExit(f'{name}: line without source file')
-                line, hits, *_ = record[3:].split(',')
-                key = (source, int(line))
-                lines[key] = lines.get(key, 0) + int(hits)
-            elif record == 'end_of_record':
-                source = None
+    layout = json.loads(os.environ.get('COVERAGE_LAYOUT') or '{}')
+    if layout:
+        layout['checkout_root'] = os.environ['COVERAGE_CHECKOUT_ROOT']
+    narrowed = os.environ.get('COVERAGE_SCOPE', 'full workspace') != 'full workspace'
+    selected = set(json.loads(os.environ.get('TEST_PACKAGES') or '[]'))
+    selected_lines = {}
+    def read_reports(directory, names, source_layout, wanted):
+        result = {}
+        roots = {package: pathlib.Path(root) for package, root in source_layout.get('package_roots', {}).items()}
+        for name in sorted(names):
+            source = None
+            include = False
+            for record in (directory / name).read_text(encoding='utf-8').splitlines():
+                if record.startswith('SF:'):
+                    source = os.path.normpath(record[3:])
+                    include = wanted is None
+                    if wanted is not None:
+                        try:
+                            relative = pathlib.Path(source).relative_to(source_layout['checkout_root'])
+                        except ValueError:
+                            continue
+                        owner = package_owner(relative, roots)
+                        include = owner in wanted
+                        source = relative.as_posix()
+                elif record.startswith('DA:'):
+                    if source is None:
+                        raise SystemExit(f'{name}: line without source file')
+                    if include:
+                        line, hits, *_ = record[3:].split(',')
+                        key = (source, int(line))
+                        result[key] = result.get(key, 0) + int(hits)
+                elif record == 'end_of_record':
+                    source = None
+        return result
+    if narrowed:
+        baseline_dir = pathlib.Path(os.environ.get('COVERAGE_BASELINE_DIR', 'baseline'))
+        baseline = json.loads((baseline_dir / 'manifest.json').read_text(encoding='utf-8'))
+        baseline_names = {f'shard-{shard}.lcov' for shard in range(1, baseline['shard_count'] + 1)}
+        if {path.name for path in baseline_dir.glob('*.lcov')} != baseline_names:
+            raise SystemExit('Missing or unexpected baseline coverage reports')
+        selected_lines = read_reports(reports, expected, layout, selected)
+        lines = read_reports(baseline_dir, baseline_names, baseline, layout['package_roots'].keys() - selected)
+        lines.update(selected_lines)
+        selected_covered = sum(hits > 0 for hits in selected_lines.values())
+        selected_figure = f'{selected_covered * 100 / len(selected_lines):.2f}% ({selected_covered}/{len(selected_lines)})' if selected_lines else 'N/A (0/0)'
+        print(f'Selected-package line coverage: {selected_figure}, information only')
+    else:
+        lines = read_reports(reports, expected, layout, None)
     if not lines:
         raise SystemExit('No instrumented lines in shard coverage')
     covered = sum(hits > 0 for hits in lines.values())
     percentage = covered * 100 / len(lines)
     threshold = int(os.environ['CARGO_COVERAGE_MIN_LINES']) if os.environ.get('CARGO_COVERAGE_MIN_LINES') else json.loads(os.environ.get('QUALITY_CONFIG') or '{}').get('coverage_min_lines', 80)
-    print(f'Merged line coverage: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')
+    print('Coverage scope: ' + os.environ.get('COVERAGE_SCOPE', 'full workspace'))
+    label = 'Workspace line coverage (gate)' if narrowed else 'Merged line coverage'
+    print(f'{label}: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')
     if percentage < threshold:
         raise SystemExit('Merged line coverage is below threshold')
+    if not narrowed and layout:
+        (reports / 'manifest.json').write_text(json.dumps(layout), encoding='utf-8')
 
 defaults:
   run:
@@ -95,6 +140,9 @@ defaults:
 
 jobs:
   declaration:
+    permissions:
+      contents: read
+      actions: read
     name: Caller declaration
     if: ${{ github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.') }}
     runs-on: ubuntu-latest
@@ -110,6 +158,9 @@ jobs:
       packages: ${{ steps.selection.outputs.packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
+      coverage_scope: ${{ steps.selection.outputs.coverage_scope }}
+      coverage_exclude: ${{ steps.selection.outputs.coverage_exclude }}
+      coverage_layout: ${{ steps.selection.outputs.coverage_layout }}
       included_tests: ${{ steps.selection.outputs.included_tests }}
       test_shard_count: ${{ env.TEST_SHARD_COUNT }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
@@ -392,11 +443,91 @@ jobs:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
           PYTHON
+      - name: Find coverage baseline
+        if: ${{ steps.config.outputs.enabled == 'true' && !inputs.warm-cache && (github.event_name == 'merge_group' || (github.repository_id == '1404598722' && inputs.test-event == 'merge_group')) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.merge_group.base_sha }}
+          COVERAGE_KEY: ${{ inputs.concurrency-key || 'root' }}
+        run: |
+          python3 - <<'PYTHON'
+          import io
+          import json
+          import os
+          import pathlib
+          import re
+          import shutil
+          import subprocess
+          import urllib.parse
+          import zipfile
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          destination = root / 'coverage-baseline'
+          shutil.rmtree(destination, ignore_errors=True)
+          destination.mkdir()
+          reason = 'no baseline manifest yet'
+          repository = os.environ['GITHUB_REPOSITORY']
+          key = os.environ['COVERAGE_KEY']
+          base = os.environ.get('BASE_REF')
+          def api(path):
+              return subprocess.check_output(['gh', 'api', f'repos/{repository}/{path}'])
+          def archive(artifact):
+              return zipfile.ZipFile(io.BytesIO(api(f"actions/artifacts/{artifact['id']}/zip")))
+          try:
+              page = 1
+              found = False
+              while base and not found:
+                  manifests = json.loads(api('actions/artifacts?name=' + urllib.parse.quote(f'coverage-{key}-full') + f'&per_page=100&page={page}'))['artifacts']
+                  for artifact in manifests:
+                      if artifact['expired']:
+                          reason = 'coverage baseline manifest expired'
+                          continue
+                      try:
+                          run_id = artifact['workflow_run']['id']
+                          run = json.loads(api(f'actions/runs/{run_id}'))
+                          if run['conclusion'] != 'success' or run['event'] not in ('push', 'merge_group'):
+                              continue
+                          with archive(artifact) as contents:
+                              manifest = json.loads(contents.read('manifest.json'))
+                          if not re.fullmatch('[0-9a-f]{40}', manifest['head']) or subprocess.run(
+                                  ['git', 'merge-base', '--is-ancestor', manifest['head'], base], capture_output=True).returncode:
+                              reason = 'coverage baseline head is not an ancestor'
+                              continue
+                          if not isinstance(manifest['package_roots'], dict) or not manifest['package_roots'] or not pathlib.Path(manifest['checkout_root']).is_absolute():
+                              raise ValueError('invalid baseline layout')
+                          count = manifest['shard_count']
+                          if not isinstance(count, int) or count < 1:
+                              raise ValueError('invalid baseline shard count')
+                          artifacts = json.loads(api(f'actions/runs/{run_id}/artifacts?per_page=100'))['artifacts']
+                          expected = {manifest['artifact_prefix'] + str(shard): f'shard-{shard}.lcov' for shard in range(1, count + 1)}
+                          reports = {item['name']: item for item in artifacts if item['name'] in expected and not item['expired']}
+                          if reports.keys() != expected.keys():
+                              reason = 'coverage baseline reports missing or expired'
+                              continue
+                          payloads = {}
+                          for name, filename in expected.items():
+                              with archive(reports[name]) as contents:
+                                  payloads[filename] = contents.read(filename)
+                          for filename, content in payloads.items():
+                              (destination / filename).write_bytes(content)
+                          (destination / 'manifest.json').write_text(json.dumps(manifest), encoding='utf-8')
+                          print(f"Coverage baseline: run {run_id}, head {manifest['head']}")
+                          found = True
+                          break
+                      except (KeyError, ValueError, OSError, zipfile.BadZipFile):
+                          reason = 'coverage baseline manifest or reports invalid'
+                  if len(manifests) < 100:
+                      break
+                  page += 1
+          except subprocess.CalledProcessError:
+              reason = 'coverage baseline API unavailable'
+          (root / 'coverage-baseline-reason').write_text(reason, encoding='utf-8')
+          PYTHON
       - name: Select test packages
         id: selection
         env:
           TEST_EVENT: ${{ inputs.warm-cache && 'push' || github.repository_id == '1404598722' && inputs.test-event || github.event_name }}
           BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          COVERAGE_KEY: ${{ inputs.concurrency-key || 'root' }}
         run: |
           python3 - <<'PYTHON'
           import ast
@@ -407,17 +538,27 @@ jobs:
           import subprocess
           import tempfile
           import tomllib
+          exec(os.environ['PACKAGE_OWNER'])
           def metadata(directory):
               return json.loads(subprocess.check_output(
                   ['cargo', 'metadata', '--format-version', '1', '--locked'], cwd=directory, text=True))
-          head = metadata('.')
+          event = os.environ['TEST_EVENT']
+          fallback = None
+          try:
+              head = metadata('.')
+          except (subprocess.CalledProcessError, ValueError, KeyError):
+              if event != 'merge_group':
+                  raise
+              # Enumeration without resolution keeps graph failures on the full-suite route.
+              head = json.loads(subprocess.check_output(
+                  ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))
+              fallback = 'workspace graph could not be resolved'
           packages = {p['id']: p for p in head['packages']}
           members = set(head['workspace_members'])
           roots = {p: pathlib.Path(packages[p]['manifest_path']).parent.relative_to(pathlib.Path.cwd()) for p in members}
           selected = set(members)
           browser_changed = False
           included_readers = set()
-          event = os.environ['TEST_EVENT']
           base = os.environ.get('BASE_REF')
           def declarations():
               try:
@@ -431,8 +572,41 @@ jobs:
           ids = {packages[p]['name']: p for p in members}
           # Declared paths outside every member select only the packages whose tests read them.
           inputs = {pathlib.Path(key): {ids[name] for name in readers} for key, readers in config.get('test_inputs', {}).items()}
-          if event == 'pull_request' and base:
-              changed = subprocess.check_output(['git', 'diff', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
+          if event == 'merge_group':
+              if not declaration.is_file():
+                  fallback = fallback or 'undeclared caller: full suite'
+              manifest = pathlib.Path(os.environ['RUNNER_TEMP']) / 'coverage-baseline/manifest.json'
+              if not manifest.is_file():
+                  reason = manifest.parent.parent / 'coverage-baseline-reason'
+                  fallback = fallback or (reason.read_text(encoding='utf-8') if reason.is_file() else 'no baseline manifest yet')
+              else:
+                  baseline = json.loads(manifest.read_text(encoding='utf-8'))
+                  # The lookup already proved the baseline head is an ancestor of the base.
+                  if baseline.get('package_roots') != {packages[p]['name']: roots[p].as_posix() for p in members}:
+                      fallback = fallback or 'baseline package layout changed'
+                  else:
+                      base = baseline['head']
+              nodes = (head.get('resolve') or {}).get('nodes', [])
+              node_ids = {node['id'] for node in nodes}
+              if not members <= node_ids or any(not set(node['dependencies']) <= node_ids for node in nodes):
+                  fallback = fallback or 'workspace graph is incomplete'
+              if not base:
+                  fallback = fallback or 'merge-group base is absent'
+          changed = None
+          if event in ('pull_request', 'merge_group') and base and not fallback:
+              try:
+                  changed = subprocess.check_output(['git', 'diff', '--relative', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
+              except subprocess.CalledProcessError:
+                  if event != 'merge_group':
+                      raise
+                  fallback = 'merge-group diff could not be resolved'
+          if event == 'merge_group' and changed is not None:
+              shared = next((name for name in changed if len(pathlib.Path(name).parts) == 1 or
+                             pathlib.Path(name).parts[0] in ('.config', '.github')), None)
+              if shared:
+                  fallback = f'shared input: {shared}'
+                  changed = None
+          if changed is not None:
               # Literal include paths are relative to the Rust source, not the package root.
               changed_paths = {(pathlib.Path.cwd() / name).resolve() for name in changed}
               # shortcut: static matching may overselect commented macros; use a Rust parser if that becomes costly.
@@ -475,9 +649,7 @@ jobs:
                                            match[1], flags=re.DOTALL)
                           path = ast.literal_eval(literal.replace('\n', r'\n').replace('\r', r'\r'))
                       if (source.parent / path).resolve() in changed_paths:
-                          owner = max((p for p, root in roots.items() if source.is_relative_to(root)),
-                                      key=lambda p: len(roots[p].parts))
-                          included_readers.add(owner)
+                          included_readers.add(package_owner(source, roots))
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)
@@ -487,10 +659,14 @@ jobs:
                   if filename in ('Cargo.lock', '.github/ci.toml'):
                       continue
                   owners = {p for p, root in roots.items() if path.is_relative_to(root)}
+                  if event == 'merge_group' and owners:
+                      owners = {package_owner(path, roots)}
                   routes = [readers for key, readers in inputs.items() if path.is_relative_to(key)]
                   selected.update(owners, *routes)
-                  if not owners and not routes and path.suffix not in ('.md',) and not filename.startswith('docs/'):
+                  if not owners and not routes and (event == 'merge_group' or (path.suffix not in ('.md',) and not filename.startswith('docs/'))):
                       selected = set(members)
+                      if event == 'merge_group':
+                          fallback = f'unknown path: {filename}'
                       break
               if '.github/ci.toml' in changed:
                   before, after = declarations()
@@ -523,16 +699,26 @@ jobs:
                   old, new = dependencies(before), dependencies(head)
                   selected.update(p for p in members if old.get(packages[p]['name']) != new[packages[p]['name']])
               if included_readers:
-                  selected = set(included_readers)
+                  if event == 'merge_group':
+                      selected.update(included_readers)
+                  else:
+                      selected = set(included_readers)
               while True:
                   reverse = {n['id'] for n in head['resolve']['nodes'] if n['id'] in members and set(n['dependencies']) & selected}
                   if reverse <= selected:
                       break
                   selected.update(reverse)
+          if event == 'merge_group' and not selected:
+              fallback = 'no workspace test packages selected'
+          if event == 'merge_group' and fallback:
+              selected = set(members)
+              print(f'Full-suite fallback: {fallback}')
           names = sorted(packages[p]['name'] for p in selected)
+          print('Coverage scope: ' + ('full workspace' if selected == members else 'selected packages'))
           requested = set(config.get('browser_test_crates', []))
           browser_tests = bool(requested and (browser_changed or requested.intersection(names)))
           print(f'Selected test packages ({event}): {names}')
+          print(f'Selected package count: {len(selected)}/{len(members)}')
           # A change can introduce an advisory only through the lockfile or the declared exceptions.
           check_advisories = event not in ('pull_request', 'merge_group') or not base
           if not check_advisories:
@@ -548,12 +734,26 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
+              layout = {'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
+                        'package_roots': {packages[p]['name']: roots[p].as_posix() for p in sorted(members)},
+                        'shard_count': int(os.environ['TEST_SHARD_COUNT']),
+                        'artifact_prefix': 'coverage-' + os.environ.get('COVERAGE_KEY', 'root') + '-'}
+              output.write('coverage_layout=' + json.dumps(layout) + '\n')
+              output.write('coverage_scope=' + ('full workspace' if selected == members else 'selected packages: ' + ', '.join(names)) + '\n')
+              output.write('coverage_exclude=' + json.dumps(sorted(packages[p]['name'] for p in members - selected)) + '\n')
               output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
               output.write('included_tests=' + str(bool(included_readers)).lower() + '\n')
               shards = list(range(1, int(os.environ['TEST_SHARD_COUNT']) + 1))
               output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
+      - name: Upload coverage baseline
+        if: steps.config.outputs.enabled == 'true' && steps.selection.outputs.coverage == 'true' && startsWith(steps.selection.outputs.coverage_scope, 'selected packages:')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-baseline-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ runner.temp }}/coverage-baseline
+          if-no-files-found: error
 
   quality:
     needs: declaration
@@ -843,12 +1043,15 @@ jobs:
 
   test-build:
     needs: declaration
+    outputs:
+      coverage_checkout_root: ${{ steps.archive-root.outputs.path }}
     name: Build test archive
     if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
+      COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' }}
     defaults:
       run:
@@ -949,12 +1152,15 @@ jobs:
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: *caller-tools
+      - name: Record archive checkout root
+        id: archive-root
+        run: printf 'path=%s\n' "$PWD" >> "$GITHUB_OUTPUT"
       - name: Build test archive
         timeout-minutes: 45
         run: |
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COLLECT_COVERAGE:-false}" = true ]; then packages=(--workspace); fi
+          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${COLLECT_COVERAGE:-false}" = true ]; then
             "$TOOLS/cargo-llvm-cov" llvm-cov nextest-archive --user-config-file none \
               --locked "${packages[@]}" --archive-file test-binaries.tar.zst
@@ -1089,6 +1295,8 @@ jobs:
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       TEST_ARCHIVE: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && format('{0}/{1}/test-binaries.tar.zst', github.workspace, inputs.working-directory || '.') || '' }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
+      COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
+      COVERAGE_EXCLUDE: ${{ needs.declaration.outputs.coverage_exclude }}
     defaults: &test-defaults
       run:
         shell: bash
@@ -1153,7 +1361,7 @@ jobs:
         run: |
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
+          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
           build_args=(--locked "${packages[@]}")
           if [ -n "${TEST_ARCHIVE:-}" ]; then
@@ -1208,7 +1416,67 @@ jobs:
           diagnostics="$PWD/target/browser-author-diagnostics"
           mkdir -p "$diagnostics"
           isolation=$(mktemp -d "$RUNNER_TEMP/maestro-tests.XXXXXX")
-          trap 'rm -rf "$isolation"' EXIT
+          # Tests can leave processes that keep writing here: stop and name them, and keep the test status.
+          cleanup_isolation() {
+            status=$?
+            set +e
+            python3 - "$isolation" <<'PYTHON'
+          import json
+          import os
+          import signal
+          import sys
+          import time
+          roots = tuple(path + '/' for path in {sys.argv[1], os.path.realpath(sys.argv[1])})
+          def link(path):
+              try:
+                  return os.readlink(path)
+              except OSError:
+                  return ''
+          def users():
+              found = {}
+              for entry in os.listdir('/proc'):
+                  if not entry.isdigit() or int(entry) == os.getpid():
+                      continue
+                  base = '/proc/' + entry
+                  try:
+                      descriptors = os.listdir(base + '/fd')
+                  except OSError:
+                      descriptors = []
+                  paths = [link(base + '/cwd'), link(base + '/exe')] + [link(base + '/fd/' + fd) for fd in descriptors]
+                  if os.path.basename(paths[1]) == 'sccache':
+                      # The compile cache server outlives the tests; its own steps report on it and stop it.
+                      continue
+                  try:
+                      with open(base + '/environ', 'rb') as file:
+                          environment = file.read()
+                  except OSError:
+                      environment = b''
+                  if any(path.startswith(roots) for path in paths) or any(root.encode() in environment for root in roots):
+                      try:
+                          with open(base + '/cmdline', 'rb') as file:
+                              found[int(entry)] = json.dumps(file.read().decode('utf-8', 'replace').split('\0')[:-1])
+                      except OSError:
+                          pass
+              return found
+          announced = set()
+          for _ in range(50):
+              found = users()
+              if not found:
+                  break
+              for pid, command in found.items():
+                  if pid not in announced:
+                      announced.add(pid)
+                      print(f'Stopped test process {pid}: {command}', flush=True)
+                  try:
+                      os.kill(pid, signal.SIGKILL)
+                  except OSError:
+                      pass
+              time.sleep(0.1)
+          PYTHON
+            rm -rf "$isolation" || echo "Could not remove $isolation" >&2
+            exit "$status"
+          }
+          trap cleanup_isolation EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
           run_isolated() {
           env -i PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
@@ -1217,7 +1485,7 @@ jobs:
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
             XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 MAESTRO_TEST_DIAGNOSTICS_DIR="$diagnostics" \
-            TEST_PREPARE_OUTPUT="$PWD/target/test-setup" \
+            TEST_PREPARE_OUTPUT="$PWD/target/test-setup" ${TEST_ARCHIVE:+TEST_ARCHIVE=1} \
             CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
             SCCACHE_DIR="${SCCACHE_DIR-}" SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE-}" \
             SCCACHE_LOCAL_RW_MODE="${SCCACHE_LOCAL_RW_MODE-}" SCCACHE_GHA_ENABLED="${SCCACHE_GHA_ENABLED-}" \
@@ -1226,7 +1494,7 @@ jobs:
           }
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
+          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
           build_args=(--locked "${packages[@]}")
           if [ -n "${TEST_ARCHIVE:-}" ]; then
@@ -1234,9 +1502,12 @@ jobs:
           fi
           if [ "${SHARD:-}" != doctests ]; then
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] || [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
+              mapfile -d '' -t report_packages < <(python3 -c 'import json, os; print("".join("--exclude-from-report\0" + name + "\0" for name in json.loads(os.environ.get("COVERAGE_EXCLUDE") or "[]")), end="")')
               partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT")
               report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
               if [ "${WARM_CACHE:-false}" = true ]; then
+                packages=(--workspace)
+                report_packages=()
                 partition=(-E "${WARM_TEST_FILTER-none()}")
                 report=(--no-report)
               elif [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
@@ -1244,12 +1515,12 @@ jobs:
                 mkdir -p target/single-coverage
                 report=(--lcov --output-path "$PWD/target/single-coverage/shard-1.lcov")
               fi
-              coverage_build_args=(--workspace --locked)
+              coverage_build_args=("${packages[@]}" "${report_packages[@]}" --locked)
               if [ -n "${TEST_ARCHIVE:-}" ]; then
                 # Keep compile-time Cargo executable paths valid after archive extraction.
                 mkdir -p target/llvm-cov-target
                 ln -sfn target/debug target/llvm-cov-target/debug
-                coverage_build_args=(--no-clean --archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
+                coverage_build_args=(--no-clean --archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite "${report_packages[@]}")
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
                 --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" \
@@ -1359,7 +1630,7 @@ jobs:
 
   tests-result:
     name: Tests (ubuntu-latest)
-    needs: [tests, doctests, declaration]
+    needs: [tests, doctests, declaration, test-build]
     if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     steps:
@@ -1386,11 +1657,28 @@ jobs:
           pattern: coverage-${{ inputs.concurrency-key || 'root' }}-*
           path: coverage
           merge-multiple: true
+      - name: Download coverage baseline
+        if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && startsWith(needs.declaration.outputs.coverage_scope, 'selected packages:')
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: coverage-baseline-${{ inputs.concurrency-key || 'root' }}
+          path: baseline
       - name: Merge coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         env:
           QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
+          COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
+          COVERAGE_LAYOUT: ${{ needs.declaration.outputs.coverage_layout }}
+          COVERAGE_CHECKOUT_ROOT: ${{ needs.test-build.outputs.coverage_checkout_root }}
+          TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
         run: python3 -c "$COVERAGE_MERGE"
+      - name: Upload full coverage manifest
+        if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && needs.declaration.outputs.coverage_scope == 'full workspace'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-${{ inputs.concurrency-key || 'root' }}-full
+          path: coverage/manifest.json
+          if-no-files-found: error
 
   checks:
     name: Dependency, source and coverage checks
