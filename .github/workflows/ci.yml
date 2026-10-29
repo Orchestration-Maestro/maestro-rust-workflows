@@ -1083,7 +1083,7 @@ jobs:
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env: &test-env
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
-      WARM_CACHE: ${{ inputs.warm-cache && github.job != 'doctests' }}
+      WARM_CACHE: ${{ inputs.warm-cache && matrix.shard != 'doctests' }}
       WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
       SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
@@ -1102,7 +1102,7 @@ jobs:
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
-        if: runner.environment == 'github-hosted' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
+        if: runner.environment == 'github-hosted' && (env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true')
         run: *free-build-space
       - name: Test toolchain
         run: *test-toolchain
@@ -1149,7 +1149,7 @@ jobs:
           tar -C target -xf "$RUNNER_TEMP/maestro-test-setup/test-setup.tar"
       - name: Tests
         timeout-minutes: 45
-        if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}
+        if: ${{ env.WARM_CACHE != 'true' && needs.declaration.outputs.enabled != 'true' }}
         run: |
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
@@ -1167,7 +1167,7 @@ jobs:
           fi
       - name: Search tools
         timeout-minutes: 10
-        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
+        if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'
         run: *search-tools
       - name: Mise bootstrap
         timeout-minutes: 10
@@ -1184,7 +1184,7 @@ jobs:
         run: sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"
       - name: Isolated tests
         timeout-minutes: 45
-        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
+        if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'
         env:
           CARGO_COVERAGE_MIN_LINES: ''
         run: |
