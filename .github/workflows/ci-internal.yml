@@ -3142,6 +3142,7 @@ jobs:
                       tools, log = install_recording_runner(directory)
                       env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
                              'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+                             'TEST_PREPARE_OUTPUT': str(directory / 'untrusted-inherited-output'),
                              'TEST_PACKAGES': '["sample"]', 'SHARD': '1', 'COLLECT_COVERAGE': coverage,
                              'CARGO_COVERAGE_MIN_LINES': '', 'ADDITIONAL_LOCKED_MANIFESTS': '["fixture/Cargo.toml"]'}
                       for step in ['Fetch additional locked manifests', route]:
@@ -3153,6 +3154,8 @@ jobs:
                       assert len(commands) == 3, commands
                       assert '--archive-file' in commands[2]['args']
                       assert '--workspace' not in commands[2]['args'] and '--locked' not in commands[2]['args']
+                      if route == 'Isolated tests':
+                          assert commands[2]['test_prepare_output'] == str(directory / 'target/test-setup'), commands[2]
               tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
               fetch = next(step for step in tests.split('      - name: ')[1:] if step.startswith('Fetch additional locked manifests\n'))
               assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
@@ -3283,6 +3286,7 @@ jobs:
                       output.write(json.dumps(dict(tool=pathlib.Path(sys.argv[0]).name, args=args,
                                                    home=os.environ.get('HOME'), cargo_home=os.environ.get('CARGO_HOME'),
                                                    ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
+                                                   test_prepare_output=os.environ.get('TEST_PREPARE_OUTPUT'),
                                                    diagnostics=os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'))) + '\\n')
                   if args[:1] != ['fetch'] and os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'):
                       (pathlib.Path(os.environ['MAESTRO_TEST_DIAGNOSTICS_DIR']) / 'runner.txt').write_text(
