@@ -20,3 +20,44 @@ jobs:
       concurrency-key: maestro-selected-228-graph
       test-event: merge_group
 
+
+  selection-seams:
+    name: Selection regression timings
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Time selection regressions
+        shell: python
+        run: |
+          import ast
+          import os
+          import pathlib
+          import re
+          import textwrap
+          import time
+          source = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+          source = source.split('      - name: Caller checks at workflow seam\n', 1)[1]
+          source = source.split('        run: |\n', 1)[1].split('\n  native:', 1)[0]
+          tree = ast.parse(textwrap.dedent(source))
+          tree.body = [node for node in tree.body if isinstance(node, (
+              ast.Import, ast.ImportFrom, ast.FunctionDef, ast.Assign))]
+          namespace = {}
+          exec(compile(tree, 'selection seam definitions', 'exec'), namespace)
+          workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
+          os.environ['COVERAGE_MERGE'] = textwrap.dedent(re.search(
+              r'^  COVERAGE_MERGE: \|\n((?:    .*\n|\n)+)', workflow, re.MULTILINE)[1])
+          os.environ['COVERAGE_IGNORE_FILENAME_REGEX'] = re.search(
+              r"^  COVERAGE_IGNORE_FILENAME_REGEX: '([^'\n]+)'$", workflow, re.MULTILINE)[1]
+          names = ['merge_groups_select_graph_and_fail_closed', 'merge_group_nested_members_have_one_owner',
+                   'selected_coverage_limits_tests_and_report_scope', 'selected_archive_build_compiles_only_selected_packages',
+                   'archived_coverage_excludes_unselected_report_packages', 'changed_packages_include_reverse_dependencies',
+                   'declared_test_inputs_select_their_readers']
+          for name in names:
+              started = time.monotonic()
+              namespace[name]()
+              elapsed = time.monotonic() - started
+              print(f'PASS {name}: {elapsed:.2f}s', flush=True)
+              assert elapsed < 30, f'{name} took {elapsed:.2f}s'
