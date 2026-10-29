@@ -27,10 +27,12 @@ through a changed dependency. Unrelated crate changes skip Chromium. Shared-inpu
 or unresolved-selection fallbacks run it. Main pushes always run declared
 Chromium tests, regardless of changed paths. See [browser selection](docs/caller-checks.md#chromium-browser-tests).
 
-Tests run with checksum-pinned cargo-nextest 0.9.148 on four Linux runners,
-using automatic count partitions rather than package lists. Doctests run in a
+Tests run with checksum-pinned cargo-nextest 0.9.148 on 16 Linux runners by
+default, using automatic count partitions rather than package lists. A caller
+can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
+[test shards](docs/caller-checks.md#test-shards). Doctests run in a
 parallel `Doctests` matrix leg. The aggregate `Tests (ubuntu-latest)` requires
-all five legs to succeed on full runs and accepts event-skipped shards on
+every shard and `Doctests` to succeed on full runs and accepts event-skipped shards on
 pull requests unless the included-input rule requires them to succeed.
 Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-diagnostics)
 and the reporter log after isolated tests fail or time out.
@@ -46,7 +48,7 @@ selected-package coverage is informational. See [test selection and retries](doc
 for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov
-nextest`. Only the sixteen numeric shards upload LCOV; the aggregate counts a
+nextest`. Only the numeric shards upload LCOV; the aggregate counts a
 source line as covered if any shard covers it and enforces the workspace union's
 80% floor (or caller's higher threshold), including unchanged baseline packages
 on narrowed runs. Missing shard reports fail. Undeclared callers

@@ -169,8 +169,9 @@ GitHub eviction can remove even the newest snapshot of a shape.
 
 ## Test shards
 
-Tests use checksum-pinned cargo-nextest 0.9.148 with sixteen automatic
-`--partition count:N/16` partitions. The caller's `.config/nextest.toml` supplies
+Tests use checksum-pinned cargo-nextest 0.9.148 with automatic
+`--partition count:N/COUNT` partitions, where `COUNT` is the declared
+`test_shard_count`. The caller's `.config/nextest.toml` supplies
 test-suite runner metadata such as resource groups for fixed-port tests. Shared
 CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
@@ -180,17 +181,32 @@ for merge groups and main pushes, using the selected packages described below.
 Main pushes always select every workspace package.
 Pull requests skip tests unless the [included-input rule](#pull-request-selection-and-retries) applies.
 
+`test_shard_count` sets the number of shards. It is an optional whole number
+from 1 to 60, the runner concurrency limit of the plan, and defaults to 16. Any
+other value, including a float, a string or a boolean, fails the declaration job
+with `test_shard_count must be a whole number from 1 to 60`.
+
+```toml
+test_shard_count = 32
+```
+
+More shards spread the tests over more runners, and each shard repeats its own
+setup. The shard matrix, the partitions, the job names and the coverage union
+all use the declared count, so the union expects exactly that many reports. A
+coverage baseline keeps the count stored in its manifest, so a baseline
+recorded with another count still merges.
+
 Declared callers run `cargo llvm-cov nextest` in the same isolated environment
-with their opted-in tools. Only the sixteen numeric shards upload LCOV, without
+with their opted-in tools. Only the numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including `Doctests`, to succeed on full runs. On pull requests it requires a
 successful declaration and either event-skipped shards or successful included-input shards. On full runs it downloads all
-sixteen reports, counts each source line once (covered if any shard hits it), and
+reports, counts each source line once (covered if any shard hits it), and
 enforces `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. Both coverage modes run tests through nextest,
 so caller setup scripts run in either mode (reusing prepared outputs in shards). Single-job coverage uses one partition
-(`count:1/1`); declared callers combine sixteen reports. Both modes use the same
+(`count:1/1`); declared callers combine one report per shard. Both modes use the same
 line-counting policy: normalize source paths, count each line once, and enforce
 the coverage floor on the union of hits. PRs skip coverage for all callers.
 
@@ -530,8 +546,8 @@ routes pass it to child builds, including dependencies outside the checkout.
 Explicit Bash run defaults preserve runner failures through log capture. A failed
 runner fails its test step, so coverage uploads run only after success; a missing
 report after success fails the upload separately. On full runs the required aggregate accepts
-only successful matrix legs, including `Doctests`, and requires the sixteen numeric
-reports when merging coverage. On pull requests the aggregate requires a successful
+only successful matrix legs, including `Doctests`, and requires one report per
+numeric shard when merging coverage. On pull requests the aggregate requires a successful
 declaration and either skipped shards or successful included-input shards.
 
 The original home and auth file are never read, moved or modified. Only the
