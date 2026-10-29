@@ -2612,6 +2612,7 @@ jobs:
           from unittest.mock import patch
 
           source = pathlib.Path('.github/workflows/post-landing.yml').read_text()
+          assert '          permission-workflows: write\n' in source, 'Reverts must handle workflow-file landings'
           step = source.split('      - name: Report and propose revert\n', 1)[1]
           code = textwrap.dedent(step.split('        run: |\n', 1)[1])
           real_run = subprocess.run
