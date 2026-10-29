@@ -2812,7 +2812,13 @@ jobs:
                   command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
                   argv = [os.path.expanduser('~/.local/bin/capped'), 'bash', '-e', '-o', 'pipefail', '-c', command]
                   env['CARGO_BUILD_JOBS'] = '3'
-              return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
+              with tempfile.TemporaryDirectory() as selection_temp:
+                  if name == 'Select test packages' and env.get('TEST_EVENT') == 'merge_group' and 'RUNNER_TEMP' not in (extra or {}):
+                      baseline = pathlib.Path(selection_temp) / 'coverage-baseline'
+                      baseline.mkdir()
+                      (baseline / 'manifest.json').write_text(json.dumps({'head': env.get('BASE_REF')}), encoding='utf-8')
+                      env['RUNNER_TEMP'] = selection_temp
+                  return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
 
           credential_names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
           GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY OPENROUTER_API_KEY ZAI_API_KEY
@@ -4749,6 +4755,85 @@ jobs:
 
           partitions_run_every_test_once_and_doctests()
           print('PASS partitions_run_every_test_once_and_doctests')
+
+          def selected_coverage_merges_only_unchanged_baseline_packages():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  for folder in ['coverage', 'baseline']:
+                      (directory / folder).mkdir()
+                  layout = {'head': 'fixture', 'checkout_root': '/current/caller',
+                            'package_roots': {'selected': 'crates/a', 'unchanged': 'crates/b', 'nested': 'crates/a/nested'},
+                            'shard_count': 1}
+                  baseline = layout | {'checkout_root': '/old/runner/caller'}
+                  (directory / 'baseline/manifest.json').write_text(json.dumps(baseline), encoding='utf-8')
+                  def records(root, selected_hits, other_hits):
+                      return ''.join(f'SF:{root}/{path}/src/lib.rs\nDA:1,{hits}\nend_of_record\n'
+                                     for path, hits in [('crates/a', selected_hits), ('crates/b', other_hits),
+                                                        ('crates/a/nested', other_hits), ('external/dependency', 0)])
+                  (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 0, 0), encoding='utf-8')
+                  (directory / 'baseline/shard-1.lcov').write_text(records('/old/runner/caller', 1, 1), encoding='utf-8')
+                  env = {'TEST_SHARD_COUNT': '1', 'COVERAGE_REPORT_COUNT': '1',
+                         'COVERAGE_SCOPE': 'selected packages: selected', 'TEST_PACKAGES': '["selected"]',
+                         'COVERAGE_LAYOUT': json.dumps(layout), 'COVERAGE_BASELINE_DIR': str(directory / 'baseline')}
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode != 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
+                  assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout, result.stdout
+                  (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 1, 0), encoding='utf-8')
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
+                  assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
+                  (directory / 'baseline/shard-1.lcov').unlink()
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode != 0 and 'baseline' in result.stderr.lower(), result.stdout + result.stderr
+
+          selected_coverage_merges_only_unchanged_baseline_packages()
+          print('PASS selected_coverage_merges_only_unchanged_baseline_packages')
+
+          def baseline_selection_includes_changes_before_group_base():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c"]\n', encoding='utf-8')
+                  for name in ['a', 'b', 'c']:
+                      (directory / name / 'src').mkdir(parents=True)
+                      (directory / name / 'Cargo.toml').write_text(
+                          f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+                      (directory / name / 'src/lib.rs').write_text('pub fn initial() {}\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'baseline')
+                  baseline_head = fixture_git(directory, 'rev-parse', 'HEAD')
+                  (directory / 'b/src/lib.rs').write_text('pub fn between() {}\n', encoding='utf-8')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'between baseline and base')
+                  base = fixture_git(directory, 'rev-parse', 'HEAD')
+                  (directory / 'a/src/lib.rs').write_text('pub fn selected() {}\n', encoding='utf-8')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'group head')
+                  baseline = directory / '.git/coverage-baseline'
+                  baseline.mkdir()
+                  manifest = baseline / 'manifest.json'
+                  manifest.write_text(json.dumps({'head': baseline_head}), encoding='utf-8')
+                  output = directory / '.git/selection'
+                  env = {'TEST_EVENT': 'merge_group', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                         'RUNNER_TEMP': str(directory / '.git')}
+                  result = execute('Select test packages', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                  assert json.loads(values['packages']) == ['a', 'b'], values
+                  assert json.loads(values['coverage_layout'])['package_roots'] == {'a': 'a', 'b': 'b', 'c': 'c'}
+                  manifest.unlink()
+                  output.write_text('', encoding='utf-8')
+                  result = execute('Select test packages', directory, env)
+                  values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                  assert result.returncode == 0 and 'no baseline manifest yet' in result.stdout, result.stdout + result.stderr
+                  assert json.loads(values['packages']) == ['a', 'b', 'c'], values
+                  manifest.write_text(json.dumps({'head': '0' * 40}), encoding='utf-8')
+                  result = execute('Select test packages', directory, env)
+                  assert result.returncode == 0 and 'baseline head is not an ancestor' in result.stdout, result.stdout + result.stderr
+
+          baseline_selection_includes_changes_before_group_base()
+          print('PASS baseline_selection_includes_changes_before_group_base')
 
           def coverage_merge_uses_union_and_requires_all_reports():
               with tempfile.TemporaryDirectory() as temporary:
