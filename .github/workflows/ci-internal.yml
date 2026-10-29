@@ -1691,15 +1691,10 @@ jobs:
               # Root self-calls keep the runner-compatible syntax until actionlint accepts $/.
               root_config = pathlib.Path(temporary) / 'root-zizmor.yml'
               root_config.write_text('rules:\n  self-repository:\n    ignore:\n'
-                                     '      - ci-internal.yml:16:11\n'
-                                     '      - ci-internal.yml:23:11\n'
-                                     '      - ci-internal.yml:31:11\n'
-                                     '      - ci-internal.yml:39:11\n'
-                                     '      - ci-proof.yml:15:11\n'
-                                     '      - ci-proof.yml:27:11\n'
-                                     '      - ci-proof.yml:39:11\n'
-                                     '      - advisories.yml:19:11\n'
-                                     '      - fuzz.yml:17:11\n', encoding="utf-8")
+                                     '      - ci-internal.yml\n'
+                                     '      - ci-proof.yml\n'
+                                     '      - advisories.yml\n'
+                                     '      - fuzz.yml\n', encoding="utf-8")
               # Moving lines inside a root workflow must not revive a self-repository finding.
               shifted = pathlib.Path(temporary) / 'shifted'
               shutil.copytree(root / '.github/workflows', shifted / '.github/workflows')
