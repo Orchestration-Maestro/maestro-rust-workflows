@@ -3628,6 +3628,11 @@ jobs:
           warm_cache_builds_without_tests_or_reports()
           print('PASS warm_cache_builds_without_tests_or_reports')
 
+          def fixture_git(directory, *args):
+              return subprocess.check_output(['git', '-c', 'user.name=Fixture', '-c',
+                  'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', *args],
+                  cwd=directory, text=True).strip()
+
           def coverage_matrix_splits_doctests_from_partitions():
               tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
               matrix = re.search(r'        shard: (.*)', tests)[1]
@@ -3642,6 +3647,9 @@ jobs:
                   directory = pathlib.Path(temporary)
                   import shutil
                   shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'coverage fixture')
                   for declared in [False, True]:
                       if declared:
                           (directory / '.github').mkdir()
@@ -4985,11 +4993,6 @@ jobs:
 
           coverage_merge_uses_union_and_requires_all_reports()
           print('PASS coverage_merge_uses_union_and_requires_all_reports')
-
-          def fixture_git(directory, *args):
-              return subprocess.check_output(['git', '-c', 'user.name=Fixture', '-c',
-                  'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', *args],
-                  cwd=directory, text=True).strip()
 
           def advisory_selection_is_caller_relative():
               from functools import partial
