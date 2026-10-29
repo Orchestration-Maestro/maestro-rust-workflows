@@ -109,7 +109,7 @@ jobs:
                   original = merged[0]['number']
                   details = []
                   for job in failed:
-                      log = command('gh', 'api', f"repos/{repository}/actions/jobs/{job['id']}/logs")
+                      log = command('gh', 'api', '--allow-escape-sequences', f"repos/{repository}/actions/jobs/{job['id']}/logs")
                       log = re.sub(r'\x1b\[[0-9;]*m', '', log)
                       lines = [line for line in log.splitlines() if re.search(r'FAIL|FAILED|failures:|error:', line)]
                       details.append(f"### {job['name']}\n```text\n" + '\n'.join(lines)[-8000:] + '\n```')
