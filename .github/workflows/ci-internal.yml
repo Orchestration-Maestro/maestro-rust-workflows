@@ -2662,21 +2662,25 @@ jobs:
                               if scenario == 'pagination':
                                   assert '--paginate' in argv and '--slurp' in argv
                                   value = [{'jobs': []}, {'jobs': jobs}]
-                              else: value = [{'jobs': jobs}] if '--slurp' in argv else {'jobs': jobs}
+                              else:
+                                  if scenario == 'large': jobs = [dict(jobs[0], name=f'Test shard ({n}/16)') for n in range(20)]
+                                  value = [{'jobs': jobs}] if '--slurp' in argv else {'jobs': jobs}
                           elif endpoint.endswith('/commits/' + sha + '/pulls'): value = [] if scenario == 'unknown' else [dict(landing, number=99, merge_commit_sha='0' * 40, head={'sha': '0' * 40}), landing]
                           elif endpoint.endswith('/jobs/8/logs'):
                               assert '--allow-escape-sequences' in argv
-                              return subprocess.CompletedProcess(argv, 0, '\x1b[31mFAIL [0.01s] sample::broken\x1b[0m\n', '')
+                              return subprocess.CompletedProcess(argv, 0, '\x1b[31mFAIL [0.01s] sample::broken\x1b[0m\n' + ('FAIL ' + 'x' * 7990 if scenario == 'large' else ''), '')
                           else: raise AssertionError(endpoint)
                       elif argv[1:3] == ['issue', 'list']: value = issues
                       elif argv[1:3] == ['pr', 'list']: value = prs
                       elif argv[1:3] == ['issue', 'create']:
                           issues.append({'title': argv[argv.index('--title') + 1], 'url': 'https://github.com/owner/repo/issues/43'})
+                          assert len(kwargs['input']) < 65536
                           assert '#42' in kwargs['input'] and sha in kwargs['input'] and 'sample::broken' in kwargs['input'] and run['html_url'] in kwargs['input']
                           return subprocess.CompletedProcess(argv, 0, issues[-1]['url'], '')
                       elif argv[1:3] == ['pr', 'create']:
                           if scenario == 'resume' and not any(call[1:3] == ['pr', 'create'] for call in calls[:-1]):
                               return subprocess.CompletedProcess(argv, 1, '', 'temporary API failure')
+                          assert argv[argv.index('--title') + 1].startswith('revert(ci):')
                           assert '#42' in kwargs['input'] and issues[0]['url'] in kwargs['input']
                           prs.append({'url': 'https://github.com/owner/repo/pull/44'})
                           return subprocess.CompletedProcess(argv, 0, prs[-1]['url'], '')
@@ -2703,6 +2707,7 @@ jobs:
                               assert issues == prs == []
                               assert all(call[1] == 'api' for call in calls)
                               return
+                          assert git('show', '-s', '--format=%s', 'origin/ci/revert-' + sha).startswith('revert(ci):')
                           assert git('show', 'origin/ci/revert-' + sha + ':base') == 'good'
                           assert real_run(['git', 'cat-file', '-e', 'origin/ci/revert-' + sha + ':defect'], cwd=checkout, capture_output=True).returncode != 0
                           exec(compile(code, 'post-landing workflow', 'exec'), {})
@@ -2713,7 +2718,7 @@ jobs:
                           os.chdir(previous)
               print(f'PASS landing_report_handles_{scenario} ({time.monotonic() - start:.3f}s)', flush=True)
 
-          for scenario in ['proof', 'failure', 'pagination', 'doctest', 'resume', 'pass', 'unknown', 'permission', 'conflict']:
+          for scenario in ['large', 'proof', 'failure', 'pagination', 'doctest', 'resume', 'pass', 'unknown', 'permission', 'conflict']:
               landing_report_handles(scenario)
               print('PASS landing_report_handles_' + scenario, flush=True)
 
