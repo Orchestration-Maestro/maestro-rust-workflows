@@ -757,10 +757,3 @@ unreadable logs, missing permissions and revert conflicts fail with the original
 run link. A conflict can leave the failure issue without a revert PR: resolve
 the conflict in a normal reviewed PR, not by force-pushing main. Non-suite job
 failures are reported as safeguard failures rather than blamed on another PR.
-
-For controlled proof only, `proof: true` accepts a push run on a
-`ci/rw227-` branch, including an in-progress run whose test job has failed.
-It attributes the simulated landing to the branch PR and prepares the revert
-from that exact branch commit. It rejects main in proof mode. This permits a
-planted failed-test job without landing a defect on main; production calls must
-leave `proof` false. Close the resulting proof issue and revert PR after review.

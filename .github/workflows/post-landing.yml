@@ -7,10 +7,6 @@ on:
         description: Completed main-push full-suite workflow run
         type: string
         required: true
-      proof:
-        description: Allow a simulated landing on a push-only ci/rw227- branch
-        type: boolean
-        default: false
     secrets:
       RELEASE_APP_PRIVATE_KEY:
         required: true
@@ -53,7 +49,6 @@ jobs:
         env:
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ inputs.run-id }}
-          PROOF: ${{ inputs.proof }}
           GH_TOKEN: ${{ github.token }}
           REPORT_TOKEN: ${{ steps.token.outputs.token }}
         run: |
@@ -84,15 +79,11 @@ jobs:
               if not re.fullmatch(r'[0-9]+', run_id):
                   raise RuntimeError('Invalid workflow run id')
               run = api(f'actions/runs/{run_id}')
-              proof = os.environ['PROOF'] == 'true'
-              branch = run['head_branch']
               if run['repository']['full_name'] != repository or run['event'] != 'push':
                   raise RuntimeError('Expected a push run in the caller repository')
-              if branch != 'main' and not (proof and branch.startswith('ci/rw227-')):
-                  raise RuntimeError('Expected an exact main landing (or a ci/rw227- proof)')
-              if proof and branch == 'main':
-                  raise RuntimeError('Proof mode must never target main')
-              if run['status'] != 'completed' and not (proof and run['status'] == 'in_progress'):
+              if run['head_branch'] != 'main':
+                  raise RuntimeError('Expected an exact main landing')
+              if run['status'] != 'completed':
                   raise RuntimeError('Full-suite run has not completed')
               sha = run['head_sha']
               if not re.fullmatch(r'[0-9a-f]{40}', sha):
@@ -108,7 +99,7 @@ jobs:
                   print(f'Full suite passed; no issue or revert: {link}')
               else:
                   merged = [pr for pr in api(f'commits/{sha}/pulls') if
-                            (pr['head']['sha'] == sha if proof else pr['merge_commit_sha'] == sha and pr['merged_at'])
+                            pr['merge_commit_sha'] == sha and pr['merged_at']
                             and pr['base']['ref'] == 'main' and pr['base']['repo']['full_name'] == repository]
                   if len(merged) != 1:
                       raise RuntimeError('Cannot uniquely attribute the exact landing to a merged PR')
@@ -134,7 +125,7 @@ jobs:
                   if prs:
                       print(f"Existing revert: {prs[0]['url']} (failure issue: {issue})")
                   else:
-                      command('git', 'fetch', 'origin', 'main', branch)
+                      command('git', 'fetch', 'origin', 'main')
                       existing = command('git', 'ls-remote', '--heads', 'origin', f'refs/heads/{head}')
                       if existing:
                           command('git', 'fetch', 'origin', head)
@@ -142,7 +133,7 @@ jobs:
                           if f'This reverts commit {sha}' not in message:
                               raise RuntimeError('Existing revert branch does not target this landing')
                       else:
-                          command('git', 'switch', '-C', head, sha if proof else 'origin/main')
+                          command('git', 'switch', '-C', head, 'origin/main')
                           parents = command('git', 'rev-list', '--parents', '-n', '1', sha).split()[1:]
                           if not parents:
                               raise RuntimeError('Landing has no parent to revert')
