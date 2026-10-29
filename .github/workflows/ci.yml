@@ -49,7 +49,7 @@ on:
         value: ${{ jobs.advisories.outputs.findings }}
 
 concurrency:
-  group: rust-ci-${{ github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
+  group: rust-ci-${{ github.event_name == 'push' && github.sha || github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
