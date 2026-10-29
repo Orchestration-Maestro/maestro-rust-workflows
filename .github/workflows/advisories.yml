@@ -12,6 +12,9 @@ permissions:
 
 jobs:
   scan:
+    permissions:
+      contents: read
+      actions: read
     name: Maestro main
     uses: ./.github/workflows/ci.yml
     with:
