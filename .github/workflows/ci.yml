@@ -1235,6 +1235,9 @@ jobs:
                   except OSError:
                       descriptors = []
                   paths = [link(base + '/cwd'), link(base + '/exe')] + [link(base + '/fd/' + fd) for fd in descriptors]
+                  if os.path.basename(paths[1]) == 'sccache':
+                      # The compile cache server outlives the tests; its own steps report on it and stop it.
+                      continue
                   try:
                       with open(base + '/environ', 'rb') as file:
                           environment = file.read()
