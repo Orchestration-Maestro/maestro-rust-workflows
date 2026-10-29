@@ -18,8 +18,8 @@ The proof uses `12614d3236fba10d81afd2191a32ade98700f5e2`, which includes the
 native residency-helper compilation repair. Its parent,
 `cb438128e64e27be85dcafbdf3275dfa058e2781`, supplies the warm build and
 selected-package base.
-Changes to either `.github/workflows/ci.yml` or `.github/workflows/ci-proof.yml`
-schedule the proof; check its results before landing.
+The coverage proof runs only on pushes to `ci/228-merge-proof`, not on pull requests.
+Check its results before landing.
 
 ```toml
 wasm_crates = ["my-browser-library"]
@@ -139,7 +139,8 @@ CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
 run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
-for merge groups and main pushes. These full runs use `--workspace`.
+for merge groups and main pushes, using the selected packages described below.
+Main pushes always select every workspace package.
 Pull requests skip tests unless the [included-input rule](#pull-request-selection-and-retries) applies.
 
 Declared callers run `cargo llvm-cov nextest` in the same isolated environment
@@ -214,7 +215,23 @@ and paths under `docs/`; other undeclared files select everything. The workflow
 and configuration rules above take precedence. Declared paths select their
 readers, including for Markdown changes.
 Every enabled shard fetches locked dependencies.
-Merge groups and main pushes run the whole suite with coverage.
+Merge groups select changed workspace crates and every direct or transitive
+workspace dependent from locked Cargo metadata. Normal, build, development and
+target-specific dependency edges all count; unrelated crates are not selected.
+Changes to `Cargo.lock`, `.config/`, `.github/` (including the caller declaration),
+the toolchain or any root file select the full suite. Unknown paths, an absent or
+unreadable merge-group base, or an unresolved dependency graph also select the
+full suite and log the fallback reason. Unlike pull requests, merge groups do not
+skip undeclared documentation changes.
+
+Coverage tests and reports cover the selected packages, excluding unselected
+workspace packages from the report. The aggregate labels its scope as selected
+packages or full workspace and enforces the same 80% floor (or the caller's higher
+floor). Main pushes always test and measure the full workspace after every
+landing; that full-suite safeguard must be deployed before narrowed merge-group
+testing is enabled. Its failure reporting and revert handling live in the
+post-landing workflow. Release graph selection together with the single-build
+test archive so the shared test build compiles only selected packages.
 
 `test_inputs` maps repository-relative files or directories outside the
 workspace members to the exact package names whose tests read them. A change

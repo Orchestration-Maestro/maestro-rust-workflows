@@ -30,8 +30,11 @@ Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-di
 and the reporter log after isolated tests fail or time out.
 
 Each nextest test can retry twice; flaky passes are named in job summaries,
-while permanent failures still fail. Merge groups and main pushes run the full
-suite with coverage. See [test selection and retries](docs/caller-checks.md#pull-request-selection-and-retries)
+while permanent failures still fail. Merge groups test changed crates and every
+transitive workspace dependent, including build, development and target-specific
+dependencies. Shared inputs or unresolved selection run the full suite. Main
+pushes run the full suite after every landing as a safeguard. Both selected and
+full runs enforce the same coverage floor, labelled with their scope. See [test selection and retries](docs/caller-checks.md#pull-request-selection-and-retries)
 for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov
