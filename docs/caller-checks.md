@@ -482,6 +482,14 @@ The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
 retain the runner's normal home and cache access.
 
+Before cleanup, the step kills every process still using the isolated
+directories: as its working directory, executable or open file, or through the
+isolated environment it inherited. The log lists each one as
+`Stopped test process <pid>: <command>`, so the test that leaked it can be
+found. If the directories still cannot be removed, the step logs
+`Could not remove <directory>`. Cleanup never changes the exit status of the
+test command, whether it passed or failed.
+
 ## Caller-pinned build and test tools
 
 With `test_tools = true`, every enabled caller-compiling job installs the
