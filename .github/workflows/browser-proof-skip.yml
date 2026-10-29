@@ -1,0 +1,23 @@
+name: Browser selection proof (skip)
+
+on:
+  push:
+    branches: [ci/229-merge-proof]
+    paths: [.github/workflows/browser-proof-skip.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  merge-group:
+    name: Merge group, unrelated crate changed
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: fixtures/browser-proof
+      concurrency-key: browser-proof
+      checkout-ref: ${{ github.sha }}
+      checkout-base-ref: cca388009e519c728bbdcaa0b80f3e121766d9b2
+      test-event: merge_group
