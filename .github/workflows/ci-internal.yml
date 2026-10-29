@@ -562,6 +562,7 @@ jobs:
               assert key.isascii() and len(key) < 512 and 'space' not in key
 
           def snapshot_only_default_branch_writers_save():
+              plain_prefix = snapshot_keys(CACHE_COVERAGE='false')['prefix']
               jobs = ['quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests']
               for job in jobs:
                   for event in ['pull_request', 'merge_group', 'workflow_dispatch', 'push']:
@@ -581,6 +582,14 @@ jobs:
                   prefixes = [snapshot_keys(CACHE_ENABLED=enabled, CACHE_COVERAGE=coverage, SHARD=shard)['prefix']
                               for shard in writers]
                   assert len(prefixes) == len(set(prefixes)), 'at most one writer per actual shape'
+              for event in ['pull_request', 'merge_group', 'workflow_dispatch', 'push']:
+                  for ref in ['refs/pull/119/merge', 'refs/heads/feature', 'refs/heads/main', 'refs/tags/main']:
+                      warm_doctests = snapshot_keys(CACHE_JOB='doctests', CACHE_WARM='true', SHARD='doctests',
+                                                    CACHE_ENABLED='false', CACHE_COVERAGE='false',
+                                                    GITHUB_EVENT_NAME=event, GITHUB_REF=ref)
+                      expected = 'true' if event == 'push' and ref == 'refs/heads/main' else 'false'
+                      assert warm_doctests['writer'] == expected, (event, ref)
+                      assert warm_doctests['prefix'] == plain_prefix, (event, ref)
               assert snapshot_keys(CACHE_WARM='true', SHARD='warm')['writer'] == 'true'
               assert snapshot_keys(CACHE_WARM='true', SHARD='warm', GITHUB_EVENT_NAME='pull_request')['writer'] == 'false'
               assert 'CACHE_DEFAULT_BRANCH: $' + '{{ github.event.repository.default_branch }}' in workflow
@@ -1039,10 +1048,10 @@ jobs:
                   assert not re.search(r'^        if:', step, re.MULTILINE)
           base_test = next(step for step in workflow.split('      - name:')[1:]
                            if step.startswith(' Tests\n'))
-          assert "if: $" + "{{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}" in base_test
+          assert "if: $" + "{{ env.WARM_CACHE != 'true' && needs.declaration.outputs.enabled != 'true' }}" in base_test
           isolated_test = next(step for step in workflow.split('      - name:')[1:]
                                if step.startswith(' Isolated tests\n'))
-          assert "if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'" in isolated_test
+          assert "if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'" in isolated_test
           assert 'run_isolated cargo test --locked --doc' in isolated_test
           assert 'llvm-cov nextest' in isolated_test
 
@@ -2808,6 +2817,15 @@ jobs:
 
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding="utf-8")
           root = pathlib.Path.cwd()
+          default_ref = "format('refs/heads/{0}', github.event.repository.default_branch)"
+
+          def evaluate(condition, values):
+              expression = condition.removeprefix('$' + '{{').removesuffix('}}').strip()
+              for key, value in values.items():
+                  expression = expression.replace(key, repr(value))
+              expression = expression.replace('&&', ' and ').replace('||', ' or ')
+              expression = re.sub(r'!(?!=)', ' not ', expression).strip()
+              return eval(expression, {'__builtins__': {}})
 
           def body(name, source=workflow):
               import json
@@ -3173,7 +3191,7 @@ jobs:
           def browser_test_job_is_single_and_optional():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               job = jobs['browser-tests']
-              assert "!inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true'" in job
+              assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true' }}" in job
               assert 'runs-on: $' + '{{ fromJSON(needs.declaration.outputs.linux_runner) }}' in job and 'matrix:' not in job
               assert body('Browser test recipe').strip() == 'just browser-test'
               assert 'mise exec' not in body('Browser test recipe')
@@ -3738,6 +3756,53 @@ jobs:
           warm_filter_failures_keep_job_red()
           print('PASS warm_filter_failures_keep_job_red')
 
+          def warm_push_seeds_non_test_shapes():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+
+              for name in ('quality', 'docs', 'browser', 'browser-tests', 'doctests'):
+                  condition = document['jobs'][name]['if']
+                  for warm in (False, True):
+                      for event in ('push', 'pull_request', 'merge_group', 'workflow_dispatch'):
+                          for ref in ('refs/heads/main', 'refs/heads/feature', 'refs/tags/main'):
+                              for excluded in ('none', 'advisory', 'fuzz'):
+                                  observed = evaluate(condition, {
+                                      default_ref: 'refs/heads/main',
+                                      'inputs.warm-cache': warm, 'github.event_name': event, 'github.ref': ref,
+                                      'inputs.advisory-scan': excluded == 'advisory',
+                                      'inputs.fuzz-scan': excluded == 'fuzz',
+                                      'github.repository_id': 'caller', 'inputs.working-directory': '.',
+                                      'needs.declaration.outputs.coverage': 'true',
+                                      'needs.declaration.outputs.included_tests': 'true',
+                                      'needs.declaration.outputs.wasm_crates': '["web"]',
+                                      'needs.declaration.outputs.browser_build': 'true',
+                                      'needs.declaration.outputs.browser_tests': 'true'})
+                                  assert observed == (excluded == 'none' and (not warm or
+                                      (event == 'push' and ref == 'refs/heads/main'))), (name, warm, event, ref, excluded)
+
+              doctests = document['jobs']['doctests']
+              assert doctests['env']['WARM_CACHE'] == '$' + "{{ inputs.warm-cache && matrix.shard != 'doctests' }}"
+
+              def test_steps_run(job, warm, enabled):
+                  shard = 'warm' if job == 'tests' else document['jobs'][job]['strategy']['matrix']['shard'][0]
+                  values = {'inputs.warm-cache': warm, 'matrix.shard': shard,
+                            'needs.declaration.outputs.enabled': enabled, 'runner.environment': 'github-hosted'}
+                  values['env.WARM_CACHE'] = str(evaluate(document['jobs'][job]['env']['WARM_CACHE'], values)).lower()
+                  steps = {step['name']: step for step in document['jobs'][job]['steps']}
+                  return {name: evaluate(steps[name]['if'], values) for name in
+                          ('Free instrumented build space', 'Tests', 'Search tools', 'Isolated tests')}
+
+              for enabled in ('true', 'false'):
+                  # The warm doctests writer runs the same test steps as its readers.
+                  assert test_steps_run('doctests', True, enabled) == test_steps_run('doctests', False, enabled), enabled
+                  assert test_steps_run('tests', True, enabled) == {
+                      'Free instrumented build space': True, 'Tests': False, 'Search tools': True, 'Isolated tests': True}, enabled
+              assert doctests['steps'] == document['jobs']['tests']['steps']
+              assert doctests['env']['SHARD'] == document['jobs']['tests']['env']['SHARD']
+              assert next(step for step in document['jobs']['browser-tests']['steps'] if step.get('name') == 'Browser test recipe')['run'].strip() == 'just browser-test'
+
+          warm_push_seeds_non_test_shapes()
+          print('PASS warm_push_seeds_non_test_shapes')
+
           def warm_cache_keeps_one_writer():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               declaration_job = document['jobs']['declaration']
@@ -3758,28 +3823,24 @@ jobs:
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               for name, job in jobs.items():
-                  if name not in ('declaration', 'tests', 'targets'):
+                  if name not in ('declaration', 'tests', 'targets', 'quality', 'docs', 'browser', 'browser-tests', 'doctests'):
                       assert '!inputs.warm-cache' in re.search(r'^    if: (.*)', job, re.MULTILINE)[1], name
               condition = document['jobs']['targets']['if']
               for warm in (False, True):
                   for event in ('push', 'pull_request', 'merge_group', 'workflow_dispatch'):
                       for advisory, fuzz, targets in [(False, False, '[{}]'), (True, False, '[{}]'),
                                                        (False, True, '[{}]'), (False, False, '[]')]:
-                          expression = condition.removeprefix('$' + '{{').removesuffix('}}').strip()
-                          for key, value in {'inputs.warm-cache': warm, 'github.event_name': event,
-                                             'inputs.advisory-scan': advisory, 'inputs.fuzz-scan': fuzz,
-                                             'needs.declaration.outputs.targets': targets,
-                                             'needs.declaration.outputs.coverage': str(warm or event != 'pull_request').lower()}.items():
-                              expression = expression.replace(key, repr(value))
-                          expression = expression.replace('&&', ' and ').replace('||', ' or ')
-                          expression = re.sub(r'!(?!=)', ' not ', expression).strip()
-                          observed = eval(expression, {'__builtins__': {}})
+                          observed = evaluate(condition, {
+                              'inputs.warm-cache': warm, 'github.event_name': event,
+                              'inputs.advisory-scan': advisory, 'inputs.fuzz-scan': fuzz,
+                              'needs.declaration.outputs.targets': targets,
+                              'needs.declaration.outputs.coverage': str(warm or event != 'pull_request').lower()})
                           assert observed == (not advisory and not fuzz and targets != '[]' and
                                               (not warm or event == 'push')), (warm, event, advisory, fuzz, targets)
               tests = jobs['tests']
-              assert 'WARM_CACHE: $' + '{{ inputs.warm-cache }}' in tests
+              assert 'WARM_CACHE: $' + "{{ inputs.warm-cache && matrix.shard != 'doctests' }}" in tests
               assert "inputs.warm-cache && '[\"warm\"]'" in tests
-              assert "if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'" in tests
+              assert "if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'" in tests
               proof = (root / '.github/workflows/ci-proof.yml').read_text(encoding='utf-8')
               assert '  maestro:\n    needs: warm\n' in proof
               assert '      warm-cache: true\n' in proof
@@ -4116,7 +4177,7 @@ jobs:
                   "$" + "{{ inputs.working-directory || '.' }}/nextest.log"]
               assert 'name: $' + '{{ steps.diagnostics.outputs.artifact_name }}\n' in upload
               assert 'timeout-minutes: 45\n' in steps['Isolated tests']
-              assert "if: $" + "{{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}\n" in steps['Tests']
+              assert "if: $" + "{{ env.WARM_CACHE != 'true' && needs.declaration.outputs.enabled != 'true' }}\n" in steps['Tests']
               for coverage in ['false', 'true']:
                   for included in ['false', 'true']:
                       for status in ['success', 'failure', 'cancelled', 'skipped']:
@@ -4952,10 +5013,10 @@ jobs:
                           assert result.returncode == 0, result.stderr
                           values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       for name in slow | {'targets', 'quality', 'docs', 'checks'}:
-                          expression = document['jobs'][name]['if'].removeprefix('$' + '{{').removesuffix('}}').strip()
                           context = {'cancelled()': False, 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                                      'needs.declaration.outputs.test_prepare': json.dumps('echo ready'), 'inputs.warm-cache': warm, 'inputs.advisory-scan': advisory,
                                      'inputs.fuzz-scan': fuzz, 'github.event_name': event,
+                                     default_ref: 'refs/heads/main', 'github.ref': 'refs/heads/main',
                                      'github.repository_id': 'caller', 'inputs.working-directory': '.',
                                      'needs.declaration.outputs.coverage': values['coverage'],
                                      'needs.declaration.outputs.included_tests': values['included_tests'],
@@ -4963,19 +5024,15 @@ jobs:
                                      'needs.declaration.outputs.wasm_crates': '["sample"]',
                                      'needs.declaration.outputs.browser_build': 'true',
                                      'needs.declaration.outputs.browser_tests': 'true'}
-                          for key, value in context.items():
-                              expression = expression.replace(key, repr(value))
-                          expression = expression.replace('&&', ' and ').replace('||', ' or ')
-                          expression = re.sub(r'!(?!=)', ' not ', expression).strip()
                           expected = not advisory and not fuzz
                           if name in slow:
                               expected &= event != 'pull_request' or warm
-                              expected &= not warm or name == 'tests'
+                              expected &= not warm or name == 'tests' or (event == 'push' and name in ('doctests', 'browser', 'browser-tests'))
                           elif name == 'targets':
                               expected &= not warm or event == 'push'
                           else:
-                              expected &= not warm
-                          assert bool(eval(expression, {'__builtins__': {}})) == expected, (name, event, warm, advisory, fuzz)
+                              expected &= not warm or (event == 'push' and name in ('quality', 'docs'))
+                          assert bool(evaluate(document['jobs'][name]['if'], context)) == expected, (name, event, warm, advisory, fuzz)
 
           event_policy_keeps_pull_requests_fast()
           print('PASS event_policy_keeps_pull_requests_fast')
@@ -6394,7 +6451,7 @@ jobs:
                   section = workflow.split(f'  {name}:\n')[1]
                   assert ('needs: [declaration, test-build, test-prepare]' if name == 'tests' else 'needs: declaration') in section
               assert 'pull_request:' in workflow and 'merge_group:' in workflow
-              assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
+              assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
               # Each scan mode runs only the declaration and its own job.
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
