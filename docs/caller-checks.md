@@ -752,6 +752,13 @@ or merges the revert. Existing issues and open or closed revert PRs are reused
 on repeated failure handling. If a push succeeded before PR creation failed,
 the next attempt reuses the landing's existing revert branch.
 
+A merge queue can squash several PRs in one push, and only the push's last
+commit gets a suite run. The reporter walks back from that commit to the
+previous commit with its own main-push run of the same workflow (within 50
+commits). When it finds more than one PR, the issue names all of them, newest
+first, and the reporter fails with the run link without a revert, because the
+failing PR is unknown. Revert the culprit in a normal reviewed PR.
+
 A passing suite creates neither artifact. Unknown or ambiguous PR attribution,
 unreadable logs, missing permissions and revert conflicts fail with the original
 run link. A conflict can leave the failure issue without a revert PR: resolve

@@ -98,12 +98,24 @@ jobs:
                       raise RuntimeError('Run did not pass, but no failed suite job could be identified')
                   print(f'Full suite passed; no issue or revert: {link}')
               else:
-                  merged = [pr for pr in api(f'commits/{sha}/pulls') if
-                            pr['merge_commit_sha'] == sha and pr['merged_at']
-                            and pr['base']['ref'] == 'main' and pr['base']['repo']['full_name'] == repository]
-                  if len(merged) != 1:
-                      raise RuntimeError('Cannot uniquely attribute the exact landing to a merged PR')
-                  original = merged[0]['number']
+                  # A merge-queue push can squash several PRs, but only its head commit gets a suite run.
+                  pushed = []
+                  for commit in command('git', 'rev-list', '--first-parent', '-n', '50', sha).split():
+                      if commit != sha and api(f"actions/workflows/{run['workflow_id']}/runs?event=push&branch=main&head_sha={commit}")['total_count']:
+                          break
+                      pushed.append(commit)
+                  else:
+                      raise RuntimeError('No earlier full-suite run found to bound this push')
+                  numbers = []
+                  for commit in pushed:
+                      merged = [pr for pr in api(f'commits/{commit}/pulls') if
+                                pr['merge_commit_sha'] == commit and pr['merged_at']
+                                and pr['base']['ref'] == 'main' and pr['base']['repo']['full_name'] == repository]
+                      if len(merged) != 1:
+                          raise RuntimeError('Cannot uniquely attribute the exact landing to a merged PR')
+                      numbers.append(merged[0]['number'])
+                  original = numbers[0]
+                  listed = ', '.join(f'#{number}' for number in numbers)
                   details = []
                   for job in failed:
                       log = command('gh', 'api', '--allow-escape-sequences', f"repos/{repository}/actions/jobs/{job['id']}/logs")
@@ -111,7 +123,7 @@ jobs:
                       lines = [line for line in log.splitlines() if re.search(r'FAIL|FAILED|failures:|error:', line)]
                       details.append(f"### {job['name']}\n```text\n" + '\n'.join(lines)[:2000] + '\n```')
                   title = f'Full suite failed after landing {sha}'
-                  body = f'Original PR: #{original}\nCommit: {sha}\nRun: {link}\n\n' + '\n'.join(details)
+                  body = f"{'Original PRs, newest first' if len(numbers) > 1 else 'Original PR'}: {listed}\nCommit: {sha}\nRun: {link}\n\n" + '\n'.join(details)
                   issues = json.loads(command('gh', 'issue', 'list', '-R', repository, '--state', 'all',
                                               '--search', f'"{sha}" in:title', '--json', 'title,url', '--limit', '100'))
                   matches = [issue for issue in issues if issue['title'] == title]
@@ -119,6 +131,8 @@ jobs:
                       raise RuntimeError('Multiple failure issues already exist for this landing')
                   issue = matches[0]['url'] if matches else command('gh', 'issue', 'create', '-R', repository,
                                                                   '--title', title, '--body-file', '-', body=body)
+                  if len(numbers) > 1:
+                      raise RuntimeError(f'{listed} landed together and only the last was tested, so the failing PR is unknown and no revert was proposed. Failure issue: {issue}')
                   head = f'ci/revert-{sha}'
                   prs = json.loads(command('gh', 'pr', 'list', '-R', repository, '--state', 'all', '--head', head,
                                            '--base', 'main', '--json', 'url', '--limit', '100'))
