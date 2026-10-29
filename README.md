@@ -54,6 +54,12 @@ than being repaired. Adoption needs a workflows release and organization re-pin.
 Pinned tool downloads use curl's `--retry 3` for transient failures without
 changing their pins or integrity checks.
 
+Numeric test shards download one nextest archive instead of compiling the workspace.
+An optional caller `test_prepare` command runs beside the host build and writes
+reusable outputs to `TEST_PREPARE_OUTPUT` (`target/test-setup`). Shards download
+those files separately and setup scripts reuse them. Doctests compile and run in
+parallel in their own leg. See [test shards](docs/caller-checks.md#test-shards).
+
 ## Compile cache
 
 Linux compiling jobs and target checks on Linux and arm64 macOS restore one
@@ -70,7 +76,7 @@ secret scan runs before restoration; isolated tests receive only non-secret
 local-cache and diagnostic settings, including after automatic server restarts.
 
 Compatibility prefixes identify the caller repository and directory, host,
-compiler and job shape. Coverage shards share a prefix with the optional
+compiler and job shape. The coverage archive build shares a prefix with the optional
 `warm-cache: true` build, which compiles the full coverage test graph without
 producing a report. By default it runs no tests; an optional caller
 [`warm_test_filter`](docs/caller-checks.md#warm-test-filter) runs selected tests
@@ -81,8 +87,8 @@ and reusable calls without splitting the shared restore prefix. GitHub's
 branch/default-branch visibility and newest-compatible-prefix lookup apply.
 Only pushes to the caller's default branch save snapshots. Pull-request and
 merge-group jobs restore but never save. Each test shape has one writer per
-call: the warm build, or shard 1 plus the separate plain doctest leg when the
-numeric shards use coverage. Other cached compiling jobs each write their own shape.
+call: the warm build, or the archive build plus the separate plain doctest leg
+when the numeric shards use coverage. Other cached compiling jobs each write their own shape.
 A default-branch push warm call also runs the declared target checks to seed
 the Linux and macOS shapes. Warm pull-request calls skip targets because they
 cannot save.

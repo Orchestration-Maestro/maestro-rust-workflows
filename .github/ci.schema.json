@@ -251,6 +251,11 @@
       "description": "Nextest filterset executed only by warm-cache builds to cache child compiles.",
       "type": "string",
       "default": "none()"
+    },
+    "test_prepare": {
+      "description": "Standalone shell command run beside the test build. Write reusable outputs to TEST_PREPARE_OUTPUT.",
+      "type": "string",
+      "default": ""
     }
   },
   "dependentRequired": {
