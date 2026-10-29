@@ -3308,6 +3308,49 @@ jobs:
                   subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
               return tools, log
 
+          def archived_coverage_excludes_unselected_report_packages():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  tools, log = install_recording_runner(directory)
+                  result = execute('Isolated tests', directory, {
+                      'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                      'RUNNER_TEMP': temporary, 'SHARD': '2', 'COLLECT_COVERAGE': 'true',
+                      'CARGO_COVERAGE_MIN_LINES': '', 'TEST_PACKAGES': '["sample"]',
+                      'TEST_ARCHIVE': str(directory / 'archive.tar.zst'), 'WARM_CACHE': 'false',
+                      'COVERAGE_EXCLUDE': '["unrelated"]', 'COVERAGE_SCOPE': 'selected packages: sample'})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                  args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
+                  assert '--archive-file' in args and '--no-clean' in args, args
+                  assert args[args.index('--exclude-from-report') + 1] == 'unrelated', args
+                  assert '-p' not in args, args
+
+          archived_coverage_excludes_unselected_report_packages()
+          print('PASS archived_coverage_excludes_unselected_report_packages')
+
+          def selected_archive_build_compiles_only_selected_packages():
+              for coverage in ['true', 'false']:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                             'COLLECT_COVERAGE': coverage, 'TEST_PACKAGES': '["sample"]',
+                             'COVERAGE_SCOPE': 'selected packages: sample'}
+                      result = execute('Build test archive', directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      args = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])['args']
+                      assert '-p' in args and args[args.index('-p') + 1] == 'sample', args
+                      assert '--workspace' not in args, args
+                      log.unlink()
+                      result = execute('Build test archive', directory, env | {
+                          'TEST_PACKAGES': '["sample", "unrelated"]', 'COVERAGE_SCOPE': 'full workspace'})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      args = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])['args']
+                      assert '--workspace' in args and '-p' not in args, args
+
+          selected_archive_build_compiles_only_selected_packages()
+          print('PASS selected_archive_build_compiles_only_selected_packages')
+
           def selected_coverage_limits_tests_and_report_scope():
               for step in ['Isolated tests', 'Coverage']:
                   with tempfile.TemporaryDirectory() as temporary:
@@ -3332,7 +3375,7 @@ jobs:
                       assert result.returncode == 0, result.stdout + result.stderr
                       commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
                       args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
-                      assert args.count('-p') == 2 and '--exclude-from-report' not in args, args
+                      assert '--workspace' in args and '--exclude-from-report' not in args, args
               # The shared merger names the scope and retains the same floor.
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
