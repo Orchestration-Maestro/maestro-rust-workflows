@@ -267,11 +267,11 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(test_prepare=json.dumps(''), warm_test_filter=json.dumps('none()'), additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare=json.dumps(''), warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'warm_test_filter', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -292,6 +292,10 @@ jobs:
                   raise SystemExit(f'{path}: warm_test_filter must be a string')
               if type(config.get('test_prepare', '')) is not str:
                   raise SystemExit(f'{path}: test_prepare must be a string')
+              count = config.get('test_shard_count', 16)
+              if type(count) is not int or not 1 <= count <= 60:
+                  raise SystemExit(f'{path}: test_shard_count must be a whole number from 1 to 60')
+              values['test_shard_count'] = str(count)
               values['test_prepare'] = json.dumps(config.get('test_prepare', ''))
               values['warm_test_filter'] = json.dumps(config.get('warm_test_filter', 'none()'))
               values['reserved_ports'] = ','.join(map(str, ports))
