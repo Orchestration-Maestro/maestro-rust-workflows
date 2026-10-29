@@ -743,7 +743,7 @@ for these writes: it does not trigger required checks on the new revert PR.
 No credential is passed to the full-suite test jobs.
 
 A failed suite creates one issue per landing commit, naming the exact merged
-PR, commit, failed-test log lines and original run. The reporter paginates jobs
+PR (or every PR in a batched push), commit, failed-test log lines and original run. The reporter paginates jobs
 and reads only the current run attempt. It opens `ci/revert-<full-commit>` against
 `main`, reverting only that landing (first parent for a merge commit), from the
 current main tip. The PR links the original PR and failure issue. It uses the
@@ -755,9 +755,10 @@ the next attempt reuses the landing's existing revert branch.
 A merge queue can squash several PRs in one push, and only the push's last
 commit gets a suite run. The reporter walks back from that commit to the
 previous commit with its own main-push run of the same workflow (within 50
-commits). When it finds more than one PR, the issue names all of them, newest
-first, and the reporter fails with the run link without a revert, because the
-failing PR is unknown. Revert the culprit in a normal reviewed PR.
+commits; it fails with the run link if none is found). When it finds more than
+one PR, the issue names all of them, newest first, and the reporter fails with
+the run link without a revert, because the failing PR is unknown. Revert the
+culprit in a normal reviewed PR.
 
 A passing suite creates neither artifact. Unknown or ambiguous PR attribution,
 unreadable logs, missing permissions and revert conflicts fail with the original

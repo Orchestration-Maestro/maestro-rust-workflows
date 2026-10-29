@@ -2613,7 +2613,7 @@ jobs:
 
           source = pathlib.Path('.github/workflows/post-landing.yml').read_text(encoding='utf-8')
           assert '          permission-workflows: write\n' in source, 'Reverts must handle workflow-file landings'
-          assert 'proof' not in source and 'rw227' not in source, 'The reusable reporter must carry no simulation path'
+          assert re.findall(r'^      ([\w-]+):$', source.split('    inputs:\n', 1)[1].split('    secrets:\n', 1)[0], re.M) == ['run-id'], 'The reusable reporter must take only the run id'
           step = source.split('      - name: Report and propose revert\n', 1)[1]
           code = textwrap.dedent(step.split('        run: |\n', 1)[1])
           real_run = subprocess.run
@@ -2631,7 +2631,6 @@ jobs:
           landing_report_prints_run_link_first()
 
           def landing_report_handles(scenario):
-              start = time.monotonic()
               with tempfile.TemporaryDirectory() as temporary:
                   root = pathlib.Path(temporary)
                   remote, checkout = root / 'remote', root / 'checkout'
@@ -2739,11 +2738,11 @@ jobs:
                           assert sum(call[1:3] == ['pr', 'create'] for call in calls) == (2 if scenario == 'resume' else 1)
                       finally:
                           os.chdir(previous)
-              print(f'PASS landing_report_handles_{scenario} ({time.monotonic() - start:.3f}s)', flush=True)
 
           for scenario in ['large', 'failure', 'pagination', 'doctest', 'resume', 'pass', 'unknown', 'permission', 'conflict', 'foreign', 'non-suite', 'batched', 'unbounded']:
+              start = time.monotonic()
               landing_report_handles(scenario)
-              print('PASS landing_report_handles_' + scenario, flush=True)
+              print(f'PASS landing_report_handles_{scenario} ({time.monotonic() - start:.3f}s)', flush=True)
 
       - name: Caller checks at workflow seam
         id: cases
@@ -5708,7 +5707,6 @@ jobs:
 
           workflow_safety_is_unchanged()
           print('PASS workflow_safety_is_unchanged')
-
 
   native:
     name: Native compiler proof (${{ matrix.target }})

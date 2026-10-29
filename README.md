@@ -116,7 +116,9 @@ checks, [additional locked manifests](docs/caller-checks.md#additional-locked-ma
 for independent workspace dependencies, a caller-pinned browser build recipe,
 optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
 with shared verified runtime pins, and a [nightly fuzz job](docs/caller-checks.md#nightly-fuzz-job)
-that files one issue per distinct finding. A repository's `rust-toolchain.toml`
+that files one issue per distinct finding. Callers can also run the
+[full suite after landing](docs/caller-checks.md#full-suite-after-landing), which files a
+failure issue and a revert proposal for a failed landing. A repository's `rust-toolchain.toml`
 selects its toolchain through rustup.
 
 Every caller also gets the dependency and source checks: cargo-deny

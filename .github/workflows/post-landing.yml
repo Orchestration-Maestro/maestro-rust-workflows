@@ -92,7 +92,7 @@ jobs:
                                          f"repos/{repository}/actions/runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100"))
               jobs = [job for page in pages for job in page['jobs']]
               failed = [job for job in jobs if job['conclusion'] == 'failure' and
-                        re.search(r'\b(Tests|Test shard|Doctests|Chromium browser tests|Coverage)\b', job['name'])]
+                        re.search(r'\b(Tests|Test shard|Doctests|Chromium browser tests)\b', job['name'])]
               if not failed:
                   if run['conclusion'] != 'success':
                       raise RuntimeError('Run did not pass, but no failed suite job could be identified')
@@ -151,8 +151,7 @@ jobs:
                           parents = command('git', 'rev-list', '--parents', '-n', '1', sha).split()[1:]
                           if not parents:
                               raise RuntimeError('Landing has no parent to revert')
-                          command('git', '-c', 'user.name=Maestro CI', '-c', 'user.email=ci@users.noreply.github.com',
-                                  '-c', 'commit.gpgsign=false', 'revert', '--no-commit', *(['-m', '1'] if len(parents) > 1 else []), sha)
+                          command('git', 'revert', '--no-commit', *(['-m', '1'] if len(parents) > 1 else []), sha)
                           command('git', '-c', 'user.name=Maestro CI', '-c', 'user.email=ci@users.noreply.github.com',
                                   '-c', 'commit.gpgsign=false', 'commit', '-m', f'revert(ci): revert #{original} after full-suite failure',
                                   '-m', f'This reverts commit {sha}.')
