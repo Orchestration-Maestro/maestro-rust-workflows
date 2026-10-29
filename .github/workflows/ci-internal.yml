@@ -4570,6 +4570,70 @@ jobs:
           advisory_selection_is_caller_relative()
           print('PASS advisory_selection_is_caller_relative')
 
+          def browser_merge_groups_follow_shared_package_selection():
+              from functools import partial
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'Cargo.toml').write_text(
+                      '[workspace]\nresolver="3"\nmembers=["core", "web", "other"]\n', encoding='utf-8')
+                  for name in ['core', 'web', 'other']:
+                      crate = directory / name
+                      (crate / 'src').mkdir(parents=True)
+                      manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n'
+                      if name == 'web':
+                          manifest += '[dependencies]\ncore={path="../core"}\n'
+                      (crate / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+                      (crate / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text(
+                      'wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=["web"]\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+                  subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+                  git = partial(fixture_git, directory)
+                  git('add', '.')
+                  git('commit', '-qm', 'base')
+                  base = git('rev-parse', 'HEAD')
+                  job = workflow.split('  browser-tests:\n', 1)[1]
+                  gate = re.search(r'^    if: \$\{\{ (.*?) \}\}$', job, re.MULTILINE)[1]
+                  for path, expected in [('other/src/lib.rs', False), ('web/src/lib.rs', True),
+                                         ('core/src/lib.rs', True), ('Cargo.lock', True),
+                                         ('.config/nextest.toml', True), ('rust-toolchain.toml', True),
+                                         ('.github/workflows/caller.yml', True), ('Cargo.toml', True),
+                                         ('unknown.txt', True)]:
+                      git('reset', '--hard', base)
+                      target = directory / path
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      with target.open('a', encoding='utf-8') as output:
+                          output.write('\n# changed shared input\n' if target.suffix in ['.toml', '.lock'] else '\n')
+                      git('add', '.')
+                      git('commit', '-qm', path)
+                      for event, comparison in [('merge_group', base), ('push', base),
+                                                ('merge_group', '0' * 40)]:
+                          output = directory / '.git/selection'
+                          output.write_text('', encoding='utf-8')
+                          result = execute('Select test packages', directory, {
+                              'TEST_EVENT': event, 'BASE_REF': comparison, 'GITHUB_OUTPUT': str(output)})
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                          should_run = expected if event == 'merge_group' and comparison == base else True
+                          assert values['browser_tests'] == str(should_run).lower(), (path, event, comparison, values)
+                          expression = gate
+                          for key, value in {'needs.declaration.outputs.browser_tests': values['browser_tests'],
+                                             'needs.declaration.outputs.coverage': values['coverage'],
+                                             'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
+                                             'inputs.warm-cache': False}.items():
+                              expression = expression.replace(key, repr(value))
+                          expression = re.sub(r'!(?!=)', ' not ', expression.replace('&&', ' and ').replace('||', ' or ')).strip()
+                          assert bool(eval(expression, {'__builtins__': {}})) == should_run, (path, event, gate)
+                  # Skips must not become failed shard dependencies; recipe failures must propagate.
+                  aggregate = workflow.split('  tests-result:\n', 1)[1].split('\n  checks:', 1)[0]
+                  assert 'browser-tests' not in aggregate
+                  assert 'continue-on-error:' not in job
+                  assert body('Browser test recipe').strip() == 'just browser-test'
+
+          browser_merge_groups_follow_shared_package_selection()
+          print('PASS browser_merge_groups_follow_shared_package_selection')
+
           def changed_packages_include_reverse_dependencies():
               from functools import partial
               with tempfile.TemporaryDirectory() as temporary:
