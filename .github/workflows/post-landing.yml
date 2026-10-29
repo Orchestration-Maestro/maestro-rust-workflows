@@ -13,7 +13,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
   group: post-landing-${{ github.repository }}-${{ inputs.run-id }}
@@ -21,6 +20,9 @@ concurrency:
 
 jobs:
   report:
+    permissions:
+      contents: read
+      actions: read
     runs-on: ubuntu-latest
     steps:
       - name: Original full-suite run

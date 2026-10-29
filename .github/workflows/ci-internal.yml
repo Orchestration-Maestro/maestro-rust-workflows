@@ -11,6 +11,9 @@ permissions:
 
 jobs:
   sample:
+    permissions:
+      contents: read
+      actions: read
     name: Sample
     uses: ./.github/workflows/ci.yml
     with:
@@ -18,6 +21,9 @@ jobs:
       concurrency-key: sample
 
   declared:
+    permissions:
+      contents: read
+      actions: read
     name: Declared caller
     uses: ./.github/workflows/ci.yml
     with:
@@ -26,6 +32,9 @@ jobs:
       test-event: merge_group
 
   test-tools:
+    permissions:
+      contents: read
+      actions: read
     name: Caller test tools
     uses: ./.github/workflows/ci.yml
     with:
@@ -34,6 +43,9 @@ jobs:
       test-event: merge_group
 
   fuzz:
+    permissions:
+      contents: read
+      actions: read
     name: Fuzz caller
     uses: ./.github/workflows/ci.yml
     with:
@@ -1679,16 +1691,20 @@ jobs:
               # Root self-calls keep the runner-compatible syntax until actionlint accepts $/.
               root_config = pathlib.Path(temporary) / 'root-zizmor.yml'
               root_config.write_text('rules:\n  self-repository:\n    ignore:\n'
-                                     '      - ci-internal.yml:15:11\n'
-                                     '      - ci-internal.yml:22:11\n'
-                                     '      - ci-internal.yml:30:11\n'
-                                     '      - ci-internal.yml:38:11\n'
-                                     '      - ci-proof.yml:13:11\n'
-                                     '      - ci-proof.yml:25:11\n'
-                                     '      - ci-proof.yml:37:11\n'
-                                     '      - advisories.yml:16:11\n'
-                                     '      - fuzz.yml:14:11\n', encoding="utf-8")
-              for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
+                                     '      - ci-internal.yml\n'
+                                     '      - ci-proof.yml\n'
+                                     '      - advisories.yml\n'
+                                     '      - fuzz.yml\n', encoding="utf-8")
+              # Moving lines inside a root workflow must not revive a self-repository finding.
+              shifted = pathlib.Path(temporary) / 'shifted'
+              shutil.copytree(root / '.github/workflows', shifted / '.github/workflows')
+              for path in (shifted / '.github/workflows').glob('*.yml'):
+                  path.write_text('# moved\n# moved\n' + path.read_text(encoding='utf-8'), encoding='utf-8')
+              zizmor = [env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows']
+              result = subprocess.run(zizmor, cwd=shifted, env=env, capture_output=True, text=True)
+              assert result.returncode == 0, 'zizmor failed after lines moved\n' + result.stdout + result.stderr
+              print('PASS self_repository_ignore_survives_line_shifts')
+              for argv in [zizmor,
                            [env['TOOLS'] + '/actionlint', '-config-file', env['CHECK_DEFAULTS'] + '/actionlint.yaml', '-shellcheck=', '-pyflakes=',
                             *map(str, (root / '.github/workflows').glob('*.yml'))]]:
                   result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
@@ -2644,6 +2660,7 @@ jobs:
 
           source = pathlib.Path('.github/workflows/post-landing.yml').read_text(encoding='utf-8')
           assert '          permission-workflows: write\n' in source, 'Reverts must handle workflow-file landings'
+          assert '  report:\n    permissions:\n      contents: read\n      actions: read\n' in source, 'The reporter job must hold actions read'
           assert re.findall(r'^      ([\w-]+):$', source.split('    inputs:\n', 1)[1].split('    secrets:\n', 1)[0], re.M) == ['run-id'], 'The reusable reporter must take only the run id'
           step = source.split('      - name: Report and propose revert\n', 1)[1]
           code = textwrap.dedent(step.split('        run: |\n', 1)[1])
@@ -2959,6 +2976,22 @@ jobs:
                   argv = [os.path.expanduser('~/.local/bin/capped'), 'bash', '-e', '-o', 'pipefail', '-c', command]
                   env['CARGO_BUILD_JOBS'] = '3'
               return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
+
+          def select_packages(cwd, extra):
+              # Merge-group selection reads a baseline manifest from RUNNER_TEMP; give it one that matches the fixture.
+              if extra.get('TEST_EVENT') != 'merge_group' or 'RUNNER_TEMP' in extra:
+                  return execute('Select test packages', cwd, extra)
+              with tempfile.TemporaryDirectory() as selection_temp:
+                  baseline = pathlib.Path(selection_temp) / 'coverage-baseline'
+                  baseline.mkdir()
+                  import tomllib
+                  package_roots = {}
+                  for manifest in pathlib.Path(cwd).rglob('Cargo.toml'):
+                      package = tomllib.loads(manifest.read_text(encoding='utf-8')).get('package', {})
+                      if 'name' in package:
+                          package_roots[package['name']] = manifest.parent.relative_to(cwd).as_posix()
+                  (baseline / 'manifest.json').write_text(json.dumps({'head': extra.get('BASE_REF'), 'package_roots': package_roots}), encoding='utf-8')
+                  return execute('Select test packages', cwd, extra | {'RUNNER_TEMP': selection_temp})
 
           credential_names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
           GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY OPENROUTER_API_KEY ZAI_API_KEY
@@ -3348,7 +3381,7 @@ jobs:
               assert jobs['doctests']['strategy']['matrix']['shard'] == ['doctests']
               for key in ['steps', 'defaults', 'env']:
                   assert jobs['doctests'][key] == jobs['tests'][key], key
-              assert set(jobs['tests-result']['needs']) == {'tests', 'doctests', 'declaration'}
+              assert set(jobs['tests-result']['needs']) == {'tests', 'doctests', 'declaration', 'test-build'}
               for tests, docs in [('success', 'success'), ('success', 'failure'), ('failure', 'success')]:
                   result = subprocess.run(['python3', '-c', body('All test shards passed')],
                                           env=os.environ | {'RESULT': tests, 'DOCTEST_RESULT': docs,
@@ -3478,6 +3511,105 @@ jobs:
                   subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
               return tools, log
 
+          def archived_coverage_excludes_unselected_report_packages():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  tools, log = install_recording_runner(directory)
+                  result = execute('Isolated tests', directory, {
+                      'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                      'RUNNER_TEMP': temporary, 'SHARD': '2', 'COLLECT_COVERAGE': 'true',
+                      'CARGO_COVERAGE_MIN_LINES': '', 'TEST_PACKAGES': '["sample"]',
+                      'TEST_ARCHIVE': str(directory / 'archive.tar.zst'), 'WARM_CACHE': 'false',
+                      'COVERAGE_EXCLUDE': '["unrelated"]', 'COVERAGE_SCOPE': 'selected packages: sample'})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                  args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
+                  assert '--archive-file' in args and '--no-clean' in args, args
+                  assert args[args.index('--exclude-from-report') + 1] == 'unrelated', args
+                  assert '-p' not in args, args
+
+          archived_coverage_excludes_unselected_report_packages()
+          print('PASS archived_coverage_excludes_unselected_report_packages')
+
+          def selected_archive_build_compiles_only_selected_packages():
+              for coverage in ['true', 'false']:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                             'COLLECT_COVERAGE': coverage, 'TEST_PACKAGES': '["sample"]',
+                             'COVERAGE_SCOPE': 'selected packages: sample'}
+                      result = execute('Build test archive', directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      args = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])['args']
+                      assert '-p' in args and args[args.index('-p') + 1] == 'sample', args
+                      assert '--workspace' not in args, args
+                      log.unlink()
+                      result = execute('Build test archive', directory, env | {
+                          'TEST_PACKAGES': '["sample", "unrelated"]', 'COVERAGE_SCOPE': 'full workspace'})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      args = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])['args']
+                      assert '--workspace' in args and '-p' not in args, args
+
+          selected_archive_build_compiles_only_selected_packages()
+          print('PASS selected_archive_build_compiles_only_selected_packages')
+
+          def isolated_coverage_runs_selected_packages_and_merge_names_scope():
+              for step in ['Isolated tests']:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                             'RUNNER_TEMP': temporary, 'SHARD': '2', 'COLLECT_COVERAGE': 'true',
+                             'CARGO_COVERAGE_MIN_LINES': '', 'TEST_PACKAGES': '["sample"]',
+                             'COVERAGE_EXCLUDE': '["unrelated"]', 'COVERAGE_SCOPE': 'selected packages: sample',
+                             'WARM_CACHE': 'false'}
+                      result = execute(step, directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                      args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
+                      assert '-p' in args and args[args.index('-p') + 1] == 'sample', args
+                      assert '--workspace' not in args, args
+                      assert args[args.index('--exclude-from-report') + 1] == 'unrelated', args
+                      log.unlink()
+                      result = execute(step, directory, env | {
+                          'TEST_PACKAGES': '["sample", "unrelated"]', 'COVERAGE_EXCLUDE': '[]',
+                          'COVERAGE_SCOPE': 'full workspace'})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                      args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
+                      assert '--workspace' in args and '--exclude-from-report' not in args, args
+              # The shared merger names the scope and retains the same floor.
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  reports = directory / 'coverage'
+                  reports.mkdir()
+                  (reports / 'shard-1.lcov').write_text('SF:/sample/lib.rs\nDA:1,1\nDA:2,0\nend_of_record\n', encoding='utf-8')
+                  result = execute('Merge coverage', directory, {
+                      'COVERAGE_REPORT_COUNT': '1', 'COVERAGE_SCOPE': 'full workspace'})
+                  assert result.returncode != 0 and 'minimum 80%' in result.stdout, result.stdout + result.stderr
+                  assert 'Coverage scope: full workspace' in result.stdout, result.stdout
+
+          isolated_coverage_runs_selected_packages_and_merge_names_scope()
+          print('PASS isolated_coverage_runs_selected_packages_and_merge_names_scope')
+
+          def undeclared_coverage_measures_the_full_workspace():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  tools, log = install_recording_runner(directory)
+                  result = execute('Coverage', directory, {
+                      'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                      'TEST_PACKAGES': '["sample"]', 'COVERAGE_EXCLUDE': '["unrelated"]'})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                  args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
+                  assert '--workspace' in args and '-p' not in args and '--exclude-from-report' not in args, args
+              step = workflow.split('      - name: Coverage\n', 1)[1].split('      - name: ', 1)[0]
+              for name in ['TEST_PACKAGES', 'COVERAGE_EXCLUDE', 'COVERAGE_SCOPE']:
+                  assert name not in step, name + ' reaches the undeclared coverage step'
+
+          undeclared_coverage_measures_the_full_workspace()
+          print('PASS undeclared_coverage_measures_the_full_workspace')
           archived_shards_provision_child_build_dependencies()
           print('PASS archived_shards_provision_child_build_dependencies')
           archive_signal_reaches_only_archived_shards()
@@ -3617,7 +3749,7 @@ jobs:
               assert "TEST_EVENT: $" + "{{ inputs.warm-cache && 'push' ||" in workflow
               with tempfile.TemporaryDirectory() as temporary:
                   output = pathlib.Path(temporary) / 'selection'
-                  result = execute('Select test packages', root / 'fixtures/sample', {
+                  result = select_packages(root / 'fixtures/sample', {
                       'TEST_EVENT': 'push', 'BASE_REF': 'unrelated-workflow-base', 'GITHUB_OUTPUT': str(output)})
                   assert result.returncode == 0, result.stderr
                   values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
@@ -3682,6 +3814,32 @@ jobs:
           coverage_exclusions_have_one_workflow_owner()
           print('PASS coverage_exclusions_have_one_workflow_owner')
 
+          def package_ownership_has_one_workflow_owner():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              assert 'PACKAGE_OWNER' in document['env'], 'missing workflow-level package ownership snippet'
+              helper = document['env']['PACKAGE_OWNER']
+              assert workflow.count('def package_owner(') == 1
+              assert len(re.findall(r'key=lambda [^:]+: len\([^)]*\.parts\)', workflow)) == 1
+              for consumer in [document['env']['COVERAGE_MERGE'], body('Select test packages')]:
+                  assert "exec(os.environ['PACKAGE_OWNER'])" in consumer and 'package_owner(' in consumer
+              namespace = {}
+              exec(helper, namespace)
+              roots = {'outer': pathlib.PurePosixPath('crates/a'), 'inner': pathlib.PurePosixPath('crates/a/nested')}
+              for source, owner in [('crates/a/nested/src/lib.rs', 'inner'), ('crates/a/src/lib.rs', 'outer'),
+                                    ('crates/b/src/lib.rs', None)]:
+                  assert namespace['package_owner'](pathlib.PurePosixPath(source), roots) == owner, source
+              internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+              with tempfile.TemporaryDirectory() as temporary:
+                  exported = pathlib.Path(temporary) / 'env'
+                  result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Shared coverage policy', internal)],
+                                          env=os.environ | {'GITHUB_ENV': str(exported), 'RUNNER_TEMP': temporary},
+                                          capture_output=True, text=True)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert 'PACKAGE_OWNER<<COVERAGE_POLICY\n' + helper + 'COVERAGE_POLICY\n' in exported.read_text(encoding='utf-8')
+
+          package_ownership_has_one_workflow_owner()
+          print('PASS package_ownership_has_one_workflow_owner')
+
           def warm_cache_builds_without_tests_or_reports():
               for status in (0, 17):
                   with tempfile.TemporaryDirectory() as temporary:
@@ -3706,6 +3864,11 @@ jobs:
           warm_cache_builds_without_tests_or_reports()
           print('PASS warm_cache_builds_without_tests_or_reports')
 
+          def fixture_git(directory, *args):
+              return subprocess.check_output(['git', '-c', 'user.name=Fixture', '-c',
+                  'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', *args],
+                  cwd=directory, text=True).strip()
+
           def coverage_matrix_splits_doctests_from_partitions():
               tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
               matrix = re.search(r'        shard: (.*)', tests)[1]
@@ -3720,6 +3883,9 @@ jobs:
                   directory = pathlib.Path(temporary)
                   import shutil
                   shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'coverage fixture')
                   for declared in [False, True]:
                       if declared:
                           (directory / '.github').mkdir()
@@ -3728,7 +3894,7 @@ jobs:
                       assert result.returncode == 0 and values['enabled'] == str(declared).lower(), result.stderr
                       for event in ['pull_request', 'merge_group', 'push']:
                           output = directory / 'output'
-                          result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
+                          result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
                           assert result.returncode == 0, result.stderr
                           selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                           legs = json.loads(selected['test_shards'])
@@ -4449,11 +4615,11 @@ jobs:
                       elif threshold:
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                                      '--partition', 'count:1/1', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
+                                      '--partition', 'count:1/1', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
                       elif route == 'Isolated tests' and coverage == 'true':
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                                      '--partition', f'count:{shard}/16', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
+                                      '--partition', f'count:{shard}/16', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
                       else:
                           expected = ['nextest', 'run', '--user-config-file', 'none', '--ignore-default-filter', '--locked',
                                       '-p', 'sample', '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky']
@@ -4781,7 +4947,7 @@ jobs:
                                                 (False, True, False), (False, False, True)]:
                       with tempfile.TemporaryDirectory() as temporary:
                           output = pathlib.Path(temporary) / 'selection'
-                          result = execute('Select test packages', root / 'fixtures/sample', {
+                          result = select_packages(root / 'fixtures/sample', {
                               'TEST_EVENT': 'push' if warm else event, 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
                           assert result.returncode == 0, result.stderr
                           values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
@@ -4863,7 +5029,7 @@ jobs:
                   assert result.returncode != 0 and not values and 'test_shards was removed' in result.stderr, result.stdout + result.stderr
               aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
               assert 'name: Tests (ubuntu-latest)' in aggregate
-              assert 'needs: [tests, doctests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
+              assert 'needs: [tests, doctests, declaration, test-build]' in aggregate and 'if: $' + '{{ always()' in aggregate
               for coverage in ['false', 'true', '']:
                   for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
                       for status in ['success', 'failure', 'cancelled', 'skipped']:
@@ -4932,6 +5098,224 @@ jobs:
           partitions_run_every_test_once_and_doctests()
           print('PASS partitions_run_every_test_once_and_doctests')
 
+          def local_callers_grant_baseline_artifact_reads():
+              for path in sorted((root / '.github/workflows').glob('*.yml')):
+                  document = json.loads(subprocess.check_output(
+                      ['yq', '-o=json', '-'], input=path.read_text(encoding='utf-8'), text=True))
+                  for name, job in document.get('jobs', {}).items():
+                      if job.get('uses') == './.github/workflows/ci.yml':
+                          assert job.get('permissions', {}).get('actions') == 'read', (path.name, name)
+                  assert 'actions' not in document.get('permissions', {}), path.name
+
+          local_callers_grant_baseline_artifact_reads()
+          print('PASS local_callers_grant_baseline_artifact_reads')
+
+          def archive_checkout_root_is_the_coverage_source_root():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  output = directory / 'output'
+                  result = execute('Record archive checkout root', directory, {'GITHUB_OUTPUT': str(output)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert output.read_text(encoding='utf-8').strip() == 'path=' + str(directory)
+              build = workflow.split('\n  test-build:\n', 1)[1].split('\n  test-prepare:', 1)[0]
+              assert 'coverage_checkout_root: $' + '{{ steps.archive-root.outputs.path }}' in build
+              aggregate = workflow.split('\n  tests-result:\n', 1)[1].split('\n  checks:', 1)[0]
+              assert 'needs: [tests, doctests, declaration, test-build]' in aggregate
+              assert 'COVERAGE_CHECKOUT_ROOT: $' + '{{ needs.test-build.outputs.coverage_checkout_root }}' in aggregate
+
+          archive_checkout_root_is_the_coverage_source_root()
+          print('PASS archive_checkout_root_is_the_coverage_source_root')
+
+          def coverage_baseline_transfer_requires_coverage():
+              for name, owner in [('Upload coverage baseline', 'steps.selection'),
+                                  ('Download coverage baseline', 'needs.declaration')]:
+                  step = next(part for part in workflow.split('      - name: ')[1:] if part.startswith(name + '\n'))
+                  condition = re.search(r'^        if: (.*)$', step, re.MULTILINE)[1]
+                  assert owner + ".outputs.coverage == 'true'" in condition, (name, condition)
+
+          coverage_baseline_transfer_requires_coverage()
+          print('PASS coverage_baseline_transfer_requires_coverage')
+
+          def coverage_baseline_download_requires_complete_manifest():
+              import zipfile
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'commit', '--allow-empty', '-qm', 'baseline')
+                  head = fixture_git(directory, 'rev-parse', 'HEAD')
+                  manifest = {'head': head, 'checkout_root': '/old/caller', 'package_roots': {'a': 'a'},
+                              'shard_count': 1, 'artifact_prefix': 'coverage-root-'}
+                  for name, records in [('manifest', {'manifest.json': json.dumps(manifest)}),
+                                        ('shard', {'shard-1.lcov': 'SF:/old/caller/a/src/lib.rs\nDA:1,1\nend_of_record\n'})]:
+                      with zipfile.ZipFile(directory / (name + '.zip'), 'w') as archive:
+                          for filename, text in records.items():
+                              archive.writestr(filename, text)
+                  artifacts = [{'id': 1, 'name': 'coverage-root-full', 'expired': False, 'workflow_run': {'id': 10}}]
+                  (directory / 'artifacts.json').write_text(json.dumps({'artifacts': artifacts}), encoding='utf-8')
+                  gh = directory / 'gh'
+                  gh.write_text('#!/usr/bin/env python3\nimport json,pathlib,sys\n'
+                      'root=pathlib.Path(__file__).parent\nurl=sys.argv[2]\n'
+                      'if (root/"deny").exists(): sys.exit(1)\n'
+                      'if "artifacts/1/zip" in url: sys.stdout.buffer.write((root/"manifest.zip").read_bytes())\n'
+                      'elif "artifacts/2/zip" in url: sys.stdout.buffer.write((root/"shard.zip").read_bytes())\n'
+                      'elif "/runs/10/artifacts" in url: print((root/"shards.json").read_text())\n'
+                      'elif "/runs/10" in url: print((root/"run.json").read_text())\n'
+                      'else: print((root/"artifacts.json").read_text())\n', encoding='utf-8')
+                  gh.chmod(0o755)
+                  shards = {'artifacts': [{'id': 2, 'name': 'coverage-root-1', 'expired': False}]}
+                  runs = {'conclusion': 'success', 'event': 'merge_group'}
+                  (directory / 'shards.json').write_text(json.dumps(shards), encoding='utf-8')
+                  (directory / 'run.json').write_text(json.dumps(runs), encoding='utf-8')
+                  env = {'PATH': str(directory) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
+                         'BASE_REF': head, 'GITHUB_REPOSITORY': 'fixture/caller', 'COVERAGE_KEY': 'root'}
+                  result = execute('Find coverage baseline', directory, env)
+                  baseline = directory / 'coverage-baseline'
+                  assert result.returncode == 0 and (baseline / 'manifest.json').is_file(), result.stdout + result.stderr
+                  assert (baseline / 'shard-1.lcov').read_text(encoding='utf-8').startswith('SF:')
+                  fixture_git(directory, 'commit', '--allow-empty', '-qm', 'newer than the group base')
+                  with zipfile.ZipFile(directory / 'manifest.zip', 'w') as archive:
+                      archive.writestr('manifest.json', json.dumps(manifest | {'head': fixture_git(directory, 'rev-parse', 'HEAD')}))
+                  result = execute('Find coverage baseline', directory, env)
+                  assert result.returncode == 0 and not (baseline / 'manifest.json').exists(), result.stdout + result.stderr
+                  assert (directory / 'coverage-baseline-reason').read_text(encoding='utf-8') == 'coverage baseline head is not an ancestor'
+                  def write_manifest(**changes):
+                      with zipfile.ZipFile(directory / 'manifest.zip', 'w') as archive:
+                          archive.writestr('manifest.json', json.dumps(manifest | changes))
+                  for label, reason, changes in [
+                          ('unsuccessful run', 'no baseline manifest yet', {'run': {'conclusion': 'failure', 'event': 'merge_group'}}),
+                          ('empty package layout', 'coverage baseline manifest or reports invalid', {'manifest': {'package_roots': {}}}),
+                          ('relative checkout root', 'coverage baseline manifest or reports invalid', {'manifest': {'checkout_root': 'relative'}}),
+                          ('missing shard', 'coverage baseline reports missing or expired', {'shards': {'artifacts': []}}),
+                          ('expired shard', 'coverage baseline reports missing or expired',
+                           {'shards': {'artifacts': [{'id': 2, 'name': 'coverage-root-1', 'expired': True}]}})]:
+                      write_manifest(**changes.get('manifest', {}))
+                      (directory / 'run.json').write_text(json.dumps(changes.get('run', runs)), encoding='utf-8')
+                      (directory / 'shards.json').write_text(json.dumps(changes.get('shards', shards)), encoding='utf-8')
+                      result = execute('Find coverage baseline', directory, env)
+                      assert result.returncode == 0 and not (baseline / 'manifest.json').exists(), (label, result.stdout + result.stderr)
+                      assert (directory / 'coverage-baseline-reason').read_text(encoding='utf-8') == reason, label
+                  write_manifest()
+                  (directory / 'run.json').write_text(json.dumps(runs), encoding='utf-8')
+                  (directory / 'shards.json').write_text(json.dumps(shards), encoding='utf-8')
+                  for failure in ['expired', 'missing', 'denied']:
+                      if failure == 'expired':
+                          artifacts[0]['expired'] = True
+                      elif failure == 'missing':
+                          artifacts.clear()
+                      else:
+                          (directory / 'deny').touch()
+                      (directory / 'artifacts.json').write_text(json.dumps({'artifacts': artifacts}), encoding='utf-8')
+                      result = execute('Find coverage baseline', directory, env)
+                      assert result.returncode == 0 and not (baseline / 'manifest.json').exists(), result.stdout + result.stderr
+                      assert 'baseline' in (directory / 'coverage-baseline-reason').read_text(encoding='utf-8')
+
+          coverage_baseline_download_requires_complete_manifest()
+          print('PASS coverage_baseline_download_requires_complete_manifest')
+
+          def selected_coverage_merges_only_unchanged_baseline_packages():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  for folder in ['coverage', 'baseline']:
+                      (directory / folder).mkdir()
+                  layout = {'head': 'fixture',
+                            'package_roots': {'selected': 'crates/a', 'unchanged': 'crates/b', 'nested': 'crates/a/nested'},
+                            'shard_count': 1}
+                  baseline = layout | {'checkout_root': '/old/runner/caller'}
+                  (directory / 'baseline/manifest.json').write_text(json.dumps(baseline), encoding='utf-8')
+                  def records(root, selected_hits, other_hits):
+                      return ''.join(f'SF:{root}/{path}/src/lib.rs\nDA:1,{hits}\nend_of_record\n'
+                                     for path, hits in [('crates/a', selected_hits), ('crates/b', other_hits),
+                                                        ('crates/a/nested', other_hits), ('external/dependency', 0)])
+                  (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 0, 0), encoding='utf-8')
+                  (directory / 'baseline/shard-1.lcov').write_text(records('/old/runner/caller', 1, 1), encoding='utf-8')
+                  env = {'TEST_SHARD_COUNT': '1', 'COVERAGE_REPORT_COUNT': '1',
+                         'COVERAGE_SCOPE': 'selected packages: selected', 'TEST_PACKAGES': '["selected"]',
+                         'COVERAGE_LAYOUT': json.dumps(layout), 'COVERAGE_CHECKOUT_ROOT': '/current/caller',
+                         'COVERAGE_BASELINE_DIR': str(directory / 'baseline')}
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode != 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
+                  assert 'Workspace line coverage (gate): 66.67% (2/3)' in result.stdout, result.stdout
+                  assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout, result.stdout
+                  (directory / 'baseline/shard-1.lcov').write_text(
+                      records('/old/runner/caller', 1, 1) +
+                      'SF:/old/runner/caller/crates/b/src/lib.rs\nDA:2,1\nDA:3,1\nend_of_record\n', encoding='utf-8')
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode == 0 and '80.00% (4/5)' in result.stdout, result.stdout + result.stderr
+                  assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout
+                  (directory / 'baseline/shard-1.lcov').write_text(records('/old/runner/caller', 1, 1), encoding='utf-8')
+                  (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 1, 0), encoding='utf-8')
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
+                  assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
+                  (directory / 'coverage/shard-1.lcov').write_text(records('/build/caller', 1, 0), encoding='utf-8')
+                  result = execute('Merge coverage', directory, env | {'COVERAGE_CHECKOUT_ROOT': '/build/caller'})
+                  assert result.returncode == 0 and 'Workspace line coverage (gate): 100.00% (3/3)' in result.stdout, result.stdout + result.stderr
+                  assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
+                  (directory / 'coverage/shard-1.lcov').write_text(
+                      'SF:/current/caller/crates/b/src/lib.rs\nDA:1,0\nend_of_record\n', encoding='utf-8')
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode == 0 and 'Selected-package line coverage: N/A (0/0)' in result.stdout, result.stdout + result.stderr
+                  assert 'Workspace line coverage (gate): 100.00% (2/2)' in result.stdout
+                  (directory / 'baseline/shard-1.lcov').unlink()
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode != 0 and 'baseline' in result.stderr.lower(), result.stdout + result.stderr
+
+          selected_coverage_merges_only_unchanged_baseline_packages()
+          print('PASS selected_coverage_merges_only_unchanged_baseline_packages')
+
+          def baseline_selection_includes_changes_before_group_base():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
+                  (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c"]\n', encoding='utf-8')
+                  for name in ['a', 'b', 'c']:
+                      (directory / name / 'src').mkdir(parents=True)
+                      (directory / name / 'Cargo.toml').write_text(
+                          f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+                      (directory / name / 'src/lib.rs').write_text('pub fn initial() {}\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'baseline')
+                  baseline_head = fixture_git(directory, 'rev-parse', 'HEAD')
+                  (directory / 'b/src/lib.rs').write_text('pub fn between() {}\n', encoding='utf-8')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'between baseline and base')
+                  base = fixture_git(directory, 'rev-parse', 'HEAD')
+                  (directory / 'a/src/lib.rs').write_text('pub fn selected() {}\n', encoding='utf-8')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'group head')
+                  baseline = directory / '.git/coverage-baseline'
+                  baseline.mkdir()
+                  manifest = baseline / 'manifest.json'
+                  manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'a', 'b': 'b', 'c': 'c'}}), encoding='utf-8')
+                  output = directory / '.git/selection'
+                  env = {'TEST_EVENT': 'merge_group', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                         'RUNNER_TEMP': str(directory / '.git')}
+                  result = select_packages(directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                  assert json.loads(values['packages']) == ['a', 'b'], values
+                  assert json.loads(values['coverage_layout'])['package_roots'] == {'a': 'a', 'b': 'b', 'c': 'c'}
+                  assert 'checkout_root' not in json.loads(values['coverage_layout']), 'the selection layout names a checkout root'
+                  manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'old'}}), encoding='utf-8')
+                  result = select_packages(directory, env)
+                  assert result.returncode == 0 and 'baseline package layout changed' in result.stdout, result.stdout + result.stderr
+                  manifest.unlink()
+                  output.write_text('', encoding='utf-8')
+                  result = select_packages(directory, env)
+                  values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                  assert result.returncode == 0 and 'no baseline manifest yet' in result.stdout, result.stdout + result.stderr
+                  assert json.loads(values['packages']) == ['a', 'b', 'c'], values
+                  manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'a', 'b': 'b', 'c': 'c'}}), encoding='utf-8')
+                  (directory / '.github/ci.toml').unlink()
+                  result = select_packages(directory, env)
+                  assert result.returncode == 0 and 'undeclared caller: full suite' in result.stdout, result.stdout + result.stderr
+
+          baseline_selection_includes_changes_before_group_base()
+          print('PASS baseline_selection_includes_changes_before_group_base')
+
           def coverage_merge_uses_union_and_requires_all_reports():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -4975,11 +5359,6 @@ jobs:
           coverage_merge_uses_union_and_requires_all_reports()
           print('PASS coverage_merge_uses_union_and_requires_all_reports')
 
-          def fixture_git(directory, *args):
-              return subprocess.check_output(['git', '-c', 'user.name=Fixture', '-c',
-                  'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', *args],
-                  cwd=directory, text=True).strip()
-
           def advisory_selection_is_caller_relative():
               from functools import partial
               import shutil
@@ -5021,7 +5400,7 @@ jobs:
                               for event in ['pull_request', 'merge_group']:
                                   output = repository / '.git/selection'
                                   output.write_text('', encoding='utf-8')
-                                  result = execute('Select test packages', directory, {'TEST_EVENT': event,
+                                  result = select_packages(directory, {'TEST_EVENT': event,
                                       'BASE_REF': comparison_base, 'GITHUB_OUTPUT': str(output)})
                                   assert result.returncode == 0, result.stdout + result.stderr
                                   values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
@@ -5030,6 +5409,116 @@ jobs:
 
           advisory_selection_is_caller_relative()
           print('PASS advisory_selection_is_caller_relative')
+
+          def merge_group_nested_members_have_one_owner():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
+                  (directory / 'src').mkdir()
+                  (directory / 'src/lib.rs').write_text('pub fn root() {}\n', encoding='utf-8')
+                  (directory / 'nested/src').mkdir(parents=True)
+                  (directory / 'nested/src/lib.rs').write_text('pub fn nested() {}\n', encoding='utf-8')
+                  (directory / 'Cargo.toml').write_text(
+                      '[workspace]\nresolver="3"\nmembers=["nested"]\n'
+                      '[package]\nname="root"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+                  (directory / 'nested/Cargo.toml').write_text(
+                      '[package]\nname="nested"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'base')
+                  base = fixture_git(directory, 'rev-parse', 'HEAD')
+                  (directory / 'nested/src/lib.rs').write_text('pub fn changed() {}\n', encoding='utf-8')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'source')
+                  output = directory / '.git/selection'
+                  result = select_packages(directory, {
+                      'TEST_EVENT': 'merge_group', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                  assert json.loads(values['packages']) == ['nested'], values
+                  assert json.loads(values['coverage_exclude']) == ['root'], values
+                  assert values['coverage_scope'] == 'selected packages: nested', values
+
+          merge_group_nested_members_have_one_owner()
+          print('PASS merge_group_nested_members_have_one_owner')
+
+          def merge_groups_select_graph_and_fail_closed():
+              from functools import partial
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
+                  names = ['a', 'b', 'c', 'build', 'dev', 'target', 'unrelated']
+                  (directory / 'Cargo.toml').write_text(
+                      '[workspace]\nresolver="3"\nmembers=' + json.dumps(names) + '\n', encoding='utf-8')
+                  edges = {'b': ('dependencies', 'a'), 'c': ('dependencies', 'b'),
+                           'build': ('build-dependencies', 'a'), 'dev': ('dev-dependencies', 'a'),
+                           'target': ('target.\'cfg(windows)\'.dependencies', 'a')}
+                  for name in names:
+                      crate = directory / name
+                      (crate / 'src').mkdir(parents=True)
+                      manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n'
+                      if name in edges:
+                          section, dependency = edges[name]
+                          manifest += f'[{section}]\n{dependency}={{path="../{dependency}"}}\n'
+                      (crate / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+                      (crate / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+                  git = partial(fixture_git, directory)
+                  git('init', '--quiet')
+                  git('add', '.')
+                  git('commit', '-qm', 'base')
+                  base = git('rev-parse', 'HEAD')
+                  def select(base_ref=base, event='merge_group'):
+                      output = directory / '.git/selection'
+                      output.write_text('', encoding='utf-8')
+                      result = select_packages(directory, {
+                          'TEST_EVENT': event, 'BASE_REF': base_ref, 'GITHUB_OUTPUT': str(output)})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                      assert values['coverage'] == 'true'
+                      return json.loads(values['packages']), result.stdout
+                  source = directory / 'a/src/lib.rs'
+                  source.write_text('pub fn changed() {}\n', encoding='utf-8')
+                  git('add', '.')
+                  git('commit', '-qm', 'source')
+                  selected, log = select()
+                  assert selected == ['a', 'b', 'build', 'c', 'dev', 'target'], (selected, log)
+                  assert 'Coverage scope: selected packages' in log
+                  assert select(event='push')[0] == sorted(names)
+                  for filename in ['Cargo.lock', '.config/nextest.toml', 'rust-toolchain.toml',
+                                   '.github/workflows/check.yml', '.github/ci.toml', 'README.md',
+                                   'Cargo.toml', 'unknown/file', 'docs/guide.md']:
+                      git('reset', '--hard', base)
+                      path = directory / filename
+                      existed = path.exists()
+                      previous = path.read_text(encoding='utf-8') if existed else None
+                      path.parent.mkdir(parents=True, exist_ok=True)
+                      path.write_text((previous or '') + '\n# shared input\n', encoding='utf-8')
+                      git('add', '.')
+                      git('commit', '-qm', 'shared input')
+                      # Restore the runtime manifest/toolchain: selection uses the committed diff.
+                      if previous is not None:
+                          path.write_text(previous, encoding='utf-8')
+                      elif filename == 'rust-toolchain.toml':
+                          path.unlink()
+                      selected, log = select()
+                      assert selected == sorted(names), (filename, selected, log)
+                      assert 'Full-suite fallback:' in log and 'Coverage scope: full workspace' in log
+                  git('reset', '--hard', base)
+                  for invalid in ['', '0' * 40]:
+                      selected, log = select(base_ref=invalid)
+                      assert selected == sorted(names) and 'Full-suite fallback:' in log, log
+                  # Broken resolution must still enumerate and run every workspace member.
+                  manifest = directory / 'a/Cargo.toml'
+                  manifest.write_text(manifest.read_text(encoding='utf-8').replace('0.1.0', '0.2.0'), encoding='utf-8')
+                  selected, log = select()
+                  assert selected == sorted(names) and 'Full-suite fallback:' in log, log
+
+          merge_groups_select_graph_and_fail_closed()
+          print('PASS merge_groups_select_graph_and_fail_closed')
 
           def changed_packages_include_reverse_dependencies():
               from functools import partial
@@ -5055,7 +5544,7 @@ jobs:
                   def select(event='pull_request'):
                       output = directory / '.git/selection'
                       output.write_text('', encoding='utf-8')
-                      result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                      result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
                       return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                   declaration_path = directory / '.github/ci.toml'
@@ -5094,16 +5583,16 @@ jobs:
                   git('commit', '-qm', 'remove browser opt-in')
                   assert select()['browser_tests'] == 'false'
                   git('reset', '--hard', 'HEAD~1')
-                  assert json.loads(select('merge_group')['packages']) == ['a', 'b', 'c', 'd']
+                  assert json.loads(select('merge_group')['packages']) == ['a', 'b', 'c']
                   assert select('push')['coverage'] == 'true'
                   # Advisories follow dependency changes only on pull requests and merge groups.
                   assert [select(event)['check_advisories'] for event in ['pull_request', 'merge_group', 'push', 'schedule']] == ['false', 'false', 'true', 'true']
                   output = directory / '.git/no-base'
-                  result = execute('Select test packages', directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
+                  result = select_packages(directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
                   assert result.returncode == 0 and 'check_advisories=true' in output.read_text(encoding='utf-8'), result.stdout + result.stderr
                   # A base the checkout cannot read keeps the check.
                   output.write_text('', encoding='utf-8')
-                  result = execute('Select test packages', directory, {'TEST_EVENT': 'merge_group', 'BASE_REF': '0' * 40, 'GITHUB_OUTPUT': str(output)})
+                  result = select_packages(directory, {'TEST_EVENT': 'merge_group', 'BASE_REF': '0' * 40, 'GITHUB_OUTPUT': str(output)})
                   assert result.returncode == 0 and 'check_advisories=true' in output.read_text(encoding='utf-8'), result.stdout + result.stderr
                   git('reset', '--hard', base)
                   (directory / 'a/Cargo.toml').write_text((directory / 'a/Cargo.toml').read_text(encoding='utf-8').replace('0.1.0', '0.2.0'), encoding='utf-8')
@@ -5200,7 +5689,7 @@ jobs:
                       git('commit', '-qm', 'change')
                       output = directory / '.git/selection'
                       output.write_text('', encoding='utf-8')
-                      result = execute('Select test packages', directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                      result = select_packages(directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
                       values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       assert json.loads(values['packages']) == expected, (changed, values)
@@ -5246,7 +5735,7 @@ jobs:
                       git('add', '.')
                       git('commit', '-qm', 'change')
                       output = directory / '.git/selection'
-                      result = execute('Select test packages', directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                      result = select_packages(directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
                       values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       assert json.loads(values['packages']) == (['child'] if nested else ['root-reader']), (nested, values)
@@ -5295,11 +5784,13 @@ jobs:
                   git('add', '.')
                   git('commit', '-qm', 'base')
                   base = git('rev-parse', 'HEAD')
-                  def select(event='pull_request'):
+                  def select(event='pull_request', fallback=None):
                       output = directory / '.git/selection'
                       output.write_text('', encoding='utf-8')
-                      result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                      result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
+                      if fallback:
+                          assert 'Full-suite fallback: ' + fallback in result.stdout, result.stdout
                       return json.loads(dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['packages'])
                   for changed, expected in [(['shared/data.txt'], ['d']), (['shared/notes.md'], ['d']), (['list.json'], ['a', 'b', 'c']),
                                             (['fuzz/src/main.rs'], []), (['fuzz/src/main.rs', 'shared/data.txt'], ['d']),
@@ -5309,7 +5800,8 @@ jobs:
                       git('add', '.')
                       git('commit', '-qm', 'change')
                       assert select() == expected, (changed, select())
-                      assert select('merge_group') == ['a', 'b', 'c', 'd'], changed
+                      merge_expected = ['a', 'b', 'c', 'd'] if not expected or any('/' not in name for name in changed) else expected
+                      assert select('merge_group', 'no workspace test packages selected' if not expected else None) == merge_expected, changed
                       git('reset', '--hard', base)
                   for source, destination, expected in [('shared/data.txt', 'fuzz/data.txt', ['d']),
                                                         ('other/data.txt', 'shared/moved.txt', ['a', 'b', 'c', 'd']),

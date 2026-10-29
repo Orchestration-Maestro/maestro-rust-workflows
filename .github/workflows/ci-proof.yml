@@ -1,7 +1,8 @@
 name: Maestro coverage proof
 
 on:
-  pull_request:
+  push:
+    branches: [ci/228-merge-proof]
     paths: [.github/workflows/ci.yml, .github/workflows/ci-proof.yml]
 
 permissions:
@@ -10,6 +11,9 @@ permissions:
 jobs:
   warm:
     name: Warm Maestro coverage cache
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: maestro
@@ -22,6 +26,9 @@ jobs:
     needs: warm
     if: always()
     name: Maestro partitioned coverage
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: maestro
@@ -34,6 +41,9 @@ jobs:
     name: Maestro selected-package tests
     needs: warm
     if: always()
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: maestro
@@ -41,7 +51,7 @@ jobs:
       checkout-ref: 146f675e6eb4d898f271327d6f0e8aab823157a4
       checkout-base-ref: 13a38591c1e01f3b1cff7209ee15d91dc9a50044
       concurrency-key: maestro-selected
-      test-event: pull_request
+      test-event: merge_group
 
   comparison:
     name: Maestro single coverage
