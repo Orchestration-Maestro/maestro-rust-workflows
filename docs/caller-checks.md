@@ -282,8 +282,9 @@ and paths under `docs/`; other undeclared files select everything. The workflow
 and configuration rules above take precedence. Declared paths select their
 readers, including for Markdown changes.
 Every enabled shard fetches locked dependencies.
-Merge groups select changed workspace crates and every direct or transitive
-workspace dependent from locked Cargo metadata. Normal, build, development and
+Declared merge groups select workspace crates changed between the verified
+coverage baseline and the group head, plus every direct or transitive workspace
+dependent from locked Cargo metadata. Normal, build, development and
 target-specific dependency edges all count; unrelated crates are not selected.
 Changes to `Cargo.lock`, `.config/`, `.github/` (including the caller declaration),
 the toolchain or any root file select the full suite. Unknown paths, an absent or
@@ -291,11 +292,12 @@ unreadable merge-group base, an unresolved dependency graph, or a selection with
 no workspace test packages also select the full suite and log the fallback reason. Unlike pull requests, merge groups do not
 skip undeclared documentation changes.
 
-Coverage tests and reports cover the selected packages, excluding unselected
-workspace packages from the report. The aggregate labels its scope as selected
-packages or full workspace and enforces the same 80% floor (or the caller's higher
-floor). Main pushes always test and measure the full workspace after every
-landing; that full-suite safeguard must be deployed before narrowed merge-group
+Narrowed coverage tests run the selected packages. The aggregate filters their
+own source records and combines them with unchanged baseline packages for the
+workspace floor; selected-package coverage is informational. See
+[coverage baseline and caller permissions](#coverage-baseline-and-caller-permissions)
+for the artifact contract and fallback rules. Main pushes always test and measure
+the full workspace after every landing; that full-suite safeguard must be deployed before narrowed merge-group
 testing is enabled. Its failure reporting and revert handling live in the
 post-landing workflow. Release graph selection together with the single-build
 test archive so the shared test build compiles only selected packages.
