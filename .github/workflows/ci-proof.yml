@@ -1,4 +1,4 @@
-name: Maestro merge-group selection proof
+name: Maestro coverage baseline bootstrap proof
 
 on:
   push:
