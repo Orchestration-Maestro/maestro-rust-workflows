@@ -2684,7 +2684,7 @@ jobs:
                                   if scenario == 'large': jobs = [dict(jobs[0], name=f'Test shard ({n}/16)') for n in range(20)]
                                   value = [{'jobs': jobs}] if '--slurp' in argv else {'jobs': jobs}
                           elif endpoint.startswith('repos/owner/repo/actions/workflows/5/runs?event=push&branch=main&head_sha='):
-                              value = {'total_count': int(endpoint.rsplit('=', 1)[1] == base)}
+                              value = {'total_count': int(endpoint.rsplit('=', 1)[1] in ((sha,) if scenario == 'unbounded' else (base, sha)))}
                           elif endpoint.endswith('/commits/' + str(earlier) + '/pulls'): value = [dict(landing, number=41, merge_commit_sha=earlier, head={'sha': earlier})]
                           elif endpoint.endswith('/commits/' + sha + '/pulls'): value = [] if scenario == 'unknown' else [dict(landing, number=99, merge_commit_sha='0' * 40, head={'sha': '0' * 40}), landing]
                           elif endpoint.endswith('/jobs/8/logs'):
@@ -2713,13 +2713,13 @@ jobs:
                       previous = pathlib.Path.cwd()
                       os.chdir(checkout)
                       try:
-                          if scenario in ('unknown', 'permission', 'conflict', 'resume', 'foreign', 'non-suite', 'batched'):
+                          if scenario in ('unknown', 'permission', 'conflict', 'resume', 'foreign', 'non-suite', 'batched', 'unbounded'):
                               try:
                                   exec(compile(code, 'post-landing workflow', 'exec'), {})
                                   raise AssertionError('Expected a clear failure')
                               except SystemExit as error:
                                   assert run['html_url'] in str(error), str(error)
-                                  diagnostic = {'unknown': 'attribute', 'permission': '403', 'conflict': 'revert', 'resume': 'temporary API failure', 'foreign': 'does not target', 'non-suite': 'no failed suite job', 'batched': 'landed together'}[scenario]
+                                  diagnostic = {'unknown': 'attribute', 'permission': '403', 'conflict': 'revert', 'resume': 'temporary API failure', 'foreign': 'does not target', 'non-suite': 'no failed suite job', 'batched': 'landed together', 'unbounded': 'No earlier full-suite run'}[scenario]
                                   assert diagnostic in str(error), str(error)
                               if scenario != 'resume':
                                   assert prs == []
@@ -2741,7 +2741,7 @@ jobs:
                           os.chdir(previous)
               print(f'PASS landing_report_handles_{scenario} ({time.monotonic() - start:.3f}s)', flush=True)
 
-          for scenario in ['large', 'failure', 'pagination', 'doctest', 'resume', 'pass', 'unknown', 'permission', 'conflict', 'foreign', 'non-suite', 'batched']:
+          for scenario in ['large', 'failure', 'pagination', 'doctest', 'resume', 'pass', 'unknown', 'permission', 'conflict', 'foreign', 'non-suite', 'batched', 'unbounded']:
               landing_report_handles(scenario)
               print('PASS landing_report_handles_' + scenario, flush=True)
 
