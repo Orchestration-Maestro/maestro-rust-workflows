@@ -89,9 +89,11 @@ jobs:
               sha = run['head_sha']
               if not re.fullmatch(r'[0-9a-f]{40}', sha):
                   raise RuntimeError('Invalid landing commit')
-              jobs = api(f"actions/runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100")['jobs']
+              pages = json.loads(command('gh', 'api', '--paginate', '--slurp',
+                                         f"repos/{repository}/actions/runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100"))
+              jobs = [job for page in pages for job in page['jobs']]
               failed = [job for job in jobs if job['conclusion'] == 'failure' and
-                        re.search(r'\b(Tests|Test shard|Chromium browser tests|Coverage)\b', job['name'])]
+                        re.search(r'\b(Tests|Test shard|Doctests|Chromium browser tests|Coverage)\b', job['name'])]
               if not failed:
                   if run['conclusion'] != 'success':
                       raise RuntimeError('Run did not pass, but no failed suite job could be identified')
@@ -128,16 +130,21 @@ jobs:
                       print(f"Existing revert: {prs[0]['url']} (failure issue: {issue})")
                   else:
                       command('git', 'fetch', 'origin', 'main', branch)
-                      command('git', 'switch', '-C', head, 'origin/main')
-                      if proof:
-                          command('git', 'switch', '-C', head, sha)
-                      parents = command('git', 'rev-list', '--parents', '-n', '1', sha).split()[1:]
-                      if not parents:
-                          raise RuntimeError('Landing has no parent to revert')
-                      command('git', '-c', 'user.name=Maestro CI', '-c', 'user.email=ci@users.noreply.github.com',
-                              '-c', 'commit.gpgsign=false', 'revert', '--no-edit', *(['-m', '1'] if len(parents) > 1 else []), sha)
-                      auth = base64.b64encode(f"x-access-token:{os.environ['GH_TOKEN']}".encode()).decode()
-                      command('git', '-c', f'http.extraheader=AUTHORIZATION: basic {auth}', 'push', 'origin', f'HEAD:refs/heads/{head}')
+                      existing = command('git', 'ls-remote', '--heads', 'origin', f'refs/heads/{head}')
+                      if existing:
+                          command('git', 'fetch', 'origin', head)
+                          message = command('git', 'show', '-s', '--format=%B', 'FETCH_HEAD')
+                          if f'This reverts commit {sha}' not in message:
+                              raise RuntimeError('Existing revert branch does not target this landing')
+                      else:
+                          command('git', 'switch', '-C', head, sha if proof else 'origin/main')
+                          parents = command('git', 'rev-list', '--parents', '-n', '1', sha).split()[1:]
+                          if not parents:
+                              raise RuntimeError('Landing has no parent to revert')
+                          command('git', '-c', 'user.name=Maestro CI', '-c', 'user.email=ci@users.noreply.github.com',
+                                  '-c', 'commit.gpgsign=false', 'revert', '--no-edit', *(['-m', '1'] if len(parents) > 1 else []), sha)
+                          auth = base64.b64encode(f"x-access-token:{os.environ['GH_TOKEN']}".encode()).decode()
+                          command('git', '-c', f'http.extraheader=AUTHORIZATION: basic {auth}', 'push', 'origin', f'HEAD:refs/heads/{head}')
                       revert_body = f'Reverts #{original} after the full suite failed.\n\nFailure issue: {issue}\nCommit: {sha}\nRun: {link}\n\nUses the normal required checks and merge queue; never pushes to main.'
                       pr = command('gh', 'pr', 'create', '-R', repository, '--base', 'main', '--head', head,
                                    '--title', f'Revert #{original}: full-suite failure', '--body-file', '-', body=revert_body)
