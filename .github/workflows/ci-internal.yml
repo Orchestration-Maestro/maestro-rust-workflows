@@ -4609,6 +4609,36 @@ jobs:
           advisory_selection_is_caller_relative()
           print('PASS advisory_selection_is_caller_relative')
 
+          def merge_group_nested_members_have_one_owner():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'src').mkdir()
+                  (directory / 'src/lib.rs').write_text('pub fn root() {}\n', encoding='utf-8')
+                  (directory / 'nested/src').mkdir(parents=True)
+                  (directory / 'nested/src/lib.rs').write_text('pub fn nested() {}\n', encoding='utf-8')
+                  (directory / 'Cargo.toml').write_text(
+                      '[workspace]\nresolver="3"\nmembers=["nested"]\n'
+                      '[package]\nname="root"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+                  (directory / 'nested/Cargo.toml').write_text(
+                      '[package]\nname="nested"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'base')
+                  base = fixture_git(directory, 'rev-parse', 'HEAD')
+                  (directory / 'nested/src/lib.rs').write_text('pub fn changed() {}\n', encoding='utf-8')
+                  output = directory / '.git/selection'
+                  result = execute('Select test packages', directory, {
+                      'TEST_EVENT': 'merge_group', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                  assert json.loads(values['packages']) == ['nested'], values
+                  assert json.loads(values['coverage_exclude']) == ['root'], values
+                  assert values['coverage_scope'] == 'selected packages: nested', values
+
+          merge_group_nested_members_have_one_owner()
+          print('PASS merge_group_nested_members_have_one_owner')
+
           def merge_groups_select_graph_and_fail_closed():
               from functools import partial
               with tempfile.TemporaryDirectory() as temporary:
