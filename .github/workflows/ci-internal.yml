@@ -4288,11 +4288,11 @@ jobs:
                       elif threshold:
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                                      '--partition', 'count:1/1', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
+                                      '--partition', 'count:1/1', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
                       elif route == 'Isolated tests' and coverage == 'true':
                           expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                                       '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                                      '--partition', f'count:{shard}/16', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
+                                      '--partition', f'count:{shard}/16', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
                       else:
                           expected = ['nextest', 'run', '--user-config-file', 'none', '--ignore-default-filter', '--locked',
                                       '-p', 'sample', '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky']
