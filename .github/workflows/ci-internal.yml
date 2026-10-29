@@ -2816,7 +2816,14 @@ jobs:
                   if name == 'Select test packages' and env.get('TEST_EVENT') == 'merge_group' and 'RUNNER_TEMP' not in (extra or {}):
                       baseline = pathlib.Path(selection_temp) / 'coverage-baseline'
                       baseline.mkdir()
-                      (baseline / 'manifest.json').write_text(json.dumps({'head': env.get('BASE_REF')}), encoding='utf-8')
+                      import tomllib
+                      package_roots = {}
+                      for manifest in pathlib.Path(cwd).rglob('Cargo.toml'):
+                          if 'target' not in manifest.relative_to(cwd).parts:
+                              package = tomllib.loads(manifest.read_text(encoding='utf-8')).get('package', {})
+                              if 'name' in package:
+                                  package_roots[package['name']] = manifest.parent.relative_to(cwd).as_posix()
+                      (baseline / 'manifest.json').write_text(json.dumps({'head': env.get('BASE_REF'), 'package_roots': package_roots}), encoding='utf-8')
                       env['RUNNER_TEMP'] = selection_temp
                   return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
 
@@ -4825,6 +4832,8 @@ jobs:
                   result = execute('Merge coverage', directory, env)
                   assert result.returncode != 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
                   assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout, result.stdout
+                  result = execute('Merge coverage', directory, env | {'QUALITY_CONFIG': '{"coverage_min_lines": 60}'})
+                  assert result.returncode == 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
                   (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 1, 0), encoding='utf-8')
                   result = execute('Merge coverage', directory, env)
                   assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
@@ -4860,7 +4869,7 @@ jobs:
                   baseline = directory / '.git/coverage-baseline'
                   baseline.mkdir()
                   manifest = baseline / 'manifest.json'
-                  manifest.write_text(json.dumps({'head': baseline_head}), encoding='utf-8')
+                  manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'a', 'b': 'b', 'c': 'c'}}), encoding='utf-8')
                   output = directory / '.git/selection'
                   env = {'TEST_EVENT': 'merge_group', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
                          'RUNNER_TEMP': str(directory / '.git')}
@@ -4869,6 +4878,9 @@ jobs:
                   values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                   assert json.loads(values['packages']) == ['a', 'b'], values
                   assert json.loads(values['coverage_layout'])['package_roots'] == {'a': 'a', 'b': 'b', 'c': 'c'}
+                  manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'old'}}), encoding='utf-8')
+                  result = execute('Select test packages', directory, env)
+                  assert result.returncode == 0 and 'baseline package layout changed' in result.stdout, result.stdout + result.stderr
                   manifest.unlink()
                   output.write_text('', encoding='utf-8')
                   result = execute('Select test packages', directory, env)
