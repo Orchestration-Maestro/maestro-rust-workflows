@@ -5580,7 +5580,7 @@ jobs:
           code = textwrap.dedent(step.split('        run: |\n', 1)[1])
           real_run = subprocess.run
 
-          def failure_opens_issue_and_exact_revert():
+          def landing_report_handles(scenario):
               start = time.monotonic()
               with tempfile.TemporaryDirectory() as temporary:
                   root = pathlib.Path(temporary)
@@ -5596,11 +5596,15 @@ jobs:
                   (checkout / 'defect').write_text('bad')
                   git('add', '.'); git('commit', '-m', 'landing')
                   sha = git('rev-parse', 'HEAD'); git('push', 'origin', 'main')
+                  if scenario == 'conflict':
+                      (checkout / 'defect').write_text('newer change')
+                      git('add', '.'); git('commit', '-m', 'later landing'); git('push', 'origin', 'main')
                   calls = []
                   issues, prs = [], []
                   run = {'id': 7, 'event': 'push', 'head_branch': 'main', 'head_sha': sha,
                          'status': 'completed', 'conclusion': 'failure', 'run_attempt': 1,
                          'repository': {'full_name': 'owner/repo'}, 'html_url': 'https://github.com/owner/repo/actions/runs/7'}
+                  if scenario == 'pass': run['conclusion'] = 'success'
                   landing = {'number': 42, 'merge_commit_sha': sha, 'merged_at': 'today',
                              'base': {'ref': 'main', 'repo': {'full_name': 'owner/repo'}}}
                   def command(argv, **kwargs):
@@ -5609,9 +5613,16 @@ jobs:
                       calls.append(argv)
                       if argv[1] == 'api':
                           endpoint = argv[-1]
+                          if scenario == 'permission':
+                              return subprocess.CompletedProcess(argv, 1, '', 'HTTP 403: Resource not accessible')
                           if endpoint.endswith('/runs/7'): value = run
-                          elif endpoint.endswith('/attempts/1/jobs?per_page=100'): value = {'jobs': [{'id': 8, 'name': 'Tests / Test shard (1)', 'conclusion': 'failure'}]}
-                          elif endpoint.endswith('/commits/' + sha + '/pulls'): value = [dict(landing, number=99, merge_commit_sha='0' * 40), landing]
+                          elif endpoint.endswith('/attempts/1/jobs?per_page=100'):
+                              jobs = [] if scenario == 'pass' else [{'id': 8, 'name': 'Doctests' if scenario == 'doctest' else 'Tests / Test shard (1)', 'conclusion': 'failure'}]
+                              if scenario == 'pagination':
+                                  assert '--paginate' in argv and '--slurp' in argv
+                                  value = [{'jobs': []}, {'jobs': jobs}]
+                              else: value = [{'jobs': jobs}] if '--slurp' in argv else {'jobs': jobs}
+                          elif endpoint.endswith('/commits/' + sha + '/pulls'): value = [] if scenario == 'unknown' else [dict(landing, number=99, merge_commit_sha='0' * 40), landing]
                           elif endpoint.endswith('/jobs/8/logs'): return subprocess.CompletedProcess(argv, 0, 'FAIL [0.01s] sample::broken\n', '')
                           else: raise AssertionError(endpoint)
                       elif argv[1:3] == ['issue', 'list']: value = issues
@@ -5621,6 +5632,8 @@ jobs:
                           assert '#42' in kwargs['input'] and sha in kwargs['input'] and 'sample::broken' in kwargs['input'] and run['html_url'] in kwargs['input']
                           return subprocess.CompletedProcess(argv, 0, issues[-1]['url'], '')
                       elif argv[1:3] == ['pr', 'create']:
+                          if scenario == 'resume' and not any(call[1:3] == ['pr', 'create'] for call in calls[:-1]):
+                              return subprocess.CompletedProcess(argv, 1, '', 'temporary API failure')
                           assert '#42' in kwargs['input'] and issues[0]['url'] in kwargs['input']
                           prs.append({'url': 'https://github.com/owner/repo/pull/44'})
                           return subprocess.CompletedProcess(argv, 0, prs[-1]['url'], '')
@@ -5631,18 +5644,35 @@ jobs:
                       previous = pathlib.Path.cwd()
                       os.chdir(checkout)
                       try:
+                          if scenario in ('unknown', 'permission', 'conflict', 'resume'):
+                              try:
+                                  exec(compile(code, 'post-landing workflow', 'exec'), {})
+                                  raise AssertionError('Expected a clear failure')
+                              except SystemExit as error:
+                                  assert run['html_url'] in str(error), str(error)
+                                  diagnostic = {'unknown': 'attribute', 'permission': '403', 'conflict': 'revert', 'resume': 'temporary API failure'}[scenario]
+                                  assert diagnostic in str(error), str(error)
+                              if scenario != 'resume':
+                                  assert prs == []
+                                  return
                           exec(compile(code, 'post-landing workflow', 'exec'), {})
+                          if scenario == 'pass':
+                              assert issues == prs == []
+                              assert all(call[1] == 'api' for call in calls)
+                              return
                           assert git('show', 'origin/ci/revert-' + sha + ':base') == 'good'
                           assert real_run(['git', 'cat-file', '-e', 'origin/ci/revert-' + sha + ':defect'], cwd=checkout, capture_output=True).returncode != 0
                           exec(compile(code, 'post-landing workflow', 'exec'), {})
                           assert len(issues) == len(prs) == 1
                           assert sum(call[1:3] == ['issue', 'create'] for call in calls) == 1
-                          assert sum(call[1:3] == ['pr', 'create'] for call in calls) == 1
+                          assert sum(call[1:3] == ['pr', 'create'] for call in calls) == (2 if scenario == 'resume' else 1)
                       finally:
                           os.chdir(previous)
-              print(f'PASS failure_opens_issue_and_exact_revert ({time.monotonic() - start:.3f}s)', flush=True)
+              print(f'PASS landing_report_handles_{scenario} ({time.monotonic() - start:.3f}s)', flush=True)
 
-          failure_opens_issue_and_exact_revert()
+          for scenario in ['failure', 'pagination', 'doctest', 'resume', 'pass', 'unknown', 'permission', 'conflict']:
+              landing_report_handles(scenario)
+              print('PASS landing_report_handles_' + scenario, flush=True)
 
   native:
     name: Native compiler proof (${{ matrix.target }})
