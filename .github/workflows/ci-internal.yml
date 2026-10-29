@@ -4843,8 +4843,13 @@ jobs:
                   assert result.returncode != 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
                   assert 'Workspace line coverage (gate): 66.67% (2/3)' in result.stdout, result.stdout
                   assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout, result.stdout
-                  result = execute('Merge coverage', directory, env | {'QUALITY_CONFIG': '{"coverage_min_lines": 60}'})
-                  assert result.returncode == 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
+                  (directory / 'baseline/shard-1.lcov').write_text(
+                      records('/old/runner/caller', 1, 1) +
+                      'SF:/old/runner/caller/crates/b/src/lib.rs\nDA:2,1\nDA:3,1\nend_of_record\n', encoding='utf-8')
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode == 0 and '80.00% (4/5)' in result.stdout, result.stdout + result.stderr
+                  assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout
+                  (directory / 'baseline/shard-1.lcov').write_text(records('/old/runner/caller', 1, 1), encoding='utf-8')
                   (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 1, 0), encoding='utf-8')
                   result = execute('Merge coverage', directory, env)
                   assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
