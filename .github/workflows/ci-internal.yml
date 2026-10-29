@@ -3192,7 +3192,7 @@ jobs:
               assert jobs['doctests']['strategy']['matrix']['shard'] == ['doctests']
               for key in ['steps', 'defaults', 'env']:
                   assert jobs['doctests'][key] == jobs['tests'][key], key
-              assert set(jobs['tests-result']['needs']) == {'tests', 'doctests', 'declaration'}
+              assert set(jobs['tests-result']['needs']) == {'tests', 'doctests', 'declaration', 'test-build'}
               for tests, docs in [('success', 'success'), ('success', 'failure'), ('failure', 'success')]:
                   result = subprocess.run(['python3', '-c', body('All test shards passed')],
                                           env=os.environ | {'RESULT': tests, 'DOCTEST_RESULT': docs,
@@ -4694,7 +4694,7 @@ jobs:
                   assert result.returncode != 0 and not values and 'test_shards was removed' in result.stderr, result.stdout + result.stderr
               aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
               assert 'name: Tests (ubuntu-latest)' in aggregate
-              assert 'needs: [tests, doctests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
+              assert 'needs: [tests, doctests, declaration, test-build]' in aggregate and 'if: $' + '{{ always()' in aggregate
               for coverage in ['false', 'true', '']:
                   for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
                       for status in ['success', 'failure', 'cancelled', 'skipped']:
