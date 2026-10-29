@@ -5491,7 +5491,8 @@ jobs:
                   git('commit', '-qm', 'base')
                   base = git('rev-parse', 'HEAD')
                   job = workflow.split('  browser-tests:\n', 1)[1]
-                  gate = re.search(r'^    if: \$\{\{ (.*?) \}\}$', job, re.MULTILINE)[1]
+                  document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+                  gate = document['jobs']['browser-tests']['if']
                   for path, expected in [('other/src/lib.rs', False), ('web/src/lib.rs', True),
                                          ('core/src/lib.rs', True), ('Cargo.lock', True),
                                          ('.config/nextest.toml', True), ('rust-toolchain.toml', True),
@@ -5516,14 +5517,11 @@ jobs:
                           values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                           should_run = expected if event == 'merge_group' and comparison == base else True
                           assert values['browser_tests'] == str(should_run).lower(), (path, event, comparison, values)
-                          expression = gate
-                          for key, value in {'needs.declaration.outputs.browser_tests': values['browser_tests'],
-                                             'needs.declaration.outputs.coverage': values['coverage'],
-                                             'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
-                                             'inputs.warm-cache': False}.items():
-                              expression = expression.replace(key, repr(value))
-                          expression = re.sub(r'!(?!=)', ' not ', expression.replace('&&', ' and ').replace('||', ' or ')).strip()
-                          assert bool(eval(expression, {'__builtins__': {}})) == should_run, (path, event, gate)
+                          context = {'needs.declaration.outputs.browser_tests': values['browser_tests'],
+                                     'needs.declaration.outputs.coverage': values['coverage'],
+                                     'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
+                                     'inputs.warm-cache': False}
+                          assert bool(evaluate(gate, context)) == should_run, (path, event, gate)
                   git('reset', '--hard', base)
                   manifest = directory / 'core/Cargo.toml'
                   manifest.write_text(manifest.read_text(encoding='utf-8').replace('0.1.0', '0.2.0'), encoding='utf-8')
