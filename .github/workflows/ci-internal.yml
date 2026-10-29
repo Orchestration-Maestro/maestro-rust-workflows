@@ -1700,11 +1700,11 @@ jobs:
               shutil.copytree(root / '.github/workflows', shifted / '.github/workflows')
               for path in (shifted / '.github/workflows').glob('*.yml'):
                   path.write_text('# moved\n# moved\n' + path.read_text(encoding='utf-8'), encoding='utf-8')
-              result = subprocess.run([env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
-                                      cwd=shifted, env=env, capture_output=True, text=True)
-              assert result.returncode == 0, 'self-repository ignore broke when lines moved\n' + result.stdout + result.stderr
+              zizmor = [env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows']
+              result = subprocess.run(zizmor, cwd=shifted, env=env, capture_output=True, text=True)
+              assert result.returncode == 0, 'zizmor failed after lines moved\n' + result.stdout + result.stderr
               print('PASS self_repository_ignore_survives_line_shifts')
-              for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
+              for argv in [zizmor,
                            [env['TOOLS'] + '/actionlint', '-config-file', env['CHECK_DEFAULTS'] + '/actionlint.yaml', '-shellcheck=', '-pyflakes=',
                             *map(str, (root / '.github/workflows').glob('*.yml'))]]:
                   result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
