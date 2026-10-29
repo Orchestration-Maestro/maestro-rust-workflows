@@ -4849,6 +4849,11 @@ jobs:
                   result = execute('Merge coverage', directory, env)
                   assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
                   assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
+                  (directory / 'coverage/shard-1.lcov').write_text(
+                      'SF:/current/caller/crates/b/src/lib.rs\nDA:1,0\nend_of_record\n', encoding='utf-8')
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode == 0 and 'Selected-package line coverage: N/A (0/0)' in result.stdout, result.stdout + result.stderr
+                  assert 'Workspace line coverage (gate): 100.00% (2/2)' in result.stdout
                   (directory / 'baseline/shard-1.lcov').unlink()
                   result = execute('Merge coverage', directory, env)
                   assert result.returncode != 0 and 'baseline' in result.stderr.lower(), result.stdout + result.stderr
