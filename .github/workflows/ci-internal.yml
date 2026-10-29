@@ -1663,9 +1663,9 @@ jobs:
                                      '      - ci-internal.yml:22:11\n'
                                      '      - ci-internal.yml:30:11\n'
                                      '      - ci-internal.yml:38:11\n'
-                                     '      - ci-proof.yml:13:11\n'
-                                     '      - ci-proof.yml:25:11\n'
-                                     '      - ci-proof.yml:37:11\n'
+                                     '      - ci-proof.yml:14:11\n'
+                                     '      - ci-proof.yml:26:11\n'
+                                     '      - ci-proof.yml:38:11\n'
                                      '      - advisories.yml:16:11\n'
                                      '      - fuzz.yml:14:11\n', encoding="utf-8")
               for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
@@ -4979,11 +4979,13 @@ jobs:
                   git('add', '.')
                   git('commit', '-qm', 'base')
                   base = git('rev-parse', 'HEAD')
-                  def select(event='pull_request'):
+                  def select(event='pull_request', fallback=None):
                       output = directory / '.git/selection'
                       output.write_text('', encoding='utf-8')
                       result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
+                      if fallback:
+                          assert 'Full-suite fallback: ' + fallback in result.stdout, result.stdout
                       return json.loads(dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['packages'])
                   for changed, expected in [(['shared/data.txt'], ['d']), (['shared/notes.md'], ['d']), (['list.json'], ['a', 'b', 'c']),
                                             (['fuzz/src/main.rs'], []), (['fuzz/src/main.rs', 'shared/data.txt'], ['d']),
@@ -4993,7 +4995,8 @@ jobs:
                       git('add', '.')
                       git('commit', '-qm', 'change')
                       assert select() == expected, (changed, select())
-                      assert select('merge_group') == ['a', 'b', 'c', 'd'], changed
+                      merge_expected = ['a', 'b', 'c', 'd'] if not expected or any('/' not in name for name in changed) else expected
+                      assert select('merge_group', 'no workspace test packages selected' if not expected else None) == merge_expected, changed
                       git('reset', '--hard', base)
                   for source, destination, expected in [('shared/data.txt', 'fuzz/data.txt', ['d']),
                                                         ('other/data.txt', 'shared/moved.txt', ['a', 'b', 'c', 'd']),
