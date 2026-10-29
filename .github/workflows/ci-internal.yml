@@ -2820,10 +2820,9 @@ jobs:
                       import tomllib
                       package_roots = {}
                       for manifest in pathlib.Path(cwd).rglob('Cargo.toml'):
-                          if 'target' not in manifest.relative_to(cwd).parts:
-                              package = tomllib.loads(manifest.read_text(encoding='utf-8')).get('package', {})
-                              if 'name' in package:
-                                  package_roots[package['name']] = manifest.parent.relative_to(cwd).as_posix()
+                          package = tomllib.loads(manifest.read_text(encoding='utf-8')).get('package', {})
+                          if 'name' in package:
+                              package_roots[package['name']] = manifest.parent.relative_to(cwd).as_posix()
                       (baseline / 'manifest.json').write_text(json.dumps({'head': env.get('BASE_REF'), 'package_roots': package_roots}), encoding='utf-8')
                       env['RUNNER_TEMP'] = selection_temp
                   return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
