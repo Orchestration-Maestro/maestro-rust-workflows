@@ -4627,6 +4627,8 @@ jobs:
                   fixture_git(directory, 'commit', '-qm', 'base')
                   base = fixture_git(directory, 'rev-parse', 'HEAD')
                   (directory / 'nested/src/lib.rs').write_text('pub fn changed() {}\n', encoding='utf-8')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'source')
                   output = directory / '.git/selection'
                   result = execute('Select test packages', directory, {
                       'TEST_EVENT': 'merge_group', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})

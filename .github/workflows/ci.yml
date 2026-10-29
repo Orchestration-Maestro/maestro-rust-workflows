@@ -513,8 +513,6 @@ jobs:
                   if filename in ('Cargo.lock', '.github/ci.toml'):
                       continue
                   owners = {p for p, root in roots.items() if path.is_relative_to(root)}
-                  if event == 'merge_group' and owners:
-                      owners = {max(owners, key=lambda p: len(roots[p].parts))}
                   routes = [readers for key, readers in inputs.items() if path.is_relative_to(key)]
                   selected.update(owners, *routes)
                   if not owners and not routes and (event == 'merge_group' or (path.suffix not in ('.md',) and not filename.startswith('docs/'))):
