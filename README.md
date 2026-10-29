@@ -36,14 +36,20 @@ Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-di
 and the reporter log after isolated tests fail or time out.
 
 Each nextest test can retry twice; flaky passes are named in job summaries,
-while permanent failures still fail. Merge groups and main pushes run the full
-suite with coverage. See [test selection and retries](docs/caller-checks.md#pull-request-selection-and-retries)
+while permanent failures still fail. Declared merge groups test crates changed
+since a verified full-coverage baseline and every transitive workspace dependent,
+including build, development and target-specific dependencies. Shared inputs,
+an unavailable baseline or unresolved selection run the full suite. Undeclared
+callers and main pushes run the full suite. Narrowed runs combine fresh selected
+coverage with unchanged baseline packages to enforce the workspace floor;
+selected-package coverage is informational. See [test selection and retries](docs/caller-checks.md#pull-request-selection-and-retries)
 for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov
 nextest`. Only the sixteen numeric shards upload LCOV; the aggregate counts a
-source line as covered if any shard covers it and enforces the union's 80% floor
-(or caller's higher threshold). Missing shard reports fail. Undeclared callers
+source line as covered if any shard covers it and enforces the workspace union's
+80% floor (or caller's higher threshold), including unchanged baseline packages
+on narrowed runs. Missing shard reports fail. Undeclared callers
 retain single-job coverage in `Dependency, source and coverage checks`.
 
 For an independent workspace built by tests, extend the optional declaration:
@@ -59,6 +65,12 @@ than being repaired. Adoption needs a workflows release and organization re-pin.
 
 Pinned tool downloads use curl's `--retry 3` for transient failures without
 changing their pins or integrity checks.
+
+Numeric test shards download one nextest archive instead of compiling the workspace.
+An optional caller `test_prepare` command runs beside the host build and writes
+reusable outputs to `TEST_PREPARE_OUTPUT` (`target/test-setup`). Shards download
+those files separately and setup scripts reuse them. Doctests compile and run in
+parallel in their own leg. See [test shards](docs/caller-checks.md#test-shards).
 
 ## Compile cache
 
@@ -76,7 +88,7 @@ secret scan runs before restoration; isolated tests receive only non-secret
 local-cache and diagnostic settings, including after automatic server restarts.
 
 Compatibility prefixes identify the caller repository and directory, host,
-compiler and job shape. Coverage shards share a prefix with the optional
+compiler and job shape. The coverage archive build shares a prefix with the optional
 `warm-cache: true` build, which compiles the full coverage test graph without
 producing a report. By default it runs no tests; an optional caller
 [`warm_test_filter`](docs/caller-checks.md#warm-test-filter) runs selected tests
@@ -87,11 +99,15 @@ and reusable calls without splitting the shared restore prefix. GitHub's
 branch/default-branch visibility and newest-compatible-prefix lookup apply.
 Only pushes to the caller's default branch save snapshots. Pull-request and
 merge-group jobs restore but never save. Each test shape has one writer per
-call: the warm build, or shard 1 plus the separate plain doctest leg when the
-numeric shards use coverage. Other cached compiling jobs each write their own shape.
-A default-branch push warm call also runs the declared target checks to seed
-the Linux and macOS shapes. Warm pull-request calls skip targets because they
-cannot save.
+call: the warm build or the archive build, plus the separate plain doctest leg
+when the numeric shards use coverage or a default-branch push warms. Other
+cached compiling jobs each write their own shape.
+A default-branch push warm call also runs Format and lint, Docs, Doctests,
+Wasm and browser build, and Chromium browser tests when declared. These jobs
+use their normal commands, paths and compiler output modes, including running
+the doctests and browser tests, to seed exactly the shapes their readers need.
+Other warm calls skip these jobs because they cannot save. Declared Linux and
+macOS target checks also seed their shapes on default-branch push warm calls.
 
 Missing snapshots build cold. Failed restores discard partial data before
 startup, including warning-only failures with no matched-cache output. Only
@@ -122,7 +138,9 @@ checks, [additional locked manifests](docs/caller-checks.md#additional-locked-ma
 for independent workspace dependencies, a caller-pinned browser build recipe,
 optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
 with shared verified runtime pins, and a [nightly fuzz job](docs/caller-checks.md#nightly-fuzz-job)
-that files one issue per distinct finding. A repository's `rust-toolchain.toml`
+that files one issue per distinct finding. Callers can also run the
+[full suite after landing](docs/caller-checks.md#full-suite-after-landing), which files a
+failure issue and a revert proposal for a failed landing. A repository's `rust-toolchain.toml`
 selects its toolchain through rustup.
 
 Every caller also gets the dependency and source checks: cargo-deny
