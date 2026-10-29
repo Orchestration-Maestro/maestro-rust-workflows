@@ -152,10 +152,51 @@ sixteen reports, counts each source line once (covered if any shard hits it), an
 enforces `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. Both coverage modes run tests through nextest,
-so caller setup scripts run in either mode. Single-job coverage uses one partition
+so caller setup scripts run in either mode (reusing prepared outputs in shards). Single-job coverage uses one partition
 (`count:1/1`); declared callers combine sixteen reports. Both modes use the same
 line-counting policy: normalize source paths, count each line once, and enforce
 the coverage floor on the union of hits. PRs skip coverage for all callers.
+
+### Build once, test many
+
+One `Build test archive` job compiles the selected unit and integration tests with
+`cargo nextest archive` (or `cargo llvm-cov nextest-archive` for declared coverage).
+Numeric shards download that archive and run `--archive-file`, keeping the same
+partitions, retries and coverage reports. Existing locked dependency fetches stay
+available for tests that intentionally start child builds. `Doctests` compiles and
+runs doctests once in parallel with the build, including on included-input PR runs.
+Warm-cache runs keep their existing compile route and cache shape.
+
+A caller that needs prepared files can declare one standalone shell command:
+
+```toml
+wasm_crates = []
+check_targets = []
+test_prepare = "sh .config/prepare-tests.sh"
+```
+
+`Prepare test setup` runs that command once, in parallel with host compilation,
+after the caller's declared tools and locked manifests are available. It starts
+from the caller's working directory. `TEST_PREPARE_OUTPUT` names the fixed
+`target/test-setup` output directory there; write only reusable runtime outputs
+inside it. `CARGO_TARGET_DIR` points at a separate temporary build directory.
+Preparation must not depend on the host test binaries or coverage instrumentation.
+A failing command fails the required test result. The default is no preparation.
+
+The workflow transfers the prepared directory separately, preserving file modes,
+and restores it at `target/test-setup` in each numeric shard. Archived isolated
+shards receive `TEST_PREPARE_OUTPUT` as the absolute path to that restored
+directory, replacing any inherited value. Callers may rely on it to locate
+prepared files during archived execution when `test_prepare` is declared. Warm-cache
+runs also receive this path, but do not run preparation or restore prepared files.
+Archived runs without `test_prepare` likewise have no prepared files restored.
+The variable alone does not guarantee files exist; callers must check for the
+files they need before reusing them. No nextest archive include is needed.
+Nextest setup scripts can export paths into that directory;
+they must reuse those files instead of preparing them again. The caller owns the
+preparation logic and exported environment. Shared CI does not interpret its
+setup-script definitions. The existing `concurrency-key` distinguishes both
+artifacts when a workflow makes several calls.
 
 ### Test diagnostics
 
@@ -220,8 +261,8 @@ workspace dependent from locked Cargo metadata. Normal, build, development and
 target-specific dependency edges all count; unrelated crates are not selected.
 Changes to `Cargo.lock`, `.config/`, `.github/` (including the caller declaration),
 the toolchain or any root file select the full suite. Unknown paths, an absent or
-unreadable merge-group base, or an unresolved dependency graph also select the
-full suite and log the fallback reason. Unlike pull requests, merge groups do not
+unreadable merge-group base, an unresolved dependency graph, or a selection with
+no workspace test packages also select the full suite and log the fallback reason. Unlike pull requests, merge groups do not
 skip undeclared documentation changes.
 
 Coverage tests and reports cover the selected packages, excluding unselected

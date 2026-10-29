@@ -178,8 +178,25 @@ jobs:
           import textwrap
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
           step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == 'Coverage tools')
-          match = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
+          match = re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(match[1])], check=True)
+      - name: Archived shards at workflow seam
+        shell: python
+        run: |
+          import ast
+          import pathlib
+          import textwrap
+          source = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+          code = source.split('      - name: Caller checks at workflow seam\n', 1)[1]
+          code = code.split('        run: |\n', 1)[1].split('\n  native:', 1)[0]
+          tree = ast.parse(textwrap.dedent(code))
+          globals_needed = {'workflow', 'root', 'credential_names', 'coverage_report_args'}
+          tree.body = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef))
+                       or (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id in globals_needed
+                                                               for target in node.targets))]
+          exec(compile(tree, 'archive workflow seam', 'exec'))
+          archived_shards_reuse_build_and_prepared_outputs()
+          print('PASS archived_shards_reuse_build_and_prepared_outputs', flush=True)
       - name: Example sources in coverage at workflow seam
         shell: python
         run: |
@@ -315,11 +332,11 @@ jobs:
               import subprocess
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               assert document['permissions'] == {'contents': 'read'}
-              assert set(document['jobs']) == {'declaration', 'quality', 'docs', 'tests', 'checks', 'advisories',
-                                               'targets', 'browser', 'browser-tests', 'fuzz', 'tests-result'}
+              assert set(document['jobs']) == {'declaration', 'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'advisories',
+                                               'targets', 'browser', 'browser-tests', 'fuzz', 'doctests', 'tests-result'}
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
-              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              owners = {'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
               stages = ['Compile cache identity', 'Restore compile cache', 'Compile cache',
                         'Compile cache statistics', 'Seal compile cache', 'Save compile cache']
               for name in owners:
@@ -501,7 +518,10 @@ jobs:
               assert snapshot_keys(CACHE_WARM='true', SHARD='warm', CACHE_COVERAGE='false')['prefix'] == coverage
               for shard in map(str, range(1, 17)):
                   assert snapshot_keys(SHARD=shard)['prefix'] == coverage
+              assert snapshot_keys(CACHE_JOB='test-build', SHARD='')['prefix'] == coverage
               plain = snapshot_keys(CACHE_COVERAGE='false')['prefix']
+              assert snapshot_keys(CACHE_JOB='doctests', SHARD='doctests')['prefix'] == plain
+              assert snapshot_keys(CACHE_JOB='test-build', CACHE_COVERAGE='false', SHARD='')['prefix'] == plain
               assert plain != coverage and snapshot_keys(SHARD='doctests')['prefix'] == plain
               assert snapshot_keys(CACHE_COVERAGE='', SHARD='')['prefix'] == plain
               for event, collect in [('pull_request', 'false'), ('push', 'true'), ('merge_group', 'true')]:
@@ -530,7 +550,7 @@ jobs:
               assert key.isascii() and len(key) < 512 and 'space' not in key
 
           def snapshot_only_default_branch_writers_save():
-              jobs = ['quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests']
+              jobs = ['quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests']
               for job in jobs:
                   for event in ['pull_request', 'merge_group', 'workflow_dispatch', 'push']:
                       for ref in ['refs/pull/119/merge', 'refs/heads/feature', 'refs/heads/main', 'refs/tags/main']:
@@ -774,7 +794,7 @@ jobs:
           def cache_error_artifacts_are_selected_and_scoped():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.M | re.S))
-              owners = {'quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
+              owners = {'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
               uploads = {name: job.split('      - name: Upload compile cache errors\n')[1].split('      - name:', 1)[0]
                          for name, job in jobs.items() if '      - name: Upload compile cache errors\n' in job}
               assert set(uploads) == owners
@@ -996,7 +1016,7 @@ jobs:
                       assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M)
                       assert '        continue-on-error: true\n' in step
                       count += 1
-              assert count == 14
+              assert count == 18
               assert not re.search(r'^    continue-on-error:', workflow, re.M)
 
           snapshot_only_transfers_fail_open()
@@ -1663,9 +1683,9 @@ jobs:
                                      '      - ci-internal.yml:22:11\n'
                                      '      - ci-internal.yml:30:11\n'
                                      '      - ci-internal.yml:38:11\n'
-                                     '      - ci-proof.yml:13:11\n'
-                                     '      - ci-proof.yml:25:11\n'
-                                     '      - ci-proof.yml:37:11\n'
+                                     '      - ci-proof.yml:14:11\n'
+                                     '      - ci-proof.yml:26:11\n'
+                                     '      - ci-proof.yml:38:11\n'
                                      '      - advisories.yml:16:11\n'
                                      '      - fuzz.yml:14:11\n', encoding="utf-8")
               for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
@@ -2162,6 +2182,8 @@ jobs:
           for job, names in {
            'quality': ['Compile cache', 'Mise bootstrap', 'Test tools'],
            'docs': ['Compile cache', 'Mise bootstrap', 'Test tools'],
+           'test-prepare': ['Compile cache', 'Search tools', 'Mise bootstrap', 'Test tools'],
+           'test-build': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap', 'Test tools'],
            'tests': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap', 'Test tools'],
            'checks': ['Check tools', 'Compile cache'],
            'fuzz': ['Check tools'], 'advisories': ['Check tools'],
@@ -2174,6 +2196,8 @@ jobs:
            'quality': ['Compile cache', 'Mise bootstrap'],
            'docs': ['Compile cache', 'Mise bootstrap'],
            'targets': ['Compile cache', 'Mise bootstrap'],
+           'test-prepare': ['Compile cache', 'Search tools', 'Mise bootstrap'],
+           'test-build': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap'],
            'tests': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap'],
            'checks': ['Check tools', 'Compile cache'],
            'fuzz': ['Check tools'], 'advisories': ['Check tools'],
@@ -2185,6 +2209,8 @@ jobs:
               permit('ci', 'browser-tests', 'Browser runtime tools', '--retry', '3', occurrence)
           for name in ['Tests', 'Isolated tests']:
               permit('ci', 'tests', name, 'timeout-minutes', '45')
+          permit('ci', 'test-prepare', 'Prepare test setup', 'timeout-minutes', '45')
+          permit('ci', 'test-build', 'Build test archive', 'timeout-minutes', '45')
           permit('ci', 'checks', 'Coverage', 'timeout-minutes', '45')
           for name in ['Coverage release installation', 'Search release installation proofs', 'Real search tools']:
               permit('ci-internal', 'seams', name, 'timeout-minutes', '10')
@@ -2199,6 +2225,11 @@ jobs:
           permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
           permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
           permit('content', 'content', 'Mise bootstrap', '--retry', '3')
+
+          # Doctests reuse the test route's step definitions and bounds.
+          for (path, job, step, kind, occurrence, value), reason in list(authority.items()):
+              if job == 'tests':
+                  authority[(path, 'doctests', step, kind, occurrence, value)] = reason
 
           def require_recorded_controls(sources, reasons=authority):
               observed = collect(sources)
@@ -2285,7 +2316,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 61)
+                  self.assertEqual(len(report.splitlines()), 93)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2493,7 +2524,7 @@ jobs:
                   candidate = source.replace('run: &sccache-stats |\n', 'run: &sccache-stats |\n          timeout 3 true\n', 1)
                   self.assertNotEqual(candidate, source)
                   owners = [row[1] for row in collect({'.github/workflows/ci.yml': candidate}) if row[3] == 'timeout']
-                  self.assertCountEqual(owners, ['quality', 'docs', 'tests', 'checks', 'targets', 'browser', 'browser-tests'])
+                  self.assertCountEqual(owners, ['quality', 'docs', 'test-build', 'test-prepare', 'tests', 'doctests', 'checks', 'targets', 'browser', 'browser-tests'])
 
               def test_literal_fixture_values_are_not_policy(self):
                   source = ('jobs:\n  new:\n'
@@ -2547,7 +2578,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 61)
+                  self.assertEqual(len(report.splitlines()), 93)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
@@ -2596,7 +2627,7 @@ jobs:
           import textwrap
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
           step = workflow.split('      - name: Search tools\n', 1)[1]
-          command = re.search(r'        run: \|\n((?:          .*\n|\n)+)', step)[1]
+          command = re.search(r'        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step)[1]
           subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', textwrap.dedent(command)], check=True)
       - name: Caller checks at workflow seam
         id: cases
@@ -2711,8 +2742,8 @@ jobs:
           def job_run_defaults_preserve_pipeline_failures():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              expected = {'declaration', 'quality', 'docs', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests'}
-              defaults = {name: re.search(r'^    defaults:\n(.*?)^    steps:', job, re.MULTILINE | re.DOTALL)
+              expected = {'declaration', 'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests'}
+              defaults = {name: re.search(r'^    defaults:(?: &[\w-]+)?\n(.*?)^    steps:', job, re.MULTILINE | re.DOTALL)
                           for name, job in jobs.items()}
               assert {name for name, match in defaults.items() if match} == expected
               for name in expected:
@@ -3012,10 +3043,172 @@ jobs:
           browser_qualification_reuses_production_bodies()
           print('PASS browser_qualification_reuses_production_bodies')
 
+          def test_prepare_command_is_validated_and_forwarded():
+              import shutil
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  path = directory / '.github/ci.toml'
+                  for command in ['', 'sh .config/prepare.sh', 'printf "ready\\n"', 'echo λ']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_prepare=' + json.dumps(command), encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode == 0, result.stderr
+                      assert json.loads(values['test_prepare']) == command
+                  for value in ['true', '1', '[]', '{}']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_prepare=' + value, encoding='utf-8')
+                      result, _ = declaration(directory)
+                      assert result.returncode != 0
+                      assert result.stderr.strip() == '.github/ci.toml: test_prepare must be a string', result.stderr
+                  path.unlink()
+                  result, values = declaration(directory)
+                  assert result.returncode == 0 and json.loads(values['test_prepare']) == ''
+              schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
+              assert schema['properties']['test_prepare'] == {
+                  'description': 'Standalone shell command run beside the test build. Write reusable outputs to TEST_PREPARE_OUTPUT.',
+                  'type': 'string', 'default': ''}
+
+          test_prepare_command_is_validated_and_forwarded()
+          print('PASS test_prepare_command_is_validated_and_forwarded')
+
+          def archived_shards_reuse_build_and_prepared_outputs():
+              import shutil
+              for coverage, route in [('false', 'Tests'), ('true', 'Isolated tests')]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary) / 'caller'
+                      shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+                      (directory / '.config').mkdir()
+                      (directory / '.config/nextest.toml').write_text(
+                          'experimental=["setup-scripts"]\n'
+                                                    '[scripts.setup.prepare]\ncommand="sh .config/prepare.sh"\n'
+                          '[[profile.default.scripts]]\nfilter="all()"\nsetup="prepare"\n', encoding='utf-8')
+                      (directory / '.config/prepare.sh').write_text(
+                          'test -x target/test-setup/prepared || exit 41\n'
+                          'echo WORKFLOW_SETUP=ready >> "$NEXTEST_ENV"\n', encoding='utf-8')
+                      (directory / 'src/lib.rs').write_text(
+                          '#[test] fn archive_requires_setup() {\n'
+                          'assert_eq!(std::env::var("WORKFLOW_SETUP").unwrap(), "ready");\n}\n', encoding='utf-8')
+                      (directory / 'src/main.rs').write_text('fn main() {}\n', encoding='utf-8')
+                      (directory / 'tests').mkdir()
+                      (directory / 'tests/archived_binary.rs').write_text(
+                          '#[test] fn archived_binary_still_runs() {\n'
+                          'assert!(std::process::Command::new(env!("CARGO_BIN_EXE_sample")).status().unwrap().success());\n}\n', encoding='utf-8')
+                      command = 'printf "#!/bin/sh\\nexit 0\\n" > "$TEST_PREPARE_OUTPUT/prepared"; chmod +x "$TEST_PREPARE_OUTPUT/prepared"; echo once >> prepare-count'
+                      env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage,
+                             'TEST_PREPARE': command, 'TEST_PACKAGES': '["sample"]',
+                             'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0]}
+                      result = execute('Prepare test setup', directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      result = execute('Build test archive', directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      assert (result.stdout + result.stderr).count('Compiling sample ') == 1, result.stdout + result.stderr
+                      assert (directory / 'test-binaries.tar.zst').is_file()
+                      assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
+                      shutil.rmtree(directory / 'target')
+                      downloaded = pathlib.Path(temporary) / 'maestro-test-setup'
+                      downloaded.mkdir()
+                      shutil.copyfile(pathlib.Path(temporary) / 'test-setup.tar', downloaded / 'test-setup.tar')
+                      result = execute('Restore test setup', directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      # A compile attempt must fail; only the archived binary can pass.
+                      (directory / 'src/lib.rs').write_text('compile_error!("shards must not compile");\n', encoding='utf-8')
+                      for shard in ['1', '2']:
+                          result = execute(route, directory, env | {'SHARD': shard, 'TEST_SHARD_COUNT': '2',
+                                           'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+                                           'CARGO_COVERAGE_MIN_LINES': ''})
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          assert 'Compiling' not in result.stdout + result.stderr
+                          assert 'error: cannot clean' not in result.stdout + result.stderr, result.stdout + result.stderr
+                          if coverage == 'true':
+                              assert (directory / f'shard-{shard}.lcov').is_file()
+                      assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
+                      result = execute('Prepare test setup', directory, env | {'TEST_PREPARE': 'exit 43'})
+                      assert result.returncode == 43, result.stdout + result.stderr
+              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
+                                     workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+              assert 'needs: [declaration, test-build, test-prepare]' in jobs['tests']
+              assert 'name: Download test archive' in jobs['tests']
+              assert 'name: Upload test archive' in jobs['test-build']
+              assert 'matrix:' not in jobs['test-build']
+              assert 'TEST_PREPARE:' not in jobs['tests']
+              assert 'TEST_PREPARE:' not in jobs['test-build']
+              assert 'needs: declaration' in jobs['test-prepare']
+              assert "matrix.shard != 'doctests'" in jobs['tests']
+
+          def archived_shards_provision_child_build_dependencies():
+              for route, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                             'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+                             'TEST_PREPARE_OUTPUT': str(directory / 'untrusted-inherited-output'),
+                             'TEST_PACKAGES': '["sample"]', 'SHARD': '1', 'COLLECT_COVERAGE': coverage,
+                             'CARGO_COVERAGE_MIN_LINES': '', 'ADDITIONAL_LOCKED_MANIFESTS': '["fixture/Cargo.toml"]'}
+                      for step in ['Fetch additional locked manifests', route]:
+                          result = execute(step, directory, env)
+                          assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      assert [command['args'] for command in commands[:2]] == [
+                          ['fetch', '--locked', '--manifest-path', 'fixture/Cargo.toml'], ['fetch', '--locked']]
+                      assert len(commands) == 3, commands
+                      assert '--archive-file' in commands[2]['args']
+                      assert '--workspace' not in commands[2]['args'] and '--locked' not in commands[2]['args']
+                      if route == 'Isolated tests':
+                          assert commands[2]['test_prepare_output'] == str(directory / 'target/test-setup'), commands[2]
+              tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
+              fetch = next(step for step in tests.split('      - name: ')[1:] if step.startswith('Fetch additional locked manifests\n'))
+              assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
+
+          def archived_shards_skip_compile_cache_lifecycle():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              steps = {step['name']: step for step in document['jobs']['tests']['steps']}
+              for name in ['Compile cache identity', 'Restore compile cache', 'Compile cache',
+                           'Compile cache statistics', 'Seal compile cache']:
+                  assert "(inputs.warm-cache || matrix.shard == 'doctests')" in steps[name]['if'], name
+              assert steps['Compile cache statistics']['if'].startswith('always() && ')
+
+          archived_shards_skip_compile_cache_lifecycle()
+          print('PASS archived_shards_skip_compile_cache_lifecycle')
+
+          def doctests_run_independently_and_remain_required():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              jobs = document['jobs']
+              assert jobs['doctests']['needs'] == 'declaration'
+              assert jobs['doctests']['name'] == '$' + "{{ matrix.shard == 'doctests' && 'Doctests' }}"
+              assert jobs['doctests']['strategy']['matrix']['shard'] == ['doctests']
+              for key in ['steps', 'defaults', 'env']:
+                  assert jobs['doctests'][key] == jobs['tests'][key], key
+              assert set(jobs['tests-result']['needs']) == {'tests', 'doctests', 'declaration'}
+              for tests, docs in [('success', 'success'), ('success', 'failure'), ('failure', 'success')]:
+                  result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                                          env=os.environ | {'RESULT': tests, 'DOCTEST_RESULT': docs,
+                                          'COLLECT_COVERAGE': 'true', 'DECLARATION_RESULT': 'success', 'INCLUDED_TESTS': 'false'},
+                                          capture_output=True, text=True)
+                  assert (result.returncode == 0) == (tests == docs == 'success')
+
+          doctests_run_independently_and_remain_required()
+          print('PASS doctests_run_independently_and_remain_required')
+
+          def preparation_runs_beside_host_compilation():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              jobs = document['jobs']
+              assert jobs['test-build']['needs'] == jobs['test-prepare']['needs'] == 'declaration'
+              assert set(jobs['tests']['needs']) == {'declaration', 'test-build', 'test-prepare'}
+              assert 'TEST_PREPARE' not in jobs['test-build']['env']
+              assert 'needs.declaration.outputs.test_prepare' in jobs['test-prepare']['if']
+              assert 'TEST_PREPARE_OUTPUT' in body('Prepare test setup')
+              assert 'target/test-setup' in body('Prepare test setup')
+              assert 'tar -C target' in body('Restore test setup')
+              assert jobs['doctests']['needs'] == 'declaration'
+
+          preparation_runs_beside_host_compilation()
+          print('PASS preparation_runs_beside_host_compilation')
+
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'warm_test_filter': json.dumps('none()'), 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
+              assert values == {'test_prepare': json.dumps(''), 'warm_test_filter': json.dumps('none()'), 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
@@ -3093,6 +3286,7 @@ jobs:
                       output.write(json.dumps(dict(tool=pathlib.Path(sys.argv[0]).name, args=args,
                                                    home=os.environ.get('HOME'), cargo_home=os.environ.get('CARGO_HOME'),
                                                    ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
+                                                   test_prepare_output=os.environ.get('TEST_PREPARE_OUTPUT'),
                                                    diagnostics=os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'))) + '\\n')
                   if args[:1] != ['fetch'] and os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'):
                       (pathlib.Path(os.environ['MAESTRO_TEST_DIAGNOSTICS_DIR']) / 'runner.txt').write_text(
@@ -3113,6 +3307,49 @@ jobs:
               for name in ['cargo', 'cargo-nextest', 'cargo-llvm-cov']:
                   subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
               return tools, log
+
+          def archived_coverage_excludes_unselected_report_packages():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  tools, log = install_recording_runner(directory)
+                  result = execute('Isolated tests', directory, {
+                      'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                      'RUNNER_TEMP': temporary, 'SHARD': '2', 'COLLECT_COVERAGE': 'true',
+                      'CARGO_COVERAGE_MIN_LINES': '', 'TEST_PACKAGES': '["sample"]',
+                      'TEST_ARCHIVE': str(directory / 'archive.tar.zst'), 'WARM_CACHE': 'false',
+                      'COVERAGE_EXCLUDE': '["unrelated"]', 'COVERAGE_SCOPE': 'selected packages: sample'})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                  args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
+                  assert '--archive-file' in args and '--no-clean' in args, args
+                  assert args[args.index('--exclude-from-report') + 1] == 'unrelated', args
+                  assert '-p' not in args, args
+
+          archived_coverage_excludes_unselected_report_packages()
+          print('PASS archived_coverage_excludes_unselected_report_packages')
+
+          def selected_archive_build_compiles_only_selected_packages():
+              for coverage in ['true', 'false']:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                             'COLLECT_COVERAGE': coverage, 'TEST_PACKAGES': '["sample"]',
+                             'COVERAGE_SCOPE': 'selected packages: sample'}
+                      result = execute('Build test archive', directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      args = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])['args']
+                      assert '-p' in args and args[args.index('-p') + 1] == 'sample', args
+                      assert '--workspace' not in args, args
+                      log.unlink()
+                      result = execute('Build test archive', directory, env | {
+                          'TEST_PACKAGES': '["sample", "unrelated"]', 'COVERAGE_SCOPE': 'full workspace'})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      args = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])['args']
+                      assert '--workspace' in args and '-p' not in args, args
+
+          selected_archive_build_compiles_only_selected_packages()
+          print('PASS selected_archive_build_compiles_only_selected_packages')
 
           def selected_coverage_limits_tests_and_report_scope():
               for step in ['Isolated tests', 'Coverage']:
@@ -3138,7 +3375,7 @@ jobs:
                       assert result.returncode == 0, result.stdout + result.stderr
                       commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
                       args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
-                      assert args.count('-p') == 2 and '--exclude-from-report' not in args, args
+                      assert '--workspace' in args and '--exclude-from-report' not in args, args
               # The shared merger names the scope and retains the same floor.
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -3152,6 +3389,8 @@ jobs:
 
           selected_coverage_limits_tests_and_report_scope()
           print('PASS selected_coverage_limits_tests_and_report_scope')
+          archived_shards_provision_child_build_dependencies()
+          print('PASS archived_shards_provision_child_build_dependencies')
 
           def warm_filter_runs_only_in_warm_mode():
               for value in warm_filters:
@@ -3384,7 +3623,7 @@ jobs:
               assert 'test_shards: $' + '{{ steps.selection.outputs.test_shards }}' in workflow
               assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.test_shards) }}"
               assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}" in tests
-              assert '    needs: declaration\n' in tests and '      fail-fast: false\n' in tests
+              assert '    needs: [declaration, test-build, test-prepare]\n' in tests and '      fail-fast: false\n' in tests
               assert 'advisory-scan' in tests and "inputs.working-directory != '.'" in tests
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -3402,7 +3641,7 @@ jobs:
                           assert result.returncode == 0, result.stderr
                           selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                           legs = json.loads(selected['test_shards'])
-                          assert legs == ([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] if event == 'pull_request' else [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 'doctests'])
+                          assert legs == list(range(1, 17))
 
           coverage_matrix_splits_doctests_from_partitions()
           print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -3534,7 +3773,7 @@ jobs:
                   for included in ['false', 'true']:
                       for status in ['success', 'failure', 'cancelled', 'skipped']:
                           result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                                  env=os.environ | {'RESULT': status, 'COLLECT_COVERAGE': coverage,
+                                                  env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': status, 'COLLECT_COVERAGE': coverage,
                                                                     'INCLUDED_TESTS': included, 'DECLARATION_RESULT': 'success'},
                                                   capture_output=True, text=True)
                           expected = 'success' if 'true' in (coverage, included) else 'skipped'
@@ -4049,10 +4288,10 @@ jobs:
           def caller_tools_precede_compiling_operations():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                                      workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-              for job, consumer in [('quality', 'Lint'), ('docs', 'Docs'), ('tests', 'Isolated tests'),
+              for job, consumer in [('quality', 'Lint'), ('docs', 'Docs'), ('test-build', 'Build test archive'), ('test-prepare', 'Prepare test setup'), ('tests', 'Isolated tests'),
                                     ('targets', 'Check target'), ('browser', 'Build wasm crates')]:
                   section = jobs[job]
-                  assert 'needs: declaration' in section, job
+                  assert ('needs: [declaration, test-build, test-prepare]' if job == 'tests' else 'needs: declaration') in section, job
                   bootstrap = next(s for s in section.split('      - name: ')[1:] if 'run: *mise-bootstrap' in s or 'run: &mise-bootstrap' in s)
                   install = next(s for s in section.split('      - name: ')[1:] if 'run: *caller-tools' in s or 'run: &caller-tools' in s)
                   assert section.index(bootstrap) < section.index(install) < section.index('- name: ' + consumer), job
@@ -4354,7 +4593,7 @@ jobs:
 
           def event_policy_keeps_pull_requests_fast():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-              slow = {'tests', 'browser', 'browser-tests'}
+              slow = {'test-build', 'test-prepare', 'tests', 'doctests', 'browser', 'browser-tests'}
               for event in ['pull_request', 'merge_group', 'push']:
                   for warm, advisory, fuzz in [(False, False, False), (True, False, False),
                                                 (False, True, False), (False, False, True)]:
@@ -4366,7 +4605,8 @@ jobs:
                           values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       for name in slow | {'targets', 'quality', 'docs', 'checks'}:
                           expression = document['jobs'][name]['if'].removeprefix('$' + '{{').removesuffix('}}').strip()
-                          context = {'inputs.warm-cache': warm, 'inputs.advisory-scan': advisory,
+                          context = {'cancelled()': False, 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
+                                     'needs.declaration.outputs.test_prepare': json.dumps('echo ready'), 'inputs.warm-cache': warm, 'inputs.advisory-scan': advisory,
                                      'inputs.fuzz-scan': fuzz, 'github.event_name': event,
                                      'github.repository_id': 'caller', 'inputs.working-directory': '.',
                                      'needs.declaration.outputs.coverage': values['coverage'],
@@ -4441,12 +4681,12 @@ jobs:
                   assert result.returncode != 0 and not values and 'test_shards was removed' in result.stderr, result.stdout + result.stderr
               aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
               assert 'name: Tests (ubuntu-latest)' in aggregate
-              assert 'needs: [tests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
+              assert 'needs: [tests, doctests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
               for coverage in ['false', 'true', '']:
                   for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
                       for status in ['success', 'failure', 'cancelled', 'skipped']:
                           result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                                  env=os.environ | {'RESULT': status, 'COLLECT_COVERAGE': coverage,
+                                                  env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': status, 'COLLECT_COVERAGE': coverage,
                                                                     'DECLARATION_RESULT': declaration_status},
                                                   capture_output=True, text=True)
                           expected = declaration_status == 'success' and (
@@ -4944,7 +5184,7 @@ jobs:
               for included in ['false', 'true']:
                   for status in ['success', 'failure', 'cancelled', 'skipped']:
                       result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                              env=os.environ | {'RESULT': status, 'COLLECT_COVERAGE': 'false',
+                                              env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': status, 'COLLECT_COVERAGE': 'false',
                                                                 'INCLUDED_TESTS': included, 'DECLARATION_RESULT': 'success'},
                                               capture_output=True, text=True)
                       expected = status == ('success' if included == 'true' else 'skipped')
@@ -4979,11 +5219,13 @@ jobs:
                   git('add', '.')
                   git('commit', '-qm', 'base')
                   base = git('rev-parse', 'HEAD')
-                  def select(event='pull_request'):
+                  def select(event='pull_request', fallback=None):
                       output = directory / '.git/selection'
                       output.write_text('', encoding='utf-8')
                       result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
+                      if fallback:
+                          assert 'Full-suite fallback: ' + fallback in result.stdout, result.stdout
                       return json.loads(dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['packages'])
                   for changed, expected in [(['shared/data.txt'], ['d']), (['shared/notes.md'], ['d']), (['list.json'], ['a', 'b', 'c']),
                                             (['fuzz/src/main.rs'], []), (['fuzz/src/main.rs', 'shared/data.txt'], ['d']),
@@ -4993,7 +5235,8 @@ jobs:
                       git('add', '.')
                       git('commit', '-qm', 'change')
                       assert select() == expected, (changed, select())
-                      assert select('merge_group') == ['a', 'b', 'c', 'd'], changed
+                      merge_expected = ['a', 'b', 'c', 'd'] if not expected or any('/' not in name for name in changed) else expected
+                      assert select('merge_group', 'no workspace test packages selected' if not expected else None) == merge_expected, changed
                       git('reset', '--hard', base)
                   for source, destination, expected in [('shared/data.txt', 'fuzz/data.txt', ['d']),
                                                         ('other/data.txt', 'shared/moved.txt', ['a', 'b', 'c', 'd']),
@@ -5584,7 +5827,7 @@ jobs:
               assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
               for name in ['targets', 'browser', 'tests']:
                   section = workflow.split(f'  {name}:\n')[1]
-                  assert 'needs: declaration' in section
+                  assert ('needs: [declaration, test-build, test-prepare]' if name == 'tests' else 'needs: declaration') in section
               assert 'pull_request:' in workflow and 'merge_group:' in workflow
               assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
               # Each scan mode runs only the declaration and its own job.

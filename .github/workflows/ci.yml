@@ -106,6 +106,7 @@ jobs:
     outputs:
       linux_runner: ${{ steps.runner.outputs.labels }}
       enabled: ${{ steps.config.outputs.enabled }}
+      test_prepare: ${{ steps.config.outputs.test_prepare }}
       warm_test_filter: ${{ steps.config.outputs.warm_test_filter }}
       packages: ${{ steps.selection.outputs.packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
@@ -218,11 +219,11 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(warm_test_filter=json.dumps('none()'), additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare=json.dumps(''), warm_test_filter=json.dumps('none()'), additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'warm_test_filter', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'warm_test_filter', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -241,6 +242,9 @@ jobs:
                   raise SystemExit(f'{path}: reserved_ports entries must be unique')
               if type(config.get('warm_test_filter', 'none()')) is not str:
                   raise SystemExit(f'{path}: warm_test_filter must be a string')
+              if type(config.get('test_prepare', '')) is not str:
+                  raise SystemExit(f'{path}: test_prepare must be a string')
+              values['test_prepare'] = json.dumps(config.get('test_prepare', ''))
               values['warm_test_filter'] = json.dumps(config.get('warm_test_filter', 'none()'))
               values['reserved_ports'] = ','.join(map(str, ports))
               values['additional_locked_manifests'] = json.dumps(config.get('additional_locked_manifests', []))
@@ -454,6 +458,12 @@ jobs:
                   if event != 'merge_group':
                       raise
                   fallback = 'merge-group diff could not be resolved'
+          if event == 'merge_group' and changed is not None:
+              shared = next((name for name in changed if len(pathlib.Path(name).parts) == 1 or
+                             pathlib.Path(name).parts[0] in ('.config', '.github')), None)
+              if shared:
+                  fallback = f'shared input: {shared}'
+                  changed = None
           if changed is not None:
               # Literal include paths are relative to the Rust source, not the package root.
               changed_paths = {(pathlib.Path.cwd() / name).resolve() for name in changed}
@@ -503,10 +513,6 @@ jobs:
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)
-                  if event == 'merge_group' and (len(path.parts) == 1 or path.parts[0] in ('.config', '.github')):
-                      selected = set(members)
-                      fallback = f'shared input: {filename}'
-                      break
                   if filename in ('Cargo.toml', 'rust-toolchain', 'rust-toolchain.toml', '.github/ci.schema.json') or filename.startswith('.github/workflows/'):
                       selected = set(members)
                       break
@@ -525,7 +531,7 @@ jobs:
               if '.github/ci.toml' in changed:
                   before, after = declarations()
                   browser_changed = before.get('browser_test_crates', []) != after.get('browser_test_crates', [])
-                  if any(before.get(key) != after.get(key) for key in ('test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
+                  if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
                       selected = set(members)
               if 'Cargo.lock' in changed and selected != members:
                   # Resolve both revisions, comparing transitive dependency identities and features.
@@ -562,6 +568,8 @@ jobs:
                   if reverse <= selected:
                       break
                   selected.update(reverse)
+          if event == 'merge_group' and not selected:
+              fallback = 'no workspace test packages selected'
           if event == 'merge_group' and fallback:
               selected = set(members)
               print(f'Full-suite fallback: {fallback}')
@@ -570,6 +578,7 @@ jobs:
           requested = set(config.get('browser_test_crates', []))
           browser_tests = bool(requested and (browser_changed or requested.intersection(names)))
           print(f'Selected test packages ({event}): {names}')
+          print(f'Selected package count: {len(selected)}/{len(members)}')
           # A change can introduce an advisory only through the lockfile or the declared exceptions.
           check_advisories = event not in ('pull_request', 'merge_group') or not base
           if not check_advisories:
@@ -590,8 +599,6 @@ jobs:
               output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
               output.write('included_tests=' + str(bool(included_readers)).lower() + '\n')
               shards = list(range(1, int(os.environ['TEST_SHARD_COUNT']) + 1))
-              if event != 'pull_request':
-                  shards.append('doctests')
               output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
@@ -639,8 +646,8 @@ jobs:
           import os
           import subprocess
           shape = os.environ['CACHE_JOB']
-          if shape == 'tests':
-              coverage = os.environ['CACHE_WARM'] == 'true' or (os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true' and os.environ.get('SHARD', '') not in ('', 'doctests'))
+          if shape in ('tests', 'test-build', 'doctests'):
+              coverage = shape != 'doctests' and (os.environ['CACHE_WARM'] == 'true' or (os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true' and (shape == 'test-build' or os.environ.get('SHARD', '') not in ('', 'doctests'))))
               shape = 'tests-coverage' if coverage else 'tests-plain'
           elif shape == 'targets':
               shape += '-clippy-' + os.environ['CACHE_TARGET']
@@ -651,7 +658,7 @@ jobs:
           call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
           suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX']) + '-' + call
           writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
-          if os.environ['CACHE_JOB'] == 'tests':
+          if os.environ['CACHE_JOB'] in ('tests', 'doctests'):
               shard = os.environ.get('SHARD', '')
               writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
@@ -882,24 +889,16 @@ jobs:
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
 
-  tests:
+  test-build:
     needs: declaration
-    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
-    if: ${{ (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.test_shards) }}
+    name: Build test archive
+    if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
-      WARM_CACHE: ${{ inputs.warm-cache }}
-      WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
-      SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
-      COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
       COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
-      COVERAGE_EXCLUDE: ${{ needs.declaration.outputs.coverage_exclude }}
+      COLLECT_COVERAGE: ${{ needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' }}
     defaults:
       run:
         shell: bash
@@ -918,7 +917,7 @@ jobs:
           # The deletion overlaps the toolchain, tools and compilation; the build needs the space minutes later.
           sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc >/dev/null 2>&1 &
       - name: Test toolchain
-        run: |
+        run: &test-toolchain |
           rustup show
           toolchain=$(rustup show active-toolchain)
           echo "RUSTUP_TOOLCHAIN=${toolchain%% *}" >> "$GITHUB_ENV"
@@ -940,7 +939,7 @@ jobs:
         run: *sccache-install
       - name: Coverage tools
         timeout-minutes: 10
-        run: |
+        run: &coverage-tools |
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-coverage-tools.XXXXXX")
           while read -r url digest binary; do
             archive=$(mktemp)
@@ -957,7 +956,7 @@ jobs:
           echo "$bin" >> "$GITHUB_PATH"
       - name: Fetch additional locked manifests
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
-        run: |
+        run: &fetch-locked-manifests |
           python3 - <<'PYTHON'
           import json
           import os
@@ -969,24 +968,10 @@ jobs:
               if result.returncode:
                   sys.exit(result.returncode)
           PYTHON
-      - name: Tests
-        timeout-minutes: 45
-        if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}
-        run: |
-          cargo fetch --locked
-          mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
-          if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
-          if [ "${SHARD:-}" != doctests ]; then
-            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/$TEST_SHARD_COUNT" --no-tests pass 2>&1 | tee nextest.log
-          fi
-          if [[ "$SHARD" == doctests || ( "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
-            cargo test --locked --doc "${packages[@]}"
-          fi
       - name: Search tools
         timeout-minutes: 10
         if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
-        run: |
+        run: &search-tools |
           # Digests: ripgrep's release .sha256 file and fd's GitHub release asset digest.
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-search-bin.XXXXXX")
           while read -r url digest binary; do
@@ -1005,6 +990,236 @@ jobs:
           "$bin/rg" --version
           "$bin/fd" --version
           echo "$bin" >> "$GITHUB_PATH"
+      - name: Mise bootstrap
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *mise-bootstrap
+      - name: Test tools
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *caller-tools
+      - name: Build test archive
+        timeout-minutes: 45
+        run: |
+          cargo fetch --locked
+          mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
+          if [ "${COLLECT_COVERAGE:-false}" = true ]; then
+            "$TOOLS/cargo-llvm-cov" llvm-cov nextest-archive --user-config-file none \
+              --locked "${packages[@]}" --archive-file test-binaries.tar.zst
+          else
+            "$TOOLS/cargo-nextest" nextest archive --user-config-file none \
+              --locked "${packages[@]}" --archive-file test-binaries.tar.zst
+          fi
+      - name: Upload test archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-archive-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ inputs.working-directory || '.' }}/test-binaries.tar.zst
+          compression-level: 0
+          if-no-files-found: error
+      - name: Compile cache statistics
+        id: cache-statistics
+        if: always()
+        run: *sccache-stats
+      - name: Upload compile cache errors
+        if: *sccache-artifact-condition
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: *sccache-artifact
+      - name: Seal compile cache
+        id: cache-seal
+        run: *sccache-seal
+      - name: Save compile cache
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-save
+
+  test-prepare:
+    needs: declaration
+    name: Prepare test setup
+    if: ${{ needs.declaration.outputs.test_prepare != '""' && !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
+    env:
+      ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
+      TEST_PREPARE: ${{ fromJSON(needs.declaration.outputs.test_prepare) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory || '.' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Free instrumented build space
+        if: runner.environment == 'github-hosted' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
+        run: *free-build-space
+      - name: Test toolchain
+        run: *test-toolchain
+      - name: Compile cache identity
+        id: cache-identity
+        env: *sccache-identity-env
+        run: *sccache-identity
+      - name: Restore compile cache
+        id: cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-restore
+      - name: Compile cache
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        timeout-minutes: 10
+        run: *sccache-install
+      - name: Fetch additional locked manifests
+        if: needs.declaration.outputs.additional_locked_manifests != '[]'
+        run: *fetch-locked-manifests
+      - name: Search tools
+        timeout-minutes: 10
+        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
+        run: *search-tools
+      - name: Mise bootstrap
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *mise-bootstrap
+      - name: Test tools
+        timeout-minutes: 10
+        if: needs.declaration.outputs.test_tools == 'true'
+        run: *caller-tools
+      - name: Prepare test setup
+        timeout-minutes: 45
+        run: |
+          export TEST_PREPARE_OUTPUT="$PWD/target/test-setup"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/maestro-test-prepare-build"
+          mkdir -p "$TEST_PREPARE_OUTPUT"
+          bash -e -o pipefail -c "$TEST_PREPARE"
+          tar -C target -cf "$RUNNER_TEMP/test-setup.tar" test-setup
+      - name: Upload test setup
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-setup-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ runner.temp }}/test-setup.tar
+          if-no-files-found: error
+      - name: Compile cache statistics
+        id: cache-statistics
+        if: always()
+        run: *sccache-stats
+      - name: Upload compile cache errors
+        if: *sccache-artifact-condition
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: *sccache-artifact
+      - name: Seal compile cache
+        id: cache-seal
+        run: *sccache-seal
+      - name: Save compile cache
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-save
+
+  tests:
+    needs: [declaration, test-build, test-prepare]
+    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
+    if: ${{ !cancelled() && (inputs.warm-cache || (needs.test-build.result == 'success' && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped'))) && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.test_shards) }}
+    runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
+    env: &test-env
+      ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
+      WARM_CACHE: ${{ inputs.warm-cache }}
+      WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
+      SHARD: ${{ matrix.shard }}
+      TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
+      TEST_ARCHIVE: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && format('{0}/{1}/test-binaries.tar.zst', github.workspace, inputs.working-directory || '.') || '' }}
+      COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
+      COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
+      COVERAGE_EXCLUDE: ${{ needs.declaration.outputs.coverage_exclude }}
+    defaults: &test-defaults
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory || '.' }}
+    steps: &test-steps
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Free instrumented build space
+        if: runner.environment == 'github-hosted' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
+        run: *free-build-space
+      - name: Test toolchain
+        run: *test-toolchain
+      - name: Compile cache identity
+        if: (inputs.warm-cache || matrix.shard == 'doctests')
+        id: cache-identity
+        env: *sccache-identity-env
+        run: *sccache-identity
+      - name: Restore compile cache
+        if: (inputs.warm-cache || matrix.shard == 'doctests')
+        id: cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sccache-restore
+      - name: Compile cache
+        if: (inputs.warm-cache || matrix.shard == 'doctests')
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        timeout-minutes: 10
+        run: *sccache-install
+      - name: Coverage tools
+        timeout-minutes: 10
+        run: *coverage-tools
+      - name: Fetch additional locked manifests
+        if: needs.declaration.outputs.additional_locked_manifests != '[]'
+        run: *fetch-locked-manifests
+      - name: Download test archive
+        if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: test-archive-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ inputs.working-directory || '.' }}
+      - name: Download test setup
+        if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: test-setup-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ runner.temp }}/maestro-test-setup
+      - name: Restore test setup
+        if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' }}
+        run: |
+          mkdir -p target
+          tar -C target -xf "$RUNNER_TEMP/maestro-test-setup/test-setup.tar"
+      - name: Tests
+        timeout-minutes: 45
+        if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}
+        run: |
+          cargo fetch --locked
+          mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
+          if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
+          build_args=(--locked "${packages[@]}")
+          if [ -n "${TEST_ARCHIVE:-}" ]; then
+            build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
+          fi
+          if [ "${SHARD:-}" != doctests ]; then
+            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${build_args[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/$TEST_SHARD_COUNT" --no-tests pass 2>&1 | tee nextest.log
+          fi
+          if [[ "$SHARD" == doctests || ( -z "${TEST_ARCHIVE:-}" && "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
+            cargo test --locked --doc "${packages[@]}"
+          fi
+      - name: Search tools
+        timeout-minutes: 10
+        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
+        run: *search-tools
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
@@ -1053,6 +1268,7 @@ jobs:
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
             XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 MAESTRO_TEST_DIAGNOSTICS_DIR="$diagnostics" \
+            TEST_PREPARE_OUTPUT="$PWD/target/test-setup" \
             CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
             SCCACHE_DIR="${SCCACHE_DIR-}" SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE-}" \
             SCCACHE_LOCAL_RW_MODE="${SCCACHE_LOCAL_RW_MODE-}" SCCACHE_GHA_ENABLED="${SCCACHE_GHA_ENABLED-}" \
@@ -1061,8 +1277,12 @@ jobs:
           }
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
+          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
+          build_args=(--locked "${packages[@]}")
+          if [ -n "${TEST_ARCHIVE:-}" ]; then
+            build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
+          fi
           if [ "${SHARD:-}" != doctests ]; then
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] || [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
               mapfile -d '' -t report_packages < <(python3 -c 'import json, os; print("".join("--exclude-from-report\0" + name + "\0" for name in json.loads(os.environ.get("COVERAGE_EXCLUDE") or "[]")), end="")')
@@ -1078,8 +1298,15 @@ jobs:
                 mkdir -p target/single-coverage
                 report=(--lcov --output-path "$PWD/target/single-coverage/shard-1.lcov")
               fi
+              coverage_build_args=("${packages[@]}" "${report_packages[@]}" --locked)
+              if [ -n "${TEST_ARCHIVE:-}" ]; then
+                # Keep compile-time Cargo executable paths valid after archive extraction.
+                mkdir -p target/llvm-cov-target
+                ln -sfn target/debug target/llvm-cov-target/debug
+                coverage_build_args=(--no-clean --archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite "${report_packages[@]}")
+              fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass "${packages[@]}" "${report_packages[@]}" --locked \
+                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" \
                 --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee nextest.log
               if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] && [ "${WARM_CACHE:-false}" != true ]; then
                 COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
@@ -1088,10 +1315,10 @@ jobs:
               partition=()
               if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT"); fi
               run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
-                --locked "${packages[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
+                "${build_args[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi
           fi
-          if [[ "${WARM_CACHE:-false}" != true && -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
+          if [[ "${WARM_CACHE:-false}" != true && -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( -z "${TEST_ARCHIVE:-}" && "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
             run_isolated cargo test --locked --doc "${packages[@]}"
           fi
       - name: Print test diagnostics
@@ -1148,13 +1375,14 @@ jobs:
           PYTHON
       - name: Compile cache statistics
         id: cache-statistics
-        if: always()
+        if: always() && (inputs.warm-cache || matrix.shard == 'doctests')
         run: *sccache-stats
       - name: Upload compile cache errors
         if: *sccache-artifact-condition
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: *sccache-artifact
       - name: Seal compile cache
+        if: (inputs.warm-cache || matrix.shard == 'doctests')
         id: cache-seal
         run: *sccache-seal
       - name: Save compile cache
@@ -1170,15 +1398,29 @@ jobs:
           path: ${{ inputs.working-directory || '.' }}/shard-${{ matrix.shard }}.lcov
           if-no-files-found: error
 
+  doctests:
+    name: ${{ matrix.shard == 'doctests' && 'Doctests' }}
+    needs: declaration
+    if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [doctests]
+    env: *test-env
+    defaults: *test-defaults
+    steps: *test-steps
+
   tests-result:
     name: Tests (ubuntu-latest)
-    needs: [tests, declaration]
+    needs: [tests, doctests, declaration]
     if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     steps:
       - name: All test shards passed
         env:
           RESULT: ${{ needs.tests.result }}
+          DOCTEST_RESULT: ${{ needs.doctests.result }}
           DECLARATION_RESULT: ${{ needs.declaration.result }}
           INCLUDED_TESTS: ${{ needs.declaration.outputs.included_tests }}
           COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
@@ -1190,6 +1432,7 @@ jobs:
           assert os.environ['COLLECT_COVERAGE'] in expected
           required = 'success' if os.environ.get('INCLUDED_TESTS') == 'true' else expected[os.environ['COLLECT_COVERAGE']]
           assert os.environ['RESULT'] == required
+          assert os.environ['DOCTEST_RESULT'] == required
       - name: Download shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -1469,7 +1712,7 @@ jobs:
           done
           mkdir -p target/single-coverage
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
+          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           mapfile -d '' -t report_packages < <(python3 -c 'import json, os; print("".join("--exclude-from-report\0" + name + "\0" for name in json.loads(os.environ.get("COVERAGE_EXCLUDE") or "[]")), end="")')
           PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
             --retries 2 --flaky-result pass --final-status-level flaky --partition count:1/1 --no-tests pass "${packages[@]}" "${report_packages[@]}" --locked \
