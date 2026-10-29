@@ -2,13 +2,13 @@
 
 /// Returns a value unrelated to the browser crate.
 pub fn unrelated() -> u32 {
-    3
+    2
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn unrelated_is_stable() {
-        assert_eq!(super::unrelated(), 3);
+        assert_eq!(super::unrelated(), 2);
     }
 }

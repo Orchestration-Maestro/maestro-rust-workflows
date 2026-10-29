@@ -1,4 +1,4 @@
-name: Browser selection proof (run)
+name: Browser selection proof (run, dependency only)
 
 on:
   push:
