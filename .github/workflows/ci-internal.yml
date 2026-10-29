@@ -4831,6 +4831,7 @@ jobs:
                          'COVERAGE_LAYOUT': json.dumps(layout), 'COVERAGE_BASELINE_DIR': str(directory / 'baseline')}
                   result = execute('Merge coverage', directory, env)
                   assert result.returncode != 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
+                  assert 'Workspace line coverage (gate): 66.67% (2/3)' in result.stdout, result.stdout
                   assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout, result.stdout
                   result = execute('Merge coverage', directory, env | {'QUALITY_CONFIG': '{"coverage_min_lines": 60}'})
                   assert result.returncode == 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
