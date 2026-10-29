@@ -1680,13 +1680,13 @@ jobs:
               # Root self-calls keep the runner-compatible syntax until actionlint accepts $/.
               root_config = pathlib.Path(temporary) / 'root-zizmor.yml'
               root_config.write_text('rules:\n  self-repository:\n    ignore:\n'
-                                     '      - ci-internal.yml:15:11\n'
-                                     '      - ci-internal.yml:22:11\n'
-                                     '      - ci-internal.yml:30:11\n'
-                                     '      - ci-internal.yml:38:11\n'
-                                     '      - ci-proof.yml:14:11\n'
-                                     '      - ci-proof.yml:26:11\n'
-                                     '      - ci-proof.yml:38:11\n'
+                                     '      - ci-internal.yml:16:11\n'
+                                     '      - ci-internal.yml:23:11\n'
+                                     '      - ci-internal.yml:31:11\n'
+                                     '      - ci-internal.yml:39:11\n'
+                                     '      - ci-proof.yml:15:11\n'
+                                     '      - ci-proof.yml:27:11\n'
+                                     '      - ci-proof.yml:39:11\n'
                                      '      - advisories.yml:16:11\n'
                                      '      - fuzz.yml:14:11\n', encoding="utf-8")
               for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
@@ -4763,6 +4763,16 @@ jobs:
           partitions_run_every_test_once_and_doctests()
           print('PASS partitions_run_every_test_once_and_doctests')
 
+          def coverage_baseline_transfer_requires_coverage():
+              for name, owner in [('Upload coverage baseline', 'steps.selection'),
+                                  ('Download coverage baseline', 'needs.declaration')]:
+                  step = next(part for part in workflow.split('      - name: ')[1:] if part.startswith(name + '\n'))
+                  condition = re.search(r'^        if: (.*)$', step, re.MULTILINE)[1]
+                  assert owner + ".outputs.coverage == 'true'" in condition, (name, condition)
+
+          coverage_baseline_transfer_requires_coverage()
+          print('PASS coverage_baseline_transfer_requires_coverage')
+
           def coverage_baseline_download_requires_complete_manifest():
               import zipfile
               with tempfile.TemporaryDirectory() as temporary:
@@ -4833,12 +4843,22 @@ jobs:
                   assert result.returncode != 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
                   assert 'Workspace line coverage (gate): 66.67% (2/3)' in result.stdout, result.stdout
                   assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout, result.stdout
-                  result = execute('Merge coverage', directory, env | {'QUALITY_CONFIG': '{"coverage_min_lines": 60}'})
-                  assert result.returncode == 0 and '66.67% (2/3)' in result.stdout, result.stdout + result.stderr
+                  (directory / 'baseline/shard-1.lcov').write_text(
+                      records('/old/runner/caller', 1, 1) +
+                      'SF:/old/runner/caller/crates/b/src/lib.rs\nDA:2,1\nDA:3,1\nend_of_record\n', encoding='utf-8')
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode == 0 and '80.00% (4/5)' in result.stdout, result.stdout + result.stderr
+                  assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout
+                  (directory / 'baseline/shard-1.lcov').write_text(records('/old/runner/caller', 1, 1), encoding='utf-8')
                   (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 1, 0), encoding='utf-8')
                   result = execute('Merge coverage', directory, env)
                   assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
                   assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
+                  (directory / 'coverage/shard-1.lcov').write_text(
+                      'SF:/current/caller/crates/b/src/lib.rs\nDA:1,0\nend_of_record\n', encoding='utf-8')
+                  result = execute('Merge coverage', directory, env)
+                  assert result.returncode == 0 and 'Selected-package line coverage: N/A (0/0)' in result.stdout, result.stdout + result.stderr
+                  assert 'Workspace line coverage (gate): 100.00% (2/2)' in result.stdout
                   (directory / 'baseline/shard-1.lcov').unlink()
                   result = execute('Merge coverage', directory, env)
                   assert result.returncode != 0 and 'baseline' in result.stderr.lower(), result.stdout + result.stderr

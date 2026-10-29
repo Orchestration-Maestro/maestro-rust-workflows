@@ -109,12 +109,11 @@ env:
         if {path.name for path in baseline_dir.glob('*.lcov')} != baseline_names:
             raise SystemExit('Missing or unexpected baseline coverage reports')
         selected_lines = read_reports(reports, expected, layout, selected)
-        if not selected_lines:
-            raise SystemExit('No instrumented lines in selected packages')
         lines = read_reports(baseline_dir, baseline_names, baseline, layout['package_roots'].keys() - selected)
         lines.update(selected_lines)
         selected_covered = sum(hits > 0 for hits in selected_lines.values())
-        print(f'Selected-package line coverage: {selected_covered * 100 / len(selected_lines):.2f}% ({selected_covered}/{len(selected_lines)}), information only')
+        selected_figure = f'{selected_covered * 100 / len(selected_lines):.2f}% ({selected_covered}/{len(selected_lines)})' if selected_lines else 'N/A (0/0)'
+        print(f'Selected-package line coverage: {selected_figure}, information only')
     else:
         lines = read_reports(reports, expected, layout, None)
     if not lines:
@@ -747,7 +746,7 @@ jobs:
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
       - name: Upload coverage baseline
-        if: startsWith(steps.selection.outputs.coverage_scope, 'selected packages:')
+        if: steps.config.outputs.enabled == 'true' && steps.selection.outputs.coverage == 'true' && startsWith(steps.selection.outputs.coverage_scope, 'selected packages:')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-baseline-${{ inputs.concurrency-key || 'root' }}
@@ -1592,7 +1591,7 @@ jobs:
           path: coverage
           merge-multiple: true
       - name: Download coverage baseline
-        if: startsWith(needs.declaration.outputs.coverage_scope, 'selected packages:')
+        if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && startsWith(needs.declaration.outputs.coverage_scope, 'selected packages:')
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: coverage-baseline-${{ inputs.concurrency-key || 'root' }}

@@ -1,4 +1,4 @@
-name: Maestro coverage baseline bootstrap proof
+name: Maestro baseline-backed narrowing proof
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 371abcbfa3c3420d2cc89b92eb8409453982cf45
+      checkout-ref: 0c107308ca9b826c43e9ce2d14b83f387990b786
       checkout-base-ref: 371abcbfa3c3420d2cc89b92eb8409453982cf45
       concurrency-key: maestro-selected-228-graph
       test-event: merge_group
@@ -56,7 +56,7 @@ jobs:
                    'selected_coverage_limits_tests_and_report_scope', 'selected_archive_build_compiles_only_selected_packages',
                    'archived_coverage_excludes_unselected_report_packages', 'changed_packages_include_reverse_dependencies',
                    'declared_test_inputs_select_their_readers', 'coverage_baseline_download_requires_complete_manifest',
-                   'selected_coverage_merges_only_unchanged_baseline_packages', 'baseline_selection_includes_changes_before_group_base']
+                   'selected_coverage_merges_only_unchanged_baseline_packages', 'baseline_selection_includes_changes_before_group_base', 'coverage_baseline_transfer_requires_coverage']
           for name in names:
               started = time.monotonic()
               namespace[name]()
