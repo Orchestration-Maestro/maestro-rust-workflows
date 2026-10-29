@@ -74,7 +74,7 @@ env:
     if {path.name for path in reports.glob('*.lcov')} != expected:
         raise SystemExit('Missing or unexpected shard coverage reports')
     layout = json.loads(os.environ.get('COVERAGE_LAYOUT') or '{}')
-    if layout and os.environ.get('COVERAGE_CHECKOUT_ROOT'):
+    if layout:
         layout['checkout_root'] = os.environ['COVERAGE_CHECKOUT_ROOT']
     narrowed = os.environ.get('COVERAGE_SCOPE', 'full workspace') != 'full workspace'
     selected = set(json.loads(os.environ.get('TEST_PACKAGES') or '[]'))
@@ -735,7 +735,6 @@ jobs:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
               layout = {'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-                        'checkout_root': str(pathlib.Path.cwd()),
                         'package_roots': {packages[p]['name']: roots[p].as_posix() for p in sorted(members)},
                         'shard_count': int(os.environ['TEST_SHARD_COUNT']),
                         'artifact_prefix': 'coverage-' + os.environ.get('COVERAGE_KEY', 'root') + '-'}
