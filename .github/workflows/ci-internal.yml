@@ -3160,6 +3160,29 @@ jobs:
               fetch = next(step for step in tests.split('      - name: ')[1:] if step.startswith('Fetch additional locked manifests\n'))
               assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
 
+          def archive_signal_reaches_only_archived_shards():
+              for shard, warm, coverage, archive, expected in [
+                  ('1', 'false', 'false', 'test-binaries.tar.zst', '1'),
+                  ('2', 'false', 'true', 'test-binaries.tar.zst', '1'),
+                  ('warm', 'true', 'false', '', None),
+                  ('2', 'false', 'false', '', None),
+                  ('2', 'false', 'true', '', None),
+                  ('doctests', 'false', 'false', '', None),
+              ]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      result = execute('Isolated tests', directory, {
+                          'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                          'RUNNER_TEMP': temporary, 'SHARD': shard, 'WARM_CACHE': warm,
+                          'COLLECT_COVERAGE': coverage, 'TEST_ARCHIVE': archive,
+                          'TEST_PACKAGES': '["sample"]', 'CARGO_COVERAGE_MIN_LINES': ''})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                      assert len(commands) == 2, commands
+                      assert commands[1]['test_archive'] == expected, (shard, warm, coverage, commands)
+                      assert commands[1]['test_prepare_output'] == str(directory / 'target/test-setup')
+
           def archived_shards_skip_compile_cache_lifecycle():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               steps = {step['name']: step for step in document['jobs']['tests']['steps']}
@@ -3287,6 +3310,7 @@ jobs:
                                                    home=os.environ.get('HOME'), cargo_home=os.environ.get('CARGO_HOME'),
                                                    ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
                                                    test_prepare_output=os.environ.get('TEST_PREPARE_OUTPUT'),
+                                                   test_archive=os.environ.get('TEST_ARCHIVE'),
                                                    diagnostics=os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'))) + '\\n')
                   if args[:1] != ['fetch'] and os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'):
                       (pathlib.Path(os.environ['MAESTRO_TEST_DIAGNOSTICS_DIR']) / 'runner.txt').write_text(
@@ -3310,6 +3334,8 @@ jobs:
 
           archived_shards_provision_child_build_dependencies()
           print('PASS archived_shards_provision_child_build_dependencies')
+          archive_signal_reaches_only_archived_shards()
+          print('PASS archive_signal_reaches_only_archived_shards')
 
           def warm_filter_runs_only_in_warm_mode():
               for value in warm_filters:
