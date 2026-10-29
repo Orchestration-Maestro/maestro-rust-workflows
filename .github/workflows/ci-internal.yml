@@ -2611,7 +2611,7 @@ jobs:
           import time
           from unittest.mock import patch
 
-          source = pathlib.Path('.github/workflows/post-landing.yml').read_text()
+          source = pathlib.Path('.github/workflows/post-landing.yml').read_text(encoding='utf-8')
           assert '          permission-workflows: write\n' in source, 'Reverts must handle workflow-file landings'
           step = source.split('      - name: Report and propose revert\n', 1)[1]
           code = textwrap.dedent(step.split('        run: |\n', 1)[1])
@@ -2628,13 +2628,13 @@ jobs:
                   git('clone', str(remote), str(checkout), cwd=root)
                   git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid')
                   git('config', 'commit.gpgsign', 'false')
-                  (checkout / 'base').write_text('good')
+                  (checkout / 'base').write_text('good', encoding='utf-8')
                   git('add', '.'); git('commit', '-m', 'base')
-                  (checkout / 'defect').write_text('bad')
+                  (checkout / 'defect').write_text('bad', encoding='utf-8')
                   git('add', '.'); git('commit', '-m', 'landing')
                   sha = git('rev-parse', 'HEAD'); git('push', 'origin', 'main')
                   if scenario == 'conflict':
-                      (checkout / 'defect').write_text('newer change')
+                      (checkout / 'defect').write_text('newer change', encoding='utf-8')
                       git('add', '.'); git('commit', '-m', 'later landing'); git('push', 'origin', 'main')
                   calls = []
                   issues, prs = [], []
