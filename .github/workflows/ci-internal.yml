@@ -1687,8 +1687,8 @@ jobs:
                                      '      - ci-proof.yml:15:11\n'
                                      '      - ci-proof.yml:27:11\n'
                                      '      - ci-proof.yml:39:11\n'
-                                     '      - advisories.yml:16:11\n'
-                                     '      - fuzz.yml:14:11\n', encoding="utf-8")
+                                     '      - advisories.yml:19:11\n'
+                                     '      - fuzz.yml:17:11\n', encoding="utf-8")
               for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
                            [env['TOOLS'] + '/actionlint', '-config-file', env['CHECK_DEFAULTS'] + '/actionlint.yaml', '-shellcheck=', '-pyflakes=',
                             *map(str, (root / '.github/workflows').glob('*.yml'))]]:
@@ -4770,6 +4770,18 @@ jobs:
 
           partitions_run_every_test_once_and_doctests()
           print('PASS partitions_run_every_test_once_and_doctests')
+
+          def local_callers_grant_baseline_artifact_reads():
+              for path in sorted((root / '.github/workflows').glob('*.yml')):
+                  document = json.loads(subprocess.check_output(
+                      ['yq', '-o=json', '-'], input=path.read_text(encoding='utf-8'), text=True))
+                  for name, job in document.get('jobs', {}).items():
+                      if job.get('uses') == './.github/workflows/ci.yml':
+                          permissions = job.get('permissions', document.get('permissions', {}))
+                          assert permissions.get('actions') == 'read', (path.name, name, permissions)
+
+          local_callers_grant_baseline_artifact_reads()
+          print('PASS local_callers_grant_baseline_artifact_reads')
 
           def archive_checkout_root_is_the_coverage_source_root():
               with tempfile.TemporaryDirectory() as temporary:
