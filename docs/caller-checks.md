@@ -609,13 +609,21 @@ invocations. An absent declaration, omitted key or empty array schedules no
 browser runtime job. Wrong types and unknown names fail declaration validation.
 The existing `wasm_crates` and `check_targets` arrays remain required.
 
-One Linux `browser-tests` job invokes `just browser-test` on merge groups and
-main pushes, which select the full requested suite. Ordinary pull requests skip
-it, and advisory-only runs never start Chromium. The pull-request selection rule
-is self-test behavior only: a requested package in the
-changed-package/reverse-dependency selection, or a change to a nonempty browser
-request, selects the job without widening native package selection, and
-removing the request skips it.
+One Linux `browser-tests` job invokes `just browser-test`. In merge groups it
+runs when the shared workspace graph selects a requested package, whether that
+package changed directly or depends on a changed crate. Changes confined to
+unrelated crates skip the job. The job reuses native package selection; it does
+not compute a separate browser graph or narrow the caller's recipe.
+
+Shared-input changes (`Cargo.lock`, `.config/`, toolchain, CI or root files) and
+unresolved graph/diff selection fall back to the full suite and run declared
+browser tests. Main pushes always run declared browser tests, even after an
+unrelated landing. An intentional browser skip does not block required checks;
+a browser recipe failure still fails CI.
+
+Ordinary pull requests, advisory-only and fuzz-only runs skip the job; warm-cache
+runs start it only on default-branch pushes. A change to a nonempty browser
+request also selects the job; removing the request skips it.
 `browser_build` and `test_tools` remain independent opt-ins. Native coverage
 selection and its floor do not change.
 

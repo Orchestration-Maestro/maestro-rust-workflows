@@ -5467,6 +5467,59 @@ jobs:
           advisory_selection_is_caller_relative()
           print('PASS advisory_selection_is_caller_relative')
 
+          def browser_merge_groups_follow_shared_package_selection():
+              from functools import partial
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'Cargo.toml').write_text(
+                      '[workspace]\nresolver="3"\nmembers=["core", "web", "other"]\n', encoding='utf-8')
+                  for name in ['core', 'web', 'other']:
+                      crate = directory / name
+                      (crate / 'src').mkdir(parents=True)
+                      manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n'
+                      if name == 'web':
+                          manifest += '[dependencies]\ncore={path="../core"}\n'
+                      (crate / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+                      (crate / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text(
+                      'wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=["web"]\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+                  subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+                  git = partial(fixture_git, directory)
+                  git('add', '.')
+                  git('commit', '-qm', 'base')
+                  base = git('rev-parse', 'HEAD')
+                  job = workflow.split('  browser-tests:\n', 1)[1]
+                  document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+                  gate = document['jobs']['browser-tests']['if']
+                  for path, expected in [('other/src/lib.rs', False), ('web/src/lib.rs', True),
+                                         ('core/src/lib.rs', True), ('Cargo.lock', True)]:
+                      git('reset', '--hard', base)
+                      target = directory / path
+                      target.parent.mkdir(parents=True, exist_ok=True)
+                      with target.open('a', encoding='utf-8') as changed:
+                          changed.write('\n# changed shared input\n' if target.suffix == '.lock' else '\n')
+                      git('add', '.')
+                      git('commit', '-qm', path)
+                      for event in ['merge_group', 'push']:
+                          output = directory / '.git/selection'
+                          output.write_text('', encoding='utf-8')
+                          result = select_packages(directory, {
+                              'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                          assert result.returncode == 0, result.stdout + result.stderr
+                          values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                          should_run = expected or event == 'push'
+                          assert values['browser_tests'] == str(should_run).lower(), (path, event, values)
+                          context = {'needs.declaration.outputs.browser_tests': values['browser_tests'],
+                                     'needs.declaration.outputs.coverage': values['coverage'],
+                                     'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
+                                     'inputs.warm-cache': False}
+                          assert bool(evaluate(gate, context)) == should_run, (path, event, gate)
+
+          browser_merge_groups_follow_shared_package_selection()
+          print('PASS browser_merge_groups_follow_shared_package_selection')
+
           def merge_group_nested_members_have_one_owner():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -5506,7 +5559,8 @@ jobs:
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   (directory / '.github').mkdir()
-                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
+                  (directory / '.github/ci.toml').write_text(
+                      'wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=["b"]\n', encoding='utf-8')
                   names = ['a', 'b', 'c', 'build', 'dev', 'target', 'unrelated']
                   (directory / 'Cargo.toml').write_text(
                       '[workspace]\nresolver="3"\nmembers=' + json.dumps(names) + '\n', encoding='utf-8')
@@ -5528,7 +5582,7 @@ jobs:
                   git('add', '.')
                   git('commit', '-qm', 'base')
                   base = git('rev-parse', 'HEAD')
-                  def select(base_ref=base, event='merge_group'):
+                  def select(base_ref=base, event='merge_group', browser='true'):
                       output = directory / '.git/selection'
                       output.write_text('', encoding='utf-8')
                       result = select_packages(directory, {
@@ -5536,6 +5590,7 @@ jobs:
                       assert result.returncode == 0, result.stdout + result.stderr
                       values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       assert values['coverage'] == 'true'
+                      assert values['browser_tests'] == browser, values
                       return json.loads(values['packages']), result.stdout
                   source = directory / 'a/src/lib.rs'
                   source.write_text('pub fn changed() {}\n', encoding='utf-8')
@@ -5545,6 +5600,11 @@ jobs:
                   assert selected == ['a', 'b', 'build', 'c', 'dev', 'target'], (selected, log)
                   assert 'Coverage scope: selected packages' in log
                   assert select(event='push')[0] == sorted(names)
+                  git('reset', '--hard', base)
+                  (directory / 'unrelated/src/lib.rs').write_text('pub fn changed() {}\n', encoding='utf-8')
+                  git('add', '.')
+                  git('commit', '-qm', 'unrelated source')
+                  assert select(browser='false')[0] == ['unrelated']
                   for filename in ['Cargo.lock', '.config/nextest.toml', 'rust-toolchain.toml',
                                    '.github/workflows/check.yml', '.github/ci.toml', 'README.md',
                                    'Cargo.toml', 'unknown/file', 'docs/guide.md']:
