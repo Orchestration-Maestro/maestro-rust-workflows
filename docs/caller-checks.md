@@ -220,8 +220,8 @@ workspace dependent from locked Cargo metadata. Normal, build, development and
 target-specific dependency edges all count; unrelated crates are not selected.
 Changes to `Cargo.lock`, `.config/`, `.github/` (including the caller declaration),
 the toolchain or any root file select the full suite. Unknown paths, an absent or
-unreadable merge-group base, or an unresolved dependency graph also select the
-full suite and log the fallback reason. Unlike pull requests, merge groups do not
+unreadable merge-group base, an unresolved dependency graph, or a selection with
+no workspace test packages also select the full suite and log the fallback reason. Unlike pull requests, merge groups do not
 skip undeclared documentation changes.
 
 Coverage tests and reports cover the selected packages, excluding unselected

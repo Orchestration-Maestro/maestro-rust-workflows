@@ -454,6 +454,12 @@ jobs:
                   if event != 'merge_group':
                       raise
                   fallback = 'merge-group diff could not be resolved'
+          if event == 'merge_group' and changed is not None:
+              shared = next((name for name in changed if len(pathlib.Path(name).parts) == 1 or
+                             pathlib.Path(name).parts[0] in ('.config', '.github')), None)
+              if shared:
+                  fallback = f'shared input: {shared}'
+                  changed = None
           if changed is not None:
               # Literal include paths are relative to the Rust source, not the package root.
               changed_paths = {(pathlib.Path.cwd() / name).resolve() for name in changed}
@@ -503,10 +509,6 @@ jobs:
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)
-                  if event == 'merge_group' and (len(path.parts) == 1 or path.parts[0] in ('.config', '.github')):
-                      selected = set(members)
-                      fallback = f'shared input: {filename}'
-                      break
                   if filename in ('Cargo.toml', 'rust-toolchain', 'rust-toolchain.toml', '.github/ci.schema.json') or filename.startswith('.github/workflows/'):
                       selected = set(members)
                       break
@@ -562,6 +564,8 @@ jobs:
                   if reverse <= selected:
                       break
                   selected.update(reverse)
+          if event == 'merge_group' and not selected:
+              fallback = 'no workspace test packages selected'
           if event == 'merge_group' and fallback:
               selected = set(members)
               print(f'Full-suite fallback: {fallback}')
@@ -570,6 +574,7 @@ jobs:
           requested = set(config.get('browser_test_crates', []))
           browser_tests = bool(requested and (browser_changed or requested.intersection(names)))
           print(f'Selected test packages ({event}): {names}')
+          print(f'Selected package count: {len(selected)}/{len(members)}')
           # A change can introduce an advisory only through the lockfile or the declared exceptions.
           check_advisories = event not in ('pull_request', 'merge_group') or not base
           if not check_advisories:
