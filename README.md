@@ -21,6 +21,12 @@ wasm/browser builds and Chromium tests run on merge groups and main pushes,
 not on ordinary pull-request heads; [included-input changes](docs/caller-checks.md#pull-request-selection-and-retries) also run reader tests on pull requests without coverage.
 Those full events also keep the Windows check.
 
+In merge groups, Chromium tests run only when the shared workspace graph selects
+at least one declared `browser_test_crates` package, including a package affected
+through a changed dependency. Unrelated crate changes skip Chromium. Shared-input
+or unresolved-selection fallbacks run it. Main pushes always run declared
+Chromium tests, regardless of changed paths. See [browser selection](docs/caller-checks.md#chromium-browser-tests).
+
 Tests run with checksum-pinned cargo-nextest 0.9.148 on four Linux runners,
 using automatic count partitions rather than package lists. Doctests run in a
 parallel `Doctests` matrix leg. The aggregate `Tests (ubuntu-latest)` requires
