@@ -1,0 +1,20 @@
+name: Browser selection proof baseline
+
+on:
+  push:
+    branches: [ci/229-merge-proof]
+    paths: [.github/workflows/browser-proof-baseline.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    name: Full-suite baseline
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: fixtures/browser-proof
+      concurrency-key: browser-proof

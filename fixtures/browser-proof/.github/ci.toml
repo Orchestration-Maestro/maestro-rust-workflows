@@ -1,0 +1,3 @@
+wasm_crates = []
+check_targets = []
+browser_test_crates = ["browser"]
