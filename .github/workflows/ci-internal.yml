@@ -4867,6 +4867,12 @@ jobs:
                   baseline = directory / 'coverage-baseline'
                   assert result.returncode == 0 and (baseline / 'manifest.json').is_file(), result.stdout + result.stderr
                   assert (baseline / 'shard-1.lcov').read_text(encoding='utf-8').startswith('SF:')
+                  fixture_git(directory, 'commit', '--allow-empty', '-qm', 'newer than the group base')
+                  with zipfile.ZipFile(directory / 'manifest.zip', 'w') as archive:
+                      archive.writestr('manifest.json', json.dumps(manifest | {'head': fixture_git(directory, 'rev-parse', 'HEAD')}))
+                  result = execute('Find coverage baseline', directory, env)
+                  assert result.returncode == 0 and not (baseline / 'manifest.json').exists(), result.stdout + result.stderr
+                  assert (directory / 'coverage-baseline-reason').read_text(encoding='utf-8') == 'coverage baseline head is not an ancestor'
                   for failure in ['expired', 'missing', 'denied']:
                       if failure == 'expired':
                           artifacts[0]['expired'] = True
@@ -4881,6 +4887,15 @@ jobs:
 
           coverage_baseline_download_requires_complete_manifest()
           print('PASS coverage_baseline_download_requires_complete_manifest')
+
+          def baseline_admission_checks_have_one_owner():
+              assert workflow.count('--is-ancestor') == 1, 'ancestry is checked outside the baseline lookup'
+              assert workflow.count('baseline head is not an ancestor') == 1, 'ancestry has a second fallback reason'
+              assert workflow.count('baseline package layout changed') == 1
+              assert 'baseline package layout does not match' not in workflow, 'the merge repeats the selector layout check'
+
+          baseline_admission_checks_have_one_owner()
+          print('PASS baseline_admission_checks_have_one_owner')
 
           def selected_coverage_merges_only_unchanged_baseline_packages():
               with tempfile.TemporaryDirectory() as temporary:
