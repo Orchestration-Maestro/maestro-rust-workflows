@@ -508,8 +508,8 @@ unrelated landing. An intentional browser skip does not block required checks;
 a browser recipe failure still fails CI.
 
 Ordinary pull requests skip the job, and advisory-only, fuzz-only and warm-cache
-runs never start Chromium. A change to a nonempty browser request selects the
-job without widening native package selection; removing the request skips it.
+runs never start Chromium. A change to a nonempty browser request also selects
+the job; removing the request skips it.
 `browser_build` and `test_tools` remain independent opt-ins. Native coverage
 selection and its floor do not change.
 
