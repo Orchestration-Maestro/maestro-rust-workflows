@@ -4763,6 +4763,16 @@ jobs:
           partitions_run_every_test_once_and_doctests()
           print('PASS partitions_run_every_test_once_and_doctests')
 
+          def coverage_baseline_transfer_requires_coverage():
+              for name, owner in [('Upload coverage baseline', 'steps.selection'),
+                                  ('Download coverage baseline', 'needs.declaration')]:
+                  step = next(part for part in workflow.split('      - name: ')[1:] if part.startswith(name + '\n'))
+                  condition = re.search(r'^        if: (.*)$', step, re.MULTILINE)[1]
+                  assert owner + ".outputs.coverage == 'true'" in condition, (name, condition)
+
+          coverage_baseline_transfer_requires_coverage()
+          print('PASS coverage_baseline_transfer_requires_coverage')
+
           def coverage_baseline_download_requires_complete_manifest():
               import zipfile
               with tempfile.TemporaryDirectory() as temporary:
