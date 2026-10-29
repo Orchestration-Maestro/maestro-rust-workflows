@@ -1,0 +1,146 @@
+name: Post-landing full-suite safeguard
+
+on:
+  workflow_call:
+    inputs:
+      run-id:
+        description: Completed main-push full-suite workflow run
+        type: string
+        required: true
+      proof:
+        description: Allow a simulated landing on a push-only ci/rw227- branch
+        type: boolean
+        default: false
+    secrets:
+      RELEASE_APP_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: post-landing-${{ github.repository }}-${{ inputs.run-id }}
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current main for the revert proposal
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Mint the report token
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-actions: read
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
+      - name: Report and propose revert
+        shell: python
+        env:
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run-id }}
+          PROOF: ${{ inputs.proof }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          import base64
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+
+          repository = os.environ['REPOSITORY']
+          run_id = os.environ['RUN_ID']
+          server = os.environ['GITHUB_SERVER_URL']
+          link = f'{server}/{repository}/actions/runs/{run_id}'
+
+          def command(*argv, body=None):
+              result = subprocess.run(list(argv), input=body, capture_output=True, text=True)
+              if result.returncode:
+                  raise RuntimeError(f'{argv[0]} {argv[1]} failed: {result.stderr.strip()}')
+              return result.stdout.strip()
+
+          def api(endpoint):
+              return json.loads(command('gh', 'api', f'repos/{repository}/{endpoint}'))
+
+          try:
+              if not re.fullmatch(r'[0-9]+', run_id):
+                  raise RuntimeError('Invalid workflow run id')
+              run = api(f'actions/runs/{run_id}')
+              proof = os.environ['PROOF'] == 'true'
+              branch = run['head_branch']
+              if run['repository']['full_name'] != repository or run['event'] != 'push':
+                  raise RuntimeError('Expected a push run in the caller repository')
+              if branch != 'main' and not (proof and branch.startswith('ci/rw227-')):
+                  raise RuntimeError('Expected an exact main landing (or a ci/rw227- proof)')
+              if proof and branch == 'main':
+                  raise RuntimeError('Proof mode must never target main')
+              if run['status'] != 'completed' and not (proof and run['status'] == 'in_progress'):
+                  raise RuntimeError('Full-suite run has not completed')
+              sha = run['head_sha']
+              if not re.fullmatch(r'[0-9a-f]{40}', sha):
+                  raise RuntimeError('Invalid landing commit')
+              jobs = api(f"actions/runs/{run_id}/attempts/{run['run_attempt']}/jobs?per_page=100")['jobs']
+              failed = [job for job in jobs if job['conclusion'] == 'failure' and
+                        re.search(r'\b(Tests|Test shard|Chromium browser tests|Coverage)\b', job['name'])]
+              if not failed:
+                  if run['conclusion'] != 'success':
+                      raise RuntimeError('Run did not pass, but no failed suite job could be identified')
+                  print(f'Full suite passed; no issue or revert: {link}')
+              else:
+                  merged = [pr for pr in api(f'commits/{sha}/pulls') if pr['merge_commit_sha'] == sha
+                            and pr['merged_at'] and pr['base']['ref'] == 'main'
+                            and pr['base']['repo']['full_name'] == repository]
+                  if proof:
+                      # A proof branch models a landing without merging a defect into main.
+                      merged = [{'number': 0}]
+                  if len(merged) != 1:
+                      raise RuntimeError('Cannot uniquely attribute the exact landing to a merged PR')
+                  original = merged[0]['number']
+                  details = []
+                  for job in failed:
+                      log = command('gh', 'api', f"repos/{repository}/actions/jobs/{job['id']}/logs")
+                      log = re.sub(r'\x1b\[[0-9;]*m', '', log)
+                      lines = [line for line in log.splitlines() if re.search(r'FAIL|FAILED|failures:|error:', line)]
+                      details.append(f"### {job['name']}\n```text\n" + '\n'.join(lines)[-8000:] + '\n```')
+                  title = f'Full suite failed after landing {sha}'
+                  body = f'Original PR: #{original}\nCommit: {sha}\nRun: {link}\n\n' + '\n'.join(details)
+                  issues = json.loads(command('gh', 'issue', 'list', '-R', repository, '--state', 'all',
+                                              '--search', f'"{sha}" in:title', '--json', 'title,url', '--limit', '100'))
+                  matches = [issue for issue in issues if issue['title'] == title]
+                  if len(matches) > 1:
+                      raise RuntimeError('Multiple failure issues already exist for this landing')
+                  issue = matches[0]['url'] if matches else command('gh', 'issue', 'create', '-R', repository,
+                                                                  '--title', title, '--body-file', '-', body=body)
+                  head = f'ci/revert-{sha}'
+                  prs = json.loads(command('gh', 'pr', 'list', '-R', repository, '--state', 'all', '--head', head,
+                                           '--base', 'main', '--json', 'url', '--limit', '100'))
+                  if prs:
+                      print(f"Existing revert: {prs[0]['url']} (failure issue: {issue})")
+                  else:
+                      command('git', 'fetch', 'origin', 'main', branch)
+                      command('git', 'switch', '-C', head, 'origin/main')
+                      if proof:
+                          command('git', 'switch', '-C', head, sha)
+                      parents = command('git', 'rev-list', '--parents', '-n', '1', sha).split()[1:]
+                      if not parents:
+                          raise RuntimeError('Landing has no parent to revert')
+                      command('git', '-c', 'user.name=Maestro CI', '-c', 'user.email=ci@users.noreply.github.com',
+                              '-c', 'commit.gpgsign=false', 'revert', '--no-edit', *(['-m', '1'] if len(parents) > 1 else []), sha)
+                      auth = base64.b64encode(f"x-access-token:{os.environ['GH_TOKEN']}".encode()).decode()
+                      command('git', '-c', f'http.extraheader=AUTHORIZATION: basic {auth}', 'push', 'origin', f'HEAD:refs/heads/{head}')
+                      revert_body = f'Reverts #{original} after the full suite failed.\n\nFailure issue: {issue}\nCommit: {sha}\nRun: {link}\n\nUses the normal required checks and merge queue; never pushes to main.'
+                      pr = command('gh', 'pr', 'create', '-R', repository, '--base', 'main', '--head', head,
+                                   '--title', f'Revert #{original}: full-suite failure', '--body-file', '-', body=revert_body)
+                      print(f'Revert proposal: {pr} (failure issue: {issue})')
+          except (RuntimeError, KeyError, ValueError, OSError) as error:
+              sys.exit(f'Post-landing safeguard failed: {error}\nRun: {link}')
