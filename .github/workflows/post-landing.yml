@@ -30,7 +30,8 @@ jobs:
       - name: Original full-suite run
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run-id }}
-        run: printf 'Full-suite run: %s\n' "$RUN_URL"
+        run: |
+          printf 'Full-suite run: %s\n' "$RUN_URL"
       - name: Checkout current main for the revert proposal
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
