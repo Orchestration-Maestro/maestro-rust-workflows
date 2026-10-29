@@ -714,3 +714,52 @@ initial target; admission can delay replacements. Repository secrets are not
 passed to these jobs, and external contributors require approval before running.
 Availability is checked before scheduling; a host lost afterward fails or leaves
 an already-selected job queued, not silently rerun on another host.
+
+## Full suite after landing
+
+A caller can run `ci.yml` on every push to `main`, without `warm-cache` or scan
+inputs. Checkout uses the push's exact commit. This runs every test shard,
+doctests and declared browser tests, regardless of merge-group selection.
+Push runs have separate concurrency groups by commit: later landings cannot
+cancel a run or replace a queued landing.
+
+Maestro's `Full suite after landing` workflow owns that call. Its
+`Failed landing reports` workflow listens for completed main-push runs with
+`workflow_run` and calls `post-landing.yml` with the completed `run-id`.
+Keep both shared-workflow references pinned to reviewed commits. There is no
+new `.github/ci.toml` setting for test selection or commands; list the caller's
+reporting workflow in `privileged_trigger_workflows` for the existing trigger
+audit. GitHub activates `workflow_run` listeners only after they reach the
+default branch.
+
+The reporter needs `contents: read` and `actions: read` on the job token to
+read the exact run attempt and failed job logs. It uses the existing
+`RELEASE_APP_CLIENT_ID` organization variable and `RELEASE_APP_PRIVATE_KEY`
+secret to mint a repository-scoped App token with contents, issues and pull
+requests write access. The App must be installed in the caller repository and
+its secret must be available there. Do not substitute the automatic job token
+for these writes: it does not trigger required checks on the new revert PR.
+No credential is passed to the full-suite test jobs.
+
+A failed suite creates one issue per landing commit, naming the exact merged
+PR, commit, failed-test log lines and original run. The reporter paginates jobs
+and reads only the current run attempt. It opens `ci/revert-<full-commit>` against
+`main`, reverting only that landing (first parent for a merge commit), from the
+current main tip. The PR links the original PR and failure issue. It uses the
+normal required checks and merge queue; the reporter never pushes to `main`
+or merges the revert. Existing issues and open or closed revert PRs are reused
+on repeated failure handling. If a push succeeded before PR creation failed,
+the next attempt reuses the landing's existing revert branch.
+
+A passing suite creates neither artifact. Unknown or ambiguous PR attribution,
+unreadable logs, missing permissions and revert conflicts fail with the original
+run link. A conflict can leave the failure issue without a revert PR: resolve
+the conflict in a normal reviewed PR, not by force-pushing main. Non-suite job
+failures are reported as safeguard failures rather than blamed on another PR.
+
+For controlled proof only, `proof: true` accepts a push run on a
+`ci/rw227-` branch, including an in-progress run whose test job has failed.
+It attributes the simulated landing to the branch PR and prepares the revert
+from that exact branch commit. It rejects main in proof mode. This permits a
+planted failed-test job without landing a defect on main; production calls must
+leave `proof` false. Close the resulting proof issue and revert PR after review.
