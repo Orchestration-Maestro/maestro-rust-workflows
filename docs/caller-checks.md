@@ -185,8 +185,13 @@ A failing command fails the required test result. The default is no preparation.
 The workflow transfers the prepared directory separately, preserving file modes,
 and restores it at `target/test-setup` in each numeric shard. Archived isolated
 shards receive `TEST_PREPARE_OUTPUT` as the absolute path to that restored
-directory, replacing any inherited value. Callers may use it to detect archived
-execution and locate prepared files. No nextest archive include is needed. Nextest setup scripts can export paths into that directory;
+directory, replacing any inherited value. Callers may rely on it to locate
+prepared files during archived execution when `test_prepare` is declared. Warm-cache
+runs also receive this path, but do not run preparation or restore prepared files.
+Archived runs without `test_prepare` likewise have no prepared files restored.
+The variable alone does not guarantee files exist; callers must check for the
+files they need before reusing them. No nextest archive include is needed.
+Nextest setup scripts can export paths into that directory;
 they must reuse those files instead of preparing them again. The caller owns the
 preparation logic and exported environment. Shared CI does not interpret its
 setup-script definitions. The existing `concurrency-key` distinguishes both
