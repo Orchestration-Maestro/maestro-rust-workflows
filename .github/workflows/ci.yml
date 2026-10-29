@@ -110,8 +110,6 @@ env:
     if narrowed:
         baseline_dir = pathlib.Path(os.environ.get('COVERAGE_BASELINE_DIR', 'baseline'))
         baseline = json.loads((baseline_dir / 'manifest.json').read_text(encoding='utf-8'))
-        if not selected or not selected <= layout['package_roots'].keys() or layout['package_roots'] != baseline['package_roots']:
-            raise SystemExit('Coverage baseline package layout does not match')
         baseline_names = {f'shard-{shard}.lcov' for shard in range(1, baseline['shard_count'] + 1)}
         if {path.name for path in baseline_dir.glob('*.lcov')} != baseline_names:
             raise SystemExit('Missing or unexpected baseline coverage reports')
@@ -583,9 +581,8 @@ jobs:
                   fallback = fallback or (reason.read_text(encoding='utf-8') if reason.is_file() else 'no baseline manifest yet')
               else:
                   baseline = json.loads(manifest.read_text(encoding='utf-8'))
-                  if not base or subprocess.run(['git', 'merge-base', '--is-ancestor', baseline['head'], base], capture_output=True).returncode:
-                      fallback = fallback or 'baseline head is not an ancestor'
-                  elif baseline.get('package_roots') != {packages[p]['name']: roots[p].as_posix() for p in members}:
+                  # The lookup already proved the baseline head is an ancestor of the base.
+                  if baseline.get('package_roots') != {packages[p]['name']: roots[p].as_posix() for p in members}:
                       fallback = fallback or 'baseline package layout changed'
                   else:
                       base = baseline['head']

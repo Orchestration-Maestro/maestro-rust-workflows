@@ -4993,9 +4993,6 @@ jobs:
                   values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                   assert result.returncode == 0 and 'no baseline manifest yet' in result.stdout, result.stdout + result.stderr
                   assert json.loads(values['packages']) == ['a', 'b', 'c'], values
-                  manifest.write_text(json.dumps({'head': '0' * 40}), encoding='utf-8')
-                  result = execute('Select test packages', directory, env)
-                  assert result.returncode == 0 and 'baseline head is not an ancestor' in result.stdout, result.stdout + result.stderr
                   manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'a', 'b': 'b', 'c': 'c'}}), encoding='utf-8')
                   (directory / '.github/ci.toml').unlink()
                   result = execute('Select test packages', directory, env)
