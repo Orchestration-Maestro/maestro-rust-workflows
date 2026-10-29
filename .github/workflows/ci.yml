@@ -49,7 +49,7 @@ on:
         value: ${{ jobs.advisories.outputs.findings }}
 
 concurrency:
-  group: rust-ci-${{ github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
+  group: rust-ci-${{ github.event_name == 'push' && github.sha || github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -1416,7 +1416,67 @@ jobs:
           diagnostics="$PWD/target/browser-author-diagnostics"
           mkdir -p "$diagnostics"
           isolation=$(mktemp -d "$RUNNER_TEMP/maestro-tests.XXXXXX")
-          trap 'rm -rf "$isolation"' EXIT
+          # Tests can leave processes that keep writing here: stop and name them, and keep the test status.
+          cleanup_isolation() {
+            status=$?
+            set +e
+            python3 - "$isolation" <<'PYTHON'
+          import json
+          import os
+          import signal
+          import sys
+          import time
+          roots = tuple(path + '/' for path in {sys.argv[1], os.path.realpath(sys.argv[1])})
+          def link(path):
+              try:
+                  return os.readlink(path)
+              except OSError:
+                  return ''
+          def users():
+              found = {}
+              for entry in os.listdir('/proc'):
+                  if not entry.isdigit() or int(entry) == os.getpid():
+                      continue
+                  base = '/proc/' + entry
+                  try:
+                      descriptors = os.listdir(base + '/fd')
+                  except OSError:
+                      descriptors = []
+                  paths = [link(base + '/cwd'), link(base + '/exe')] + [link(base + '/fd/' + fd) for fd in descriptors]
+                  if os.path.basename(paths[1]) == 'sccache':
+                      # The compile cache server outlives the tests; its own steps report on it and stop it.
+                      continue
+                  try:
+                      with open(base + '/environ', 'rb') as file:
+                          environment = file.read()
+                  except OSError:
+                      environment = b''
+                  if any(path.startswith(roots) for path in paths) or any(root.encode() in environment for root in roots):
+                      try:
+                          with open(base + '/cmdline', 'rb') as file:
+                              found[int(entry)] = json.dumps(file.read().decode('utf-8', 'replace').split('\0')[:-1])
+                      except OSError:
+                          pass
+              return found
+          announced = set()
+          for _ in range(50):
+              found = users()
+              if not found:
+                  break
+              for pid, command in found.items():
+                  if pid not in announced:
+                      announced.add(pid)
+                      print(f'Stopped test process {pid}: {command}', flush=True)
+                  try:
+                      os.kill(pid, signal.SIGKILL)
+                  except OSError:
+                      pass
+              time.sleep(0.1)
+          PYTHON
+            rm -rf "$isolation" || echo "Could not remove $isolation" >&2
+            exit "$status"
+          }
+          trap cleanup_isolation EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
           run_isolated() {
           env -i PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
