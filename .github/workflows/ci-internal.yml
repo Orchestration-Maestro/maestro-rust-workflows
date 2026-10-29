@@ -1680,13 +1680,13 @@ jobs:
               # Root self-calls keep the runner-compatible syntax until actionlint accepts $/.
               root_config = pathlib.Path(temporary) / 'root-zizmor.yml'
               root_config.write_text('rules:\n  self-repository:\n    ignore:\n'
-                                     '      - ci-internal.yml:15:11\n'
-                                     '      - ci-internal.yml:22:11\n'
-                                     '      - ci-internal.yml:30:11\n'
-                                     '      - ci-internal.yml:38:11\n'
-                                     '      - ci-proof.yml:14:11\n'
-                                     '      - ci-proof.yml:26:11\n'
-                                     '      - ci-proof.yml:38:11\n'
+                                     '      - ci-internal.yml:16:11\n'
+                                     '      - ci-internal.yml:23:11\n'
+                                     '      - ci-internal.yml:31:11\n'
+                                     '      - ci-internal.yml:39:11\n'
+                                     '      - ci-proof.yml:15:11\n'
+                                     '      - ci-proof.yml:27:11\n'
+                                     '      - ci-proof.yml:39:11\n'
                                      '      - advisories.yml:16:11\n'
                                      '      - fuzz.yml:14:11\n', encoding="utf-8")
               for argv in [[env['TOOLS'] + '/zizmor', '--offline', '--strict-collection', '--config', str(root_config), '.github/workflows'],
