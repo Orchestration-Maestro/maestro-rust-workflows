@@ -2618,6 +2618,18 @@ jobs:
           code = textwrap.dedent(step.split('        run: |\n', 1)[1])
           real_run = subprocess.run
 
+          def landing_report_prints_run_link_first():
+              start = time.monotonic()
+              link_step = source.split('      - name: Original full-suite run\n', 1)[1].split('      - name: ', 1)[0]
+              assert source.index('name: Original full-suite run') < source.index('name: Mint the report token'), 'A failed token step must still show the run'
+              assert 'RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run-id }}\n' in link_step and '        if:' not in link_step
+              printed = real_run(['bash', '-e', '-c', textwrap.dedent(link_step.split('        run: |\n', 1)[1])],
+                                 env={'PATH': os.environ['PATH'], 'RUN_URL': 'https://example.invalid/runs/9'}, capture_output=True, text=True, check=True).stdout
+              assert 'https://example.invalid/runs/9' in printed, printed
+              print(f'PASS landing_report_prints_run_link_first ({time.monotonic() - start:.3f}s)', flush=True)
+
+          landing_report_prints_run_link_first()
+
           def landing_report_handles(scenario):
               start = time.monotonic()
               with tempfile.TemporaryDirectory() as temporary:
@@ -2637,6 +2649,9 @@ jobs:
                   if scenario == 'conflict':
                       (checkout / 'defect').write_text('newer change', encoding='utf-8')
                       git('add', '.'); git('commit', '-m', 'later landing'); git('push', 'origin', 'main')
+                  if scenario == 'foreign':
+                      git('commit', '--allow-empty', '-m', 'revert(ci): other landing', '-m', 'This reverts commit ' + '1' * 40 + '.')
+                      git('push', 'origin', 'HEAD:refs/heads/ci/revert-' + sha); git('reset', '--hard', sha)
                   calls = []
                   issues, prs = [], []
                   run = {'id': 7, 'event': 'push', 'head_branch': 'main', 'head_sha': sha,
@@ -2657,7 +2672,7 @@ jobs:
                               return subprocess.CompletedProcess(argv, 1, '', 'HTTP 403: Resource not accessible')
                           if endpoint.endswith('/runs/7'): value = run
                           elif endpoint.endswith('/attempts/1/jobs?per_page=100'):
-                              jobs = [] if scenario == 'pass' else [{'id': 8, 'name': 'Doctests' if scenario == 'doctest' else 'Tests / Test shard (1)', 'conclusion': 'failure'}]
+                              jobs = [] if scenario == 'pass' else [{'id': 8, 'name': {'doctest': 'Doctests', 'non-suite': 'Format'}.get(scenario, 'Tests / Test shard (1)'), 'conclusion': 'failure'}]
                               if scenario == 'pagination':
                                   assert '--paginate' in argv and '--slurp' in argv
                                   value = [{'jobs': []}, {'jobs': jobs}]
@@ -2690,16 +2705,17 @@ jobs:
                       previous = pathlib.Path.cwd()
                       os.chdir(checkout)
                       try:
-                          if scenario in ('unknown', 'permission', 'conflict', 'resume'):
+                          if scenario in ('unknown', 'permission', 'conflict', 'resume', 'foreign', 'non-suite'):
                               try:
                                   exec(compile(code, 'post-landing workflow', 'exec'), {})
                                   raise AssertionError('Expected a clear failure')
                               except SystemExit as error:
                                   assert run['html_url'] in str(error), str(error)
-                                  diagnostic = {'unknown': 'attribute', 'permission': '403', 'conflict': 'revert', 'resume': 'temporary API failure'}[scenario]
+                                  diagnostic = {'unknown': 'attribute', 'permission': '403', 'conflict': 'revert', 'resume': 'temporary API failure', 'foreign': 'does not target', 'non-suite': 'no failed suite job'}[scenario]
                                   assert diagnostic in str(error), str(error)
                               if scenario != 'resume':
                                   assert prs == []
+                                  if scenario == 'non-suite': assert issues == []
                                   return
                           exec(compile(code, 'post-landing workflow', 'exec'), {})
                           if scenario == 'pass':
@@ -2717,7 +2733,7 @@ jobs:
                           os.chdir(previous)
               print(f'PASS landing_report_handles_{scenario} ({time.monotonic() - start:.3f}s)', flush=True)
 
-          for scenario in ['large', 'failure', 'pagination', 'doctest', 'resume', 'pass', 'unknown', 'permission', 'conflict']:
+          for scenario in ['large', 'failure', 'pagination', 'doctest', 'resume', 'pass', 'unknown', 'permission', 'conflict', 'foreign', 'non-suite']:
               landing_report_handles(scenario)
               print('PASS landing_report_handles_' + scenario, flush=True)
 
