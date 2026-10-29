@@ -5512,7 +5512,7 @@ jobs:
           def reusable_calls_complete_independently():
               internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding="utf-8")
               group = re.search(r'^  group: (.+)$', workflow, re.MULTILINE).group(1)
-              assert group == 'rust-ci-$' + '{{ github.ref }}$' + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
+              assert group == 'rust-ci-$' + "{{ github.event_name == 'push' && github.sha || github.ref }}$" + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
                   'Reusable calls share a concurrency group and can cancel each other'
               keys = []
               for job in ['sample', 'declared', 'test-tools']:
