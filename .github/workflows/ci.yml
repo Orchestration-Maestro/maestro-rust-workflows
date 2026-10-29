@@ -897,6 +897,7 @@ jobs:
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
+      COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' }}
     defaults:
       run:
@@ -1002,7 +1003,7 @@ jobs:
         run: |
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COLLECT_COVERAGE:-false}" = true ]; then packages=(--workspace); fi
+          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${COLLECT_COVERAGE:-false}" = true ]; then
             "$TOOLS/cargo-llvm-cov" llvm-cov nextest-archive --user-config-file none \
               --locked "${packages[@]}" --archive-file test-binaries.tar.zst
@@ -1203,7 +1204,7 @@ jobs:
         run: |
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
+          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
           build_args=(--locked "${packages[@]}")
           if [ -n "${TEST_ARCHIVE:-}" ]; then
@@ -1276,7 +1277,7 @@ jobs:
           }
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
+          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
           build_args=(--locked "${packages[@]}")
           if [ -n "${TEST_ARCHIVE:-}" ]; then
@@ -1302,7 +1303,7 @@ jobs:
                 # Keep compile-time Cargo executable paths valid after archive extraction.
                 mkdir -p target/llvm-cov-target
                 ln -sfn target/debug target/llvm-cov-target/debug
-                coverage_build_args=(--no-clean --archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
+                coverage_build_args=(--no-clean --archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite "${report_packages[@]}")
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
                 --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" \
@@ -1711,7 +1712,7 @@ jobs:
           done
           mkdir -p target/single-coverage
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
+          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           mapfile -d '' -t report_packages < <(python3 -c 'import json, os; print("".join("--exclude-from-report\0" + name + "\0" for name in json.loads(os.environ.get("COVERAGE_EXCLUDE") or "[]")), end="")')
           PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
             --retries 2 --flaky-result pass --final-status-level flaky --partition count:1/1 --no-tests pass "${packages[@]}" "${report_packages[@]}" --locked \
