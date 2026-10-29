@@ -85,6 +85,7 @@ env:
     covered = sum(hits > 0 for hits in lines.values())
     percentage = covered * 100 / len(lines)
     threshold = int(os.environ['CARGO_COVERAGE_MIN_LINES']) if os.environ.get('CARGO_COVERAGE_MIN_LINES') else json.loads(os.environ.get('QUALITY_CONFIG') or '{}').get('coverage_min_lines', 80)
+    print('Coverage scope: ' + os.environ.get('COVERAGE_SCOPE', 'full workspace'))
     print(f'Merged line coverage: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')
     if percentage < threshold:
         raise SystemExit('Merged line coverage is below threshold')
@@ -109,6 +110,8 @@ jobs:
       packages: ${{ steps.selection.outputs.packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
+      coverage_scope: ${{ steps.selection.outputs.coverage_scope }}
+      coverage_exclude: ${{ steps.selection.outputs.coverage_exclude }}
       included_tests: ${{ steps.selection.outputs.included_tests }}
       test_shard_count: ${{ env.TEST_SHARD_COUNT }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
@@ -580,6 +583,8 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
+              output.write('coverage_scope=' + ('full workspace' if selected == members else 'selected packages: ' + ', '.join(names)) + '\n')
+              output.write('coverage_exclude=' + json.dumps(sorted(packages[p]['name'] for p in members - selected)) + '\n')
               output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
               output.write('included_tests=' + str(bool(included_readers)).lower() + '\n')
               shards = list(range(1, int(os.environ['TEST_SHARD_COUNT']) + 1))
@@ -891,6 +896,8 @@ jobs:
       SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
+      COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
+      COVERAGE_EXCLUDE: ${{ needs.declaration.outputs.coverage_exclude }}
     defaults:
       run:
         shell: bash
@@ -1056,9 +1063,12 @@ jobs:
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
           if [ "${SHARD:-}" != doctests ]; then
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] || [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
+              mapfile -d '' -t report_packages < <(python3 -c 'import json, os; print("".join("--exclude-from-report\0" + name + "\0" for name in json.loads(os.environ.get("COVERAGE_EXCLUDE") or "[]")), end="")')
               partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT")
               report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
               if [ "${WARM_CACHE:-false}" = true ]; then
+                packages=(--workspace)
+                report_packages=()
                 partition=(-E "${WARM_TEST_FILTER-none()}")
                 report=(--no-report)
               elif [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
@@ -1067,7 +1077,7 @@ jobs:
                 report=(--lcov --output-path "$PWD/target/single-coverage/shard-1.lcov")
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass --workspace --locked \
+                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass "${packages[@]}" "${report_packages[@]}" --locked \
                 --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee nextest.log
               if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] && [ "${WARM_CACHE:-false}" != true ]; then
                 COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
@@ -1189,6 +1199,7 @@ jobs:
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         env:
           QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
+          COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
         run: python3 -c "$COVERAGE_MERGE"
 
   checks:
@@ -1445,14 +1456,21 @@ jobs:
       - name: Coverage
         timeout-minutes: 45
         if: needs.declaration.outputs.enabled != 'true' && needs.declaration.outputs.coverage == 'true'
+        env:
+          TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
+          COVERAGE_EXCLUDE: ${{ needs.declaration.outputs.coverage_exclude }}
+          COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
         run: |
           unset LLVM_COV LLVM_PROFDATA CARGO_LLVM_COV_FLAGS CARGO_LLVM_PROFDATA_FLAGS
           for name in ${!LLVM_@}; do
             if [[ "$name" == LLVM_*_FLAGS ]]; then unset "$name"; fi
           done
           mkdir -p target/single-coverage
+          mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          if [ -z "${TEST_PACKAGES:-}" ]; then packages=(--workspace); fi
+          mapfile -d '' -t report_packages < <(python3 -c 'import json, os; print("".join("--exclude-from-report\0" + name + "\0" for name in json.loads(os.environ.get("COVERAGE_EXCLUDE") or "[]")), end="")')
           PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-            --retries 2 --flaky-result pass --final-status-level flaky --partition count:1/1 --no-tests pass --workspace --locked \
+            --retries 2 --flaky-result pass --final-status-level flaky --partition count:1/1 --no-tests pass "${packages[@]}" "${report_packages[@]}" --locked \
             --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
             --lcov --output-path "$PWD/target/single-coverage/shard-1.lcov" 2>&1 | tee nextest.log
           COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
