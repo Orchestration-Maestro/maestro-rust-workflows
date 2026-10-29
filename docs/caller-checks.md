@@ -218,7 +218,15 @@ directory, replacing any inherited value. Callers may rely on it to locate
 prepared files during archived execution when `test_prepare` is declared. Warm-cache
 runs also receive this path, but do not run preparation or restore prepared files.
 Archived runs without `test_prepare` likewise have no prepared files restored.
-The variable alone does not guarantee files exist; callers must check for the
+
+Archived isolated numeric shards receive `TEST_ARCHIVE=1` on both plain and
+coverage routes. Warm-cache runs, direct non-archived runs, doctests and coverage
+runs that do not extract an archive leave it unset in the isolated environment.
+Callers may use `TEST_ARCHIVE=1` to require their declared prepared files and fail
+if any are missing, rather than silently rebuilding them in each shard.
+It identifies archived execution, not the presence of prepared files.
+
+`TEST_PREPARE_OUTPUT` alone does not guarantee files exist; callers must check for the
 files they need before reusing them. No nextest archive include is needed.
 Nextest setup scripts can export paths into that directory;
 they must reuse those files instead of preparing them again. The caller owns the
