@@ -2613,6 +2613,7 @@ jobs:
 
           source = pathlib.Path('.github/workflows/post-landing.yml').read_text(encoding='utf-8')
           assert '          permission-workflows: write\n' in source, 'Reverts must handle workflow-file landings'
+          assert 'proof' not in source and 'rw227' not in source, 'The reusable reporter must carry no simulation path'
           step = source.split('      - name: Report and propose revert\n', 1)[1]
           code = textwrap.dedent(step.split('        run: |\n', 1)[1])
           real_run = subprocess.run
@@ -2642,9 +2643,6 @@ jobs:
                          'status': 'completed', 'conclusion': 'failure', 'run_attempt': 1,
                          'repository': {'full_name': 'owner/repo'}, 'html_url': 'https://github.com/owner/repo/actions/runs/7'}
                   if scenario == 'pass': run['conclusion'] = 'success'
-                  if scenario == 'proof':
-                      run['head_branch'] = 'ci/rw227-fixture'; run['status'] = 'in_progress'
-                      git('push', 'origin', sha + ':refs/heads/ci/rw227-fixture')
                   landing = {'number': 42, 'merge_commit_sha': sha, 'merged_at': 'today',
                              'head': {'sha': sha}, 'base': {'ref': 'main', 'repo': {'full_name': 'owner/repo'}}}
                   def command(argv, **kwargs):
@@ -2687,7 +2685,7 @@ jobs:
                           return subprocess.CompletedProcess(argv, 0, prs[-1]['url'], '')
                       else: raise AssertionError(argv)
                       return subprocess.CompletedProcess(argv, 0, json.dumps(value), '')
-                  env = {'REPOSITORY': 'owner/repo', 'RUN_ID': '7', 'PROOF': 'true' if scenario == 'proof' else 'false', 'GH_TOKEN': 'token', 'REPORT_TOKEN': 'report-token', 'GITHUB_SERVER_URL': 'https://github.com'}
+                  env = {'REPOSITORY': 'owner/repo', 'RUN_ID': '7', 'GH_TOKEN': 'token', 'REPORT_TOKEN': 'report-token', 'GITHUB_SERVER_URL': 'https://github.com'}
                   with patch.dict(os.environ, env), patch('subprocess.run', side_effect=command):
                       previous = pathlib.Path.cwd()
                       os.chdir(checkout)
@@ -2719,7 +2717,7 @@ jobs:
                           os.chdir(previous)
               print(f'PASS landing_report_handles_{scenario} ({time.monotonic() - start:.3f}s)', flush=True)
 
-          for scenario in ['large', 'proof', 'failure', 'pagination', 'doctest', 'resume', 'pass', 'unknown', 'permission', 'conflict']:
+          for scenario in ['large', 'failure', 'pagination', 'doctest', 'resume', 'pass', 'unknown', 'permission', 'conflict']:
               landing_report_handles(scenario)
               print('PASS landing_report_handles_' + scenario, flush=True)
 
