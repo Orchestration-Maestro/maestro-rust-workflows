@@ -1,4 +1,4 @@
-name: Aggregate expectation regression timings
+name: Coverage fixture regression timings
 
 on:
   push:
@@ -58,7 +58,7 @@ jobs:
                    'archived_coverage_excludes_unselected_report_packages', 'changed_packages_include_reverse_dependencies',
                    'declared_test_inputs_select_their_readers', 'coverage_baseline_download_requires_complete_manifest',
                    'selected_coverage_merges_only_unchanged_baseline_packages', 'baseline_selection_includes_changes_before_group_base', 'coverage_baseline_transfer_requires_coverage', 'archive_checkout_root_is_the_coverage_source_root', 'doctests_run_independently_and_remain_required',
-                   'removed_shard_lists_fail_clearly']
+                   'removed_shard_lists_fail_clearly', 'coverage_matrix_splits_doctests_from_partitions']
           for name in names:
               started = time.monotonic()
               namespace[name]()
