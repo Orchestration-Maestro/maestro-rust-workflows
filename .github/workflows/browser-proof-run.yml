@@ -1,4 +1,4 @@
-name: Browser selection proof (run, dependency only)
+name: Browser selection proof (run, browser crate only)
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   merge-group:
-    name: Merge group, browser dependency changed
+    name: Merge group, browser crate changed
     permissions:
       contents: read
       actions: read

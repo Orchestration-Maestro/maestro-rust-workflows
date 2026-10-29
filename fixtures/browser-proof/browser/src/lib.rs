@@ -2,13 +2,13 @@
 
 /// Returns the engine value the browser reports.
 pub fn reported() -> u32 {
-    engine::value()
+    engine::value() + 1
 }
 
 #[cfg(test)]
 mod tests {
     #[test]
     fn reports_engine_value() {
-        assert_eq!(super::reported(), engine::value());
+        assert_eq!(super::reported(), engine::value() + 1);
     }
 }
