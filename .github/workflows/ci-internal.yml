@@ -5613,6 +5613,8 @@ jobs:
                   def command(argv, **kwargs):
                       if argv[0] != 'gh':
                           return real_run(argv, **kwargs)
+                      expected = 'token' if argv[1] == 'api' else 'report-token'
+                      assert kwargs['env']['GH_TOKEN'] == expected
                       calls.append(argv)
                       if argv[1] == 'api':
                           endpoint = argv[-1]
@@ -5642,7 +5644,7 @@ jobs:
                           return subprocess.CompletedProcess(argv, 0, prs[-1]['url'], '')
                       else: raise AssertionError(argv)
                       return subprocess.CompletedProcess(argv, 0, json.dumps(value), '')
-                  env = {'REPOSITORY': 'owner/repo', 'RUN_ID': '7', 'PROOF': 'true' if scenario == 'proof' else 'false', 'GH_TOKEN': 'token', 'GITHUB_SERVER_URL': 'https://github.com'}
+                  env = {'REPOSITORY': 'owner/repo', 'RUN_ID': '7', 'PROOF': 'true' if scenario == 'proof' else 'false', 'GH_TOKEN': 'token', 'REPORT_TOKEN': 'report-token', 'GITHUB_SERVER_URL': 'https://github.com'}
                   with patch.dict(os.environ, env), patch('subprocess.run', side_effect=command):
                       previous = pathlib.Path.cwd()
                       os.chdir(checkout)
