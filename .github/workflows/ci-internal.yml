@@ -5105,6 +5105,8 @@ jobs:
                       if job.get('uses') == './.github/workflows/ci.yml':
                           assert job.get('permissions', {}).get('actions') == 'read', (path.name, name)
                   assert 'actions' not in document.get('permissions', {}), path.name
+                  if path.name == 'post-landing.yml':
+                      assert document['jobs']['report'].get('permissions', {}).get('actions') == 'read', path.name
 
           local_callers_grant_baseline_artifact_reads()
           print('PASS local_callers_grant_baseline_artifact_reads')
