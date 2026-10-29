@@ -3365,7 +3365,7 @@ jobs:
           print('PASS selected_archive_build_compiles_only_selected_packages')
 
           def selected_coverage_limits_tests_and_report_scope():
-              for step in ['Isolated tests', 'Coverage']:
+              for step in ['Isolated tests']:
                   with tempfile.TemporaryDirectory() as temporary:
                       directory = pathlib.Path(temporary)
                       tools, log = install_recording_runner(directory)
@@ -3396,9 +3396,9 @@ jobs:
                   reports.mkdir()
                   (reports / 'shard-1.lcov').write_text('SF:/sample/lib.rs\nDA:1,1\nDA:2,0\nend_of_record\n', encoding='utf-8')
                   result = execute('Merge coverage', directory, {
-                      'TEST_SHARD_COUNT': '1', 'COVERAGE_SCOPE': 'selected packages: sample'})
+                      'COVERAGE_REPORT_COUNT': '1', 'COVERAGE_SCOPE': 'full workspace'})
                   assert result.returncode != 0 and 'minimum 80%' in result.stdout, result.stdout + result.stderr
-                  assert 'Coverage scope: selected packages: sample' in result.stdout, result.stdout
+                  assert 'Coverage scope: full workspace' in result.stdout, result.stdout
 
           selected_coverage_limits_tests_and_report_scope()
           print('PASS selected_coverage_limits_tests_and_report_scope')
@@ -4849,6 +4849,8 @@ jobs:
           def baseline_selection_includes_changes_before_group_base():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
                   (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c"]\n', encoding='utf-8')
                   for name in ['a', 'b', 'c']:
                       (directory / name / 'src').mkdir(parents=True)
@@ -4891,6 +4893,10 @@ jobs:
                   manifest.write_text(json.dumps({'head': '0' * 40}), encoding='utf-8')
                   result = execute('Select test packages', directory, env)
                   assert result.returncode == 0 and 'baseline head is not an ancestor' in result.stdout, result.stdout + result.stderr
+                  manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'a', 'b': 'b', 'c': 'c'}}), encoding='utf-8')
+                  (directory / '.github/ci.toml').unlink()
+                  result = execute('Select test packages', directory, env)
+                  assert result.returncode == 0 and 'undeclared caller: full suite' in result.stdout, result.stdout + result.stderr
 
           baseline_selection_includes_changes_before_group_base()
           print('PASS baseline_selection_includes_changes_before_group_base')
@@ -4997,6 +5003,8 @@ jobs:
           def merge_group_nested_members_have_one_owner():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
                   (directory / 'src').mkdir()
                   (directory / 'src/lib.rs').write_text('pub fn root() {}\n', encoding='utf-8')
                   (directory / 'nested/src').mkdir(parents=True)
@@ -5030,6 +5038,8 @@ jobs:
               from functools import partial
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
                   names = ['a', 'b', 'c', 'build', 'dev', 'target', 'unrelated']
                   (directory / 'Cargo.toml').write_text(
                       '[workspace]\nresolver="3"\nmembers=' + json.dumps(names) + '\n', encoding='utf-8')
