@@ -4639,7 +4639,9 @@ jobs:
                   # Skips must not become failed shard dependencies; recipe failures must propagate.
                   aggregate = workflow.split('  tests-result:\n', 1)[1].split('\n  checks:', 1)[0]
                   assert 'browser-tests' not in aggregate
-                  assert 'continue-on-error:' not in job
+                  assert 'continue-on-error:' not in job.split('    steps:', 1)[0]
+                  recipe = job.split('      - name: Browser test recipe\n', 1)[1].split('      - name:', 1)[0]
+                  assert 'continue-on-error:' not in recipe
                   assert body('Browser test recipe').strip() == 'just browser-test'
 
           browser_merge_groups_follow_shared_package_selection()
