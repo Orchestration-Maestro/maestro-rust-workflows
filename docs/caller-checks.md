@@ -484,12 +484,12 @@ retain the runner's normal home and cache access.
 
 Before cleanup, the step kills every process still using the isolated
 directories: as its working directory, executable or open file, or through the
-isolated environment it inherited. The compile cache server is left running for
-the statistics and seal steps. The log lists each stopped process as
-`Stopped test process <pid>: <command>`, so the test that leaked it can be
-found. If the directories still cannot be removed, the step logs
-`Could not remove <directory>`. Cleanup never changes the exit status of the
-test command, whether it passed or failed.
+isolated environment it inherited. Processes running the compile cache
+executable are left running for the statistics and seal steps. The log lists
+each stopped process as `Stopped test process <pid>: <command>`, so the test
+that leaked it can be found. If the directories still cannot be removed, the
+step logs `Could not remove <directory>`. Cleanup never changes the exit status
+of the test command, whether it passed or failed.
 
 ## Caller-pinned build and test tools
 

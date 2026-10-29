@@ -3701,7 +3701,7 @@ jobs:
                           import os, pathlib, shutil, subprocess, sys, time
                           leak = {leak!r}
                           if leak:
-                              temporary = os.environ['TMPDIR']
+                              isolated_tmp = os.environ['TMPDIR']
                               # Each sleeper is visible to one check only: it has no isolated environment, directory, file or executable except the one named.
                               command, cwd, env, stdout = [shutil.which('sleep'), '600'], '/', {{}}, subprocess.DEVNULL
                               if leak == 'writer':
@@ -3711,16 +3711,16 @@ jobs:
                               elif leak == 'environment':
                                   env = None
                               elif leak == 'working directory':
-                                  cwd = temporary
+                                  cwd = isolated_tmp
                               elif leak == 'open file':
-                                  stdout = open(temporary + '/held', 'w')
+                                  stdout = open(isolated_tmp + '/held', 'w')
                               elif leak == 'executable':
-                                  command[0] = shutil.copy(command[0], temporary + '/sleeper')
+                                  command[0] = shutil.copy(command[0], isolated_tmp + '/sleeper')
                               process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=stdout,
                                                          stderr=subprocess.DEVNULL, start_new_session=True)
                               pathlib.Path({str(directory / 'leaked.pid')!r}).write_text(str(process.pid), encoding='utf-8')
                               for _ in range(1000):
-                                  if leak != 'writer' or len(os.listdir(os.environ['TMPDIR'])) > 2000:
+                                  if leak != 'writer' or len(os.listdir(isolated_tmp)) > 2000:
                                       break
                                   time.sleep(0.01)
                               else:
@@ -3740,15 +3740,15 @@ jobs:
                           output = result.stdout + result.stderr
                           assert result.returncode == status, (status, leak, removal_fails, output)
                           stopped = [line for line in output.splitlines() if line.startswith('Stopped test process ')]
+                          pid = int(pid_file.read_text(encoding='utf-8')) if leak else None
                           if leak not in (None, 'compile cache'):
-                              pid = int(pid_file.read_text(encoding='utf-8'))
                               name = 'leaking-writer.py' if leak == 'writer' else 'sleep'
                               assert len(stopped) == 1 and f' {pid}:' in stopped[0] and name in stopped[0], (leak, output)
                               assert not alive(pid) and not list(directory.glob('maestro-tests.*')), (leak, output)
                           else:
                               assert not stopped, output
                           if leak == 'compile cache':
-                              assert alive(int(pid_file.read_text(encoding='utf-8'))), output
+                              assert alive(pid), output
                           if removal_fails:
                               assert 'Could not remove ' in output, output
                       finally:
