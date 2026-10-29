@@ -29,6 +29,30 @@ browser_test_crates = []
 test_tools = false
 ```
 
+## Coverage baseline and caller permissions
+
+When updating the shared workflow release pin, callers grant `actions: read`
+to the reusable-workflow call. The shared test-selection job needs it to read
+coverage artifacts from earlier runs; all other jobs retain their existing
+permissions. A missing caller grant can prevent a reusable workflow from
+starting, so add the grant in the same PR as the release-pin update.
+
+The workspace coverage floor remains 80% (or the caller's higher floor).
+A narrowed merge group combines fresh selected-package LCOV with unchanged
+packages' LCOV from the latest successful full run on main's ancestry.
+Narrowing requires a `.github/ci.toml` declaration; undeclared callers run the
+full suite. Selected-package coverage is reported separately, for information
+only; it has no per-package floor. Selection compares the baseline head with the group head,
+so packages changed since the baseline also run.
+
+A successful full aggregate publishes `coverage-<key>-full`, containing the
+source head, checkout root, package roots and shard count. The selector accepts
+only this manifest together with all of its run's LCOV shard artifacts. Missing
+or expired artifacts, unavailable API access and an unrelated baseline cause a
+logged full-suite fallback. Historical runs without a manifest are not used;
+the first full run after rollout supplies the initial baseline. Main pushes and
+full fallbacks retain full-workspace coverage.
+
 ## Warm test filter
 
 `warm_test_filter` is an optional nextest filterset string used only by
