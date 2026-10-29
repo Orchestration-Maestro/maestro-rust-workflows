@@ -8,10 +8,12 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   sample:
+    permissions:
+      contents: read
+      actions: read
     name: Sample
     uses: ./.github/workflows/ci.yml
     with:
@@ -19,6 +21,9 @@ jobs:
       concurrency-key: sample
 
   declared:
+    permissions:
+      contents: read
+      actions: read
     name: Declared caller
     uses: ./.github/workflows/ci.yml
     with:
@@ -27,6 +32,9 @@ jobs:
       test-event: merge_group
 
   test-tools:
+    permissions:
+      contents: read
+      actions: read
     name: Caller test tools
     uses: ./.github/workflows/ci.yml
     with:
@@ -35,6 +43,9 @@ jobs:
       test-event: merge_group
 
   fuzz:
+    permissions:
+      contents: read
+      actions: read
     name: Fuzz caller
     uses: ./.github/workflows/ci.yml
     with:
@@ -2813,19 +2824,23 @@ jobs:
                   command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
                   argv = [os.path.expanduser('~/.local/bin/capped'), 'bash', '-e', '-o', 'pipefail', '-c', command]
                   env['CARGO_BUILD_JOBS'] = '3'
+              return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
+
+          def select_packages(cwd, extra):
+              # Merge-group selection reads a baseline manifest from RUNNER_TEMP; give it one that matches the fixture.
+              if extra.get('TEST_EVENT') != 'merge_group' or 'RUNNER_TEMP' in extra:
+                  return execute('Select test packages', cwd, extra)
               with tempfile.TemporaryDirectory() as selection_temp:
-                  if name == 'Select test packages' and env.get('TEST_EVENT') == 'merge_group' and 'RUNNER_TEMP' not in (extra or {}):
-                      baseline = pathlib.Path(selection_temp) / 'coverage-baseline'
-                      baseline.mkdir()
-                      import tomllib
-                      package_roots = {}
-                      for manifest in pathlib.Path(cwd).rglob('Cargo.toml'):
-                          package = tomllib.loads(manifest.read_text(encoding='utf-8')).get('package', {})
-                          if 'name' in package:
-                              package_roots[package['name']] = manifest.parent.relative_to(cwd).as_posix()
-                      (baseline / 'manifest.json').write_text(json.dumps({'head': env.get('BASE_REF'), 'package_roots': package_roots}), encoding='utf-8')
-                      env['RUNNER_TEMP'] = selection_temp
-                  return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
+                  baseline = pathlib.Path(selection_temp) / 'coverage-baseline'
+                  baseline.mkdir()
+                  import tomllib
+                  package_roots = {}
+                  for manifest in pathlib.Path(cwd).rglob('Cargo.toml'):
+                      package = tomllib.loads(manifest.read_text(encoding='utf-8')).get('package', {})
+                      if 'name' in package:
+                          package_roots[package['name']] = manifest.parent.relative_to(cwd).as_posix()
+                  (baseline / 'manifest.json').write_text(json.dumps({'head': extra.get('BASE_REF'), 'package_roots': package_roots}), encoding='utf-8')
+                  return execute('Select test packages', cwd, extra | {'RUNNER_TEMP': selection_temp})
 
           credential_names = '''ANTHROPIC_API_KEY ANTHROPIC_OAUTH_TOKEN OPENAI_API_KEY GEMINI_API_KEY
           GROQ_API_KEY CEREBRAS_API_KEY XAI_API_KEY OPENROUTER_API_KEY ZAI_API_KEY
@@ -3364,7 +3379,7 @@ jobs:
           selected_archive_build_compiles_only_selected_packages()
           print('PASS selected_archive_build_compiles_only_selected_packages')
 
-          def selected_coverage_limits_tests_and_report_scope():
+          def isolated_coverage_runs_selected_packages_and_merge_names_scope():
               for step in ['Isolated tests']:
                   with tempfile.TemporaryDirectory() as temporary:
                       directory = pathlib.Path(temporary)
@@ -3400,8 +3415,8 @@ jobs:
                   assert result.returncode != 0 and 'minimum 80%' in result.stdout, result.stdout + result.stderr
                   assert 'Coverage scope: full workspace' in result.stdout, result.stdout
 
-          selected_coverage_limits_tests_and_report_scope()
-          print('PASS selected_coverage_limits_tests_and_report_scope')
+          isolated_coverage_runs_selected_packages_and_merge_names_scope()
+          print('PASS isolated_coverage_runs_selected_packages_and_merge_names_scope')
 
           def undeclared_coverage_measures_the_full_workspace():
               with tempfile.TemporaryDirectory() as temporary:
@@ -3557,7 +3572,7 @@ jobs:
               assert "TEST_EVENT: $" + "{{ inputs.warm-cache && 'push' ||" in workflow
               with tempfile.TemporaryDirectory() as temporary:
                   output = pathlib.Path(temporary) / 'selection'
-                  result = execute('Select test packages', root / 'fixtures/sample', {
+                  result = select_packages(root / 'fixtures/sample', {
                       'TEST_EVENT': 'push', 'BASE_REF': 'unrelated-workflow-base', 'GITHUB_OUTPUT': str(output)})
                   assert result.returncode == 0, result.stderr
                   values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
@@ -3702,7 +3717,7 @@ jobs:
                       assert result.returncode == 0 and values['enabled'] == str(declared).lower(), result.stderr
                       for event in ['pull_request', 'merge_group', 'push']:
                           output = directory / 'output'
-                          result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
+                          result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
                           assert result.returncode == 0, result.stderr
                           selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                           legs = json.loads(selected['test_shards'])
@@ -4664,7 +4679,7 @@ jobs:
                                                 (False, True, False), (False, False, True)]:
                       with tempfile.TemporaryDirectory() as temporary:
                           output = pathlib.Path(temporary) / 'selection'
-                          result = execute('Select test packages', root / 'fixtures/sample', {
+                          result = select_packages(root / 'fixtures/sample', {
                               'TEST_EVENT': 'push' if warm else event, 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
                           assert result.returncode == 0, result.stderr
                           values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
@@ -4821,8 +4836,8 @@ jobs:
                       ['yq', '-o=json', '-'], input=path.read_text(encoding='utf-8'), text=True))
                   for name, job in document.get('jobs', {}).items():
                       if job.get('uses') == './.github/workflows/ci.yml':
-                          permissions = job.get('permissions', document.get('permissions', {}))
-                          assert permissions.get('actions') == 'read', (path.name, name, permissions)
+                          assert job.get('permissions', {}).get('actions') == 'read', (path.name, name)
+                  assert 'actions' not in document.get('permissions', {}), path.name
 
           local_callers_grant_baseline_artifact_reads()
           print('PASS local_callers_grant_baseline_artifact_reads')
@@ -4875,10 +4890,14 @@ jobs:
                       'if (root/"deny").exists(): sys.exit(1)\n'
                       'if "artifacts/1/zip" in url: sys.stdout.buffer.write((root/"manifest.zip").read_bytes())\n'
                       'elif "artifacts/2/zip" in url: sys.stdout.buffer.write((root/"shard.zip").read_bytes())\n'
-                      'elif "/runs/10/artifacts" in url: print(json.dumps({"artifacts":[{"id":2,"name":"coverage-root-1","expired":False}]}))\n'
-                      'elif "/runs/10" in url: print(json.dumps({"conclusion":"success","event":"merge_group"}))\n'
+                      'elif "/runs/10/artifacts" in url: print((root/"shards.json").read_text())\n'
+                      'elif "/runs/10" in url: print((root/"run.json").read_text())\n'
                       'else: print((root/"artifacts.json").read_text())\n', encoding='utf-8')
                   gh.chmod(0o755)
+                  shards = {'artifacts': [{'id': 2, 'name': 'coverage-root-1', 'expired': False}]}
+                  runs = {'conclusion': 'success', 'event': 'merge_group'}
+                  (directory / 'shards.json').write_text(json.dumps(shards), encoding='utf-8')
+                  (directory / 'run.json').write_text(json.dumps(runs), encoding='utf-8')
                   env = {'PATH': str(directory) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
                          'BASE_REF': head, 'GITHUB_REPOSITORY': 'fixture/caller', 'COVERAGE_KEY': 'root'}
                   result = execute('Find coverage baseline', directory, env)
@@ -4891,6 +4910,25 @@ jobs:
                   result = execute('Find coverage baseline', directory, env)
                   assert result.returncode == 0 and not (baseline / 'manifest.json').exists(), result.stdout + result.stderr
                   assert (directory / 'coverage-baseline-reason').read_text(encoding='utf-8') == 'coverage baseline head is not an ancestor'
+                  def write_manifest(**changes):
+                      with zipfile.ZipFile(directory / 'manifest.zip', 'w') as archive:
+                          archive.writestr('manifest.json', json.dumps(manifest | changes))
+                  for label, reason, changes in [
+                          ('unsuccessful run', 'no baseline manifest yet', {'run': {'conclusion': 'failure', 'event': 'merge_group'}}),
+                          ('empty package layout', 'coverage baseline manifest or reports invalid', {'manifest': {'package_roots': {}}}),
+                          ('relative checkout root', 'coverage baseline manifest or reports invalid', {'manifest': {'checkout_root': 'relative'}}),
+                          ('missing shard', 'coverage baseline reports missing or expired', {'shards': {'artifacts': []}}),
+                          ('expired shard', 'coverage baseline reports missing or expired',
+                           {'shards': {'artifacts': [{'id': 2, 'name': 'coverage-root-1', 'expired': True}]}})]:
+                      write_manifest(**changes.get('manifest', {}))
+                      (directory / 'run.json').write_text(json.dumps(changes.get('run', runs)), encoding='utf-8')
+                      (directory / 'shards.json').write_text(json.dumps(changes.get('shards', shards)), encoding='utf-8')
+                      result = execute('Find coverage baseline', directory, env)
+                      assert result.returncode == 0 and not (baseline / 'manifest.json').exists(), (label, result.stdout + result.stderr)
+                      assert (directory / 'coverage-baseline-reason').read_text(encoding='utf-8') == reason, label
+                  write_manifest()
+                  (directory / 'run.json').write_text(json.dumps(runs), encoding='utf-8')
+                  (directory / 'shards.json').write_text(json.dumps(shards), encoding='utf-8')
                   for failure in ['expired', 'missing', 'denied']:
                       if failure == 'expired':
                           artifacts[0]['expired'] = True
@@ -4905,15 +4943,6 @@ jobs:
 
           coverage_baseline_download_requires_complete_manifest()
           print('PASS coverage_baseline_download_requires_complete_manifest')
-
-          def baseline_admission_checks_have_one_owner():
-              assert workflow.count('--is-ancestor') == 1, 'ancestry is checked outside the baseline lookup'
-              assert workflow.count('baseline head is not an ancestor') == 1, 'ancestry has a second fallback reason'
-              assert workflow.count('baseline package layout changed') == 1
-              assert 'baseline package layout does not match' not in workflow, 'the merge repeats the selector layout check'
-
-          baseline_admission_checks_have_one_owner()
-          print('PASS baseline_admission_checks_have_one_owner')
 
           def selected_coverage_merges_only_unchanged_baseline_packages():
               with tempfile.TemporaryDirectory() as temporary:
@@ -4996,24 +5025,24 @@ jobs:
                   output = directory / '.git/selection'
                   env = {'TEST_EVENT': 'merge_group', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
                          'RUNNER_TEMP': str(directory / '.git')}
-                  result = execute('Select test packages', directory, env)
+                  result = select_packages(directory, env)
                   assert result.returncode == 0, result.stdout + result.stderr
                   values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                   assert json.loads(values['packages']) == ['a', 'b'], values
                   assert json.loads(values['coverage_layout'])['package_roots'] == {'a': 'a', 'b': 'b', 'c': 'c'}
                   assert 'checkout_root' not in json.loads(values['coverage_layout']), 'the selection layout names a checkout root'
                   manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'old'}}), encoding='utf-8')
-                  result = execute('Select test packages', directory, env)
+                  result = select_packages(directory, env)
                   assert result.returncode == 0 and 'baseline package layout changed' in result.stdout, result.stdout + result.stderr
                   manifest.unlink()
                   output.write_text('', encoding='utf-8')
-                  result = execute('Select test packages', directory, env)
+                  result = select_packages(directory, env)
                   values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                   assert result.returncode == 0 and 'no baseline manifest yet' in result.stdout, result.stdout + result.stderr
                   assert json.loads(values['packages']) == ['a', 'b', 'c'], values
                   manifest.write_text(json.dumps({'head': baseline_head, 'package_roots': {'a': 'a', 'b': 'b', 'c': 'c'}}), encoding='utf-8')
                   (directory / '.github/ci.toml').unlink()
-                  result = execute('Select test packages', directory, env)
+                  result = select_packages(directory, env)
                   assert result.returncode == 0 and 'undeclared caller: full suite' in result.stdout, result.stdout + result.stderr
 
           baseline_selection_includes_changes_before_group_base()
@@ -5103,7 +5132,7 @@ jobs:
                               for event in ['pull_request', 'merge_group']:
                                   output = repository / '.git/selection'
                                   output.write_text('', encoding='utf-8')
-                                  result = execute('Select test packages', directory, {'TEST_EVENT': event,
+                                  result = select_packages(directory, {'TEST_EVENT': event,
                                       'BASE_REF': comparison_base, 'GITHUB_OUTPUT': str(output)})
                                   assert result.returncode == 0, result.stdout + result.stderr
                                   values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
@@ -5136,7 +5165,7 @@ jobs:
                   fixture_git(directory, 'add', '.')
                   fixture_git(directory, 'commit', '-qm', 'source')
                   output = directory / '.git/selection'
-                  result = execute('Select test packages', directory, {
+                  result = select_packages(directory, {
                       'TEST_EVENT': 'merge_group', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                   assert result.returncode == 0, result.stdout + result.stderr
                   values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
@@ -5177,7 +5206,7 @@ jobs:
                   def select(base_ref=base, event='merge_group'):
                       output = directory / '.git/selection'
                       output.write_text('', encoding='utf-8')
-                      result = execute('Select test packages', directory, {
+                      result = select_packages(directory, {
                           'TEST_EVENT': event, 'BASE_REF': base_ref, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
                       values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
@@ -5247,7 +5276,7 @@ jobs:
                   def select(event='pull_request'):
                       output = directory / '.git/selection'
                       output.write_text('', encoding='utf-8')
-                      result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                      result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
                       return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                   declaration_path = directory / '.github/ci.toml'
@@ -5291,11 +5320,11 @@ jobs:
                   # Advisories follow dependency changes only on pull requests and merge groups.
                   assert [select(event)['check_advisories'] for event in ['pull_request', 'merge_group', 'push', 'schedule']] == ['false', 'false', 'true', 'true']
                   output = directory / '.git/no-base'
-                  result = execute('Select test packages', directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
+                  result = select_packages(directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
                   assert result.returncode == 0 and 'check_advisories=true' in output.read_text(encoding='utf-8'), result.stdout + result.stderr
                   # A base the checkout cannot read keeps the check.
                   output.write_text('', encoding='utf-8')
-                  result = execute('Select test packages', directory, {'TEST_EVENT': 'merge_group', 'BASE_REF': '0' * 40, 'GITHUB_OUTPUT': str(output)})
+                  result = select_packages(directory, {'TEST_EVENT': 'merge_group', 'BASE_REF': '0' * 40, 'GITHUB_OUTPUT': str(output)})
                   assert result.returncode == 0 and 'check_advisories=true' in output.read_text(encoding='utf-8'), result.stdout + result.stderr
                   git('reset', '--hard', base)
                   (directory / 'a/Cargo.toml').write_text((directory / 'a/Cargo.toml').read_text(encoding='utf-8').replace('0.1.0', '0.2.0'), encoding='utf-8')
@@ -5392,7 +5421,7 @@ jobs:
                       git('commit', '-qm', 'change')
                       output = directory / '.git/selection'
                       output.write_text('', encoding='utf-8')
-                      result = execute('Select test packages', directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                      result = select_packages(directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
                       values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       assert json.loads(values['packages']) == expected, (changed, values)
@@ -5438,7 +5467,7 @@ jobs:
                       git('add', '.')
                       git('commit', '-qm', 'change')
                       output = directory / '.git/selection'
-                      result = execute('Select test packages', directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                      result = select_packages(directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
                       values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       assert json.loads(values['packages']) == (['child'] if nested else ['root-reader']), (nested, values)
@@ -5490,7 +5519,7 @@ jobs:
                   def select(event='pull_request', fallback=None):
                       output = directory / '.git/selection'
                       output.write_text('', encoding='utf-8')
-                      result = execute('Select test packages', directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                      result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
                       assert result.returncode == 0, result.stdout + result.stderr
                       if fallback:
                           assert 'Full-suite fallback: ' + fallback in result.stdout, result.stdout

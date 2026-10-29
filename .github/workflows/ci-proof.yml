@@ -7,11 +7,13 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   warm:
     name: Warm Maestro coverage cache
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: maestro
@@ -24,6 +26,9 @@ jobs:
     needs: warm
     if: always()
     name: Maestro partitioned coverage
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: maestro
@@ -36,6 +41,9 @@ jobs:
     name: Maestro selected-package tests
     needs: warm
     if: always()
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: maestro

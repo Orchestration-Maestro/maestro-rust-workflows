@@ -32,7 +32,7 @@ test_tools = false
 ## Coverage baseline and caller permissions
 
 When updating the shared workflow release pin, callers grant `actions: read`
-to the reusable-workflow call. The shared test-selection job needs it to read
+to the reusable-workflow call. The shared Caller declaration job needs it to read
 coverage artifacts from earlier runs; all other jobs retain their existing
 permissions. A missing caller grant can prevent a reusable workflow from
 starting, so add the grant in the same PR as the release-pin update.
@@ -50,8 +50,8 @@ run.
 A successful full aggregate publishes `coverage-<key>-full`, containing the
 source head, archive compiler checkout root, package roots and shard count. The
 aggregate uses the compiler job's root, even when its own runner has a different
-workspace path. The selector accepts
-only this manifest together with all of its run's LCOV shard artifacts. Missing
+workspace path. The baseline lookup
+accepts only this manifest together with all of its run's LCOV shard artifacts. Missing
 or expired artifacts, unavailable API access and an unrelated baseline cause a
 logged full-suite fallback. Historical runs without a manifest are not used;
 the first full run after rollout supplies the initial baseline. Main pushes and
