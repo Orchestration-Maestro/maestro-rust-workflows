@@ -3114,6 +3114,45 @@ jobs:
                   subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
               return tools, log
 
+          def selected_coverage_limits_tests_and_report_scope():
+              for step in ['Isolated tests', 'Coverage']:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                             'RUNNER_TEMP': temporary, 'SHARD': '2', 'COLLECT_COVERAGE': 'true',
+                             'CARGO_COVERAGE_MIN_LINES': '', 'TEST_PACKAGES': '["sample"]',
+                             'COVERAGE_EXCLUDE': '["unrelated"]', 'COVERAGE_SCOPE': 'selected packages: sample',
+                             'WARM_CACHE': 'false'}
+                      result = execute(step, directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                      args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
+                      assert '-p' in args and args[args.index('-p') + 1] == 'sample', args
+                      assert '--workspace' not in args, args
+                      assert args[args.index('--exclude-from-report') + 1] == 'unrelated', args
+                      log.unlink()
+                      result = execute(step, directory, env | {
+                          'TEST_PACKAGES': '["sample", "unrelated"]', 'COVERAGE_EXCLUDE': '[]',
+                          'COVERAGE_SCOPE': 'full workspace'})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                      args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
+                      assert args.count('-p') == 2 and '--exclude-from-report' not in args, args
+              # The shared merger names the scope and retains the same floor.
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  reports = directory / 'coverage'
+                  reports.mkdir()
+                  (reports / 'shard-1.lcov').write_text('SF:/sample/lib.rs\nDA:1,1\nDA:2,0\nend_of_record\n', encoding='utf-8')
+                  result = execute('Merge coverage', directory, {
+                      'TEST_SHARD_COUNT': '1', 'COVERAGE_SCOPE': 'selected packages: sample'})
+                  assert result.returncode != 0 and 'minimum 80%' in result.stdout, result.stdout + result.stderr
+                  assert 'Coverage scope: selected packages: sample' in result.stdout, result.stdout
+
+          selected_coverage_limits_tests_and_report_scope()
+          print('PASS selected_coverage_limits_tests_and_report_scope')
+
           def warm_filter_runs_only_in_warm_mode():
               for value in warm_filters:
                   with tempfile.TemporaryDirectory() as temporary:
