@@ -3402,6 +3402,24 @@ jobs:
 
           selected_coverage_limits_tests_and_report_scope()
           print('PASS selected_coverage_limits_tests_and_report_scope')
+
+          def undeclared_coverage_measures_the_full_workspace():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  tools, log = install_recording_runner(directory)
+                  result = execute('Coverage', directory, {
+                      'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                      'TEST_PACKAGES': '["sample"]', 'COVERAGE_EXCLUDE': '["unrelated"]'})
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+                  args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
+                  assert '--workspace' in args and '-p' not in args and '--exclude-from-report' not in args, args
+              step = workflow.split('      - name: Coverage\n', 1)[1].split('      - name: ', 1)[0]
+              for name in ['TEST_PACKAGES', 'COVERAGE_EXCLUDE', 'COVERAGE_SCOPE']:
+                  assert name not in step, name + ' reaches the undeclared coverage step'
+
+          undeclared_coverage_measures_the_full_workspace()
+          print('PASS undeclared_coverage_measures_the_full_workspace')
           archived_shards_provision_child_build_dependencies()
           print('PASS archived_shards_provision_child_build_dependencies')
 
