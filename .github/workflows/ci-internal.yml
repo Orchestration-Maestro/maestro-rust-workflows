@@ -3813,6 +3813,97 @@ jobs:
           diagnostic_directory_reaches_isolated_runner()
           print('PASS diagnostic_directory_reaches_isolated_runner')
 
+          def isolated_cleanup_stops_leaked_processes_and_keeps_test_status():
+              import signal
+              import shutil
+              def alive(pid):
+                  try:
+                      return pathlib.Path(f'/proc/{pid}/stat').read_text(encoding='utf-8').rsplit(')', 1)[1].split()[0] != 'Z'
+                  except FileNotFoundError:
+                      return False
+              for status, leak, removal_fails in [(0, 'writer', False), (3, 'writer', False), (0, 'compile cache', False),
+                                                  (3, 'compile cache', False), (0, None, True), (3, None, True),
+                                                  (0, 'environment', False), (0, 'working directory', False),
+                                                  (0, 'open file', False), (0, 'executable', False)]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools = directory / 'runner-tools'
+                      tools.mkdir()
+                      writer = directory / 'leaking-writer.py'
+                      # A test runner may exit while a descendant in its own session keeps writing to TMPDIR.
+                      writer.write_text(textwrap.dedent('''
+                          import os, pathlib, time
+                          temporary = pathlib.Path(os.environ['TMPDIR'])
+                          os.chdir(temporary)
+                          for index in range(100000):
+                              (temporary / f'leaked-{index}').touch()
+                          while True:
+                              time.sleep(60)
+                      '''), encoding='utf-8')
+                      # The compile cache server is a real executable named sccache; its owner stops it after the tests.
+                      shutil.copy(shutil.which('sleep'), tools / 'sccache')
+                      runner = tools / 'cargo-nextest'
+                      runner.write_text('#!/usr/bin/env python3\n' + textwrap.dedent(f'''
+                          import os, pathlib, shutil, subprocess, sys, time
+                          leak = {leak!r}
+                          if leak:
+                              isolated_tmp = os.environ['TMPDIR']
+                              # Each sleeper is visible to one check only: it has no isolated environment, directory, file or executable except the one named.
+                              command, cwd, env, stdout = [shutil.which('sleep'), '600'], '/', {{}}, subprocess.DEVNULL
+                              if leak == 'writer':
+                                  command, cwd, env = [sys.executable, {str(writer)!r}], None, None
+                              elif leak == 'compile cache':
+                                  command, cwd, env = [{str(tools / 'sccache')!r}, '600'], None, None
+                              elif leak == 'environment':
+                                  env = None
+                              elif leak == 'working directory':
+                                  cwd = isolated_tmp
+                              elif leak == 'open file':
+                                  stdout = open(isolated_tmp + '/held', 'w')
+                              elif leak == 'executable':
+                                  command[0] = shutil.copy(command[0], isolated_tmp + '/sleeper')
+                              process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=stdout,
+                                                         stderr=subprocess.DEVNULL, start_new_session=True)
+                              pathlib.Path({str(directory / 'leaked.pid')!r}).write_text(str(process.pid), encoding='utf-8')
+                              for _ in range(1000):
+                                  if leak != 'writer' or len(os.listdir(isolated_tmp)) > 2000:
+                                      break
+                                  time.sleep(0.01)
+                              else:
+                                  sys.exit('leaking writer never started')
+                          print('runner done', flush=True)
+                          sys.exit({status})
+                      '''), encoding='utf-8')
+                      (tools / 'cargo').write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+                      (tools / 'rm').write_text('#!/bin/sh\nexit 1\n' if removal_fails else '#!/bin/sh\nexec /bin/rm "$@"\n', encoding='utf-8')
+                      for tool in tools.iterdir():
+                          tool.chmod(0o700)
+                      pid_file = directory / 'leaked.pid'
+                      try:
+                          result = execute('Isolated tests', directory, {
+                              'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                              'RUNNER_TEMP': temporary, 'SHARD': '2', 'COLLECT_COVERAGE': 'false'})
+                          output = result.stdout + result.stderr
+                          assert result.returncode == status, (status, leak, removal_fails, output)
+                          stopped = [line for line in output.splitlines() if line.startswith('Stopped test process ')]
+                          pid = int(pid_file.read_text(encoding='utf-8')) if leak else None
+                          if leak not in (None, 'compile cache'):
+                              name = 'leaking-writer.py' if leak == 'writer' else 'sleep'
+                              assert len(stopped) == 1 and f' {pid}:' in stopped[0] and name in stopped[0], (leak, output)
+                              assert not alive(pid) and not list(directory.glob('maestro-tests.*')), (leak, output)
+                          else:
+                              assert not stopped, output
+                          if leak == 'compile cache':
+                              assert alive(pid), output
+                          if removal_fails:
+                              assert 'Could not remove ' in output, output
+                      finally:
+                          if pid_file.exists() and alive(int(pid_file.read_text(encoding='utf-8'))):
+                              os.kill(int(pid_file.read_text(encoding='utf-8')), signal.SIGKILL)
+
+          isolated_cleanup_stops_leaked_processes_and_keeps_test_status()
+          print('PASS isolated_cleanup_stops_leaked_processes_and_keeps_test_status')
+
           def diagnostic_post_step_keeps_partial_transcripts():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
