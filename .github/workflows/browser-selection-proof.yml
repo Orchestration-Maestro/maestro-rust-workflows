@@ -1,0 +1,37 @@
+name: Browser selection proof
+on:
+  push:
+    branches: [ci/229-browser-proof]
+permissions:
+  contents: read
+jobs:
+  browser-selection:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Browser workflow seam
+        shell: python
+        run: |
+          import ast
+          import pathlib
+          import textwrap
+          import time
+          source = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+          code = source.split('      - name: Caller checks at workflow seam\n', 1)[1]
+          code = code.split('        run: |\n', 1)[1].split('\n  native:', 1)[0]
+          tree = ast.parse(textwrap.dedent(code))
+          tree.body = [node for node in tree.body
+                       if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.Assign))]
+          namespace = {}
+          exec(compile(tree, 'workflow seam definitions', 'exec'), namespace)
+          for name in ['browser_merge_groups_follow_shared_package_selection',
+                       'merge_groups_select_graph_and_fail_closed',
+                       'changed_packages_include_reverse_dependencies',
+                       'browser_test_job_is_single_and_optional',
+                       'browser_test_result_stays_required']:
+              started = time.monotonic()
+              namespace[name]()
+              print(f'PASS {name} ({time.monotonic() - started:.2f}s)', flush=True)
