@@ -48,7 +48,9 @@ baseline head with the group head, so packages changed since the baseline also
 run.
 
 A successful full aggregate publishes `coverage-<key>-full`, containing the
-source head, checkout root, package roots and shard count. The selector accepts
+source head, archive compiler checkout root, package roots and shard count. The
+aggregate uses the compiler job's root, even when its own runner has a different
+workspace path. The selector accepts
 only this manifest together with all of its run's LCOV shard artifacts. Missing
 or expired artifacts, unavailable API access and an unrelated baseline cause a
 logged full-suite fallback. Historical runs without a manifest are not used;
