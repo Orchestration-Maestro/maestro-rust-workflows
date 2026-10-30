@@ -207,7 +207,14 @@ jobs:
 
           def required_finding(run, jobs, pinned):
               """Pinned jobs that did not run at all, so a renamed or removed gate cannot pass silently."""
-              raise NotImplementedError('required_finding')
+              ran = [job['name'] for job in jobs if job.get('conclusion') in ('success', 'failure')]
+              missing = [name for name in pinned if not any(
+                  job.startswith(name[:-1]) if name.endswith('*') else job == name for job in ran)]
+              if not missing:
+                  return None
+              return {'title': f"Required checks missing from run {run['id']}",
+                      'body': f"Run: {run['html_url']}\nThese pinned jobs did not run: " + ', '.join(f'`{name}`' for name in missing) +
+                              '.\nA job was renamed, removed or skipped; restore it or update the pinned list.\n'}
 
           def file_issues(findings, repository, gh, slow_limit):
               """Open an issue for each finding no open issue already carries; returns the titles filed."""
@@ -248,6 +255,8 @@ jobs:
               jobs = jobs_of(run_id)
               findings = [budget_finding(run, jobs, settings['budget'])]
               on_main = run['event'] in ('merge_group', 'push')
+              if on_main:
+                  findings.append(required_finding(run, jobs, settings['required']))
               slow = shard_slow(jobs)
               unbalanced = shard_finding(run, jobs, settings['margin'], [])
               if unbalanced:
