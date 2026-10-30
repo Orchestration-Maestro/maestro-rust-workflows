@@ -524,8 +524,13 @@ jobs:
               start = datetime.datetime(2026, 10, 30, 2, 0, tzinfo=datetime.timezone.utc)
               return (start + datetime.timedelta(seconds=seconds)).isoformat().replace('+00:00', 'Z')
 
-          def job(name, minutes, conclusion='success', identifier=1):
-              return {'id': identifier, 'name': name, 'conclusion': conclusion,
+          def job(name, minutes, conclusion='success', identifier=1, steps=()):
+              # Steps are (name, seconds) pairs that run one after the other from the start of the job.
+              spent, listed = 0, []
+              for step, took in steps:
+                  listed.append({'name': step, 'conclusion': 'success', 'started_at': moment(spent), 'completed_at': moment(spent + took)})
+                  spent += took
+              return {'id': identifier, 'name': name, 'conclusion': conclusion, 'steps': listed,
                       'started_at': moment(0), 'completed_at': moment(minutes * 60)}
 
           def run_of(identifier, minutes, event='merge_group', conclusion='success', name='Rust CI', branch='main'):
@@ -535,67 +540,75 @@ jobs:
                       'status': 'completed', 'conclusion': conclusion, 'event': event, 'workflow_id': 9, 'created_at': moment(identifier),
                       'run_started_at': moment(start), 'updated_at': moment(start + minutes * 60)}
 
-          def a_run_more_than_ten_percent_over_its_baseline_files_an_issue():
-              prior = [run_of(n, 30) for n in range(1, 6)]
-              earlier = lambda identifier: [job('Test shard (1/16)', 20), job('Docs', 5), job('Format and lint', 4)]
-              now = [job('Test shard (1/16)', 28), job('Docs', 5), job('Format and lint', 4.5), job('New job', 3), job('Advisory scan', 0, 'skipped')]
-              finding = judging['budget_finding'](run_of(7, 33.3), now, prior, earlier, 'amd-epyc-7763-4c', None)
+          def prior_runs(count, rate=10.0, **more):
+              # Earlier runs of one band with their measured seconds per unit of work.
+              return [run_of(n, 30) for n in range(1, count + 1)], [{'tests': rate} | more] * count
+
+          def a_rate_more_than_ten_percent_over_its_baseline_files_an_issue():
+              prior, measured = prior_runs(5, compiles=2.0)
+              finding = judging['rate_finding'](run_of(7, 33.3), {'tests': 11.1, 'compiles': 2.0}, prior, measured, 'amd-epyc-7763-4c', {})
               assert finding['title'] == 'CI run slower than its baseline: run 7', finding
               body = finding['body']
               assert 'Run: https://example.test/runs/7' in body, body
-              assert 'Rust CI (merge_group, main) took 33.3 min against a baseline of 30.0 min (+11%, limit +10%) on runner band amd-epyc-7763-4c.' in body, body
+              assert 'Rust CI (merge_group, main) on runner band amd-epyc-7763-4c.' in body, body
+              assert '- Test jobs: 11.10 s per test run against a baseline of 10.00 s (+11%, limit +10%)' in body, body
+              assert 'Ratchet level: `9/merge_group/amd-epyc-7763-4c/tests`' in body, body
+              assert 'Build jobs' not in body, body
               assert 'Latest baseline runs (successful, same workflow, event and runner band):' in body, body
-              assert 'Ratchet level: `9/merge_group/amd-epyc-7763-4c`' in body, body
               for n in range(1, 6):
                   assert f'- https://example.test/runs/{n}' in body, body
-              grown = [line for line in body.splitlines() if line.startswith('- ') and 'min (' in line]
-              assert grown == ['- Test shard (1/16): 28.0 min (+8.0 min)', '- Format and lint: 4.5 min (+0.5 min)',
-                               '- Docs: 5.0 min (+0.0 min)'], grown
-              for minutes in (32.7, 33):
-                  assert judging['budget_finding'](run_of(8, minutes), now, prior, earlier, 'amd-epyc-7763-4c', None) is None, minutes
+              for rate in (10.9, 11.0):
+                  assert judging['rate_finding'](run_of(8, 30), {'tests': rate}, prior, measured, 'band', {}) is None, rate
+              # Compile units are judged on their own rate.
+              body = judging['rate_finding'](run_of(8, 30), {'tests': 10.0, 'compiles': 2.22}, prior, measured, 'band', {})['body']
+              assert '- Build jobs: 2.22 s per compile unit against a baseline of 2.00 s (+11%, limit +10%)' in body and 'Test jobs' not in body, body
 
-          a_run_more_than_ten_percent_over_its_baseline_files_an_issue()
-          print('PASS a_run_more_than_ten_percent_over_its_baseline_files_an_issue')
+          a_rate_more_than_ten_percent_over_its_baseline_files_an_issue()
+          print('PASS a_rate_more_than_ten_percent_over_its_baseline_files_an_issue')
 
           def the_baseline_needs_three_samples_and_is_their_median():
-              earlier = lambda identifier: []
               slow = run_of(9, 120)
               for count in (0, 1, 2):
-                  assert judging['budget_finding'](slow, [], [run_of(n, 30) for n in range(1, count + 1)], earlier, 'band', None) is None, count
-              assert judging['budget_finding'](slow, [], [run_of(n, 30) for n in range(1, 4)], earlier, 'band', None) is not None
-              assert judging['baseline_seconds']([1800, 1800]) is None and judging['baseline_seconds']([]) is None
+                  prior, measured = prior_runs(count)
+                  assert judging['rate_finding'](slow, {'tests': 99.0}, prior, measured, 'band', {}) is None, count
+              prior, measured = prior_runs(3)
+              assert judging['rate_finding'](slow, {'tests': 99.0}, prior, measured, 'band', {}) is not None
+              assert judging['baseline_of']([18.0, 18.0]) is None and judging['baseline_of']([]) is None
               # The median keeps one fast run from lowering the bar.
-              history = [run_of(3, 10), run_of(4, 30), run_of(5, 30), run_of(6, 30), run_of(7, 30)]
-              assert judging['baseline_seconds']([600, 1800, 1800, 1800, 1800]) == 1800
-              assert judging['budget_finding'](run_of(9, 32.9), [], history, earlier, 'band', None) is None
-              assert 'baseline of 30.0 min' in judging['budget_finding'](run_of(9, 33.1), [], history, earlier, 'band', None)['body']
+              history = [run_of(n, 30) for n in range(3, 8)]
+              measured = [{'tests': rate} for rate in (3.0, 10.0, 10.0, 10.0, 10.0)]
+              assert judging['baseline_of']([3.0, 10.0, 10.0, 10.0, 10.0]) == 10.0
+              assert judging['rate_finding'](run_of(9, 30), {'tests': 10.9}, history, measured, 'band', {}) is None
+              assert 'baseline of 10.00 s' in judging['rate_finding'](run_of(9, 30), {'tests': 11.1}, history, measured, 'band', {})['body']
+              # A kind with fewer than three earlier rates has no baseline, whatever the other kinds have.
+              prior, measured = prior_runs(5)
+              assert judging['rate_finding'](slow, {'tests': 10.0, 'compiles': 99.0}, prior, measured, 'band', {}) is None
 
           the_baseline_needs_three_samples_and_is_their_median()
           print('PASS the_baseline_needs_three_samples_and_is_their_median')
 
           def only_runs_that_gate_a_merge_are_judged():
-              prior = [run_of(n, 30) for n in range(1, 6)]
-              earlier = lambda identifier: []
+              prior, measured = prior_runs(5)
               for event, name, branch, fires in [('merge_group', 'Rust CI', 'gh-readonly-queue/main/x', True), ('pull_request', 'Rust CI', 'feature', True),
                                                  ('push', 'Rust CI', 'main', True), ('push', 'Rust CI', 'probe', False),
                                                  ('merge_group', 'CodeQL', 'x', False), ('push', 'CodeQL', 'main', False),
                                                  ('schedule', 'Rust CI', 'main', False)]:
                   slow = run_of(9, 60, event, name=name, branch=branch)
-                  assert (judging['budget_finding'](slow, [], prior, earlier, 'band', None) is not None) == fires, (event, name, branch)
+                  assert (judging['rate_finding'](slow, {'tests': 20.0}, prior, measured, 'band', {}) is not None) == fires, (event, name, branch)
 
           only_runs_that_gate_a_merge_are_judged()
           print('PASS only_runs_that_gate_a_merge_are_judged')
 
           def a_creeping_regression_fires_against_the_stored_ratchet():
-              earlier = lambda identifier: []
-              creep = [run_of(n, minutes) for n, minutes in enumerate([32, 34, 36, 38, 40], 3)]
-              # The last five alone give a median of 36 minutes and a limit of 39.6; the stored 30 keeps the limit at 33.
-              finding = judging['budget_finding'](run_of(9, 36), [], creep, earlier, 'band', 1800)
-              assert finding and 'baseline of 30.0 min (+20%, limit +10%)' in finding['body'], finding
-              assert judging['budget_finding'](run_of(9, 32.9), [], creep, earlier, 'band', 1800) is None
+              creep = [run_of(n, 30) for n in range(3, 8)]
+              measured = [{'tests': rate} for rate in (12.0, 13.0, 14.0, 15.0, 16.0)]
+              # The last five alone give a median of 14 and a limit of 15.4; the stored 10 keeps the limit at 11.
+              finding = judging['rate_finding'](run_of(9, 30), {'tests': 12.0}, creep, measured, 'band', {'tests': 10.0})
+              assert finding and 'against a baseline of 10.00 s (+20%, limit +10%)' in finding['body'], finding
+              assert judging['rate_finding'](run_of(9, 30), {'tests': 10.9}, creep, measured, 'band', {'tests': 10.0}) is None
               # A stored level above the recent median never raises the line.
-              raised = judging['budget_finding'](run_of(9, 45), [], creep, earlier, 'band', 3000)
-              assert raised and 'baseline of 36.0 min' in raised['body'], raised
+              raised = judging['rate_finding'](run_of(9, 30), {'tests': 16.0}, creep, measured, 'band', {'tests': 30.0})
+              assert raised and 'against a baseline of 14.00 s' in raised['body'], raised
 
           a_creeping_regression_fires_against_the_stored_ratchet()
           print('PASS a_creeping_regression_fires_against_the_stored_ratchet')
@@ -613,6 +626,27 @@ jobs:
 
           a_runs_band_is_the_hardware_label_of_its_slowest_labelled_job()
           print('PASS a_runs_band_is_the_hardware_label_of_its_slowest_labelled_job')
+
+          def work_units(message):
+              return [{'title': 'Work units', 'message': message, 'annotation_level': 'notice'}]
+
+          def measures_are_seconds_per_unit_of_work_read_from_the_work_unit_annotations():
+              jobs = [job('Test shard (1/3)', 10, identifier=1), job('Test shard (2/3)', 30, identifier=2), job('Test shard (3/3)', 5, identifier=3),
+                      job('Test shard (4/4)', 5, 'skipped', identifier=4), job('Build test archive', 5, identifier=5), job('Docs', 9, identifier=6)]
+              notes = {1: work_units('tests: 100'), 2: work_units('tests: 300'), 3: work_units('tests: 0'), 4: work_units('tests: 50'),
+                       5: work_units('compiles: 600; hit-rate: 99.5'), 6: work_units('tests: 7')}
+              asked = []
+              def annotations_of(item):
+                  asked.append(item['id'])
+                  return notes.get(item['id'], [])
+              # Shard seconds over shard test runs; a shard that ran no test, a skipped job and an unmeasured job add nothing.
+              assert judging['measures_of'](jobs, annotations_of) == {'tests': 6.0, 'compiles': 0.5, 'hit-rate': 99.5}, judging['measures_of'](jobs, annotations_of)
+              assert 6 not in asked, asked
+              assert judging['measures_of'](jobs, lambda item: [{'message': 'tests: 100'}]) == {}
+              assert judging['measures_of']([], lambda item: []) == {}
+
+          measures_are_seconds_per_unit_of_work_read_from_the_work_unit_annotations()
+          print('PASS measures_are_seconds_per_unit_of_work_read_from_the_work_unit_annotations')
 
           def every_linux_job_records_its_runner_hardware():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
@@ -660,20 +694,29 @@ jobs:
           findings_file_once_and_every_slow_test_gets_an_issue()
           print('PASS findings_file_once_and_every_slow_test_gets_an_issue')
 
-          def fake_repository(minutes=30, prior_minutes=None, bands=None, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group',
-                                  ratchet=None, floor=None, newer=0):
-              """Serves the REST calls judge makes for run 7, its earlier runs and the stored ratchet; `newer` runs finish after run 7."""
+          def fake_repository(minutes=30, bands=None, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group',
+                                  ratchet=None, floor=None, newer=0, pace=None, build=None, steps=None):
+              """Serves the REST calls judge makes for run 7, its earlier runs and the stored ratchet; `newer` runs finish after run 7.
+
+              `pace` maps a run to (shard duration factor, test runs per shard) and `build` to (build duration factor, compile units, cache hit rate);
+              `steps` maps (run, job name) to its (step, seconds) pairs. Runs after run 7 are five times slower per unit."""
               ratchet = {} if ratchet is None else ratchet
               counts = collections.Counter()
               names = required or ['Caller declaration', 'Format and lint', 'Docs', 'Build test archive', 'Doctests',
                                    'Tests (ubuntu-latest)', 'Dependency, source and coverage checks']
               shard_minutes = shard_minutes or [26 + n % 4 for n in range(16)]
+              pace = {identifier: (5, 100) for identifier in range(8, 20)} | (pace or {})
+              build = build or {}
               logs = {}
               def jobs_for(identifier):
                   base = identifier * 1000
-                  found = [job(name, 5, identifier=base + index) for index, name in enumerate(names)]
+                  factor, _ = pace.get(identifier, (1, 100))
+                  built, _, _ = build.get(identifier, (1, 600, 99.5))
+                  found = [job(name, 5 * built if name == 'Build test archive' else 5, identifier=base + index,
+                               steps=(steps or {}).get((identifier, name), [('Set up job', 5), ('Build docs', 240)] if name == 'Docs' else []))
+                           for index, name in enumerate(names)]
                   for index, took in enumerate(shard_minutes):
-                      found.append(job(f'Test shard ({index + 1}/16)', took, identifier=base + 100 + index))
+                      found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index))
                       logs[base + 100 + index] = (shard_logs or {}).get((identifier, index), 'Summary [1.0s] 1 test run\n')
                   declaration = next(item for item in found if item['name'] == 'Caller declaration') if 'Caller declaration' in names else None
                   if declaration:
@@ -681,7 +724,7 @@ jobs:
                       logs[declaration['id']] = '2026-10-30T02:00:00.1234567Z ' + (
                           f'Full-suite fallback: {trigger}\n' if trigger else '') + f'2026-10-30T02:00:01.1234567Z Selected package count: {selected}/{total}\n'
                   return found
-              runs = {identifier: run_of(identifier, minutes if identifier == 7 else 200 if identifier > 7 else (prior_minutes or {}).get(identifier, 30), event)
+              runs = {identifier: run_of(identifier, minutes if identifier == 7 else 200 if identifier > 7 else 30, event)
                       for identifier in range(1, 8 + newer)}
               # Other workflows of the repository share the listing; their wide selections must not count.
               decoys = [dict(run_of(identifier, 30, event), workflow_id=3) for identifier in range(101, 105)]
@@ -701,11 +744,16 @@ jobs:
                       return json.dumps(runs[int(m[1])])
                   if m := re.search(r'check-runs/(\d+)/annotations', text):
                       counts['annotations'] += 1
-                      label = (bands or {}).get(int(m[1]) // 1000)
+                      identifier, index = int(m[1]) // 1000, int(m[1]) % 1000
+                      label = (bands or {}).get(identifier)
                       notes = [{'title': 'Runner hardware', 'message': f'runner-band: {label}', 'annotation_level': 'notice'}] if label else []
-                      index = int(m[1]) % 1000
-                      if (floor or {}).get(int(m[1]) // 1000) and index < len(names) and names[index] == 'Build test archive':
-                          notes.append({'title': 'Compile cache floor', 'message': floor[int(m[1]) // 1000], 'annotation_level': 'warning'})
+                      if 100 <= index < 100 + len(shard_minutes):
+                          notes += work_units(f'tests: {pace.get(identifier, (1, 100))[1]}')
+                      if index < len(names) and names[index] == 'Build test archive':
+                          _, compiles, hit_rate = build.get(identifier, (1, 600, 99.5))
+                          notes += work_units(f'compiles: {compiles}; hit-rate: {hit_rate}')
+                          if (floor or {}).get(identifier):
+                              notes.append({'title': 'Compile cache floor', 'message': floor[identifier], 'annotation_level': 'warning'})
                       return json.dumps(notes)
                   if re.search(r'actions/workflows/', text):
                       raise AssertionError('a required workflow is not listed under its own id: ' + text)
@@ -737,84 +785,104 @@ jobs:
               return json.loads(re.search(r'```json\n(.*?)\n```', ratchet['body'], re.DOTALL)[1])['levels']
 
           def stored_ratchet(levels):
-              return {'body': 'The guards keep the lowest median wall time of each level here.\n\n```json\n' + json.dumps({'levels': levels}) + '\n```\n'}
+              return {'body': 'The guards keep the lowest median rate of each level here.\n\n```json\n' + json.dumps({'levels': levels}) + '\n```\n'}
 
           SETTINGS = {'window': 5, 'ceiling': 25.0, 'margin': 1.5, 'slow': 30.0, 'required': [
               'Caller declaration', 'Format and lint', 'Docs', 'Build test archive', 'Test shard (*', 'Doctests',
               'Tests (ubuntu-latest)', 'Dependency, source and coverage checks']}
 
-          def judge_stays_quiet_on_a_healthy_run_and_reports_a_baseline_breach():
+          # With the default shards a run spends 16.5 s per test run (440 shard minutes over 16 shards of 100 tests) and 0.5 s per compile unit.
+          TESTS_RATE, COMPILES_RATE = 16.5, 0.5
+
+          def judge_stays_quiet_on_a_healthy_run_and_reports_a_rate_breach():
               ratchet = {}
               gh, _ = fake_repository(ratchet=ratchet)
               assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
-              assert stored_levels(ratchet)['9/merge_group/unknown']['seconds'] == 1800, ratchet
-              gh, _ = fake_repository(minutes=32.9)
+              assert stored_levels(ratchet)['9/merge_group/unknown/tests']['rate'] == TESTS_RATE, ratchet
+              assert stored_levels(ratchet)['9/merge_group/unknown/compiles']['rate'] == COMPILES_RATE, ratchet
+              gh, _ = fake_repository(pace={7: (1.09, 100)})
               assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
-              gh, _ = fake_repository(minutes=33.3)
+              gh, _ = fake_repository(pace={7: (1.11, 100)})
               findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
               assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+              assert '(+11%, limit +10%)' in findings[0]['body'], findings
               assert '- https://example.test/runs/2' in findings[0]['body'] and '- https://example.test/runs/1' not in findings[0]['body']
               cancelled = run_of(7, 90, conclusion='cancelled')
               assert judging['judge']('7', 'owner/repo', lambda *argv, body=None: json.dumps(cancelled), SETTINGS) == []
 
-          judge_stays_quiet_on_a_healthy_run_and_reports_a_baseline_breach()
-          print('PASS judge_stays_quiet_on_a_healthy_run_and_reports_a_baseline_breach')
+          judge_stays_quiet_on_a_healthy_run_and_reports_a_rate_breach()
+          print('PASS judge_stays_quiet_on_a_healthy_run_and_reports_a_rate_breach')
+
+          def natural_growth_stays_quiet():
+              # Twice the tests and twice the compile units take twice as long at the same rate: the wall time doubles and nothing is filed.
+              ratchet = {}
+              gh, _ = fake_repository(minutes=60, pace={7: (2, 200)}, build={7: (2, 1200, 99.5)}, ratchet=ratchet)
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+              assert stored_levels(ratchet)['9/merge_group/unknown/tests']['rate'] == TESTS_RATE, ratchet
+              # The same growth at a 11% higher rate is a regression.
+              gh, _ = fake_repository(minutes=66.6, pace={7: (2.22, 200)}, build={7: (2, 1200, 99.5)})
+              titles = [finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS)]
+              assert titles == ['CI run slower than its baseline: run 7'], titles
+
+          natural_growth_stays_quiet()
+          print('PASS natural_growth_stays_quiet')
 
           def judge_compares_a_run_only_with_runs_on_its_own_hardware_band():
               SIX = SETTINGS | {'window': 6}
-              slow_history = {1: 45, 2: 45, 3: 45, 4: 30, 5: 30, 6: 30}
+              slow_history = {identifier: (1.5, 100) for identifier in (1, 2, 3)}
               split = {1: 'slow', 2: 'slow', 3: 'slow', 4: 'fast', 5: 'fast', 6: 'fast'}
-              gh, _ = fake_repository(minutes=33.3, prior_minutes=slow_history, bands=split | {7: 'fast'})
+              gh, _ = fake_repository(pace=slow_history | {7: (1.11, 100)}, bands=split | {7: 'fast'})
               findings = judging['judge']('7', 'owner/repo', gh, SIX)
               assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
               body = findings[0]['body']
               assert 'on runner band fast.' in body and all(f'- https://example.test/runs/{n}' in body for n in (4, 5, 6)), body
               assert not any(f'- https://example.test/runs/{n}\n' in body for n in (1, 2, 3)), body
-              # The same duration on the slow band is judged against 45 minutes, so 46 stays quiet and 50 fires.
-              gh, _ = fake_repository(minutes=46, prior_minutes=slow_history, bands=split | {7: 'slow'})
+              # The same pace on the slow band is judged against the slow runs, so +9% stays quiet and +11% fires.
+              gh, _ = fake_repository(pace={n: (1.5, 100) for n in range(1, 7)} | {7: (1.635, 100)}, bands={n: 'slow' for n in range(1, 8)})
               assert judging['judge']('7', 'owner/repo', gh, SIX) == []
-              gh, _ = fake_repository(minutes=50, prior_minutes=slow_history, bands=split | {7: 'slow'})
-              assert 'baseline of 45.0 min' in judging['judge']('7', 'owner/repo', gh, SIX)[0]['body']
+              gh, _ = fake_repository(pace={n: (1.5, 100) for n in range(1, 7)} | {7: (1.665, 100)}, bands={n: 'slow' for n in range(1, 8)})
+              assert 'against a baseline of 24.75 s' in judging['judge']('7', 'owner/repo', gh, SIX)[0]['body']
               # Fewer than three earlier runs on the band means no baseline, however slow the run is.
-              gh, _ = fake_repository(minutes=90, prior_minutes=slow_history, bands=split | {7: 'new hardware'})
+              gh, _ = fake_repository(pace=slow_history | {7: (3, 100)}, bands=split | {7: 'new hardware'})
               assert judging['judge']('7', 'owner/repo', gh, SIX) == []
 
           judge_compares_a_run_only_with_runs_on_its_own_hardware_band()
           print('PASS judge_compares_a_run_only_with_runs_on_its_own_hardware_band')
 
           def the_ratchet_is_only_lowered_by_the_guard():
-              key = '9/merge_group/unknown'
+              key = '9/merge_group/unknown/tests'
               ratchet = {}
               gh, _ = fake_repository(ratchet=ratchet)
               assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
               level = stored_levels(ratchet)[key]
-              assert level['seconds'] == 1800 and level['run'] == 7 and level['reason'], level
+              assert level['rate'] == TESTS_RATE and level['run'] == 7 and level['reason'], level
               # Slower earlier runs never raise the stored level, and a faster median lowers it.
-              gh, _ = fake_repository(prior_minutes={n: 40 for n in range(1, 7)}, ratchet=ratchet)
+              gh, _ = fake_repository(pace={n: (1.5, 100) for n in range(1, 7)}, ratchet=ratchet)
+              judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert stored_levels(ratchet)[key]['rate'] == TESTS_RATE, ratchet
+              half = {n: (0.5, 100) for n in range(1, 8)}
+              gh, _ = fake_repository(pace=half, ratchet=ratchet)
               assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
-              assert stored_levels(ratchet)[key]['seconds'] == 1800, ratchet
-              gh, _ = fake_repository(minutes=20, prior_minutes={n: 20 for n in range(1, 7)}, ratchet=ratchet)
-              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
-              assert stored_levels(ratchet)[key]['seconds'] == 1200, ratchet
+              assert stored_levels(ratchet)[key]['rate'] == TESTS_RATE / 2, ratchet
               # A lasting move to slower runners keeps firing: nothing raises the level, so it is fixed at its cause.
               for attempt in range(2):
-                  gh, _ = fake_repository(minutes=40, prior_minutes={n: 40 for n in range(1, 7)}, ratchet=ratchet)
+                  gh, _ = fake_repository(pace={n: (1.5, 100) for n in range(1, 8)}, ratchet=ratchet)
                   findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
                   assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
-                  assert 'baseline of 20.0 min' in findings[0]['body'], findings
-                  assert stored_levels(ratchet)[key]['seconds'] == 1200, ratchet
+                  assert 'against a baseline of 8.25 s' in findings[0]['body'], findings
+                  assert stored_levels(ratchet)[key]['rate'] == TESTS_RATE / 2, ratchet
 
           the_ratchet_is_only_lowered_by_the_guard()
           print('PASS the_ratchet_is_only_lowered_by_the_guard')
 
           def judge_holds_a_creeping_run_to_the_stored_level():
-              key = '9/merge_group/unknown'
-              ratchet = stored_ratchet({key: {'seconds': 1800, 'reason': 'seed', 'run': 1}})
-              gh, _ = fake_repository(minutes=36, prior_minutes={n: 34 for n in range(1, 7)}, ratchet=ratchet)
+              key = '9/merge_group/unknown/tests'
+              ratchet = stored_ratchet({key: {'rate': TESTS_RATE, 'reason': 'seed', 'run': 1}})
+              gh, _ = fake_repository(pace={n: (1.13, 100) for n in range(1, 7)} | {7: (1.2, 100)}, ratchet=ratchet)
               findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
               assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
-              assert 'baseline of 30.0 min (+20%, limit +10%)' in findings[0]['body'], findings
-              assert stored_levels(ratchet)[key] == {'seconds': 1800, 'reason': 'seed', 'run': 1}, ratchet
+              assert 'against a baseline of 16.50 s (+20%, limit +10%)' in findings[0]['body'], findings
+              assert stored_levels(ratchet)[key] == {'rate': TESTS_RATE, 'reason': 'seed', 'run': 1}, ratchet
 
           judge_holds_a_creeping_run_to_the_stored_level()
           print('PASS judge_holds_a_creeping_run_to_the_stored_level')
@@ -826,7 +894,7 @@ jobs:
                   gh, _ = fake_repository(event=event, newer=3, ratchet={})
                   assert judging['judge']('7', 'owner/repo', gh, narrow) == [], event
                   counts = gh.counts
-                  assert counts['runs'] == 2 and counts['jobs'] <= 1 + 3 and counts['annotations'] <= 3 * (1 + 3) + (event == 'merge_group'), counts
+                  assert counts['runs'] == 2 and counts['jobs'] <= 1 + 3 and counts['annotations'] <= (1 + 3) * 17, counts
                   assert {number for number in range(1, 11) if counts[f'logs of run {number}']} == {5, 6, 7}, counts
                   # Declaration logs on a balanced pull request; on a merge group also the shard logs of the judged run.
                   assert counts['logs'] == (3 if event == 'pull_request' else 3 + 16), counts

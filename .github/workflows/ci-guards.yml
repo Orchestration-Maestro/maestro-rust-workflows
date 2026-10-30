@@ -215,6 +215,15 @@ jobs:
               else:
                   gh('issue', 'create', '-R', repository, '--title', RATCHET_TITLE, '--body-file', '-', body=body)
 
+          def baseline_of(rates):
+              raise NotImplementedError('baseline_of')
+
+          def measures_of(jobs, annotations_of):
+              raise NotImplementedError('measures_of')
+
+          def rate_finding(run, measured, prior, prior_measured, band, ratchet):
+              raise NotImplementedError('rate_finding')
+
           def band_of(jobs, annotations_of):
               """The runner hardware label of the run's slowest labelled job, the runner that sets its pace."""
               for job in sorted((job for job in jobs if seconds(job) is not None), key=seconds, reverse=True)[:3]:
