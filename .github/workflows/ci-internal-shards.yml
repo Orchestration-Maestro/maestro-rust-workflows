@@ -201,6 +201,7 @@ jobs:
           import json
           import os
           import pathlib
+          import platform
           import re
           import shutil
           import subprocess
@@ -252,11 +253,11 @@ jobs:
               prior = [run_of(n, 30) for n in range(1, 6)]
               earlier = lambda identifier: [job('Test shard (1/16)', 20), job('Docs', 5), job('Format and lint', 4)]
               now = [job('Test shard (1/16)', 28), job('Docs', 5), job('Format and lint', 4.5), job('New job', 3), job('Advisory scan', 0, 'skipped')]
-              finding = judging['budget_finding'](run_of(7, 33.3), now, prior, earlier)
+              finding = judging['budget_finding'](run_of(7, 33.3), now, prior, earlier, 'amd-epyc-7763-4c')
               assert finding['title'] == 'CI run slower than its baseline: run 7', finding
               body = finding['body']
               assert 'Run: https://example.test/runs/7' in body, body
-              assert 'Rust CI (merge_group, main) took 33.3 min against a baseline of 30.0 min (+11%, limit +10%).' in body, body
+              assert 'Rust CI (merge_group, main) took 33.3 min against a baseline of 30.0 min (+11%, limit +10%) on runner band amd-epyc-7763-4c.' in body, body
               assert 'Baseline runs (previous successful runs of the same workflow and event):' in body, body
               for n in range(1, 6):
                   assert f'- https://example.test/runs/{n}' in body, body
@@ -264,7 +265,7 @@ jobs:
               assert grown == ['- Test shard (1/16): 28.0 min (+8.0 min)', '- Format and lint: 4.5 min (+0.5 min)',
                                '- Docs: 5.0 min (+0.0 min)'], grown
               for minutes in (32.7, 33):
-                  assert judging['budget_finding'](run_of(8, minutes), now, prior, earlier) is None, minutes
+                  assert judging['budget_finding'](run_of(8, minutes), now, prior, earlier, 'amd-epyc-7763-4c') is None, minutes
 
           a_run_more_than_ten_percent_over_its_baseline_files_an_issue()
           print('PASS a_run_more_than_ten_percent_over_its_baseline_files_an_issue')
@@ -273,12 +274,12 @@ jobs:
               earlier = lambda identifier: []
               slow = run_of(9, 120)
               for count in (0, 1, 2):
-                  assert judging['budget_finding'](slow, [], [run_of(n, 30) for n in range(1, count + 1)], earlier) is None, count
-              assert judging['budget_finding'](slow, [], [run_of(n, 30) for n in range(1, 4)], earlier) is not None
+                  assert judging['budget_finding'](slow, [], [run_of(n, 30) for n in range(1, count + 1)], earlier, 'band') is None, count
+              assert judging['budget_finding'](slow, [], [run_of(n, 30) for n in range(1, 4)], earlier, 'band') is not None
               # Only the last five count, and the median keeps one fast run from lowering the bar.
               history = [run_of(1, 90), run_of(2, 90), run_of(3, 10), run_of(4, 30), run_of(5, 30), run_of(6, 30), run_of(7, 30)]
-              assert judging['budget_finding'](run_of(9, 32.9), [], history, earlier) is None
-              assert 'baseline of 30.0 min' in judging['budget_finding'](run_of(9, 33.1), [], history, earlier)['body']
+              assert judging['budget_finding'](run_of(9, 32.9), [], history, earlier, 'band') is None
+              assert 'baseline of 30.0 min' in judging['budget_finding'](run_of(9, 33.1), [], history, earlier, 'band')['body']
 
           the_baseline_needs_three_samples_and_uses_the_last_five_medians()
           print('PASS the_baseline_needs_three_samples_and_uses_the_last_five_medians')
@@ -291,10 +292,63 @@ jobs:
                                                  ('merge_group', 'CodeQL', 'x', False), ('push', 'CodeQL', 'main', False),
                                                  ('schedule', 'Rust CI', 'main', False)]:
                   slow = run_of(9, 60, event, name=name, branch=branch)
-                  assert (judging['budget_finding'](slow, [], prior, earlier) is not None) == fires, (event, name, branch)
+                  assert (judging['budget_finding'](slow, [], prior, earlier, 'band') is not None) == fires, (event, name, branch)
 
           only_runs_that_gate_a_merge_are_judged()
           print('PASS only_runs_that_gate_a_merge_are_judged')
+
+          def a_creeping_regression_fires_against_the_lowest_median_ratchet():
+              earlier = lambda identifier: []
+              creep = [run_of(n, minutes) for n, minutes in enumerate([30, 30, 30, 32, 34, 36, 38], 1)]
+              assert judging['ratchet_seconds']([]) is None
+              assert judging['ratchet_seconds']([1800, 1800, 1800, 1920, 2040, 2160, 2280]) == 1800
+              assert judging['ratchet_seconds']([1800, 1800]) is None
+              # The last five alone would give a median of 34 minutes and a limit of 37.4; the ratchet keeps 30 and 33.
+              finding = judging['budget_finding'](run_of(9, 36), [], creep, earlier, 'band')
+              assert finding and 'baseline of 30.0 min (+20%, limit +10%)' in finding['body'], finding
+              assert judging['budget_finding'](run_of(9, 32.9), [], creep, earlier, 'band') is None
+              steady = [run_of(n, 30) for n in range(1, 8)]
+              assert judging['budget_finding'](run_of(9, 32.9), [], steady, earlier, 'band') is None
+
+          a_creeping_regression_fires_against_the_lowest_median_ratchet()
+          print('PASS a_creeping_regression_fires_against_the_lowest_median_ratchet')
+
+          def a_runs_band_is_the_hardware_label_of_its_slowest_labelled_job():
+              jobs = [job('Windows check', 40, identifier=1), job('Test shard (1/16)', 30, identifier=2), job('Docs', 5, identifier=3)]
+              notes = {1: [], 2: [{'title': 'Runner hardware', 'message': 'runner-band: intel-xeon-8272cl-4c'}], 3: [{'message': 'runner-band: other'}]}
+              asked = []
+              def annotations_of(item):
+                  asked.append(item['id'])
+                  return notes[item['id']]
+              assert judging['band_of'](jobs, annotations_of) == 'intel-xeon-8272cl-4c' and asked == [1, 2], asked
+              assert judging['band_of'](jobs, lambda item: [{'message': 'Node.js 20 is deprecated'}]) == 'unknown'
+              assert judging['band_of']([], lambda item: []) == 'unknown'
+
+          a_runs_band_is_the_hardware_label_of_its_slowest_labelled_job()
+          print('PASS a_runs_band_is_the_hardware_label_of_its_slowest_labelled_job')
+
+          def every_linux_job_records_its_runner_hardware():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              for name, item in document['jobs'].items():
+                  first = item['steps'][0]
+                  assert first['name'] == 'Runner hardware' and first['if'] == "runner.os == 'Linux'", name
+                  assert first['working-directory'] == '$' + '{{ github.workspace }}', name
+              for model, cores, label in [('AMD EPYC 7763 64-Core Processor', '4', 'amd-epyc-7763-64-core-4c'),
+                                          ('Intel(R) Xeon(R) Platinum 8272CL CPU @ 2.60GHz', '2', 'intel-xeon-platinum-8272cl-2c'),
+                                          ('Intel(R) Xeon(R) Platinum 8272CL CPU @ 2.60GHz', '4', 'intel-xeon-platinum-8272cl-4c'),
+                                          ('', '2', re.sub(r'[^a-z0-9]+', '-', platform.machine().lower()) + '-2c')]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      (directory / 'cpuinfo').write_text('processor\t: 0\n' + (f'model name\t: {model}\n' if model else '') + 'cpu MHz\t\t: 2445.4\n', encoding='utf-8')
+                      summary = directory / 'summary'
+                      result = execute('Runner hardware', directory, {'CPUINFO_FILE': str(directory / 'cpuinfo'), 'CPU_CORES': cores,
+                                                                    'GITHUB_STEP_SUMMARY': str(summary)})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      assert f'(runner-band: {label})' in result.stdout and f'::notice title=Runner hardware::runner-band: {label}\n' in result.stdout, result.stdout
+                      assert f'{cores} cores (runner-band: {label})' in summary.read_text(encoding='utf-8')
+
+          every_linux_job_records_its_runner_hardware()
+          print('PASS every_linux_job_records_its_runner_hardware')
 
           def findings_file_once_and_slow_issues_are_limited():
               calls = []
@@ -312,7 +366,7 @@ jobs:
           findings_file_once_and_slow_issues_are_limited()
           print('PASS findings_file_once_and_slow_issues_are_limited')
 
-          def fake_repository(minutes=30, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group'):
+          def fake_repository(minutes=30, prior_minutes=None, bands=None, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group'):
               """Serves the REST calls judge makes for run 7, its earlier green run 6 and the selection window."""
               names = required or ['Caller declaration', 'Format and lint', 'Docs', 'Build test archive', 'Doctests',
                                    'Tests (ubuntu-latest)', 'Dependency, source and coverage checks']
@@ -330,7 +384,7 @@ jobs:
                       logs[declaration['id']] = '2026-10-30T02:00:00.1234567Z ' + (
                           f'Full-suite fallback: {trigger}\n' if trigger else '') + f'2026-10-30T02:00:01.1234567Z Selected package count: {selected}/{total}\n'
                   return found
-              runs = {identifier: run_of(identifier, minutes if identifier == 7 else 30, event) for identifier in range(1, 8)}
+              runs = {identifier: run_of(identifier, minutes if identifier == 7 else (prior_minutes or {}).get(identifier, 30), event) for identifier in range(1, 8)}
               # Other workflows of the repository share the listing; their wide selections must not count.
               decoys = [dict(run_of(identifier, 30, event), workflow_id=3) for identifier in range(101, 105)]
               for decoy in decoys:
@@ -344,6 +398,9 @@ jobs:
                       return logs[int(m[1])]
                   if m := re.search(r'actions/runs/(\d+)$', text):
                       return json.dumps(runs[int(m[1])])
+                  if m := re.search(r'check-runs/(\d+)/annotations', text):
+                      label = (bands or {}).get(int(m[1]) // 1000)
+                      return json.dumps([{'title': 'Runner hardware', 'message': f'runner-band: {label}', 'annotation_level': 'notice'}] if label else [])
                   if re.search(r'actions/workflows/', text):
                       raise AssertionError('a required workflow is not listed under its own id: ' + text)
                   if m := re.search(r'actions/runs\?event=(\w+)&status=(\w+)', text):
@@ -377,6 +434,27 @@ jobs:
 
           judge_stays_quiet_on_a_healthy_run_and_reports_a_baseline_breach()
           print('PASS judge_stays_quiet_on_a_healthy_run_and_reports_a_baseline_breach')
+
+          def judge_compares_a_run_only_with_runs_on_its_own_hardware_band():
+              slow_history = {1: 45, 2: 45, 3: 45, 4: 30, 5: 30, 6: 30}
+              split = {1: 'slow', 2: 'slow', 3: 'slow', 4: 'fast', 5: 'fast', 6: 'fast'}
+              gh, _ = fake_repository(minutes=33.3, prior_minutes=slow_history, bands=split | {7: 'fast'})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+              body = findings[0]['body']
+              assert 'on runner band fast.' in body and all(f'- https://example.test/runs/{n}' in body for n in (4, 5, 6)), body
+              assert not any(f'- https://example.test/runs/{n}\n' in body for n in (1, 2, 3)), body
+              # The same duration on the slow band is judged against 45 minutes, so 46 stays quiet and 50 fires.
+              gh, _ = fake_repository(minutes=46, prior_minutes=slow_history, bands=split | {7: 'slow'})
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+              gh, _ = fake_repository(minutes=50, prior_minutes=slow_history, bands=split | {7: 'slow'})
+              assert 'baseline of 45.0 min' in judging['judge']('7', 'owner/repo', gh, SETTINGS)[0]['body']
+              # Fewer than three earlier runs on the band means no baseline, however slow the run is.
+              gh, _ = fake_repository(minutes=90, prior_minutes=slow_history, bands=split | {7: 'new hardware'})
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+
+          judge_compares_a_run_only_with_runs_on_its_own_hardware_band()
+          print('PASS judge_compares_a_run_only_with_runs_on_its_own_hardware_band')
 
           SLOW_LOG = '\n'.join([
               '2026-10-30T02:48:22.6648967Z         SLOW [> 30.000s] (─────────) maestro-tooling::integration browser_author_build::repairs',
@@ -710,6 +788,7 @@ jobs:
               # The time guard is relative to the run's own baseline; a fixed minutes budget is not allowed.
               assert 'merge-run-budget-minutes' not in guide and 'merge-run-budget-minutes' not in guards
               assert 'median wall time of the previous five successful runs' in guide and 'plus 10%' in guide
+              assert 'runner band' in guide and 'lowest such median' in guide and 'runner-band: <label>' in guide
 
           required_checks_and_documented_defaults_stay_pinned()
           print('PASS required_checks_and_documented_defaults_stay_pinned')
