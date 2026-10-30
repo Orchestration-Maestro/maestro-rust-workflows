@@ -464,3 +464,150 @@ jobs:
 
           docs_list_the_preparation_keys()
           print('PASS docs_list_the_preparation_keys')
+      - name: Artifact download at workflow seam
+        shell: python
+        run: |
+          import hashlib
+          import http.server
+          import io
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import tempfile
+          import threading
+          import zipfile
+
+          workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
+          document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+          job = document['jobs']['tests']
+          steps = {step['name']: step for step in job['steps']}
+          payload = os.urandom(5 * 1024 * 1024)
+
+          def archive():
+              buffer = io.BytesIO()
+              with zipfile.ZipFile(buffer, 'w') as bundle:
+                  bundle.writestr('test-binaries.tar.zst', payload)
+              return buffer.getvalue()
+
+          class Storage(http.server.BaseHTTPRequestHandler):
+              def log_message(self, *args):
+                  pass
+
+              def do_GET(self):
+                  server = self.server
+                  path = self.path.split('?')[0]
+                  server.requests.append((path, self.headers.get('Range'), self.headers.get('Authorization')))
+                  if path == '/repos/o/r/actions/runs/7/artifacts':
+                      if server.listing_fails:
+                          return self.send_error(500)
+                      digest = 'sha256:' + hashlib.sha256(server.blob).hexdigest() if server.digest else None
+                      body = json.dumps({'artifacts': [{'id': 9, 'name': 'test-archive-root', 'size_in_bytes': len(server.blob),
+                                                        'expired': False, 'digest': digest}]}).encode()
+                      return self.reply(200, body)
+                  if path == '/repos/o/r/actions/artifacts/9/zip':
+                      self.send_response(302)
+                      self.send_header('Location', f'http://127.0.0.1:{server.server_port}/blob')
+                      self.send_header('Content-Length', '0')
+                      return self.end_headers()
+                  assert path == '/blob', path
+                  requested = self.headers.get('Range')
+                  if requested and server.ranges:
+                      start, end = map(int, re.fullmatch(r'bytes=(\d+)-(\d+)', requested).groups())
+                      body = bytearray(server.blob[start:end + 1])
+                      if server.corrupt and start > 0:
+                          body[0] ^= 0xff
+                      return self.reply(206, bytes(body), {'Content-Range': f'bytes {start}-{end}/{len(server.blob)}'})
+                  self.reply(200, server.blob)
+
+              def reply(self, status, body, headers=None):
+                  self.send_response(status)
+                  self.send_header('Content-Length', str(len(body)))
+                  for name, value in (headers or {}).items():
+                      self.send_header(name, value)
+                  self.end_headers()
+                  self.wfile.write(body)
+
+          def download(ranges=True, corrupt=False, digest=True, listing_fails=False):
+              server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Storage)
+              server.blob, server.requests = archive(), []
+              server.ranges, server.corrupt, server.digest, server.listing_fails = ranges, corrupt, digest, listing_fails
+              threading.Thread(target=server.serve_forever, daemon=True).start()
+              try:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      base = pathlib.Path(temporary)
+                      (base / 'runner').mkdir()
+                      (base / 'out').mkdir()
+                      env = {**os.environ, 'GH_TOKEN': 'secret-token', 'GITHUB_API_URL': f'http://127.0.0.1:{server.server_port}',
+                             'GITHUB_REPOSITORY': 'o/r', 'GITHUB_RUN_ID': '7', 'ARTIFACT_NAME': 'test-archive-root',
+                             'ARTIFACT_PATH': str(base / 'out'), 'RUNNER_TEMP': str(base / 'runner'), 'GITHUB_OUTPUT': str(base / 'output')}
+                      (base / 'output').write_text('', encoding='utf-8')
+                      result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', steps['Download test archive']['run']],
+                                              env=env, capture_output=True, text=True)
+                      files = sorted(path.name for path in (base / 'out').iterdir())
+                      extracted = (base / 'out/test-binaries.tar.zst').read_bytes() if files else b''
+                      outputs = (base / 'output').read_text(encoding='utf-8').split()
+                      leftovers = list((base / 'runner').iterdir())
+                      return result, server, files, extracted, outputs, leftovers
+              finally:
+                  server.shutdown()
+
+          def line(result):
+              found = re.findall(r'^artifact-download name=(\S+) bytes=(\d+) seconds=(\d+\.\d\d) streams=(\d+)$', result.stdout, re.MULTILINE)
+              assert len(found) == 1, result.stdout
+              return found[0]
+
+          def parallel_ranges_extract_and_report_the_transfer():
+              result, server, files, extracted, outputs, leftovers = download()
+              assert result.returncode == 0, result.stderr
+              assert files == ['test-binaries.tar.zst'] and extracted == payload
+              name, size, _, streams = line(result)
+              assert name == 'test-archive-root' and int(size) == len(server.blob) and int(streams) > 1, result.stdout
+              blob = [request for request in server.requests if request[0] == '/blob']
+              ranges = sorted(int(request[1].split('=')[1].split('-')[0]) for request in blob if request[1])
+              assert len(ranges) >= int(streams) and ranges[0] == 0, blob
+              # The token goes to the Actions API only, never to the storage host.
+              assert all(request[2] == 'Bearer secret-token' for request in server.requests if request[0] != '/blob'), server.requests
+              assert all(request[2] is None for request in blob), blob
+              assert 'fallback=true' not in outputs and leftovers == [], (outputs, leftovers)
+
+          def a_server_without_ranges_gets_one_stream():
+              result, server, files, extracted, outputs, leftovers = download(ranges=False)
+              assert result.returncode == 0, result.stderr
+              assert files == ['test-binaries.tar.zst'] and extracted == payload
+              assert line(result)[3] == '1', result.stdout
+              assert 'fallback=true' not in outputs and leftovers == []
+
+          def a_corrupted_range_fails_on_the_digest_and_never_extracts():
+              result, server, files, extracted, outputs, leftovers = download(corrupt=True)
+              assert result.returncode != 0 and 'digest' in result.stderr, (result.stdout, result.stderr)
+              assert files == [] and 'fallback=true' not in outputs and leftovers == []
+
+          def an_unusable_listing_hands_over_to_the_single_stream_action():
+              for case in [{'listing_fails': True}, {'digest': False}]:
+                  result, server, files, extracted, outputs, leftovers = download(**case)
+                  assert result.returncode == 0, (case, result.stderr)
+                  assert files == [] and 'fallback=true' in outputs and leftovers == [], (case, outputs)
+                  assert line(result)[3] == '0', result.stdout
+
+          def both_downloads_share_one_script_and_keep_the_single_stream_action():
+              pin = 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'
+              names = list(steps)
+              for name, artifact in [('Download test archive', 'test-archive-'), ('Download test setup', 'test-setup-')]:
+                  step, single = steps[name], steps[name + ' in one stream']
+                  assert step['run'] == steps['Download test archive']['run'] and 'uses' not in step, name
+                  assert step['env']['ARTIFACT_NAME'].startswith(artifact), name
+                  assert step['env']['GH_TOKEN'] == '$' + '{{ github.token }}'
+                  assert single['uses'].startswith(pin), name
+                  gate, handover = [condition['if'].removeprefix('$' + '{{ ').removesuffix(' }}') for condition in (step, single)]
+                  assert handover == gate + " && steps.%s.outputs.fallback == 'true'" % step['id'], name
+                  assert single['with']['name'] == step['env']['ARTIFACT_NAME'], name
+                  assert names.index(name) + 1 == names.index(name + ' in one stream') < names.index('Restore test setup'), names
+              assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
+
+          for check in [parallel_ranges_extract_and_report_the_transfer, a_server_without_ranges_gets_one_stream,
+                        a_corrupted_range_fails_on_the_digest_and_never_extracts, an_unusable_listing_hands_over_to_the_single_stream_action,
+                        both_downloads_share_one_script_and_keep_the_single_stream_action]:
+              check()
+              print('PASS', check.__name__)
