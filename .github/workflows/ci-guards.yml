@@ -497,7 +497,7 @@ jobs:
           def shard_finding(run, jobs, margin, grown):
               """The slowest test shard is beyond the margin over the median; names the tests that grew."""
               took = sorted((seconds(job), job['name']) for job in jobs
-                            if job['name'].startswith('Test shard (') and seconds(job) is not None)
+                            if kind_of(job['name']) == 'tests' and seconds(job) is not None)
               if len(took) < 2:
                   return None
               median = statistics.median(value for value, _ in took)
@@ -575,7 +575,7 @@ jobs:
               def shard_slow(jobs):
                   found = {}
                   for job in jobs:
-                      if job['name'].startswith('Test shard ('):
+                      if kind_of(job['name']) == 'tests':
                           for test, mark in slow_tests(log_of(job)).items():
                               found[test] = max(found.get(test, 0), mark)
                   return found
