@@ -175,6 +175,31 @@ jobs:
       fuzz_manifest: ${{ steps.config.outputs.fuzz_manifest }}
       fuzz_targets: ${{ steps.config.outputs.fuzz_targets }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: &runner-hardware |
+          python3 - <<'PYTHON'
+          import os
+          import platform
+          import re
+          model = ''
+          with open(os.environ.get('CPUINFO_FILE', '/proc/cpuinfo'), encoding='utf-8') as cpuinfo:
+              for line in cpuinfo:
+                  if line.startswith('model name'):
+                      model = line.split(':', 1)[1].strip()
+                      break
+          model = model or platform.machine()
+          cores = os.environ.get('CPU_CORES') or str(len(os.sched_getaffinity(0)))
+          words = re.sub(r'\((?:r|tm)\)|@.*$|\b(?:cpu|processor)\b', '', model.lower())
+          label = re.sub(r'[^a-z0-9]+', '-', words).strip('-') + f'-{cores}c'
+          line = f'Runner hardware: {model}, {cores} cores (runner-band: {label})'
+          print(line)
+          print(f'::notice title=Runner hardware::runner-band: {label}')
+          if os.environ.get('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+                  summary.write(line + '\n')
+          PYTHON
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -781,6 +806,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1003,6 +1032,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1076,6 +1109,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1271,6 +1308,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1369,6 +1410,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps: &test-steps
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1701,6 +1746,10 @@ jobs:
     if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: All test shards passed
         env:
           RESULT: ${{ needs.tests.result }}
@@ -1761,6 +1810,10 @@ jobs:
       QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
       CHECK_ADVISORIES: ${{ needs.declaration.outputs.check_advisories }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2052,6 +2105,10 @@ jobs:
       QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
       FUZZ_MANIFEST: ${{ needs.declaration.outputs.fuzz_manifest }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2156,6 +2213,10 @@ jobs:
     outputs:
       findings: ${{ steps.scan.outputs.findings }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2217,6 +2278,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2287,6 +2352,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2375,6 +2444,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
