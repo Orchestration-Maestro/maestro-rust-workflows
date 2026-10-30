@@ -77,11 +77,42 @@ jobs:
 
           def nextest_exceptions(text, hang_seconds):
               """Overrides whose kill time passes the hang limit, with the issues named above their slow-timeout."""
-              raise NotImplementedError('nextest_exceptions')
+              found = []
+              for block in re.split(r'(?m)^(?=\[\[profile\.[^\]]+\.overrides\]\])', text)[1:]:
+                  lines = block.splitlines()
+                  own = []
+                  for line in lines:
+                      if own and line.startswith('['):
+                          break
+                      own.append(line)
+                  override = tomllib.loads('\n'.join(own))['profile']
+                  override = next(iter(override.values()))['overrides'][0]
+                  timeout = override.get('slow-timeout')
+                  if not isinstance(timeout, dict) or 'terminate-after' not in timeout:
+                      continue
+                  seconds = period_seconds(timeout['period']) * timeout['terminate-after']
+                  if seconds <= hang_seconds:
+                      continue
+                  at = next(index for index, line in enumerate(own) if line.startswith('slow-timeout'))
+                  issues = []
+                  for line in reversed(own[:at]):
+                      if not line.startswith('#'):
+                          break
+                      issues = [int(number) for number in re.findall(r'#(\d+)', line)] + issues
+                  found.append({'filter': override.get('filter', ''), 'seconds': seconds, 'issues': issues})
+              return found
 
           def exception_findings(exceptions, state_of):
               """One message per exception that names no issue or only closed ones."""
-              raise NotImplementedError('exception_findings')
+              messages = []
+              for item in exceptions:
+                  label = f"the {item['seconds']:g}-second exception for {item['filter']}"
+                  if not item['issues']:
+                      messages.append(f'{label} names no issue; put its issue number in the comment above slow-timeout')
+                  elif all(state_of(number) == 'CLOSED' for number in item['issues']):
+                      listed = ', '.join(f'#{number}' for number in item['issues'])
+                      messages.append(f'{label} is refused: {listed} is closed, so fix the test and remove the exception')
+              return messages
 
           def main():
               path = pathlib.Path(os.environ['NEXTEST_CONFIG'])
