@@ -956,7 +956,10 @@ on:
     types: [completed]
 jobs:
   guards:
-    if: github.event.workflow_run.event == 'merge_group'
+    if: >-
+      github.event.workflow_run.event == 'merge_group' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == github.event.repository.default_branch)
     permissions:
       contents: read
       actions: read
@@ -965,6 +968,10 @@ jobs:
     with:
       run-id: ${{ github.event.workflow_run.id }}
 ```
+
+The listener passes default-branch pushes as well as merge groups, because those
+runs save the compile snapshots every other run restores, and it passes a
+cancelled one too: a cancelled seeding run is a finding, not silence.
 
 Pin the reference to a reviewed commit and list the listener workflow in
 `privileged_trigger_workflows`, as for the post-landing reporter. Issues are
@@ -1096,6 +1103,33 @@ comments:
   runs a release of this workflow that has the writer.
 - **Eviction:** the repository cache holds no compile snapshot at all. Check the
   cache size and the seven-day expiry, then run the warm build.
+
+### Compile snapshots and cache usage
+
+A push to the default branch is the only run that saves compile snapshots, so
+the guards judge those runs themselves, cancelled ones included (a cancelled run
+used to return nothing), and the repository cache they fill.
+
+- "Escalation: default-branch run did not seed its compile snapshots" is filed
+  when the run's jobs reported more saved snapshots than the repository cache
+  holds for the run (the save step never fails the build, so a lost save shows
+  only here), when jobs measured their compile cache and none saved, or when the
+  run was cancelled with jobs unfinished. The cache list is read for the run's
+  default branch and matched by the run id in the snapshot key. Source: on
+  2026-10-26 between 16:13 and 21:00 UTC other caches filled the 10 GB limit and
+  every default-branch snapshot was evicted, and eight merge groups
+  (40369902252 to 40395312817) compiled the test shape cold at 0% to 28.8%, their
+  test shards taking a median 17.4 min against 13.2 min afterwards.
+- "Repository cache above 90% of its limit" is filed when the cache in use
+  (`actions/cache/usage`) is over 90% of the repository's storage limit
+  (`actions/cache/storage-limit`, 10 GB on Maestro), with the five largest
+  entries by ref. It is read for every judged run. Over the limit GitHub evicts
+  the oldest snapshots, which is how the 2026-10-26 cold groups happened.
+  Source: Maestro held 11.66 GB in 22 entries on 2026-10-30 against its 10 GB
+  limit. To respond, delete the pull-request entries the issue lists, or
+  shrink what the snapshots hold.
+
+Both titles are standing: a repeat adds a comment to the open issue.
 
 ### Selection check
 

@@ -172,10 +172,13 @@ jobs:
                   return None
               return (stamp(job['completed_at']) - stamp(job['started_at'])).total_seconds()
 
+          def seeds(run):
+              """A push to the default branch, the only run that saves compile snapshots."""
+              return run['event'] == 'push' and run['head_branch'] == 'main'
+
           def watched(run):
               """Merge groups, pull requests and pushes to main gate a merge; CodeQL and other runs do not."""
-              return run['name'] != 'CodeQL' and (run['event'] in ('merge_group', 'pull_request')
-                                                  or (run['event'] == 'push' and run['head_branch'] == 'main'))
+              return run['name'] != 'CodeQL' and (run['event'] in ('merge_group', 'pull_request') or seeds(run))
 
           # Per kind of work: the name of the jobs that do it, and how a finding names those jobs and one unit of their work.
           WORK = {'tests': ('Test shard (', 'Test jobs', 'test run'),
@@ -266,11 +269,40 @@ jobs:
               return {'title': 'Compile cache below its hit-rate floor', 'comment': True,
                       'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n" + '\n'.join(lines) + '\n'}
 
+          def reached(job, step):
+              """Whether the job ran the named step to success."""
+              return any(item['name'] == step and item.get('conclusion') == 'success' for item in job.get('steps', []))
+
           def snapshot_finding(run, jobs, caches):
-              raise NotImplementedError('snapshot_finding')
+              """A default-branch run that left compile snapshots unsaved: saves reported without a cache entry, none saved at all, or jobs cancelled before theirs."""
+              measuring = [job for job in jobs if reached(job, 'Compile cache statistics')]
+              saving = [job for job in jobs if reached(job, 'Save compile cache')]
+              stored = [cache for cache in caches if re.search(rf"-[0-9a-f]{{64}}-{run['id']}-\d+-", cache['key'])]
+              unfinished = [job['name'] for job in jobs if job.get('conclusion') == 'cancelled']
+              lines = []
+              if len(stored) < len(saving):
+                  lines.append(f'- {len(saving)} jobs reported a saved snapshot but the repository cache holds {len(stored)} for this run')
+              if measuring and not saving:
+                  lines.append(f'- {len(measuring)} jobs measured their compile cache but none saved a snapshot')
+              if unfinished:
+                  lines.append(f"- The run was cancelled with {len(unfinished)} jobs unfinished: {', '.join(unfinished)}")
+              if not lines:
+                  return None
+              return {'title': 'Escalation: default-branch run did not seed its compile snapshots', 'comment': True, 'labels': ['escalation'],
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
+                              'What departed from one saved snapshot per seeded shape:\n' + '\n'.join(lines) + '\n'}
 
           def usage_finding(run, usage, limit_gb, caches):
-              raise NotImplementedError('usage_finding')
+              """The repository cache over 90% of its storage limit, with its largest entries by ref."""
+              limit, used = limit_gb * 1024**3, usage['active_caches_size_in_bytes']
+              if used <= limit * 0.9:
+                  return None
+              largest = '\n'.join(f"- {cache['ref']}: {cache['size_in_bytes'] / 1024**3:.2f} GiB {cache['key']}"
+                                  for cache in sorted(caches, key=lambda cache: cache['size_in_bytes'], reverse=True)[:5])
+              return {'title': 'Repository cache above 90% of its limit', 'comment': True,
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
+                              f"The repository cache holds {used / 1024**3:.2f} GiB in {usage['active_caches_count']} entries against its {limit_gb:g} GiB limit "
+                              f"({used / limit:.1%}); the threshold is 90%. Over the limit, GitHub evicts the oldest snapshots.\n\nLargest entries by ref:\n{largest}\n"}
 
           def spread_of(history, pad, ceiling=None):
               """The range of earlier values widened by `pad`, never below zero or above the ceiling; None below three values."""
@@ -523,13 +555,23 @@ jobs:
                           for test, mark in slow_tests(log_of(job)).items():
                               found[test] = max(found.get(test, 0), mark)
                   return found
+              def caches_of(query):
+                  pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repository}/actions/caches?{query}'))
+                  return [cache for page in pages for cache in page['actions_caches']]
               run = api(f'actions/runs/{run_id}')
-              if run['status'] != 'completed' or run['conclusion'] == 'cancelled':
+              if run['status'] != 'completed':
                   return []
               jobs = jobs_of(run['id'])
+              usage, limit = api('actions/cache/usage'), api('actions/cache/storage-limit')['max_cache_size_gb']
+              findings = [usage_finding(run, usage, limit, [])]
+              if findings[0]:
+                  findings = [usage_finding(run, usage, limit, caches_of('sort=size_in_bytes&direction=desc&per_page=100'))]
+              if seeds(run):
+                  findings.append(snapshot_finding(run, jobs, caches_of(f"ref=refs/heads/{run['head_branch']}&per_page=100")))
+              if run['conclusion'] == 'cancelled':
+                  return [finding for finding in findings if finding]
               window = settings['window']
               earlier = runs_like(run, 'success')
-              findings = []
               if watched(run):
                   band = band_of(jobs, annotations_of)
                   ran = job_set(jobs)
