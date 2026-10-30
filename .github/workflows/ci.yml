@@ -850,7 +850,9 @@ jobs:
           compiler = subprocess.check_output(['rustc', '-vV'], text=True)
           identity = [os.environ[name] for name in ['CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'HOST_OS', 'HOST_ARCH']] + [compiler, shape]
           digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
-          prefix = f'maestro-compile-v1-{digest}-'
+          namespace = 'maestro-compile-v1-'
+          prefix = f'{namespace}{digest}-'
+          seeder = '-tests-'
           call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
           suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX']) + '-' + call
           writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
@@ -858,7 +860,7 @@ jobs:
               shard = os.environ.get('SHARD', '')
               writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\nshape={shape}\n')
+              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\nshape={shape}\nnamespace={namespace}\nseeder={seeder}\n')
           PYTHON
       - name: Restore compile cache
         id: cache-restore
@@ -1252,6 +1254,8 @@ jobs:
           CACHE_SHAPE: ${{ steps.cache-identity.outputs.shape }}
           CACHE_MATCHED_KEY: ${{ steps.cache-restore.outputs.cache-matched-key }}
           CACHE_PREFIX: ${{ steps.cache-identity.outputs.prefix }}
+          CACHE_NAMESPACE: ${{ steps.cache-identity.outputs.namespace }}
+          CACHE_SEEDER: ${{ steps.cache-identity.outputs.seeder }}
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PYTHON'
@@ -1280,13 +1284,13 @@ jobs:
           if matched:
               cause = f"cold snapshot: the restored snapshot {matched} holds too few of this build's objects; seed it again from the default branch"
           else:
-              listing = subprocess.run(['gh', 'api', f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/caches?key=maestro-compile-v1-&per_page=100"],
+              listing = subprocess.run(['gh', 'api', f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/caches?key={os.environ['CACHE_NAMESPACE']}&per_page=100"],
                                        capture_output=True, text=True)
               if listing.returncode:
                   cause = 'no snapshot restored (key change or eviction; the cache list is unavailable)'
               else:
                   others = [cache['key'] for cache in json.loads(listing.stdout)['actions_caches']
-                            if '-tests-' in cache['key'] and not cache['key'].startswith(prefix)]
+                            if os.environ['CACHE_SEEDER'] in cache['key'] and not cache['key'].startswith(prefix)]
                   if others:
                       cause = (f'key change: no snapshot matches {prefix} but {len(others)} test snapshots exist under other keys; '
                                'the job shape (compiler, runner or caller directory) changed')
