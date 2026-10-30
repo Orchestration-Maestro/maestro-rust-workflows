@@ -1039,11 +1039,11 @@ jobs:
               count = 0
               for step in re.split(r'^      - name: ', workflow, flags=re.M)[1:]:
                   if re.search(r'^        continue-on-error:', step, re.M):
-                      assert step.splitlines()[0] in ['Restore compile cache', 'Save compile cache']
+                      assert step.splitlines()[0] in ['Restore compile cache', 'Save compile cache', 'Restore test setup cache', 'Save test setup cache']
                       assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M)
                       assert '        continue-on-error: true\n' in step
                       count += 1
-              assert count == 18
+              assert count == 20
               assert not re.search(r'^    continue-on-error:', workflow, re.M)
 
           snapshot_only_transfers_fail_open()
@@ -3257,7 +3257,7 @@ jobs:
                       path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_prepare=' + json.dumps(command), encoding='utf-8')
                       result, values = declaration(directory)
                       assert result.returncode == 0, result.stderr
-                      assert json.loads(values['test_prepare']) == command
+                      assert 'test_prepare' not in values, 'the selection step forwards the command'
                   for value in ['true', '1', '[]', '{}']:
                       path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_prepare=' + value, encoding='utf-8')
                       result, _ = declaration(directory)
@@ -3265,7 +3265,7 @@ jobs:
                       assert result.stderr.strip() == '.github/ci.toml: test_prepare must be a string', result.stderr
                   path.unlink()
                   result, values = declaration(directory)
-                  assert result.returncode == 0 and json.loads(values['test_prepare']) == ''
+                  assert result.returncode == 0 and 'test_prepare' not in values
               schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
               assert schema['properties']['test_prepare'] == {
                   'description': 'Standalone shell command run beside the test build. Write reusable outputs to TEST_PREPARE_OUTPUT.',
@@ -3434,7 +3434,7 @@ jobs:
           def absent_keeps_base_checks():
               result, values = declaration(root / 'fixtures/sample')
               assert result.returncode == 0, result.stdout + result.stderr
-              assert values == {'test_prepare': json.dumps(''), 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
+              assert values == {'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
               assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
               assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
               assert "inputs.working-directory != '.'" in workflow
@@ -5019,6 +5019,7 @@ jobs:
                           values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       for name in slow | {'targets', 'quality', 'docs', 'checks'}:
                           context = {'cancelled()': False, 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
+                                     'needs.declaration.outputs.test_prepare_inputs': '[]',
                                      'needs.declaration.outputs.test_prepare': json.dumps('echo ready'), 'inputs.warm-cache': warm, 'inputs.advisory-scan': advisory,
                                      'inputs.fuzz-scan': fuzz, 'github.event_name': event,
                                      default_ref: 'refs/heads/main', 'github.ref': 'refs/heads/main',
