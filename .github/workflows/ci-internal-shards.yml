@@ -1,0 +1,181 @@
+name: CI self-test shard count
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  shards:
+    name: Shard count seam proofs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Shared coverage policy
+        run: python3 .github/extract-workflow-steps.py
+      - name: Toolchain
+        working-directory: fixtures/sample
+        run: rustup show
+      - name: Shard count at workflow seam
+        shell: python
+        run: |
+          import ast
+          import json
+          import pathlib
+          import re
+          import shutil
+          import subprocess
+          import tempfile
+          import textwrap
+
+          # The helpers (execute, declaration, select_packages, fixture_git) keep one owner: the caller checks step.
+          source = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+          code = source.split('      - name: Caller checks at workflow seam\n', 1)[1]
+          code = code.split('        run: |\n', 1)[1].split('\n  native:', 1)[0]
+          tree = ast.parse(textwrap.dedent(code))
+          globals_needed = {'workflow', 'root', 'credential_names', 'coverage_report_args'}
+          tree.body = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef))
+                       or (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id in globals_needed
+                                                               for target in node.targets))]
+          exec(compile(tree, 'caller checks helpers', 'exec'))
+
+          def shard_count_declaration_is_validated():
+              message = '.github/ci.toml: test_shard_count must be a whole number from 1 to 60'
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  result, values = declaration(directory)
+                  assert result.returncode == 0 and values['test_shard_count'] == '16', result.stderr
+                  (directory / '.github').mkdir()
+                  path = directory / '.github/ci.toml'
+                  for declared, expected in [('', '16'), ('test_shard_count=1', '1'), ('test_shard_count=16', '16'),
+                                             ('test_shard_count=32', '32'), ('test_shard_count=60', '60')]:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\n' + declared + '\n', encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode == 0 and values['test_shard_count'] == expected, (declared, result.stderr)
+                  for declared in ['0', '61', '-1', '16.0', '1e1', '"16"', 'true', '[16]', '{}']:
+                      path.write_text('wasm_crates=[]\ncheck_targets=[]\ntest_shard_count=' + declared + '\n', encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and not values, (declared, result.stdout)
+                      assert result.stderr.strip() == message, (declared, result.stderr)
+              schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
+              assert schema['properties']['test_shard_count'] == {
+                  'description': 'Number of parallel test shards; every shard collects coverage.',
+                  'type': 'integer', 'minimum': 1, 'maximum': 60, 'default': 16}
+              assert 'test_shard_count' not in schema['required']
+
+          shard_count_declaration_is_validated()
+          print('PASS shard_count_declaration_is_validated')
+
+          def shard_count_seen_by(job, step, declared):
+              # Layers workflow, job and step env as GitHub does, resolving declaration outputs from a real declaration run.
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  if declared is not None:
+                      (directory / '.github').mkdir()
+                      (directory / '.github/ci.toml').write_text(
+                          f'wasm_crates=[]\ncheck_targets=[]\ntest_shard_count={declared}\n', encoding='utf-8')
+                  result, outputs = declaration(directory)
+                  assert result.returncode == 0, result.stderr
+              def resolve(value):
+                  match = re.fullmatch(r'\$\{\{ (steps\.config|needs\.declaration)\.outputs\.(\w+) \}\}', str(value))
+                  if not match:
+                      return str(value)
+                  if match[1] == 'steps.config':
+                      return outputs[match[2]]
+                  return resolve(document['jobs']['declaration']['outputs'][match[2]])
+              layers = [document.get('env', {}), document['jobs'][job].get('env', {}),
+                        next(s for s in document['jobs'][job]['steps'] if s.get('name') == step).get('env', {})]
+              seen = [layer['TEST_SHARD_COUNT'] for layer in layers if 'TEST_SHARD_COUNT' in layer]
+              return resolve(seen[-1]) if seen else None
+
+          def declared_shard_count_reaches_every_reader():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              assert 'TEST_SHARD_COUNT' not in document.get('env', {}), 'the shard count is no longer fixed for the workflow'
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'shard count fixture')
+                  for declared in [None, 32, 60]:
+                      expected = declared or 16
+                      output = directory / 'output'
+                      output.write_text('', encoding='utf-8')
+                      result = select_packages(directory, {
+                          'TEST_EVENT': 'push', 'BASE_REF': '', 'GITHUB_OUTPUT': str(output),
+                          'TEST_SHARD_COUNT': shard_count_seen_by('declaration', 'Select test packages', declared)})
+                      assert result.returncode == 0, result.stderr
+                      selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                      assert json.loads(selected['test_shards']) == list(range(1, expected + 1)), declared
+                      assert json.loads(selected['coverage_layout'])['shard_count'] == expected, declared
+                      for job, step in [('tests', 'Tests'), ('tests', 'Isolated tests'), ('doctests', 'Tests'),
+                                        ('tests-result', 'Merge coverage')]:
+                          assert shard_count_seen_by(job, step, declared) == str(expected), (job, step, declared)
+
+          declared_shard_count_reaches_every_reader()
+          print('PASS declared_shard_count_reaches_every_reader')
+
+          def union_expects_exactly_the_declared_report_count():
+              report = 'SF:/src/lib.rs\nDA:1,1\nend_of_record\n'
+              for declared in [None, 32]:
+                  expected = declared or 16
+                  env = {'TEST_SHARD_COUNT': shard_count_seen_by('tests-result', 'Merge coverage', declared)}
+                  for reports, accepted in [(expected, True), (expected - 1, False), (expected + 1, False)]:
+                      with tempfile.TemporaryDirectory() as temporary:
+                          directory = pathlib.Path(temporary)
+                          (directory / 'coverage').mkdir()
+                          for shard in range(1, reports + 1):
+                              (directory / f'coverage/shard-{shard}.lcov').write_text(report, encoding='utf-8')
+                          result = execute('Merge coverage', directory, env)
+                          assert (result.returncode == 0) == accepted, (declared, reports, result.stdout + result.stderr)
+                          assert accepted or result.stderr.strip() == 'Missing or unexpected shard coverage reports', result.stderr
+
+          union_expects_exactly_the_declared_report_count()
+          print('PASS union_expects_exactly_the_declared_report_count')
+
+          def baseline_recorded_with_another_shard_count_is_accepted():
+              layout = {'head': 'fixture', 'package_roots': {'selected': 'crates/a', 'unchanged': 'crates/b'}}
+              for declared, recorded in [(32, 16), (None, 32), (32, 32)]:
+                  current = declared or 16
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      for folder in ['coverage', 'baseline']:
+                          (directory / folder).mkdir()
+                      (directory / 'baseline/manifest.json').write_text(
+                          json.dumps(layout | {'shard_count': recorded, 'checkout_root': '/old/runner/caller'}), encoding='utf-8')
+                      for shard in range(1, recorded + 1):
+                          (directory / f'baseline/shard-{shard}.lcov').write_text(
+                              'SF:/old/runner/caller/crates/b/src/lib.rs\nDA:1,1\nend_of_record\n', encoding='utf-8')
+                      for shard in range(1, current + 1):
+                          (directory / f'coverage/shard-{shard}.lcov').write_text(
+                              'SF:/current/caller/crates/a/src/lib.rs\nDA:1,1\nend_of_record\n', encoding='utf-8')
+                      env = {'TEST_SHARD_COUNT': shard_count_seen_by('tests-result', 'Merge coverage', declared),
+                             'COVERAGE_SCOPE': 'selected packages: selected', 'TEST_PACKAGES': '["selected"]',
+                             'COVERAGE_LAYOUT': json.dumps(layout | {'shard_count': current}),
+                             'COVERAGE_CHECKOUT_ROOT': '/current/caller', 'COVERAGE_BASELINE_DIR': str(directory / 'baseline')}
+                      result = execute('Merge coverage', directory, env)
+                      assert result.returncode == 0 and 'Workspace line coverage (gate): 100.00% (2/2)' in result.stdout, (
+                          declared, recorded, result.stdout + result.stderr)
+                      (directory / f'baseline/shard-{recorded}.lcov').unlink()
+                      result = execute('Merge coverage', directory, env)
+                      assert result.returncode != 0, (declared, recorded, result.stdout)
+                      assert result.stderr.strip() == 'Missing or unexpected baseline coverage reports', result.stderr
+
+          baseline_recorded_with_another_shard_count_is_accepted()
+          print('PASS baseline_recorded_with_another_shard_count_is_accepted')
+
+          def diagnostics_docs_follow_the_declared_shard_count():
+              # The artifact name is built from the shard number, so the documented range must follow the declaration.
+              guide = ' '.join((root / 'docs/caller-checks.md').read_text(encoding='utf-8').split())
+              assert 'The shard field is `1` through the declared `test_shard_count`, or `doctests`' in guide
+              assert '`1` through `16`' not in guide
+
+          diagnostics_docs_follow_the_declared_shard_count()
+          print('PASS diagnostics_docs_follow_the_declared_shard_count')

@@ -56,7 +56,6 @@ permissions:
   contents: read
 
 env:
-  TEST_SHARD_COUNT: 16
   COVERAGE_IGNORE_FILENAME_REGEX: '(^|/)(tests|benches)/([^.]|\.[^./]|\.\.[^/])|(^|/)(target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$'
   PACKAGE_OWNER: |
     # The deepest root wins, so a nested package owns its own files.
@@ -162,7 +161,7 @@ jobs:
       coverage_exclude: ${{ steps.selection.outputs.coverage_exclude }}
       coverage_layout: ${{ steps.selection.outputs.coverage_layout }}
       included_tests: ${{ steps.selection.outputs.included_tests }}
-      test_shard_count: ${{ env.TEST_SHARD_COUNT }}
+      test_shard_count: ${{ steps.config.outputs.test_shard_count }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       targets: ${{ steps.config.outputs.targets }}
@@ -267,11 +266,11 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(test_prepare=json.dumps(''), warm_test_filter=json.dumps('none()'), additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare=json.dumps(''), warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'warm_test_filter', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -292,6 +291,10 @@ jobs:
                   raise SystemExit(f'{path}: warm_test_filter must be a string')
               if type(config.get('test_prepare', '')) is not str:
                   raise SystemExit(f'{path}: test_prepare must be a string')
+              count = config.get('test_shard_count', 16)
+              if type(count) is not int or not 1 <= count <= 60:
+                  raise SystemExit(f'{path}: test_shard_count must be a whole number from 1 to 60')
+              values['test_shard_count'] = str(count)
               values['test_prepare'] = json.dumps(config.get('test_prepare', ''))
               values['warm_test_filter'] = json.dumps(config.get('warm_test_filter', 'none()'))
               values['reserved_ports'] = ','.join(map(str, ports))
@@ -528,6 +531,7 @@ jobs:
           TEST_EVENT: ${{ inputs.warm-cache && 'push' || github.repository_id == '1404598722' && inputs.test-event || github.event_name }}
           BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           COVERAGE_KEY: ${{ inputs.concurrency-key || 'root' }}
+          TEST_SHARD_COUNT: ${{ steps.config.outputs.test_shard_count }}
         run: |
           python3 - <<'PYTHON'
           import ast
@@ -1288,6 +1292,7 @@ jobs:
         shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.test_shards) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env: &test-env
+      TEST_SHARD_COUNT: ${{ needs.declaration.outputs.test_shard_count }}
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       WARM_CACHE: ${{ inputs.warm-cache && matrix.shard != 'doctests' }}
       WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
@@ -1671,6 +1676,7 @@ jobs:
           COVERAGE_LAYOUT: ${{ needs.declaration.outputs.coverage_layout }}
           COVERAGE_CHECKOUT_ROOT: ${{ needs.test-build.outputs.coverage_checkout_root }}
           TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
+          TEST_SHARD_COUNT: ${{ needs.declaration.outputs.test_shard_count }}
         run: python3 -c "$COVERAGE_MERGE"
       - name: Upload full coverage manifest
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && needs.declaration.outputs.coverage_scope == 'full workspace'
