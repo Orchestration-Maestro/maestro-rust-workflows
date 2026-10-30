@@ -1283,14 +1283,16 @@ jobs:
               sys.exit(status)
           floor = 90
           shape = os.environ['CACHE_SHAPE']
-          if shape != 'tests-coverage':
-              finish(f'Compile cache hit rate not judged: {shape} is not seeded by a warm build')
           stats = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'sccache-stats').read_text(encoding='utf-8')
           executed = re.search(r'(?m)^Compile requests executed +(\d+)', stats)
           rate = re.search(r'(?m)^Cache hits rate +([0-9.]+) %', stats)
           if not executed or not int(executed[1]) or not rate:
               finish('Compile cache hit rate not judged: no cacheable compilation ran')
           rate = float(rate[1])
+          # The guards read the compile units and the hit rate of every build from this notice.
+          print(f'::notice title=Work units::compiles: {executed[1]}; hit-rate: {rate:.2f}')
+          if shape != 'tests-coverage':
+              finish(f'Compile cache hit rate not judged: {shape} is not seeded by a warm build')
           if rate >= floor:
               finish(f'Compile cache hit rate {rate:.2f}% (floor {floor}%)')
           matched, prefix = os.environ['CACHE_MATCHED_KEY'], os.environ['CACHE_PREFIX']
@@ -1764,6 +1766,18 @@ jobs:
           flaky = sorted(set(re.findall(r'^\s*FLAKY(?:\s+\d+/\d+)?\s+\[[^]]*\]\s*(.+)$', text, re.MULTILINE)))
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
               output.write('### Flaky tests (passed on retry)\n' + ('\n'.join('- ' + name for name in flaky) if flaky else 'None') + '\n')
+          PYTHON
+      - name: Test work units
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import pathlib
+          import re
+          path = pathlib.Path('nextest.log')
+          text = re.sub(r'\x1b\[[0-9;]*m', '', path.read_text(encoding='utf-8')) if path.exists() else ''
+          summary = re.search(r'(?m)^\s*Summary \[\s*[0-9.]+s\] (\d+) tests? run', text)
+          if summary:
+              print(f'::notice title=Work units::tests: {summary[1]}')
           PYTHON
       - name: Compile cache statistics
         id: cache-statistics
