@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.17.0...v0.18.0) (2026-10-30)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main f1995334 ([#247](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/247)) ([f23bf93](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/f23bf936ebafb8fdb03290bf48588a3947ca283f))
+
+
+### Features
+
+* **ci:** let each caller declare its test shard count ([#241](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/241)) ([fdeb9ba](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/fdeb9ba6282902e0c07a72ca738ae9f4acc25991))
+
 ## [0.17.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.16.1...v0.17.0) (2026-10-29)
 
 
