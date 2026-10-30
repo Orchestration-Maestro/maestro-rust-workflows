@@ -399,3 +399,24 @@ jobs:
 
           judge_reports_an_unbalanced_shard_with_the_tests_that_grew()
           print('PASS judge_reports_an_unbalanced_shard_with_the_tests_that_grew')
+
+          def a_pinned_job_that_did_not_run_is_reported():
+              pinned = SETTINGS['required']
+              ran = [job(name.rstrip('*') + ('1/16)' if name.endswith('*') else ''), 5) for name in pinned]
+              assert judging['required_finding'](run_of(7, 39), ran, pinned) is None
+              renamed = [item for item in ran if item['name'] != 'Docs'] + [job('Documentation', 5)]
+              skipped = [dict(item, conclusion='skipped') if item['name'] == 'Format and lint' else item for item in renamed]
+              finding = judging['required_finding'](run_of(7, 39), skipped, pinned)
+              assert finding['title'] == 'Required checks missing from run 7', finding
+              assert '`Docs`, `Format and lint`' in finding['body'] or '`Format and lint`, `Docs`' in finding['body'], finding
+              assert 'Test shard' not in finding['body'], finding
+              failing = [dict(item, conclusion='failure') for item in ran]
+              assert judging['required_finding'](run_of(7, 39), failing, pinned) is None
+              gh, _ = fake_repository(required=['Caller declaration', 'Docs'])
+              titles = [item['title'] for item in judging['judge']('7', 'owner/repo', gh, SETTINGS)]
+              assert titles == ['Required checks missing from run 7'], titles
+              gh, _ = fake_repository(required=['Caller declaration', 'Docs'], event='pull_request')
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+
+          a_pinned_job_that_did_not_run_is_reported()
+          print('PASS a_pinned_job_that_did_not_run_is_reported')
