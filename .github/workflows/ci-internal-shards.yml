@@ -241,24 +241,60 @@ jobs:
               return {'id': identifier, 'name': name, 'conclusion': conclusion,
                       'started_at': moment(0), 'completed_at': moment(minutes * 60)}
 
-          def run_of(identifier, minutes, event='merge_group', conclusion='success'):
-              return {'id': identifier, 'html_url': f'https://example.test/runs/{identifier}', 'status': 'completed',
-                      'conclusion': conclusion, 'event': event, 'workflow_id': 9, 'created_at': moment(identifier),
-                      'run_started_at': moment(0), 'updated_at': moment(minutes * 60)}
+          def run_of(identifier, minutes, event='merge_group', conclusion='success', name='Rust CI', branch='main'):
+              # Runs start two hours apart, so a run's predecessors are the runs with smaller identifiers.
+              start = identifier * 7200
+              return {'id': identifier, 'name': name, 'head_branch': branch, 'html_url': f'https://example.test/runs/{identifier}',
+                      'status': 'completed', 'conclusion': conclusion, 'event': event, 'workflow_id': 9, 'created_at': moment(identifier),
+                      'run_started_at': moment(start), 'updated_at': moment(start + minutes * 60)}
 
-          def merge_run_over_budget_files_an_issue_with_its_slowest_jobs():
-              jobs = [job(f'Test shard ({n}/16)', 20 + n) for n in range(1, 9)] + [job('Docs', 5), job('Advisory scan', 0, 'skipped')]
-              finding = judging['budget_finding'](run_of(7, 50), jobs, 45)
-              assert finding['title'] == 'Merge run over its time budget: run 7', finding
-              assert 'Run: https://example.test/runs/7' in finding['body'], finding
-              assert 'Took 50.0 minutes; the budget is 45 minutes.' in finding['body'], finding
-              listed = [line for line in finding['body'].splitlines() if line.startswith('- ')]
-              assert listed == [f'- Test shard ({n}/16): {20 + n:.1f} min' for n in (8, 7, 6, 5, 4)], listed
-              for minutes in (39.8, 45):
-                  assert judging['budget_finding'](run_of(8, minutes), jobs, 45) is None, minutes
+          def a_run_more_than_ten_percent_over_its_baseline_files_an_issue():
+              prior = [run_of(n, 30) for n in range(1, 6)]
+              earlier = lambda identifier: [job('Test shard (1/16)', 20), job('Docs', 5), job('Format and lint', 4)]
+              now = [job('Test shard (1/16)', 28), job('Docs', 5), job('Format and lint', 4.5), job('New job', 3), job('Advisory scan', 0, 'skipped')]
+              finding = judging['budget_finding'](run_of(7, 33.3), now, prior, earlier)
+              assert finding['title'] == 'CI run slower than its baseline: run 7', finding
+              body = finding['body']
+              assert 'Run: https://example.test/runs/7' in body, body
+              assert 'Rust CI (merge_group, main) took 33.3 min against a baseline of 30.0 min (+11%, limit +10%).' in body, body
+              assert 'Baseline runs (previous successful runs of the same workflow and event):' in body, body
+              for n in range(1, 6):
+                  assert f'- https://example.test/runs/{n}' in body, body
+              grown = [line for line in body.splitlines() if line.startswith('- ') and 'min (' in line]
+              assert grown == ['- Test shard (1/16): 28.0 min (+8.0 min)', '- Format and lint: 4.5 min (+0.5 min)',
+                               '- Docs: 5.0 min (+0.0 min)'], grown
+              for minutes in (32.7, 33):
+                  assert judging['budget_finding'](run_of(8, minutes), now, prior, earlier) is None, minutes
 
-          merge_run_over_budget_files_an_issue_with_its_slowest_jobs()
-          print('PASS merge_run_over_budget_files_an_issue_with_its_slowest_jobs')
+          a_run_more_than_ten_percent_over_its_baseline_files_an_issue()
+          print('PASS a_run_more_than_ten_percent_over_its_baseline_files_an_issue')
+
+          def the_baseline_needs_three_samples_and_uses_the_last_five_medians():
+              earlier = lambda identifier: []
+              slow = run_of(9, 120)
+              for count in (0, 1, 2):
+                  assert judging['budget_finding'](slow, [], [run_of(n, 30) for n in range(1, count + 1)], earlier) is None, count
+              assert judging['budget_finding'](slow, [], [run_of(n, 30) for n in range(1, 4)], earlier) is not None
+              # Only the last five count, and the median keeps one fast run from lowering the bar.
+              history = [run_of(1, 90), run_of(2, 90), run_of(3, 10), run_of(4, 30), run_of(5, 30), run_of(6, 30), run_of(7, 30)]
+              assert judging['budget_finding'](run_of(9, 32.9), [], history, earlier) is None
+              assert 'baseline of 30.0 min' in judging['budget_finding'](run_of(9, 33.1), [], history, earlier)['body']
+
+          the_baseline_needs_three_samples_and_uses_the_last_five_medians()
+          print('PASS the_baseline_needs_three_samples_and_uses_the_last_five_medians')
+
+          def only_runs_that_gate_a_merge_are_judged():
+              prior = [run_of(n, 30) for n in range(1, 6)]
+              earlier = lambda identifier: []
+              for event, name, branch, fires in [('merge_group', 'Rust CI', 'gh-readonly-queue/main/x', True), ('pull_request', 'Rust CI', 'feature', True),
+                                                 ('push', 'Rust CI', 'main', True), ('push', 'Rust CI', 'probe', False),
+                                                 ('merge_group', 'CodeQL', 'x', False), ('push', 'CodeQL', 'main', False),
+                                                 ('schedule', 'Rust CI', 'main', False)]:
+                  slow = run_of(9, 60, event, name=name, branch=branch)
+                  assert (judging['budget_finding'](slow, [], prior, earlier) is not None) == fires, (event, name, branch)
+
+          only_runs_that_gate_a_merge_are_judged()
+          print('PASS only_runs_that_gate_a_merge_are_judged')
 
           def findings_file_once_and_slow_issues_are_limited():
               calls = []
@@ -276,7 +312,7 @@ jobs:
           findings_file_once_and_slow_issues_are_limited()
           print('PASS findings_file_once_and_slow_issues_are_limited')
 
-          def fake_repository(minutes=39, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group'):
+          def fake_repository(minutes=30, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group'):
               """Serves the REST calls judge makes for run 7, its earlier green run 6 and the selection window."""
               names = required or ['Caller declaration', 'Format and lint', 'Docs', 'Build test archive', 'Doctests',
                                    'Tests (ubuntu-latest)', 'Dependency, source and coverage checks']
@@ -323,21 +359,24 @@ jobs:
               created = []
               return gh, created
 
-          SETTINGS = {'budget': 45.0, 'window': 5, 'ceiling': 25.0, 'margin': 1.5, 'slow': 30.0, 'required': [
+          SETTINGS = {'window': 5, 'ceiling': 25.0, 'margin': 1.5, 'slow': 30.0, 'required': [
               'Caller declaration', 'Format and lint', 'Docs', 'Build test archive', 'Test shard (*', 'Doctests',
               'Tests (ubuntu-latest)', 'Dependency, source and coverage checks']}
 
-          def judge_stays_quiet_on_a_healthy_run_and_reports_a_budget_breach():
+          def judge_stays_quiet_on_a_healthy_run_and_reports_a_baseline_breach():
               gh, _ = fake_repository()
               assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
-              gh, _ = fake_repository(minutes=50)
-              titles = [finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS)]
-              assert titles == ['Merge run over its time budget: run 7'], titles
+              gh, _ = fake_repository(minutes=32.9)
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+              gh, _ = fake_repository(minutes=33.3)
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+              assert '- https://example.test/runs/2' in findings[0]['body'] and '- https://example.test/runs/1' not in findings[0]['body']
               cancelled = run_of(7, 90, conclusion='cancelled')
               assert judging['judge']('7', 'owner/repo', lambda *argv, body=None: json.dumps(cancelled), SETTINGS) == []
 
-          judge_stays_quiet_on_a_healthy_run_and_reports_a_budget_breach()
-          print('PASS judge_stays_quiet_on_a_healthy_run_and_reports_a_budget_breach')
+          judge_stays_quiet_on_a_healthy_run_and_reports_a_baseline_breach()
+          print('PASS judge_stays_quiet_on_a_healthy_run_and_reports_a_baseline_breach')
 
           SLOW_LOG = '\n'.join([
               '2026-10-30T02:48:22.6648967Z         SLOW [> 30.000s] (─────────) maestro-tooling::integration browser_author_build::repairs',
@@ -668,6 +707,9 @@ jobs:
                       assert f"| `{name}` | {value['default']} |" in guide, name
               for source in ['40990557025', '40990555729', '40968689273', '40946549381']:
                   assert source in guide, source
+              # The time guard is relative to the run's own baseline; a fixed minutes budget is not allowed.
+              assert 'merge-run-budget-minutes' not in guide and 'merge-run-budget-minutes' not in guards
+              assert 'median wall time of the previous five successful runs' in guide and 'plus 10%' in guide
 
           required_checks_and_documented_defaults_stay_pinned()
           print('PASS required_checks_and_documented_defaults_stay_pinned')
