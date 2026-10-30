@@ -6588,8 +6588,8 @@ jobs:
           def reusable_calls_complete_independently():
               internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding="utf-8")
               group = re.search(r'^  group: (.+)$', workflow, re.MULTILINE).group(1)
-              assert group == 'rust-ci-$' + "{{ github.event_name == 'push' && github.sha || github.ref }}$" + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
-                  'Reusable calls share a concurrency group and can cancel each other'
+              assert group == 'rust-ci-$' + "{{ github.event_name == 'push' && format('{0}-{1}', github.workflow, github.sha) || github.ref }}$" + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
+                  'Two callers on one pushed commit share a concurrency group and wait for each other'
               keys = []
               for job in ['sample', 'declared', 'test-tools']:
                   section = re.split(r'\n  \S', internal.split(f'  {job}:\n', 1)[1], maxsplit=1)[0]
@@ -6603,6 +6603,16 @@ jobs:
 
           reusable_calls_complete_independently()
           print('PASS reusable_calls_complete_independently')
+
+          def caller_name_stays_in_the_concurrency_group():
+              named = [line for line in workflow.splitlines() if re.search(r'github\.workflow\b', line)]
+              assert named == [re.search(r'^  group: .+$', workflow, re.MULTILINE).group(0)], \
+                  'The caller name must not reach artifact names, coverage keys or cache keys'
+              assert "name: coverage-$" + "{{ inputs.concurrency-key || 'root' }}-full" in workflow
+              assert "COVERAGE_KEY: $" + "{{ inputs.concurrency-key || 'root' }}" in workflow
+
+          caller_name_stays_in_the_concurrency_group()
+          print('PASS caller_name_stays_in_the_concurrency_group')
 
           def workflow_safety_is_unchanged():
               assert re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + ['cargo test --workspace --locked'] == [
