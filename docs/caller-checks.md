@@ -1015,12 +1015,14 @@ new set. The stored ratchet level of a band, kind and workflow is shared across
 job sets.
 
 A run whose rate for either kind is more than 10% over its baseline, and
-whose gap is more than 15 s in total (the rate gap times the run's units of
-that kind), is a regression and files "CI run slower than its baseline: run N"
-at once. The 15 s floor exists because GitHub stamps job times to the second: a
-19 s job measured at 21 s (Maestro release run 41095516017) is within the
-instrument's resolution, not a slowdown. A 20 s workflow that doubles still
-fires. The
+whose gap is more than 2 s per executed job in total (the rate gap times the
+run's units of that kind, against two seconds for each job that did them), is a
+regression and files "CI run slower than its baseline: run N" at once. The
+bound is the measurement's own error (supervisor ruling S7759): GitHub stamps
+job and step times to the second, 1 s at each boundary, so a work-time
+difference is measurable only above 2 s per executed job. A difference within
+it is neither a regression nor an escalation; anything above it at +10% fires,
+and anything outside the band's spread escalates. The
 issue names the run and the band, gives each regressed rate against its baseline
 and links the latest baseline runs. Fix it at its cause; nothing accepts it.
 
@@ -1223,8 +1225,11 @@ departure that repeats shows as comments on one issue:
   regression above, filed once with the same label.
 - "Escalation: jobs or steps changed without matching work": a job or step
   that appears, disappears or grows (past the earlier range plus 10% and 30
-  seconds) in a successful run. The test shards and the archive build are
-  judged by their rate, so they are only checked for appearing and disappearing.
+  seconds) in a successful run. The seconds a rate judges (the archive build,
+  each shard job and the `Tests` or `Isolated tests` step of a shard) are only
+  checked for appearing and disappearing. Every other shard step, such as setup,
+  tools, coverage or a download, is judged for growth like any step: a slow
+  download is a transfer finding, never a regression of the tests rate.
 - "Escalation: compile cache hit rate outside its usual range": the hit rate of
   the archive build, read from its `Work units` notice, outside the earlier
   hit rates widened by 10 points.
