@@ -829,6 +829,32 @@ jobs:
           exception_check_fails_the_job_when_an_issue_is_closed()
           print('PASS exception_check_fails_the_job_when_an_issue_is_closed')
 
+          def the_accept_inputs_set_a_level_through_the_step():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'bin').mkdir()
+                  fake = directory / 'bin/gh'
+                  fake.write_text('#!/bin/sh\ncase "$1 $2" in "issue list") echo \'[]\';; "issue create") cat > "$STORED";; esac\n', encoding='utf-8')
+                  fake.chmod(0o755)
+                  env = os.environ | {'PATH': f"{directory / 'bin'}:{os.environ['PATH']}", 'STORED': str(directory / 'stored'), 'REPOSITORY': 'owner/repo',
+                                      'RUN_ID': '', 'GITHUB_RUN_ID': '555', 'SELECTION_WINDOW': '10', 'SELECTION_CEILING': '25', 'SHARD_MARGIN': '1.5',
+                                      'SLOW_SECONDS': '30', 'REQUIRED_CHECKS': '[]', 'ACCEPT_LEVEL': '', 'ACCEPT_SECONDS': '0', 'ACCEPT_REASON': ''}
+                  def step(**changed):
+                      return subprocess.run(['python3', '-c', body('Judge the run', guards)], env=env | changed, cwd=directory, capture_output=True, text=True)
+                  result = step()
+                  assert result.returncode == 0 and '0 findings, 0 issues filed' in result.stdout and not (directory / 'stored').exists(), result.stdout + result.stderr
+                  result = step(ACCEPT_LEVEL='9/merge_group/x', ACCEPT_SECONDS='2400', ACCEPT_REASON='slower pool')
+                  assert result.returncode == 0 and 'Accepted 9/merge_group/x at 2400 s' in result.stdout, result.stdout + result.stderr
+                  stored = (directory / 'stored').read_text(encoding='utf-8')
+                  assert '"9/merge_group/x": {' in stored and '"reason": "slower pool"' in stored and '"run": 555' in stored and '"seconds": 2400.0' in stored, stored
+                  (directory / 'stored').unlink()
+                  result = step(ACCEPT_LEVEL='9/merge_group/x', ACCEPT_SECONDS='2400', ACCEPT_REASON=' ')
+                  assert result.returncode != 0 and 'CI guards failed: accepting a level needs the level' in result.stderr, result.stdout + result.stderr
+                  assert not (directory / 'stored').exists()
+
+          the_accept_inputs_set_a_level_through_the_step()
+          print('PASS the_accept_inputs_set_a_level_through_the_step')
+
           def run_cache_floor(shape, stats, matched, listing, namespace='maestro-compile-v1-'):
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
