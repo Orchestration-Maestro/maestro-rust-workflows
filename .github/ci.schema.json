@@ -38,6 +38,12 @@
       },
       "uniqueItems": true
     },
+    "test_archive_profile": {
+      "description": "Nextest profile that archived test shards run under; other runs keep the default profile.",
+      "type": "string",
+      "pattern": "^([A-Za-z0-9][A-Za-z0-9_-]*)?$",
+      "default": ""
+    },
     "browser_build": {
       "description": "Run the caller's mise-pinned just browser-build after the listed wasm builds.",
       "type": "boolean",

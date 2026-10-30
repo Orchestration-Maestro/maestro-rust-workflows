@@ -117,6 +117,13 @@ set, every Linux test job runs
 tests that must bind a fixed local port are not displaced by an outbound
 connection that the kernel assigned that port. Without it nothing runs.
 
+`test_archive_profile` is an optional nextest profile name: letters, digits,
+`_` and `-`, starting with a letter or digit. When set, each archived test
+shard exports `NEXTEST_PROFILE=<name>` for its test run, so the caller's
+`.config/nextest.toml` can differ between a local run and a shard that runs
+from the test archive without Cargo. Every other run keeps the default
+profile, and without the key nothing is exported.
+
 An absent file runs the standard checks without isolation, search tool
 installation or optional jobs. After declaration validation, pull requests
 run formatting, Clippy, docs, dependency/source checks and declared Windows

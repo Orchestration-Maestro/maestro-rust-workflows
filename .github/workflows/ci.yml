@@ -171,6 +171,7 @@ jobs:
       browser_build: ${{ steps.config.outputs.browser_build }}
       test_tools: ${{ steps.config.outputs.test_tools }}
       reserved_ports: ${{ steps.config.outputs.reserved_ports }}
+      test_archive_profile: ${{ steps.config.outputs.test_archive_profile }}
       additional_locked_manifests: ${{ steps.config.outputs.additional_locked_manifests }}
       quality_config: ${{ steps.config.outputs.quality_config }}
       fuzz_manifest: ${{ steps.config.outputs.fuzz_manifest }}
@@ -296,7 +297,7 @@ jobs:
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'test_archive_profile', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -337,6 +338,14 @@ jobs:
               for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_packages', 'test_prepare_inputs'):
                   for value in config.get(key, []):
                       validate_toml_string(key, value)
+              profile = config.get('test_archive_profile', '')
+              if type(profile) is not str:
+                  raise SystemExit(f'{path}: test_archive_profile must be a string')
+              validate_toml_string('test_archive_profile', profile)
+              if profile and not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', profile):
+                  raise SystemExit(f'{path}: test_archive_profile must be a nextest profile name')
+              if profile:
+                  values['test_archive_profile'] = profile
               def contained_manifest(value):
                   manifest = pathlib.Path(value)
                   try:
@@ -712,7 +721,7 @@ jobs:
               if '.github/ci.toml' in changed:
                   before, after = declarations()
                   browser_changed = before.get('browser_test_crates', []) != after.get('browser_test_crates', [])
-                  if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
+                  if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'test_tools', 'reserved_ports', 'test_archive_profile', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
                       selected = set(members)
                       trigger = 'shared input: .github/ci.toml'
               if 'Cargo.lock' in changed and selected != members:
@@ -1490,6 +1499,7 @@ jobs:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       WARM_CACHE: ${{ inputs.warm-cache && matrix.shard != 'doctests' }}
       WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
+      TEST_ARCHIVE_PROFILE: ${{ needs.declaration.outputs.test_archive_profile }}
       SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       TEST_ARCHIVE: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && format('{0}/{1}/test-binaries.tar.zst', github.workspace, inputs.working-directory || '.') || '' }}
@@ -1810,7 +1820,7 @@ jobs:
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
             XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 MAESTRO_TEST_DIAGNOSTICS_DIR="$diagnostics" \
-            TEST_PREPARE_OUTPUT="$PWD/target/test-setup" ${TEST_ARCHIVE:+TEST_ARCHIVE=1} \
+            TEST_PREPARE_OUTPUT="$PWD/target/test-setup" ${TEST_ARCHIVE:+TEST_ARCHIVE=1} ${TEST_ARCHIVE:+${TEST_ARCHIVE_PROFILE:+NEXTEST_PROFILE=$TEST_ARCHIVE_PROFILE}} \
             CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
             SCCACHE_DIR="${SCCACHE_DIR-}" SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE-}" \
             SCCACHE_LOCAL_RW_MODE="${SCCACHE_LOCAL_RW_MODE-}" SCCACHE_GHA_ENABLED="${SCCACHE_GHA_ENABLED-}" \

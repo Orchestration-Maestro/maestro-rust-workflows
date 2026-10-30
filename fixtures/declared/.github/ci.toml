@@ -10,3 +10,4 @@ browser_test_crates = ["declared"]
 test_prepare = "printf ready > \"$TEST_PREPARE_OUTPUT/ready\""
 test_prepare_packages = ["declared"]
 test_prepare_inputs = ["justfile"]
+test_archive_profile = "archived"
