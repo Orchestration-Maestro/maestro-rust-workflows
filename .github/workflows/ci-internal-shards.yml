@@ -501,3 +501,82 @@ jobs:
 
           selection_reports_its_share_and_trigger_file()
           print('PASS selection_reports_its_share_and_trigger_file')
+
+          exceptions = functions_of('Test-time exceptions')
+          NEXTEST = '\n'.join([
+              '[profile.default]',
+              'slow-timeout = { period = "30s", terminate-after = 4 }',
+              '',
+              '[[profile.default.overrides]]',
+              'filter = "test(=kept)"',
+              '# Measured: 207.925s; cause: a build from an empty home by design; #3661',
+              'slow-timeout = { period = "30s", terminate-after = 7 }',
+              '',
+              '[[profile.default.overrides]]',
+              'filter = "test(=unnamed)"',
+              'slow-timeout = { period = "30s", terminate-after = 7 }',
+              '',
+              '# Priorities follow the run in #3999.',
+              '[[profile.default.overrides]]',
+              'filter = "test(=ordered)"',
+              'priority = 99',
+              '',
+              '[[profile.default.overrides]]',
+              'filter = "test(=closed)"',
+              '# Measured: 130s.',
+              '# Fixed by #3700',
+              'slow-timeout = { period = "1m", terminate-after = 3 }',
+              '',
+              '[[profile.default.overrides]]',
+              'filter = "test(=within)"',
+              '# Exactly at the hang limit, #1',
+              'slow-timeout = { period = "30s", terminate-after = 4 }',
+              '', ''])
+
+          def exceptions_over_the_hang_limit_are_found_with_their_issues():
+              found = exceptions['nextest_exceptions'](NEXTEST, 120)
+              assert found == [{'filter': 'test(=kept)', 'seconds': 210, 'issues': [3661]},
+                               {'filter': 'test(=unnamed)', 'seconds': 210, 'issues': []},
+                               {'filter': 'test(=closed)', 'seconds': 180, 'issues': [3700]}], found
+              assert exceptions['nextest_exceptions']('[profile.default]\nslow-timeout = "60s"\n', 120) == []
+
+          exceptions_over_the_hang_limit_are_found_with_their_issues()
+          print('PASS exceptions_over_the_hang_limit_are_found_with_their_issues')
+
+          def an_exception_without_an_open_issue_is_refused():
+              found = exceptions['nextest_exceptions'](NEXTEST, 120)
+              states = {3661: 'OPEN', 3700: 'CLOSED'}
+              assert exceptions['exception_findings'](found, states.get) == [
+                  'the 210-second exception for test(=unnamed) names no issue; put its issue number in the comment above slow-timeout',
+                  'the 180-second exception for test(=closed) is refused: #3700 is closed, so fix the test and remove the exception']
+              assert exceptions['exception_findings'](found[:1], {3661: 'OPEN'}.get) == []
+              assert exceptions['exception_findings']([{'filter': 'f', 'seconds': 150, 'issues': [1, 2]}], {1: 'CLOSED', 2: 'OPEN'}.get) == []
+
+          an_exception_without_an_open_issue_is_refused()
+          print('PASS an_exception_without_an_open_issue_is_refused')
+
+          def exception_check_fails_the_job_when_an_issue_is_closed():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'bin').mkdir()
+                  fake = directory / 'bin/gh'
+                  fake.write_text('#!/bin/sh\ncase "$3" in 3661) echo \'{"state":"OPEN"}\';; *) echo \'{"state":"CLOSED"}\';; esac\n', encoding='utf-8')
+                  fake.chmod(0o755)
+                  config = directory / 'nextest.toml'
+                  env = os.environ | {'PATH': f"{directory / 'bin'}:{os.environ['PATH']}", 'REPOSITORY': 'owner/repo',
+                                      'NEXTEST_CONFIG': str(config), 'HANG_LIMIT_SECONDS': '120'}
+                  def check():
+                      return subprocess.run(['python3', '-c', body('Test-time exceptions', guards)], env=env, cwd=directory,
+                                            capture_output=True, text=True)
+                  result = check()
+                  assert result.returncode == 0 and 'no exceptions to check' in result.stdout, result.stdout + result.stderr
+                  config.write_text(NEXTEST, encoding='utf-8')
+                  result = check()
+                  assert result.returncode == 1, result.stdout + result.stderr
+                  assert 'is refused: #3700 is closed' in result.stdout and '3 test-time exceptions, 2 refused' in result.stdout, result.stdout
+                  config.write_text('\n'.join(NEXTEST.splitlines()[:7]) + '\n', encoding='utf-8')
+                  result = check()
+                  assert result.returncode == 0 and '1 test-time exceptions, 0 refused' in result.stdout, result.stdout + result.stderr
+
+          exception_check_fails_the_job_when_an_issue_is_closed()
+          print('PASS exception_check_fails_the_job_when_an_issue_is_closed')
