@@ -180,18 +180,19 @@ jobs:
               return run['name'] != 'CodeQL' and (run['event'] in ('merge_group', 'pull_request')
                                                   or (run['event'] == 'push' and run['head_branch'] == 'main'))
 
-          def job_times(jobs):
-              return {job['name']: seconds(job) for job in jobs if seconds(job) is not None and job.get('conclusion') != 'cancelled'}
+          # Per kind of work: the name of the jobs that do it, and how a finding names those jobs and one unit of their work.
+          WORK = {'tests': ('Test shard (', 'Test jobs', 'test run'),
+                  'compiles': ('Build test archive', 'Build jobs', 'compile unit')}
 
           RATCHET_TITLE = 'CI time ratchet'
 
-          def level_of(run, band):
-              """The key of a ratchet level: a run is compared only with runs of its workflow, event and runner band."""
-              return f"{run['workflow_id']}/{run['event']}/{band}"
+          def level_of(run, band, kind):
+              """The key of a ratchet level: a run is compared only with runs of its workflow, event and runner band, per kind of work."""
+              return f"{run['workflow_id']}/{run['event']}/{band}/{kind}"
 
-          def baseline_seconds(durations):
-              """The median wall time of earlier runs in the level; None below three runs."""
-              return statistics.median(durations) if len(durations) >= 3 else None
+          def baseline_of(rates):
+              """The median seconds per unit of earlier runs in the level; None below three runs."""
+              return statistics.median(rates) if len(rates) >= 3 else None
 
           def ratchet_issue(repository, gh):
               """The open issue that stores the ratchet, as (number, levels); (None, {}) until the first level is stored."""
@@ -207,22 +208,13 @@ jobs:
 
           def save_ratchet(repository, gh, number, levels):
               """Write the levels to the ratchet issue, creating the issue on first use."""
-              body = ('The CI guards keep the lowest median wall time of each level here. Do not edit it by hand: only the guard lowers a level, '
+              body = ('The CI guards keep the lowest median seconds per unit of work of each level here. Do not edit it by hand: only the guard lowers a level, '
                       'and nothing raises one.\n\n'
                       f"```json\n{json.dumps({'levels': levels}, indent=2, sort_keys=True)}\n```\n")
               if number:
                   gh('issue', 'edit', str(number), '-R', repository, '--body-file', '-', body=body)
               else:
                   gh('issue', 'create', '-R', repository, '--title', RATCHET_TITLE, '--body-file', '-', body=body)
-
-          def baseline_of(rates):
-              raise NotImplementedError('baseline_of')
-
-          def measures_of(jobs, annotations_of):
-              raise NotImplementedError('measures_of')
-
-          def rate_finding(run, measured, prior, prior_measured, band, ratchet):
-              raise NotImplementedError('rate_finding')
 
           def band_of(jobs, annotations_of):
               """The runner hardware label of the run's slowest labelled job, the runner that sets its pace."""
@@ -243,29 +235,44 @@ jobs:
                                       'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n{note['message']}\n"}
               return None
 
-          def budget_finding(run, jobs, prior, jobs_of, band, ratchet=None):
-              """A run more than 10% over the lower of the band's recent median and its stored ratchet level."""
-              baseline = baseline_seconds([wall(earlier) for earlier in prior])
-              if not watched(run) or baseline is None:
+          def measures_of(jobs, annotations_of):
+              """Seconds per unit of each kind of work in a run, and its compile cache hit rate, from the work-unit annotations of its jobs."""
+              found, spent, units = {}, {}, {}
+              for job in jobs:
+                  kind = next((kind for kind, (name, _, _) in WORK.items() if job['name'].startswith(name)), None)
+                  if kind is None or seconds(job) is None or job.get('conclusion') == 'cancelled':
+                      continue
+                  for note in annotations_of(job):
+                      if note.get('title') != 'Work units':
+                          continue
+                      for name, value in re.findall(r'(tests|compiles|hit-rate): ([0-9.]+)', note['message']):
+                          if name == 'hit-rate':
+                              found[name] = float(value)
+                          elif name == kind and float(value) > 0:
+                              spent[kind] = spent.get(kind, 0) + seconds(job)
+                              units[kind] = units.get(kind, 0) + float(value)
+              return found | {kind: spent[kind] / units[kind] for kind in spent}
+
+          def rate_finding(run, measured, prior, prior_measured, band, ratchet):
+              """A run whose seconds per unit of work, for any kind, are more than 10% over the lower of the band's recent median and its stored ratchet level."""
+              if not watched(run):
                   return None
-              baseline = baseline if ratchet is None else min(baseline, ratchet)
-              took = wall(run)
-              if took <= baseline * 1.10:
+              lines = []
+              for kind, (_, jobs, unit) in WORK.items():
+                  baseline = baseline_of([rates[kind] for rates in prior_measured if kind in rates])
+                  if baseline is None or kind not in measured:
+                      continue
+                  baseline = min(baseline, ratchet.get(kind, baseline))
+                  if measured[kind] > baseline * 1.10:
+                      lines.append(f"- {jobs}: {measured[kind]:.2f} s per {unit} against a baseline of {baseline:.2f} s "
+                                   f"(+{(measured[kind] / baseline - 1) * 100:.0f}%, limit +10%)\n  Ratchet level: `{level_of(run, band, kind)}`")
+              if not lines:
                   return None
-              before = {}
-              for earlier in prior:
-                  for name, value in job_times(jobs_of(earlier['id'])).items():
-                      before.setdefault(name, []).append(value)
-              grown = sorted(((value - sum(before[name]) / len(before[name]), name, value)
-                              for name, value in job_times(jobs).items() if name in before), reverse=True)[:6]
-              listed = '\n'.join(f'- {name}: {value / 60:.1f} min ({change / 60:+.1f} min)' for change, name, value in grown)
               runs = '\n'.join(f"- {earlier['html_url']}" for earlier in prior)
               return {'title': f"CI run slower than its baseline: run {run['id']}",
-                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) took {took / 60:.1f} min against a baseline "
-                              f"of {baseline / 60:.1f} min (+{(took / baseline - 1) * 100:.0f}%, limit +10%) on runner band {band}.\n"
-                              f"Ratchet level: `{level_of(run, band)}`\n\n"
-                              f"Latest baseline runs (successful, same workflow, event and runner band):\n{runs}\n\n"
-                              f"Jobs that grew most (now against their mean in those runs):\n{listed}\n"}
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) on runner band {band}.\n"
+                              'Time per unit of work against the lower of the band\'s recent median and its stored ratchet level:\n\n'
+                              + '\n'.join(lines) + f"\n\nLatest baseline runs (successful, same workflow, event and runner band):\n{runs}\n"}
 
           def selection_of(log):
               """Selected and total test packages and the full-suite trigger, as the selection step logs them."""
@@ -370,8 +377,11 @@ jobs:
                   listed = api(f"actions/runs?event={run['event']}&status={status}&per_page=100")['workflow_runs']
                   older = [other for other in listed if other['workflow_id'] == run['workflow_id'] and other['created_at'] < run['created_at']]
                   return sorted(older, key=lambda other: other['created_at'], reverse=True)
+              noted = {}
               def annotations_of(job):
-                  return json.loads(gh('api', f"repos/{repository}/check-runs/{job['id']}/annotations"))
+                  if job['id'] not in noted:
+                      noted[job['id']] = json.loads(gh('api', f"repos/{repository}/check-runs/{job['id']}/annotations"))
+                  return noted[job['id']]
               def log_of(job):
                   return gh('api', '--allow-escape-sequences', f"repos/{repository}/actions/jobs/{job['id']}/logs")
               def shard_slow(jobs):
@@ -397,15 +407,19 @@ jobs:
                           if len(prior) == 5:
                               break
                   prior.reverse()
-                  median = baseline_seconds([wall(other) for other in prior])
-                  if median is not None:
-                      level = level_of(run, band)
+                  measured = measures_of(jobs, annotations_of)
+                  prior_measured = [measures_of(jobs_of(other['id']), annotations_of) for other in prior]
+                  medians = {kind: baseline_of([rates[kind] for rates in prior_measured if kind in rates]) for kind in WORK}
+                  medians = {kind: value for kind, value in medians.items() if value is not None}
+                  if medians:
                       number, levels = ratchet_issue(repository, gh)
-                      kept = levels.get(level, {}).get('seconds')
-                      findings.append(budget_finding(run, jobs, prior, jobs_of, band, kept))
-                      if kept is None or median < kept:
-                          levels[level] = {'seconds': median, 'reason': 'lowest median of the previous five successful runs on the level', 'run': run['id']}
-                          save_ratchet(repository, gh, number, levels)
+                      kept = {kind: levels[level_of(run, band, kind)]['rate'] for kind in medians if level_of(run, band, kind) in levels}
+                      findings.append(rate_finding(run, measured, prior, prior_measured, band, kept))
+                      lowered = {level_of(run, band, kind): {'rate': value, 'reason': 'lowest median of the previous five successful runs on the level',
+                                                             'run': run['id']}
+                                 for kind, value in medians.items() if kind not in kept or value < kept[kind]}
+                      if lowered:
+                          save_ratchet(repository, gh, number, levels | lowered)
               on_main = run['event'] in ('merge_group', 'push')
               if on_main:
                   findings.append(required_finding(run, jobs, settings['required']))
