@@ -945,8 +945,10 @@ read the run fails instead of passing.
 | `selection-share-ceiling-percent` | 25 | Selection check |
 | `shard-balance-margin` | 1.5 | Shard balance |
 | `slow-test-seconds` | 30 | Test-time limit |
-| `slow-issue-limit` | 10 | Test-time limit |
 | `hang-limit-seconds` | 120 | Test-time limit |
+| `accept-level` | none | Run time baseline |
+| `accept-seconds` | 0 | Run time baseline |
+| `accept-reason` | none | Run time baseline |
 
 ### Merge-run time budget
 
@@ -968,34 +970,53 @@ Runner hardware: AMD EPYC 7763 64-Core Processor, 4 cores (runner-band: amd-epyc
 
 A run's runner band is the label of its slowest labelled job, which sets the
 run's pace. The guard reads it from the annotation (`runner-band: <label>`); a
-run with no label is in the band `unknown`. Among the last 20 earlier successful
-runs of the same workflow and event, only those in the same band count.
+run with no label is in the band `unknown`. Of the last `selection-window`
+earlier successful runs of the same workflow and event (10 by default), only
+those in the same band count, and a run newer than the judged one never does.
 
-The baseline is the median wall time of the previous five successful runs in
-the band, held down by a ratchet: it is the lowest such median seen in that
-history, so a staircase of small regressions cannot raise the line. The limit is
-the baseline plus 10%. Fewer than three earlier runs in the band means no
-baseline and no issue. Merge groups, pull requests and pushes to `main` are
-judged; CodeQL and every other run are not, because they gate nothing. The
-history is the 20 runs the guard reads, so after a lasting change in the runners
-the ratchet follows once the older runs have left that window.
+The recent baseline is the median wall time of the previous five successful
+runs in the band. The guard also keeps the lowest such median it has seen for
+each level, a workflow, event and band, in one open issue titled "CI time
+ratchet". The baseline is the lower of the two, so a staircase of small
+regressions cannot raise the line, and the limit is the baseline plus 10%.
+Fewer than three earlier runs in the band means no baseline and no issue.
+Merge groups, pull requests and pushes to `main` are judged; CodeQL and every
+other run are not, because they gate nothing. Keep the ratchet issue open: the
+guard rebuilds a missing one from the next runs, and a lasting slowdown it has
+not seen is then taken as the new level.
+
+The guard lowers a level by itself when the recent median is lower; only an
+accept with a reason raises it. When the runners really got slower, call
+`ci-guards.yml` with `accept-level` (the `Ratchet level` line of the slower
+run's issue), `accept-seconds` and `accept-reason`. The guard stores the level
+with the reason and the accepting run, and refuses a call that lacks any of the
+three.
 
 Source: Maestro merge-group runs 40990557025 and 40990555729 took 39.3 and 39.8
 minutes with 16 shards, so at that level the line sits near 43 minutes; it
-moves down by itself as the 32-shard change makes runs shorter. The guard looks
-up the band only when a run is more than 10% slower than the fastest of the 20,
-so healthy runs cost no extra calls. To respond, open the run link, start from
-the job that grew most and fix its cause.
+moves down by itself as the 32-shard change makes runs shorter. A judged run
+reads the jobs and annotations of at most `selection-window` earlier runs, and
+shard logs only on a merge group or main push, or when the shards are
+unbalanced. With 32 shards and the default window that is at most about 95
+calls, and about 125 when the shards are unbalanced, against the job token's
+1,000 calls an hour for the whole repository. To respond, open the run link, start from the job that grew most and fix its
+cause.
 
 ### Compile-cache hit-rate floor
 
-`Build test archive` fails when the compile-cache hit rate is under 90% and the
+`Build test archive` warns when the compile-cache hit rate is under 90% and the
 build uses the coverage snapshot, which is every merge-group and main-push
-run. Pull-request builds, and jobs that no warm build seeds (format and lint,
+run. It never fails the build: a change can invalidate the cache itself, such as
+a toolchain bump, and only a push to the default branch saves a snapshot again,
+so a failing floor would block the merge group on every retry. Pull-request builds, and jobs that no warm build seeds (format and lint,
 docs, doctests, browser builds), are not judged. The floor is fixed in
 `ci.yml`. Source: the archive build of merge-group runs 40990557025,
 40990555729, 40968689273 and 40946549381 hit 100.00%, 100.00%, 100.00% and
-99.67%; the unseeded jobs sit at 0% by design. The error names one cause:
+99.67%; the unseeded jobs sit at 0% by design. The warning is an annotation
+that names one cause. The guards read it from a merge-group or main-push run and
+file "Compile cache below its hit-rate floor", or add a comment to the open
+issue, so repeated cold builds on default-branch pushes, which are the
+regression, show as a growing list of comments:
 
 - **Cold snapshot:** a snapshot was restored but lacks this build's objects.
   Run the warm build on the default branch to seed it again.
@@ -1036,9 +1057,10 @@ configuration.
 ### Test-time limit
 
 Nextest flags a test slow after `slow-test-seconds` (30), and the caller's
-`slow-timeout` period should match. Every test flagged in a merge-group or main
-run gets one issue, "Test over 30 seconds: <test>", and one run files at most
-`slow-issue-limit` new ones. Fix the test at its cause; do not raise a timeout.
+`slow-timeout` period should match. A merge-group or main run files one issue
+for every test it flagged, "Test over 30 seconds: <test>", with no cap on how many one
+run files; an open issue for the test is never filed twice. Fix the test at its
+cause; do not raise a timeout.
 
 The kill is one hang limit, `hang-limit-seconds` (120). A nextest override may
 exceed it only for a test that needs more, and the comment directly above its

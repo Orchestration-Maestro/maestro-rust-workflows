@@ -8,7 +8,7 @@ on:
         type: string
         default: ''
       selection-window:
-        description: Completed runs of the same event that make a sustained selection share
+        description: Completed runs of the same workflow and event, up to and including the judged run, that every guard reads - for the selection share and for the earlier runs searched for a run's baseline
         type: number
         default: 10
       selection-share-ceiling-percent:
@@ -23,10 +23,6 @@ on:
         description: Seconds after which nextest flags a test slow; each such test on main gets one issue
         type: number
         default: 30
-      slow-issue-limit:
-        description: New slow-test issues one run may file (open issues are never filed twice)
-        type: number
-        default: 10
       hang-limit-seconds:
         description: Longest kill time a nextest override may declare without an open issue
         type: number
@@ -35,6 +31,18 @@ on:
         description: Path of the caller's nextest configuration
         type: string
         default: .config/nextest.toml
+      accept-level:
+        description: Ratchet level to set by hand, as listed in the "CI time ratchet" issue; the only way to raise a level
+        type: string
+        default: ''
+      accept-seconds:
+        description: Wall time in seconds the accepted level is set to
+        type: number
+        default: 0
+      accept-reason:
+        description: Why the level is accepted; recorded in the "CI time ratchet" issue
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -134,7 +142,7 @@ jobs:
 
   guards:
     name: Run guards
-    if: ${{ inputs.run-id != '' }}
+    if: ${{ inputs.run-id != '' || inputs.accept-level != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -150,7 +158,9 @@ jobs:
           SELECTION_CEILING: ${{ inputs.selection-share-ceiling-percent }}
           SHARD_MARGIN: ${{ inputs.shard-balance-margin }}
           SLOW_SECONDS: ${{ inputs.slow-test-seconds }}
-          SLOW_ISSUE_LIMIT: ${{ inputs.slow-issue-limit }}
+          ACCEPT_LEVEL: ${{ inputs.accept-level }}
+          ACCEPT_SECONDS: ${{ inputs.accept-seconds }}
+          ACCEPT_REASON: ${{ inputs.accept-reason }}
           # Jobs a full run must execute; a trailing * matches a name prefix.
           REQUIRED_CHECKS: >-
             ["Caller declaration", "Format and lint", "Docs", "Build test archive", "Test shard (*",
@@ -188,13 +198,45 @@ jobs:
           def job_times(jobs):
               return {job['name']: seconds(job) for job in jobs if seconds(job) is not None and job.get('conclusion') != 'cancelled'}
 
-          def ratchet_seconds(durations):
-              """The lowest median of five consecutive runs so far, so a staircase of small regressions cannot raise the line; None below three runs."""
-              lowest = None
-              for end in range(3, len(durations) + 1):
-                  median = statistics.median(durations[max(0, end - 5):end])
-                  lowest = median if lowest is None else min(lowest, median)
-              return lowest
+          RATCHET_TITLE = 'CI time ratchet'
+
+          def level_of(run, band):
+              """The key of a ratchet level: a run is compared only with runs of its workflow, event and runner band."""
+              return f"{run['workflow_id']}/{run['event']}/{band}"
+
+          def baseline_seconds(durations):
+              """The median wall time of earlier runs in the level; None below three runs."""
+              return statistics.median(durations) if len(durations) >= 3 else None
+
+          def ratchet_issue(repository, gh):
+              """The open issue that stores the ratchet, as (number, levels); (None, {}) until the first level is stored."""
+              listed = json.loads(gh('issue', 'list', '-R', repository, '--state', 'open', '--search', f'"{RATCHET_TITLE}" in:title',
+                                     '--json', 'number,title,body'))
+              for item in listed:
+                  if item['title'] == RATCHET_TITLE:
+                      block = re.search(r'```json\n(.*?)\n```', item['body'], re.DOTALL)
+                      if not block:
+                          raise RuntimeError(f"issue #{item['number']} holds no ratchet block")
+                      return item['number'], json.loads(block[1])['levels']
+              return None, {}
+
+          def save_ratchet(repository, gh, number, levels):
+              """Write the levels to the ratchet issue, creating the issue on first use."""
+              body = ('The CI guards keep the lowest median wall time of each level here. Do not edit it by hand: the guard lowers a level, '
+                      'and only the accept inputs of ci-guards.yml raise one.\n\n'
+                      f"```json\n{json.dumps({'levels': levels}, indent=2, sort_keys=True)}\n```\n")
+              if number:
+                  gh('issue', 'edit', str(number), '-R', repository, '--body-file', '-', body=body)
+              else:
+                  gh('issue', 'create', '-R', repository, '--title', RATCHET_TITLE, '--body-file', '-', body=body)
+
+          def accept_ratchet(repository, gh, level, seconds, reason, run_id):
+              """Set a level by hand, the only way to raise one; it needs the level, a positive duration and a reason."""
+              if not level or seconds <= 0 or not reason.strip():
+                  raise ValueError('accepting a level needs the level, a positive number of seconds and a reason')
+              number, levels = ratchet_issue(repository, gh)
+              levels[level] = {'seconds': seconds, 'reason': reason.strip(), 'run': int(run_id)}
+              save_ratchet(repository, gh, number, levels)
 
           def band_of(jobs, annotations_of):
               """The runner hardware label of the run's slowest labelled job, the runner that sets its pace."""
@@ -205,34 +247,37 @@ jobs:
                           return found[1]
               return 'unknown'
 
-          def baseline_seconds(durations):
-              raise NotImplementedError('baseline_seconds')
-
           def cache_finding(run, jobs, annotations_of):
-              raise NotImplementedError('cache_finding')
-
-          def accept_ratchet(repository, gh, level, seconds, reason, run_id):
-              raise NotImplementedError('accept_ratchet')
+              """The warning the compile-cache floor left on the archive build, as one standing issue."""
+              for job in jobs:
+                  if job['name'] == 'Build test archive':
+                      for note in annotations_of(job):
+                          if note.get('title') == 'Compile cache floor':
+                              return {'title': 'Compile cache below its hit-rate floor', 'comment': True,
+                                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n{note['message']}\n"}
+              return None
 
           def budget_finding(run, jobs, prior, jobs_of, band, ratchet=None):
-              """A run more than 10% over the ratchet of earlier successful runs of its workflow, event and runner band."""
-              baseline = ratchet_seconds([wall(earlier) for earlier in prior])
+              """A run more than 10% over the lower of the band's recent median and its stored ratchet level."""
+              baseline = baseline_seconds([wall(earlier) for earlier in prior])
               if not watched(run) or baseline is None:
                   return None
+              baseline = baseline if ratchet is None else min(baseline, ratchet)
               took = wall(run)
               if took <= baseline * 1.10:
                   return None
               before = {}
-              for earlier in prior[-5:]:
+              for earlier in prior:
                   for name, value in job_times(jobs_of(earlier['id'])).items():
                       before.setdefault(name, []).append(value)
               grown = sorted(((value - sum(before[name]) / len(before[name]), name, value)
                               for name, value in job_times(jobs).items() if name in before), reverse=True)[:6]
               listed = '\n'.join(f'- {name}: {value / 60:.1f} min ({change / 60:+.1f} min)' for change, name, value in grown)
-              runs = '\n'.join(f"- {earlier['html_url']}" for earlier in prior[-5:])
+              runs = '\n'.join(f"- {earlier['html_url']}" for earlier in prior)
               return {'title': f"CI run slower than its baseline: run {run['id']}",
                       'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) took {took / 60:.1f} min against a baseline "
-                              f"of {baseline / 60:.1f} min (+{(took / baseline - 1) * 100:.0f}%, limit +10%) on runner band {band}.\n\n"
+                              f"of {baseline / 60:.1f} min (+{(took / baseline - 1) * 100:.0f}%, limit +10%) on runner band {band}.\n"
+                              f"Ratchet level: `{level_of(run, band)}`\n\n"
                               f"Latest baseline runs (successful, same workflow, event and runner band):\n{runs}\n\n"
                               f"Jobs that grew most (now against their mean in those runs):\n{listed}\n"}
 
@@ -291,7 +336,7 @@ jobs:
 
           def slow_findings(slow, limit, run):
               """One issue per test that ran past the slow mark."""
-              return [{'title': f'Test over {limit:g} seconds: {test}', 'slow': True,
+              return [{'title': f'Test over {limit:g} seconds: {test}',
                        'body': f"Run: {run['html_url']}\nNextest flagged this test slow, over {mark:g} seconds. "
                                'Fix the test at its cause; do not raise a timeout.\n'}
                       for test, mark in sorted(slow.items())]
@@ -307,25 +352,25 @@ jobs:
                       'body': f"Run: {run['html_url']}\nThese pinned jobs did not run: " + ', '.join(f'`{name}`' for name in missing) +
                               '.\nA job was renamed, removed or skipped; restore it or update the pinned list.\n'}
 
-          def file_issues(findings, repository, gh, slow_limit):
-              """Open an issue for each finding no open issue already carries; returns the titles filed."""
-              existing = {item['title'] for item in json.loads(gh('issue', 'list', '-R', repository, '--state', 'open',
-                                                                  '--limit', '1000', '--json', 'title'))}
-              filed, slow = [], 0
+          def file_issues(findings, repository, gh):
+              """Open an issue for each finding no open issue already carries; a finding marked for comment is added to its open issue. Returns the titles filed or commented."""
+              existing = {item['title']: item['number'] for item in json.loads(gh('issue', 'list', '-R', repository, '--state', 'open',
+                                                                                 '--limit', '1000', '--json', 'number,title'))}
+              filed = []
               for finding in findings:
-                  if finding['title'] in existing:
+                  title = finding['title']
+                  if title not in existing:
+                      gh('issue', 'create', '-R', repository, '--title', title, '--body-file', '-', body=finding['body'])
+                      existing[title] = None
+                  elif finding.get('comment') and existing[title]:
+                      gh('issue', 'comment', str(existing[title]), '-R', repository, '--body-file', '-', body=finding['body'])
+                  else:
                       continue
-                  if finding.get('slow'):
-                      if slow >= slow_limit:
-                          continue
-                      slow += 1
-                  gh('issue', 'create', '-R', repository, '--title', finding['title'], '--body-file', '-', body=finding['body'])
-                  filed.append(finding['title'])
-                  existing.add(finding['title'])
+                  filed.append(title)
               return filed
 
           def judge(run_id, repository, gh, settings):
-              """Every finding for one completed run."""
+              """Every finding for one completed run; also lowers the stored ratchet level of the run's band when the earlier runs show a lower median."""
               def api(path):
                   return json.loads(gh('api', f'repos/{repository}/{path}'))
               known = {}
@@ -335,9 +380,10 @@ jobs:
                       known[identifier] = [job for page in pages for job in page['jobs']]
                   return known[identifier]
               def runs_like(run, status):
-                  # A required workflow is not listed under its own id, so list the repository's runs and keep this workflow's.
+                  # A required workflow is not listed under its own id, so list the repository's runs and keep this workflow's earlier ones, newest first.
                   listed = api(f"actions/runs?event={run['event']}&status={status}&per_page=100")['workflow_runs']
-                  return [other for other in listed if other['workflow_id'] == run['workflow_id']]
+                  older = [other for other in listed if other['workflow_id'] == run['workflow_id'] and other['created_at'] < run['created_at']]
+                  return sorted(older, key=lambda other: other['created_at'], reverse=True)
               def annotations_of(job):
                   return json.loads(gh('api', f"repos/{repository}/check-runs/{job['id']}/annotations"))
               def log_of(job):
@@ -352,38 +398,47 @@ jobs:
               run = api(f'actions/runs/{run_id}')
               if run['status'] != 'completed' or run['conclusion'] == 'cancelled':
                   return []
-              jobs = jobs_of(run_id)
-              candidates = sorted((other for other in runs_like(run, 'success') if watched(other) and other['run_started_at'] < run['run_started_at']),
-                                  key=lambda other: other['run_started_at'])[-20:]
-              prior, band = [], None
-              # No median of earlier runs is below the fastest one, so a run within 10% of it needs no hardware lookup.
-              if len(candidates) >= 3 and wall(run) > 1.10 * min(wall(other) for other in candidates):
+              jobs = jobs_of(run['id'])
+              window = settings['window']
+              earlier = runs_like(run, 'success')
+              findings = []
+              if watched(run):
                   band = band_of(jobs, annotations_of)
-                  prior = [other for other in candidates if band_of(jobs_of(other['id']), annotations_of) == band]
-              findings = [budget_finding(run, jobs, prior, jobs_of, band)]
+                  prior = []
+                  for other in [other for other in earlier if watched(other)][:window]:
+                      if band_of(jobs_of(other['id']), annotations_of) == band:
+                          prior.append(other)
+                          if len(prior) == 5:
+                              break
+                  prior.reverse()
+                  median = baseline_seconds([wall(other) for other in prior])
+                  if median is not None:
+                      level = level_of(run, band)
+                      number, levels = ratchet_issue(repository, gh)
+                      kept = levels.get(level, {}).get('seconds')
+                      findings.append(budget_finding(run, jobs, prior, jobs_of, band, kept))
+                      if kept is None or median < kept:
+                          levels[level] = {'seconds': median, 'reason': 'lowest median of the previous five successful runs on the level', 'run': run['id']}
+                          save_ratchet(repository, gh, number, levels)
               on_main = run['event'] in ('merge_group', 'push')
               if on_main:
                   findings.append(required_finding(run, jobs, settings['required']))
-              slow = shard_slow(jobs)
+                  findings.append(cache_finding(run, jobs, annotations_of))
               unbalanced = shard_finding(run, jobs, settings['margin'], [])
+              slow = shard_slow(jobs) if unbalanced or on_main else {}
               if unbalanced:
-                  earlier = [other for other in runs_like(run, 'success')
-                             if other['id'] != run['id'] and other['created_at'] < run['created_at']]
                   previous = shard_slow(jobs_of(earlier[0]['id'])) if earlier else {}
                   unbalanced = shard_finding(run, jobs, settings['margin'], grown_tests(slow, previous))
               findings.append(unbalanced)
               if on_main:
                   findings.extend(slow_findings(slow, settings['slow'], run))
-              recent = runs_like(run, 'completed')
               rows = []
-              for other in recent:
-                  if other['conclusion'] not in ('success', 'failure'):
-                      continue
+              for other in ([run] + [other for other in runs_like(run, 'completed') if other['conclusion'] in ('success', 'failure')])[:window]:
                   declaration = next((job for job in jobs_of(other['id']) if job['name'] == 'Caller declaration'), None)
                   chosen = selection_of(log_of(declaration)) if declaration else None
                   if chosen:
                       rows.append((other['id'], *chosen))
-              findings.append(selection_finding(rows[:settings['window']], settings['ceiling'], settings['window']))
+              findings.append(selection_finding(rows, settings['ceiling'], window))
               return [finding for finding in findings if finding]
 
           def main():
@@ -397,8 +452,12 @@ jobs:
                           'slow': float(os.environ['SLOW_SECONDS']), 'required': json.loads(os.environ['REQUIRED_CHECKS'])}
               repository = os.environ['REPOSITORY']
               try:
-                  findings = judge(os.environ['RUN_ID'], repository, gh, settings)
-                  filed = file_issues(findings, repository, gh, int(float(os.environ['SLOW_ISSUE_LIMIT'])))
+                  if os.environ['ACCEPT_LEVEL']:
+                      seconds = float(os.environ['ACCEPT_SECONDS'])
+                      accept_ratchet(repository, gh, os.environ['ACCEPT_LEVEL'], seconds, os.environ['ACCEPT_REASON'], os.environ['GITHUB_RUN_ID'])
+                      print(f"Accepted {os.environ['ACCEPT_LEVEL']} at {seconds:g} s")
+                  findings = judge(os.environ['RUN_ID'], repository, gh, settings) if os.environ['RUN_ID'] else []
+                  filed = file_issues(findings, repository, gh)
               except (RuntimeError, KeyError, ValueError, OSError) as error:
                   sys.exit(f'CI guards failed: {error}')
               print(f'{len(findings)} findings, {len(filed)} issues filed')

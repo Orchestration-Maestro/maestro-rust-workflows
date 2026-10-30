@@ -598,7 +598,7 @@ jobs:
           def each_slow_test_on_main_gets_one_issue():
               findings = judging['slow_findings']({'b::two': 90.0, 'a::one': 30.0}, 30.0, run_of(7, 39))
               assert [finding['title'] for finding in findings] == ['Test over 30 seconds: a::one', 'Test over 30 seconds: b::two']
-              assert all(finding['slow'] for finding in findings) and 'over 90 seconds' in findings[1]['body'], findings
+              assert 'over 90 seconds' in findings[1]['body'], findings
               assert 'Run: https://example.test/runs/7' in findings[0]['body'] and 'do not raise a timeout' in findings[0]['body']
               gh, _ = fake_repository(shard_logs={(7, 3): SLOW_LOG})
               titles = [finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS)]
