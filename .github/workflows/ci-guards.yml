@@ -163,11 +163,27 @@ jobs:
 
           def selection_of(log):
               """Selected and total test packages and the full-suite trigger, as the selection step logs them."""
-              raise NotImplementedError('selection_of')
+              log = clean(log)
+              count = re.search(r'(?m)^Selected package count: (\d+)/(\d+)$', log)
+              if not count:
+                  return None
+              fallback = re.search(r'(?m)^Full-suite fallback: (.+)$', log)
+              return int(count[1]), int(count[2]), fallback[1] if fallback else None
 
           def selection_finding(rows, ceiling, window):
               """A sustained share: the median over a full window of runs is above the ceiling."""
-              raise NotImplementedError('selection_finding')
+              if len(rows) < window:
+                  return None
+              shares = [selected * 100 / total for _, selected, total, _ in rows]
+              median = statistics.median(shares)
+              if median <= ceiling:
+                  return None
+              listed = '\n'.join(f"- run {run_id}: {selected}/{total} packages ({selected * 100 / total:.0f}%)"
+                                 + (f", full suite because {trigger}" if trigger else '')
+                                 for run_id, selected, total, trigger in rows)
+              return {'title': 'Test selection share above its range',
+                      'body': f'The median share of workspace test packages selected over the last {len(rows)} runs is '
+                              f'{median:.0f}%; the expected ceiling is {ceiling:g}%.\n\n{listed}\n'}
 
           def slow_tests(log):
               """Longest slow mark nextest printed for each test."""
@@ -267,6 +283,16 @@ jobs:
               findings.append(unbalanced)
               if on_main:
                   findings.extend(slow_findings(slow, settings['slow'], run))
+              recent = api(f"actions/workflows/{run['workflow_id']}/runs?event={run['event']}&status=completed&per_page={settings['window'] + 5}")['workflow_runs']
+              rows = []
+              for other in recent:
+                  if other['conclusion'] not in ('success', 'failure'):
+                      continue
+                  declaration = next((job for job in jobs_of(other['id']) if job['name'] == 'Caller declaration'), None)
+                  chosen = selection_of(log_of(declaration)) if declaration else None
+                  if chosen:
+                      rows.append((other['id'], *chosen))
+              findings.append(selection_finding(rows[:settings['window']], settings['ceiling'], settings['window']))
               return [finding for finding in findings if finding]
 
           def main():
