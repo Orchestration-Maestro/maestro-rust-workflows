@@ -1014,8 +1014,13 @@ that added or lost a job has no like-for-like baseline until three runs have the
 new set. The stored ratchet level of a band, kind and workflow is shared across
 job sets.
 
-A run whose rate for either kind is more than 10% over its baseline is a
-regression and files "CI run slower than its baseline: run N" at once. The
+A run whose rate for either kind is more than 10% over its baseline, and
+whose gap is more than 15 s in total (the rate gap times the run's units of
+that kind), is a regression and files "CI run slower than its baseline: run N"
+at once. The 15 s floor exists because GitHub stamps job times to the second: a
+19 s job measured at 21 s (Maestro release run 41095516017) is within the
+instrument's resolution, not a slowdown. A 20 s workflow that doubles still
+fires. The
 issue names the run and the band, gives each regressed rate against its baseline
 and links the latest baseline runs. Fix it at its cause; nothing accepts it.
 
