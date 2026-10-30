@@ -64,7 +64,8 @@ jobs:
           values = {'enabled': 'false'}
           if lock.is_file():
               tools = tomllib.loads(pathlib.Path('mise.toml').read_text(encoding='utf-8')).get('tools', {})
-              identity = [os.environ['RUNNER_OS'], os.environ['RUNNER_ARCH'], hashlib.sha256(lock.read_bytes()).hexdigest(), tools]
+              toolchain = next((path.read_text(encoding='utf-8') for path in map(pathlib.Path, ['rust-toolchain.toml', 'rust-toolchain']) if path.is_file()), '')
+              identity = [os.environ['RUNNER_OS'], os.environ['RUNNER_ARCH'], hashlib.sha256(lock.read_bytes()).hexdigest(), tools, toolchain]
               digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':'), sort_keys=True).encode('utf-8')).hexdigest()
               values = {'enabled': 'true', 'key': f'maestro-compile-v1-{digest}-content'}
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:

@@ -206,8 +206,8 @@ caller check fails the job.
 
 A caller with a `Cargo.lock` restores one compiled-cache snapshot and the mise
 tools before `mise install`, and the checks run through checksum-pinned sccache.
-The key hashes the `Cargo.lock`, the `tools` table of `mise.toml` and the runner
-OS and architecture, so a changed lock or toolchain misses and rebuilds. The
+The key hashes the `Cargo.lock`, the `tools` table of `mise.toml`, the rustup
+toolchain file and the runner OS and architecture, so a changed lock or toolchain misses and rebuilds. The
 first run that misses saves the snapshot for the same pull request's later runs.
 Both transfers fail open. Callers without a `Cargo.lock` run no cache steps.
 
