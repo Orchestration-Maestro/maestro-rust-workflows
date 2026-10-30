@@ -979,9 +979,6 @@ read the run fails instead of passing.
 | `shard-balance-margin` | 1.5 | Shard balance |
 | `slow-test-seconds` | 30 | Test-time limit |
 | `hang-limit-seconds` | 120 | Test-time limit |
-| `accept-level` | none | Run time baseline |
-| `accept-seconds` | 0 | Run time baseline |
-| `accept-reason` | none | Run time baseline |
 
 ### Merge-run time budget
 
@@ -1018,12 +1015,9 @@ other run are not, because they gate nothing. Keep the ratchet issue open: the
 guard rebuilds a missing one from the next runs, and a lasting slowdown it has
 not seen is then taken as the new level.
 
-The guard lowers a level by itself when the recent median is lower; only an
-accept with a reason raises it. When the runners really got slower, call
-`ci-guards.yml` with `accept-level` (the `Ratchet level` line of the slower
-run's issue), `accept-seconds` and `accept-reason`. The guard stores the level
-with the reason and the accepting run, and refuses a call that lacks any of the
-three.
+A stored level has one writer: only the guard lowers it, when the recent median
+is lower, and nothing raises it; no input does. A lasting slowdown keeps firing
+until its cause is fixed.
 
 Source: Maestro merge-group runs 40990557025 and 40990555729 took 39.3 and 39.8
 minutes with 16 shards, so at that level the line sits near 43 minutes; it

@@ -31,18 +31,6 @@ on:
         description: Path of the caller's nextest configuration
         type: string
         default: .config/nextest.toml
-      accept-level:
-        description: Ratchet level to set by hand, as listed in the "CI time ratchet" issue; the only way to raise a level
-        type: string
-        default: ''
-      accept-seconds:
-        description: Wall time in seconds the accepted level is set to
-        type: number
-        default: 0
-      accept-reason:
-        description: Why the level is accepted; recorded in the "CI time ratchet" issue
-        type: string
-        default: ''
 
 permissions:
   contents: read
@@ -142,7 +130,7 @@ jobs:
 
   guards:
     name: Run guards
-    if: ${{ inputs.run-id != '' || inputs.accept-level != '' }}
+    if: ${{ inputs.run-id != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -158,9 +146,6 @@ jobs:
           SELECTION_CEILING: ${{ inputs.selection-share-ceiling-percent }}
           SHARD_MARGIN: ${{ inputs.shard-balance-margin }}
           SLOW_SECONDS: ${{ inputs.slow-test-seconds }}
-          ACCEPT_LEVEL: ${{ inputs.accept-level }}
-          ACCEPT_SECONDS: ${{ inputs.accept-seconds }}
-          ACCEPT_REASON: ${{ inputs.accept-reason }}
           # Jobs a full run must execute; a trailing * matches a name prefix.
           REQUIRED_CHECKS: >-
             ["Caller declaration", "Format and lint", "Docs", "Build test archive", "Test shard (*",
@@ -222,21 +207,13 @@ jobs:
 
           def save_ratchet(repository, gh, number, levels):
               """Write the levels to the ratchet issue, creating the issue on first use."""
-              body = ('The CI guards keep the lowest median wall time of each level here. Do not edit it by hand: the guard lowers a level, '
-                      'and only the accept inputs of ci-guards.yml raise one.\n\n'
+              body = ('The CI guards keep the lowest median wall time of each level here. Do not edit it by hand: only the guard lowers a level, '
+                      'and nothing raises one.\n\n'
                       f"```json\n{json.dumps({'levels': levels}, indent=2, sort_keys=True)}\n```\n")
               if number:
                   gh('issue', 'edit', str(number), '-R', repository, '--body-file', '-', body=body)
               else:
                   gh('issue', 'create', '-R', repository, '--title', RATCHET_TITLE, '--body-file', '-', body=body)
-
-          def accept_ratchet(repository, gh, level, seconds, reason, run_id):
-              """Set a level by hand, the only way to raise one; it needs the level, a positive duration and a reason."""
-              if not level or seconds <= 0 or not reason.strip():
-                  raise ValueError('accepting a level needs the level, a positive number of seconds and a reason')
-              number, levels = ratchet_issue(repository, gh)
-              levels[level] = {'seconds': seconds, 'reason': reason.strip(), 'run': int(run_id)}
-              save_ratchet(repository, gh, number, levels)
 
           def band_of(jobs, annotations_of):
               """The runner hardware label of the run's slowest labelled job, the runner that sets its pace."""
@@ -452,10 +429,6 @@ jobs:
                           'slow': float(os.environ['SLOW_SECONDS']), 'required': json.loads(os.environ['REQUIRED_CHECKS'])}
               repository = os.environ['REPOSITORY']
               try:
-                  if os.environ['ACCEPT_LEVEL']:
-                      seconds = float(os.environ['ACCEPT_SECONDS'])
-                      accept_ratchet(repository, gh, os.environ['ACCEPT_LEVEL'], seconds, os.environ['ACCEPT_REASON'], os.environ['GITHUB_RUN_ID'])
-                      print(f"Accepted {os.environ['ACCEPT_LEVEL']} at {seconds:g} s")
                   findings = judge(os.environ['RUN_ID'], repository, gh, settings) if os.environ['RUN_ID'] else []
                   filed = file_issues(findings, repository, gh)
               except (RuntimeError, KeyError, ValueError, OSError) as error:
