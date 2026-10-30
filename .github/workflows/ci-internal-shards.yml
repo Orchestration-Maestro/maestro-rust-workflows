@@ -668,26 +668,39 @@ jobs:
           def a_rate_below_the_normal_spread_or_a_cache_rate_off_its_range_escalates():
               prior, measured = prior_runs(5, compiles=2.0, **{'hit-rate': 99.5})
               run = run_of(7, 30)
-              low = judging['range_findings'](run, 'band-x', {'tests': 8.0, 'compiles': 2.0, 'hit-rate': 99.5}, prior, measured)
+              low = judging['range_findings'](run, 'band-x', {'tests': 8.0, 'compiles': 2.0, 'hit-rate': 99.5}, many, ran_jobs, prior, measured)
               assert [finding['title'] for finding in low] == ['Escalation: time per test run outside its normal spread'], low
               assert low[0]['labels'] == ['escalation'] and low[0]['comment'], low
               body = low[0]['body']
               assert 'Run: https://example.test/runs/7' in body and 'Rust CI (merge_group, main) on runner band band-x.' in body, body
               assert "8.00 s per test run, below the band's normal spread of 9.00 to 11.00 s" in body, body
               assert all(f'- https://example.test/runs/{n}' in body for n in range(1, 6)), body
-              cache = judging['range_findings'](run, 'band-x', {'tests': 10.0, 'hit-rate': 60.0}, prior, measured)
+              cache = judging['range_findings'](run, 'band-x', {'tests': 10.0, 'hit-rate': 60.0}, many, ran_jobs, prior, measured)
               assert [finding['title'] for finding in cache] == ['Escalation: compile cache hit rate outside its usual range'], cache
               assert 'Compile cache hit rate 60.00%, below its usual range of 89.50% to 100.00%' in cache[0]['body'], cache
-              slow = judging['range_findings'](run, 'band-x', {'tests': 10.0, 'compiles': 3.0, 'hit-rate': 99.5}, prior, measured)
+              slow = judging['range_findings'](run, 'band-x', {'tests': 10.0, 'compiles': 3.0, 'hit-rate': 99.5}, many, ran_jobs, prior, measured)
               assert [finding['title'] for finding in slow] == [], slow
               # A rate above the spread is the regression finding's to file, so it is not filed twice.
-              assert judging['range_findings'](run, 'band-x', {'tests': 12.0}, prior, measured) == []
+              assert judging['range_findings'](run, 'band-x', {'tests': 12.0}, many, ran_jobs, prior, measured) == []
               # Fewer than three earlier values: nothing stands out yet.
               few, measured = prior_runs(2, **{'hit-rate': 99.5})
-              assert judging['range_findings'](run, 'band-x', {'tests': 1.0, 'hit-rate': 1.0}, few, measured) == []
+              assert judging['range_findings'](run, 'band-x', {'tests': 1.0, 'hit-rate': 1.0}, many, ran_jobs, few, measured) == []
 
           a_rate_below_the_normal_spread_or_a_cache_rate_off_its_range_escalates()
           print('PASS a_rate_below_the_normal_spread_or_a_cache_rate_off_its_range_escalates')
+
+          def a_rate_below_its_spread_within_the_stamp_error_of_the_executed_jobs_does_not_escalate():
+              # S7759: the same bound as the regression's. The earlier rates are 19.0 s, so the spread's lower edge is 17.1 s.
+              prior, measured = prior_runs(5, rate=19.0)
+              run = run_of(9, 30)
+              fire = lambda rate, units, jobs: bool(judging['range_findings'](run, 'band', {'tests': rate}, {'tests': units}, {'tests': jobs}, prior, measured))
+              # One job: a 2 s gap below the median is within the bound; 2.5 s escalates.
+              assert not fire(17.0, 1, 1) and fire(16.5, 1, 1)
+              # The bound grows with the executed jobs: 32 s over sixteen jobs is within it, 40 s escalates.
+              assert not fire(17.0, 16, 16) and fire(16.5, 16, 16)
+
+          a_rate_below_its_spread_within_the_stamp_error_of_the_executed_jobs_does_not_escalate()
+          print('PASS a_rate_below_its_spread_within_the_stamp_error_of_the_executed_jobs_does_not_escalate')
 
           def jobs_of_a_run(extra=(), docs=240, shards=20, skip=(), corpus=None, tests=600, test_step='Tests', setup=None):
               named = [('Docs', 5, [('Set up job', 5), ('Build docs', docs)] + ([('Download corpus', corpus)] if corpus else [])), ('Format and lint', 4, [('Lint', 100)]),
@@ -817,6 +830,7 @@ jobs:
               assert "seconds(job) is None" not in guards and guards.count("job.get('conclusion') != 'cancelled'") == 1, 'executed() owns the jobs that ran'
               assert 'def step_seconds' not in guards and guards.count("get('started_at')") == 1, 'seconds() owns the seconds of a job or step that ran'
               assert "startswith('Test shard (')" not in guards and guards.count('startswith(measuring)') == 1, 'kind_of() owns which jobs are test shards'
+              assert 'def measurable' in guards and guards.count('STAMP_ERROR') == 2 and guards.count('measurable(') == 3, 'measurable() owns the stamp error bound of both rate judges'
               assert "== 'Compile cache hit-rate floor'" not in guards and "reached(job, 'Compile cache hit-rate floor')" in guards, 'reached() owns the steps that succeeded'
 
           each_judging_predicate_has_one_owner()

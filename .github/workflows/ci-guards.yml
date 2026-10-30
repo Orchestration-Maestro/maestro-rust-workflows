@@ -347,7 +347,7 @@ jobs:
                               'Baseline (earlier successful runs of the same workflow and event):\n' + '\n'.join(baseline)
                               + '\n\nWhat departed from it:\n' + '\n'.join(lines) + '\n'}
 
-          def range_findings(run, band, measured, prior, prior_measured):
+          def range_findings(run, band, measured, units, ran, prior, prior_measured):
               """Escalations for a rate below its band's normal spread (a rate above it is the regression's) and for a compile cache hit rate off its usual range."""
               baseline = [f"- {earlier['html_url']}" for earlier in prior]
               found = []
@@ -625,7 +625,7 @@ jobs:
                                  for kind, value in medians.items() if kind not in kept or value < kept[kind]}
                       if lowered:
                           save_ratchet(repository, gh, number, levels | lowered)
-                  findings.extend(range_findings(run, band, measured, like, prior_measured))
+                  findings.extend(range_findings(run, band, measured, units, ran_jobs, like, prior_measured))
                   findings.append(capacity_finding(run, band, wait_of(run, jobs), work_of(jobs), like, [wait_of(other, jobs_of(other['id'])) for other in like]))
                   findings.append(shape_finding(run, band, jobs, prior, [jobs_of(other['id']) for other in prior]))
                   findings.append(cache_finding(run, jobs, annotations_of))
