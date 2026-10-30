@@ -192,6 +192,9 @@ jobs:
 
           RATCHET_TITLE = 'CI time ratchet'
 
+          # GitHub stamps job times to the second, so a gap of a few seconds on a short run is measurement error, not a regression.
+          WORK_FLOOR = 15
+
           def level_of(run, band, kind):
               """The key of a ratchet level: a run is compared only with runs of its workflow, event and runner band, per kind of work."""
               return f"{run['workflow_id']}/{run['event']}/{band}/{kind}"
@@ -396,8 +399,8 @@ jobs:
                                 [f'- This run selected {selected}/{total} test packages ({share:.0f}%), {side} the usual range of {low:.0f}% to {high:.0f}%'
                                  + (f', full suite because {trigger}' if trigger else '')])
 
-          def measures_of(jobs, annotations_of):
-              """Seconds per unit of each kind of work in a run, and its compile cache hit rate, from the work-unit annotations of its jobs.
+          def totals_of(jobs, annotations_of):
+              """The compile cache hit rate, and the seconds spent and units done per kind of work, from the work-unit annotations of a run's jobs.
               A test shard counts the seconds of its Tests or Isolated tests step, so downloads and setup are not test work; the archive build counts its whole job."""
               found, spent, units = {}, {}, {}
               for job in executed(jobs):
@@ -414,10 +417,16 @@ jobs:
                           elif name == kind and float(value) > 0:
                               spent[kind] = spent.get(kind, 0) + took
                               units[kind] = units.get(kind, 0) + float(value)
+              return found, spent, units
+
+          def measures_of(jobs, annotations_of):
+              """Seconds per unit of each kind of work in a run, and its compile cache hit rate."""
+              found, spent, units = totals_of(jobs, annotations_of)
               return found | {kind: spent[kind] / units[kind] for kind in spent}
 
           def rate_finding(run, measured, units, prior, prior_measured, band, ratchet):
-              """A run whose seconds per unit of work, for any kind, are more than 10% over the lower of the band's recent median and its stored ratchet level."""
+              """A run whose seconds per unit of work, for any kind, are more than 10% over the lower of the band's recent median and its stored ratchet level,
+              and whose gap, over its units, is more than WORK_FLOOR seconds."""
               if not watched(run):
                   return None
               lines, outside = [], False
@@ -427,7 +436,7 @@ jobs:
                   if baseline is None or kind not in measured:
                       continue
                   baseline = min(baseline, ratchet.get(kind, baseline))
-                  if measured[kind] > baseline * 1.10:
+                  if measured[kind] > baseline * 1.10 and (measured[kind] - baseline) * units[kind] > WORK_FLOOR:
                       outside = outside or departure(measured[kind], history, rate_pad(history)) == 'above'
                       lines.append(f"- {jobs}: {measured[kind]:.2f} s per {unit} against a baseline of {baseline:.2f} s "
                                    f"(+{(measured[kind] / baseline - 1) * 100:.0f}%, limit +10%)\n  Ratchet level: `{level_of(run, band, kind)}`")
@@ -594,14 +603,14 @@ jobs:
                           break
                   prior.reverse()
                   like.reverse()
-                  measured = measures_of(jobs, annotations_of)
+                  measured, units = measures_of(jobs, annotations_of), totals_of(jobs, annotations_of)[2]
                   prior_measured = [measures_of(jobs_of(other['id']), annotations_of) for other in like]
                   medians = {kind: baseline_of([rates[kind] for rates in prior_measured if kind in rates]) for kind in WORK}
                   medians = {kind: value for kind, value in medians.items() if value is not None}
                   if medians:
                       number, levels = ratchet_issue(repository, gh)
                       kept = {kind: levels[level_of(run, band, kind)]['rate'] for kind in medians if level_of(run, band, kind) in levels}
-                      findings.append(rate_finding(run, measured, {}, like, prior_measured, band, kept))
+                      findings.append(rate_finding(run, measured, units, like, prior_measured, band, kept))
                       lowered = {level_of(run, band, kind): {'rate': value, 'reason': 'lowest median of the previous five successful runs on the level',
                                                              'run': run['id']}
                                  for kind, value in medians.items() if kind not in kept or value < kept[kind]}
