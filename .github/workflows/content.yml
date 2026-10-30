@@ -51,7 +51,81 @@ jobs:
           printf '%s  %s\n' 8f5f6660336f572830e33cd9b378d3131e529a0d4c4f0c553776be90a1ba302a "$bin/mise" | sha256sum --check --status
           chmod +x "$bin/mise"
           echo "$bin" >> "$GITHUB_PATH"
+      - name: Content cache identity
+        id: cache-identity
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import tomllib
+          lock = pathlib.Path('Cargo.lock')
+          values = {'enabled': 'false'}
+          if lock.is_file():
+              tools = tomllib.loads(pathlib.Path('mise.toml').read_text(encoding='utf-8')).get('tools', {})
+              identity = [os.environ['RUNNER_OS'], os.environ['RUNNER_ARCH'], hashlib.sha256(lock.read_bytes()).hexdigest(), tools]
+              digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':'), sort_keys=True).encode('utf-8')).hexdigest()
+              values = {'enabled': 'true', 'key': f'maestro-compile-v1-{digest}-content'}
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(''.join(f'{name}={value}\n' for name, value in values.items()))
+          PYTHON
+      - name: Restore content cache
+        id: cache-restore
+        if: steps.cache-identity.outputs.enabled == 'true'
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ runner.temp }}/maestro-sccache
+            ~/.local/share/mise
+          key: ${{ steps.cache-identity.outputs.key }}
+          enableCrossOsArchive: false
+          fail-on-cache-miss: false
+      - name: Content compile cache
+        if: steps.cache-identity.outputs.enabled == 'true'
+        env:
+          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+        timeout-minutes: 10
+        run: |
+          version=0.18.0
+          platform=x86_64-unknown-linux-musl
+          digest=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
+          name=sccache-v$version-$platform
+          bin=$(mktemp -d "$RUNNER_TEMP/maestro-sccache.XXXXXX")
+          archive=$(mktemp)
+          curl --fail --retry 3 --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
+          printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$bin" --strip-components=1 "$name/sccache"
+          rm "$archive"
+          echo "$bin" >> "$GITHUB_PATH"
+          if [ "$CACHE_RESTORE_OUTCOME" = failure ]; then
+            rm -rf "$RUNNER_TEMP/maestro-sccache"
+            echo 'Content cache restore failed; using an empty local cache'
+          fi
+          export SCCACHE_DIR="$RUNNER_TEMP/maestro-sccache" SCCACHE_CACHE_SIZE=1073741824
+          export SCCACHE_LOCAL_RW_MODE=READ_WRITE SCCACHE_GHA_ENABLED=false CARGO_INCREMENTAL=0 SCCACHE_SKIP_CACHE_CHECK=true
+          { echo CARGO_BUILD_RUSTC_WRAPPER=sccache; env | grep -E '^(SCCACHE_(DIR|CACHE_SIZE|LOCAL_RW_MODE|GHA_ENABLED|SKIP_CACHE_CHECK)|CARGO_INCREMENTAL)='; } >> "$GITHUB_ENV"
+          PATH="$bin:$PATH" sccache --start-server
       - name: Caller tools
         run: mise install
       - name: Caller check
         run: mise exec -- just check
+      - name: Seal content cache
+        id: cache-seal
+        if: steps.cache-identity.outputs.enabled == 'true'
+        run: |
+          if sccache --stop-server && [ -n "$(ls -A "$SCCACHE_DIR")" ]; then
+            echo eligible=true >> "$GITHUB_OUTPUT"
+          else
+            echo 'Content cache save skipped: server stop failed or cache empty'
+          fi
+      - name: Save content cache
+        if: steps.cache-identity.outputs.enabled == 'true' && steps.cache-restore.outputs.cache-hit != 'true' && steps.cache-seal.outputs.eligible == 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ runner.temp }}/maestro-sccache
+            ~/.local/share/mise
+          key: ${{ steps.cache-identity.outputs.key }}
