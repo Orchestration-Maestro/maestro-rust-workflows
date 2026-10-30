@@ -1474,9 +1474,6 @@ jobs:
         run: *sccache-floor
 
   tests:
-    permissions:
-      contents: read
-      actions: read
     needs: [declaration, test-build, test-prepare]
     permissions:
       contents: read
