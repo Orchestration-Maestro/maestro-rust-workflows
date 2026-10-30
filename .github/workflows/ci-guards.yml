@@ -179,11 +179,24 @@ jobs:
 
           def grown_tests(current, previous):
               """The five slow tests that grew most: new, or past a higher slow mark than before."""
-              raise NotImplementedError('grown_tests')
+              grown = [(test, now, previous.get(test)) for test, now in current.items() if now > previous.get(test, 0)]
+              return sorted(grown, key=lambda item: item[1] - (item[2] or 0), reverse=True)[:5]
 
           def shard_finding(run, jobs, margin, grown):
               """The slowest test shard is beyond the margin over the median; names the tests that grew."""
-              raise NotImplementedError('shard_finding')
+              took = sorted((seconds(job), job['name']) for job in jobs
+                            if job['name'].startswith('Test shard (') and seconds(job) is not None)
+              if len(took) < 2:
+                  return None
+              median = statistics.median(value for value, _ in took)
+              slowest, name = took[-1]
+              if slowest <= margin * median:
+                  return None
+              lines = '\n'.join(f"- `{test}`: over {now:g} s now, " + (f'over {before:g} s before' if before else 'not slow before')
+                                for test, now, before in grown) or '- no test crossed a higher slow mark'
+              return {'title': f"Test shards unbalanced: run {run['id']}",
+                      'body': f"Run: {run['html_url']}\n{name} took {slowest / 60:.1f} min against a median shard of {median / 60:.1f} min "
+                              f"({slowest / median:.2f} times; the margin is {margin:g}).\n\nSlow tests in that shard that grew:\n{lines}\n"}
 
           def slow_findings(slow, limit, run):
               """One issue per test that ran past the slow mark."""
@@ -236,6 +249,13 @@ jobs:
               findings = [budget_finding(run, jobs, settings['budget'])]
               on_main = run['event'] in ('merge_group', 'push')
               slow = shard_slow(jobs)
+              unbalanced = shard_finding(run, jobs, settings['margin'], [])
+              if unbalanced:
+                  earlier = [other for other in api(f"actions/workflows/{run['workflow_id']}/runs?event={run['event']}&status=success&per_page=10")['workflow_runs']
+                             if other['id'] != run['id'] and other['created_at'] < run['created_at']]
+                  previous = shard_slow(jobs_of(earlier[0]['id'])) if earlier else {}
+                  unbalanced = shard_finding(run, jobs, settings['margin'], grown_tests(slow, previous))
+              findings.append(unbalanced)
               if on_main:
                   findings.extend(slow_findings(slow, settings['slow'], run))
               return [finding for finding in findings if finding]
