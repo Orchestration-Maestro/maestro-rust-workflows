@@ -170,3 +170,12 @@ jobs:
 
           baseline_recorded_with_another_shard_count_is_accepted()
           print('PASS baseline_recorded_with_another_shard_count_is_accepted')
+
+          def diagnostics_docs_follow_the_declared_shard_count():
+              # The artifact name is built from the shard number, so the documented range must follow the declaration.
+              guide = ' '.join((root / 'docs/caller-checks.md').read_text(encoding='utf-8').split())
+              assert 'The shard field is `1` through the declared `test_shard_count`, or `doctests`' in guide
+              assert '`1` through `16`' not in guide
+
+          diagnostics_docs_follow_the_declared_shard_count()
+          print('PASS diagnostics_docs_follow_the_declared_shard_count')
