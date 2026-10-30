@@ -939,3 +939,306 @@ unreadable logs, missing permissions and revert conflicts fail with the original
 run link. A conflict can leave the failure issue without a revert PR: resolve
 the conflict in a normal reviewed PR, not by force-pushing main. Non-suite job
 failures are reported as safeguard failures rather than blamed on another PR.
+
+## CI speed guards
+
+Six guards keep the merge queue from slowing down again. Each one fails a check
+or files an issue on its own; none waits for someone to notice. The numbers
+below are the first values measured on Maestro, the largest caller, and each has
+its source next to it. Tighten them with `with:` inputs once the 32-shard and
+build-once changes have run on that caller.
+
+`ci-guards.yml` holds the guards that judge a finished run, plus the exception
+check. A caller gives it the completed run to judge from a `workflow_run`
+listener, and runs it without a run id on pull requests for the exception check:
+
+```yaml
+on:
+  workflow_run:
+    workflows: [Rust CI]
+    types: [completed]
+jobs:
+  guards:
+    if: >-
+      github.event.workflow_run.event == 'merge_group' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == github.event.repository.default_branch)
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci-guards.yml@<reviewed commit>
+    with:
+      run-id: ${{ github.event.workflow_run.id }}
+```
+
+The listener passes default-branch pushes as well as merge groups, because those
+runs save the compile snapshots every other run restores, and it passes a
+cancelled one too: a cancelled seeding run is a finding, not silence.
+
+Pin the reference to a reviewed commit and list the listener workflow in
+`privileged_trigger_workflows`, as for the post-landing reporter. Issues are
+filed with the automatic job token. An open issue with the same title is never
+filed twice, so a breach that persists leaves one issue, and a job that cannot
+read the run fails instead of passing.
+
+| Input | Default | Used by |
+| --- | --- | --- |
+| `selection-window` | 10 | Selection check |
+| `selection-share-ceiling-percent` | 25 | Selection check |
+| `shard-balance-margin` | 1.5 | Shard balance |
+| `slow-test-seconds` | 30 | Test-time limit |
+| `hang-limit-seconds` | 120 | Test-time limit |
+
+### Time per unit of work
+
+The guard holds time per unit of work, not raw wall time. A run that does twice
+the work and takes twice as long is natural growth: it is accepted without
+anyone acting and files nothing. Two kinds of work are measured:
+
+- Test jobs, in seconds per test run. Each test shard ends with a `Work units`
+  notice, `tests: N`, read from the nextest summary; the rate is the seconds of
+  the step that ran the tests (`Tests` or `Isolated tests`) over the shards'
+  test runs, within a runner band. Downloads and setup are never test work, and
+  shards that run side by side each add their own seconds.
+- Build jobs, in seconds per compile unit. The `Build test archive` cache step
+  prints `compiles: N; hit-rate: P`, the executed compile requests and the hit
+  rate of the sccache statistics.
+
+The seconds are work time, never wall time: a gap with no job executing counts
+for nothing, and skipped and cancelled jobs are not work. The union of the jobs'
+start-to-end intervals is the run's work time, which only the runner wait below
+subtracts. A run is compared only
+with earlier runs that executed the same jobs (the same job names), so a run
+that added or lost a job has no like-for-like baseline until three runs have the
+new set. The stored ratchet level of a band, kind and workflow is shared across
+job sets.
+
+A run whose rate for either kind is more than 10% over its baseline, and
+whose gap is more than 2 s per executed job in total (the rate gap times the
+run's units of that kind, against two seconds for each job that did them), is a
+regression and files "CI run slower than its baseline: run N" at once. The
+bound is the measurement's own error (supervisor ruling S7759): GitHub stamps
+job and step times to the second, 1 s at each boundary, so a work-time
+difference is measurable only above 2 s per executed job. A difference within
+it is neither a regression nor an escalation, for a rate below its spread as well;
+anything above it at +10% fires, and anything above it outside the band's
+spread escalates. The
+issue names the run and the band, gives each regressed rate against its baseline
+and links the latest baseline runs. Fix it at its cause; nothing accepts it.
+
+Hosted Linux runners come in two speed bands: the same work, cache and image
+ran 1.45 to 1.6 times slower on some runners (maestro-rust-workflows runs
+40990998136 and 40931459907). Every Linux job therefore starts with a `Runner
+hardware` step that prints the CPU model and core count, adds a notice
+annotation and appends the line to the job summary, with a stable label:
+
+```text
+Runner hardware: AMD EPYC 7763 64-Core Processor, 4 cores (runner-band: amd-epyc-7763-64-core-4c)
+```
+
+A run's runner band is the label of its slowest labelled job, which sets the
+run's pace. The guard reads it from the annotation (`runner-band: <label>`); a
+run with no label is in the band `unknown`. Of the last `selection-window`
+earlier successful runs of the same workflow and event (10 by default), only
+those in the same band count, and a run newer than the judged one never does.
+
+The recent baseline of a kind is the median of its rates in the previous five
+successful runs in the band. The guard also keeps the lowest such median it has
+seen for each level, a workflow, event, band and kind, in one open issue titled
+"CI time ratchet". The baseline is the lower of the two, so a staircase of small
+regressions cannot raise the line, and the limit is the baseline plus 10%.
+Fewer than three earlier rates in the band means no baseline and no issue.
+Merge groups, pull requests and pushes to `main` are judged; CodeQL and every
+other run are not, because they gate nothing. Keep the ratchet issue open: the
+guard rebuilds a missing one from the next runs, and a lasting slowdown it has
+not seen is then taken as the new level.
+
+A stored level has one writer: only the guard lowers it, when the recent median
+is lower, and nothing raises it; no input does. A lasting slowdown keeps firing
+until its cause is fixed. A deliberate new cost that is not natural growth needs
+its own owner decision first.
+
+The runner wait is its own measure: the run's wall time minus its work time,
+which is the time spent pending for a concurrency group or a runner, before the
+first job or between jobs. It is never CI slowness. It is out of pattern only
+when it is over the median wait of the like-for-like baseline runs by more than
+10% and by more than 2 minutes, and then the guard files "Escalation: runner
+wait over its median" (a capacity issue, never a regression). Source: Maestro
+run 41006271785 waited 36.8 min before its first job and worked 17.0 min, and
+the advisory run 41059668738 of this repository waited 16 s and 28 s longer for
+runners than before while its work time matched.
+
+Source: no rate is fixed in advance; the first baseline of a band is its first
+three runs. Maestro merge-group runs 40990557025 and 40990555729 took 39.3 and
+39.8 minutes with 16 shards, and the baseline moves down by itself as the
+32-shard change makes runs shorter. A judged run
+reads the jobs of at most `selection-window` earlier runs, the annotations of
+the test shards and the archive build of the judged run and of at most five
+baseline runs, and shard logs only on a merge group or main push, or when the
+shards are unbalanced. With 32 shards and the default window that is at most
+about 285 calls for the time guards and about 315 when the shards are
+unbalanced, against the job token's 1,000 calls an hour for the whole
+repository. The cache reads add two calls (cache usage and the storage limit),
+up to six pages of the cache list (the largest entries past 90%, and the
+snapshots of a default-branch run), and the floor annotations of the other
+jobs that ran a floor step, about 15, so about 310 and 340. To respond, open the run
+link and fix the cause of the kind that regressed.
+
+### Compile-cache hit-rate floor
+
+Every job that saves a compile snapshot warns when its compile-cache hit rate is
+under 90%: Format and lint, Docs, Build test archive, Prepare test setup, the
+test shards and Doctests, Dependency, source and coverage checks, each Linux and
+macOS target check (the Windows target checks skip the statistics step, so they
+are never judged) and the Wasm and Chromium browser builds. A default-branch push
+seeds every one of these shapes (`tests-coverage`, `tests-plain`, `quality`,
+`docs`, `checks`, `targets-clippy-<target>`, `browser`, `browser-tests` and
+`test-prepare`), so each is judged on merge groups, pull requests and
+default-branch runs alike; only a run in which no cacheable compilation ran is
+not judged. It never fails the build: a change can invalidate the cache itself,
+such as a toolchain bump, and only a push to the default branch saves a
+snapshot again, so a failing floor would block the merge group on every retry.
+The floor is fixed in `ci.yml`. Source: the archive build of merge-group runs
+40990557025, 40990555729, 40968689273 and 40946549381 hit 100.00%, 100.00%,
+100.00% and 99.67%. Before the check covered every shape, Format and lint, Docs,
+Doctests and the browser builds of Maestro merge groups 40322701820, 40620121647,
+40870001533 and 40993559130 compiled cold, about 4,040 misses per group, because
+the warm-up stayed on a release without their writer, and the first group after a
+default-branch push (40996420703) restored all five at 100%. The warning is an
+annotation that names the shape and one cause. The guards read it from a
+merge-group or main-push run, and from a pull-request run when a caller passes
+one, and file "Compile cache below its hit-rate floor", or add a comment to the
+open issue listing each job and its warning, so repeated cold builds on
+default-branch pushes, which are the regression, show as a growing list of
+comments:
+
+- **Cold snapshot:** a snapshot was restored but lacks this build's objects.
+  Run the warm build on the default branch to seed it again.
+- **Key change:** no snapshot matches the job shape, though others of the same
+  job exist. The compiler, runner or caller directory changed; the next warm
+  build on the default branch seeds the new key.
+- **No writer:** the repository cache holds snapshots of other jobs but none of
+  this shape, so no default-branch push saves it. Check that the caller's warm-up
+  runs a release of this workflow that has the writer.
+- **Eviction:** the repository cache holds no compile snapshot at all. Check the
+  cache size and the seven-day expiry, then run the warm build.
+
+### Compile snapshots and cache usage
+
+A push to the default branch is the only run that saves compile snapshots, so
+the guards judge those runs themselves, cancelled ones included, and the
+repository cache they fill.
+
+- "Escalation: default-branch run did not seed its compile snapshots" is filed
+  when the run's jobs reported more saved snapshots than the repository cache
+  holds for the run (the save step never fails the build, so a lost save shows
+  only here), when jobs measured their compile cache and none saved, or when the
+  run was cancelled with jobs unfinished. The cache list is read for the run's
+  default branch and matched by the run id in the snapshot key. Source: on
+  2026-10-26 between 16:13 and 21:00 UTC other caches filled the 10 GiB limit and
+  every default-branch snapshot was evicted, and eight merge groups
+  (40369902252 to 40395312817) compiled the test shape cold at 0% to 28.8%, their
+  test shards taking a median 17.4 min against 13.2 min afterwards.
+- "Repository cache above 90% of its limit" is filed when the cache in use
+  (`actions/cache/usage`) is over 90% of the repository's storage limit
+  (`actions/cache/storage-limit`, 10 GiB on Maestro), with the five largest
+  entries by ref. It fires at 90% of the storage limit the API reports, not at
+  a size fixed in the workflow, because over the limit GitHub evicts the oldest
+  snapshots, which is how the 2026-10-26 cold groups happened, and the margin
+  gives the guard time to file before that. It is read for every judged run.
+  Source: Maestro held 10,928,201,953 bytes (10.18 GiB) in 22 entries on
+  2026-10-30 against its 10 GiB limit. The guide and the finding use GiB. To respond, delete the pull-request entries the issue lists, or
+  shrink what the snapshots hold.
+
+Both titles are standing: a repeat adds a comment to the open issue.
+
+### Selection check
+
+The selection step logs and summarizes `Selection share: N% (a/b test
+packages)`. When a change widens the run to the full suite it also logs
+`Full-suite fallback: <trigger>`, with the file when one caused it. The guard
+reads this from the last `selection-window` completed runs of the same event
+and files "Test selection share above its range" when their median share is
+above `selection-share-ceiling-percent`. The issue lists each run's share and
+trigger. Source: of 14 Maestro pull-request runs from 21:00 UTC on 29 October
+2026, 11 selected 1 to 3 of 51 packages (median 2%) and 3 ran all 51. All five
+merge groups inspected (40990557025, 40990555729, 40968689273, 40946549381 and
+40993559130) ran 51 of 51 because the coverage baseline was missing or not an
+ancestor, so no narrowed merge group has been measured yet. To respond, read the
+triggers in the issue: a missing or stale baseline needs a full-workspace run to
+land first, and a shared input that keeps widening runs belongs in `test_inputs`.
+
+### Shard balance
+
+When the slowest `Test shard` job takes more than `shard-balance-margin` times
+the median shard, the guard files "Test shards unbalanced: run N". The issue
+names the slow tests in that shard that are new, or reached a higher slow mark,
+since the last green run of the same event. Nextest prints only slow marks, so
+growth shows as a higher mark rather than exact seconds. The default is 1.5.
+Source: the slowest shard was 1.18 and 1.20 times the median in runs 40990557025
+and 40990555729, and 1.32 times in the 32-shard proof run 40974924871. To
+respond, fix or split the named tests, then check priorities in the nextest
+configuration.
+
+### Test-time limit
+
+Nextest flags a test slow after `slow-test-seconds` (30), and the caller's
+`slow-timeout` period should match. A merge-group or main run files one issue
+for every test it flagged, "Test over 30 seconds: <test>", with no cap on how many one
+run files; an open issue for the test is never filed twice. Fix the test at its
+cause; do not raise a timeout.
+
+The kill is one hang limit, `hang-limit-seconds` (120). A nextest override may
+exceed it only for a test that needs more, and the comment directly above its
+`slow-timeout` must name the issue that removes it. The `Test-time exceptions` job
+fails for an override that names no issue or only closed ones, and names the
+filter. Close the issue only after removing the override. Source: 30 and 120
+seconds are the limits Maestro chose after a single 30-second kill failed 79 of
+99 shard jobs in one day; its one exception, `browser_author_bootstraps_from_empty_build_state`,
+needs 208 seconds.
+
+### Required checks
+
+For a full merge-group or main run, `ci-guards.yml` pins the jobs that must run:
+`Caller declaration`, `Format and lint`, `Docs`, `Build test archive`, the
+`Test shard` jobs, `Doctests`, `Tests (ubuntu-latest)` and `Dependency, source
+and coverage checks`. A pinned job that is missing or skipped files "Required
+checks missing from run N" naming it. A failed job is not a missing one; the run
+already reports it. The self-test checks every pinned name against `ci.yml`,
+and checks that this repository's ruleset checks, `Required repository quality`
+and `Required consumer tests`, still exist, so renaming a job fails there first.
+When you rename a job on purpose, change the pin and the ruleset in one change.
+### Escalations
+
+Anything that stands out of the pattern is escalated explicitly: the guard files
+an issue with the label `escalation`, or adds a comment to the open one with the
+same title, naming the run, its baseline runs and what departed from them.
+Nothing outside the pattern is absorbed silently. The normal spread of a rate is
+the range of the band's earlier rates widened by 10% of their median; for a hit
+rate or a share it is the range of the earlier values widened by 10 points.
+Three earlier values are needed for a spread. Each title is standing, so a
+departure that repeats shows as comments on one issue:
+
+- "Escalation: time per test run outside its normal spread" and "Escalation:
+  time per compile unit outside its normal spread": a rate below the band's
+  spread, which means work that did not run. A rate above the spread is the
+  regression above, filed once with the same label.
+- "Escalation: jobs or steps changed without matching work": a job or step
+  that appears, disappears or grows (past the earlier range plus 10% and 30
+  seconds) in a successful run. The seconds a rate judges (the archive build,
+  each shard job and the `Tests` or `Isolated tests` step of a shard) are only
+  checked for appearing and disappearing. Every other shard step, such as setup,
+  tools, coverage or a download, is judged for growth like any step: a slow
+  download is a transfer finding, never a regression of the tests rate.
+- "Escalation: compile cache hit rate outside its usual range": the hit rate of
+  the archive build, read from its `Work units` notice, outside the earlier
+  hit rates widened by 10 points.
+- "Escalation: test selection share outside its usual range": the run's share
+  of workspace test packages selected, outside the earlier runs' shares
+  widened by 10 points.
+
+To respond, open the run link, find what departed and either fix its cause or,
+if the change is deliberate, take it to the owner; the guard stays quiet again
+once the earlier runs show the new pattern.
+
