@@ -185,6 +185,19 @@ jobs:
           WORK = {'tests': ('Test shard (', 'Test jobs', 'test run'),
                   'compiles': ('Build test archive', 'Build jobs', 'compile unit')}
 
+          # The steps of a test shard that run the tests: the only seconds of a shard that count as test work.
+          TEST_STEPS = ('Tests', 'Isolated tests')
+
+          def kind_of(name):
+              """The kind of work a job name measures, None for any other job."""
+              return next((kind for kind, (measuring, _, _) in WORK.items() if name.startswith(measuring)), None)
+
+          def rated(name):
+              """Whether the rate finding already judges the seconds of a timing: the archive build, a shard job and the step of a shard that runs its tests.
+              Any other step of a shard is judged for growth like a step of any job; a download there is transfer, never test work."""
+              job, _, step = name.partition(' / ')
+              return kind_of(job) == 'compiles' or (kind_of(job) == 'tests' and (not step or step in TEST_STEPS))
+
           RATCHET_TITLE = 'CI time ratchet'
 
           # GitHub stamps job times to the second, so a gap of a few seconds on a short run is measurement error, not a regression.
@@ -366,7 +379,7 @@ jobs:
 
           def shape_finding(run, band, jobs, prior, prior_jobs):
               """Jobs and steps of a successful run that appear, disappear or grow (past the earlier range plus 10% and 30 s) without matching work.
-              The jobs that measure work are judged by their rate, so they are only checked for appearing and disappearing."""
+              The seconds a rate judges (see `rated`) are only checked for appearing and disappearing."""
               if run['conclusion'] != 'success' or len(prior_jobs) < 3:
                   return None
               now, before = timings(jobs), [timings(earlier) for earlier in prior_jobs]
@@ -374,7 +387,7 @@ jobs:
               lines += [f'- {name} disappeared' for name in sorted(set.intersection(*map(set, before)) - now.keys())]
               for name, value in sorted(now.items()):
                   history = [earlier[name] for earlier in before if name in earlier]
-                  if not any(name.startswith(measuring) for measuring, _, _ in WORK.values()) and departure(value, history, max(rate_pad(history), 30)) == 'above':
+                  if not rated(name) and departure(value, history, max(rate_pad(history), 30)) == 'above':
                       lines.append(f'- {name} grew to {value:.0f} s (earlier: {min(history):.0f} to {max(history):.0f} s)')
               if not lines:
                   return None
@@ -399,10 +412,10 @@ jobs:
               A test shard counts the seconds of its Tests or Isolated tests step, so downloads and setup are not test work; the archive build counts its whole job."""
               found, spent, units = {}, {}, {}
               for job in executed(jobs):
-                  kind = next((kind for kind, (name, _, _) in WORK.items() if job['name'].startswith(name)), None)
+                  kind = kind_of(job['name'])
                   if kind is None:
                       continue
-                  took = sum(seconds(step) or 0 for step in job.get('steps', []) if step['name'] in ('Tests', 'Isolated tests')) if kind == 'tests' else seconds(job)
+                  took = sum(seconds(step) or 0 for step in job.get('steps', []) if step['name'] in TEST_STEPS) if kind == 'tests' else seconds(job)
                   for note in annotations_of(job):
                       if note.get('title') != 'Work units':
                           continue
