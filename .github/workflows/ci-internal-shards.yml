@@ -1686,7 +1686,7 @@ jobs:
                             'Escalation: jobs or steps changed without matching work', 'Escalation: compile cache hit rate outside its usual range',
                             'Escalation: test selection share outside its usual range', 'Escalation: runner wait over its median']:
                   assert title in guide, title
-              floor = guide.split('### Compile-cache hit-rate floor', 1)[1].split('### Selection check', 1)[0].lower()
+              floor = guide.split('### Compile-cache hit-rate floor', 1)[1].split('### Compile snapshots and cache usage', 1)[0].lower()
               assert 'by design' not in floor and not re.search(r'(?<![\d.])0%', floor), 'a seeded shape is never at 0% by design'
               for shape in ['format and lint', 'docs', 'doctests', 'build test archive', 'browser', 'target', 'tests-plain', 'tests-coverage', 'pull-request']:
                   assert shape in floor, shape
@@ -1694,7 +1694,7 @@ jobs:
                   assert cause in floor, cause
               snapshots = guide.split('### Compile snapshots and cache usage', 1)[1].split('### Selection check', 1)[0]
               for text in ['Escalation: default-branch run did not seed its compile snapshots', 'Repository cache above 90% of its limit', 'cancelled',
-                           '`actions/cache/usage`', 'storage-limit', '11.66 GB', '40322701820', '10 GB']:
+                           '`actions/cache/usage`', 'storage-limit', '11.66 GB', '40369902252', '10 GB']:
                   assert text in snapshots, text
               assert "github.event.workflow_run.event == 'push'" in guide and "github.event.workflow_run.event == 'merge_group'" in guide
 
