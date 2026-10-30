@@ -641,3 +641,26 @@ jobs:
 
           the_cache_floor_runs_after_the_statistics_in_the_build_job_only()
           print('PASS the_cache_floor_runs_after_the_statistics_in_the_build_job_only')
+
+          def required_checks_and_documented_defaults_stay_pinned():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=guards, text=True))
+              pinned = json.loads(document['jobs']['guards']['steps'][0]['env']['REQUIRED_CHECKS'])
+              names = re.findall(r'^    name: (.+)$', workflow, re.MULTILINE)
+              for name in pinned:
+                  assert any(name.rstrip('*') in line for line in names), f'ci.yml has no job named {name}'
+              # Renaming either job drops a gate silently: the repository ruleset requires exactly these two checks.
+              internal_names = re.findall(r'^    name: (.+)$', internal, re.MULTILINE)
+              for name in ['Required repository quality', 'Required consumer tests']:
+                  assert name in internal_names, name
+              guide = ' '.join((root / 'docs/caller-checks.md').read_text(encoding='utf-8').split())
+              for heading in ['## CI speed guards', '### Merge-run time budget', '### Compile-cache hit-rate floor', '### Selection check',
+                              '### Shard balance', '### Test-time limit', '### Required checks']:
+                  assert heading in guide, heading
+              for name, value in document['on']['workflow_call']['inputs'].items():
+                  if isinstance(value.get('default'), (int, float)):
+                      assert f"| `{name}` | {value['default']} |" in guide, name
+              for source in ['40990557025', '40990555729', '40968689273', '40946549381']:
+                  assert source in guide, source
+
+          required_checks_and_documented_defaults_stay_pinned()
+          print('PASS required_checks_and_documented_defaults_stay_pinned')
