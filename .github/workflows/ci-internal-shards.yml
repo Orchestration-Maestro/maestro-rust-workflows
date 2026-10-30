@@ -524,14 +524,14 @@ jobs:
               start = datetime.datetime(2026, 10, 30, 2, 0, tzinfo=datetime.timezone.utc)
               return (start + datetime.timedelta(seconds=seconds)).isoformat().replace('+00:00', 'Z')
 
-          def job(name, minutes, conclusion='success', identifier=1, steps=()):
+          def job(name, minutes, conclusion='success', identifier=1, steps=(), start=0):
               # Steps are (name, seconds) pairs that run one after the other from the start of the job.
               spent, listed = 0, []
               for step, took in steps:
                   listed.append({'name': step, 'conclusion': 'success', 'started_at': moment(spent), 'completed_at': moment(spent + took)})
                   spent += took
               return {'id': identifier, 'name': name, 'conclusion': conclusion, 'steps': listed,
-                      'started_at': moment(0), 'completed_at': moment(minutes * 60)}
+                      'started_at': moment(start * 60), 'completed_at': moment((start + minutes) * 60)}
 
           def run_of(identifier, minutes, event='merge_group', conclusion='success', name='Rust CI', branch='main'):
               # Runs start two hours apart, so a run's predecessors are the runs with smaller identifiers.
@@ -705,6 +705,38 @@ jobs:
           a_job_or_step_that_appears_disappears_or_grows_without_matching_work_escalates()
           print('PASS a_job_or_step_that_appears_disappears_or_grows_without_matching_work_escalates')
 
+          def work_time_is_the_union_of_the_job_intervals_and_the_runner_wait_is_the_rest():
+              jobs = [job('A', 10, identifier=1), job('B', 15, identifier=2, start=5), job('C', 10, identifier=3, start=30), job('F', 3, identifier=6, start=32),
+                      job('D', 60, 'skipped', identifier=4), job('E', 60, 'cancelled', identifier=5)]
+              # [0, 20] and [30, 40] minutes: the overlap counts once, the gap between them and the nested job add nothing, skipped and cancelled jobs are not work.
+              assert judging['work_of'](jobs) == 30 * 60 and judging['work_of']([]) == 0
+              assert judging['wait_of'](run_of(7, 50), jobs) == 20 * 60
+              assert judging['wait_of'](run_of(7, 20), jobs) == 0
+              assert judging['job_set'](jobs) == {'A', 'B', 'C', 'F'}
+
+          work_time_is_the_union_of_the_job_intervals_and_the_runner_wait_is_the_rest()
+          print('PASS work_time_is_the_union_of_the_job_intervals_and_the_runner_wait_is_the_rest')
+
+          def a_runner_wait_over_its_median_by_ten_percent_and_two_minutes_files_a_capacity_issue():
+              prior, _ = prior_runs(5)
+              run = run_of(7, 30)
+              capacity = lambda wait, waits=(60.0,) * 5, runs=prior, event=run: judging['capacity_finding'](event, 'band-x', wait, 1700.0, runs, list(waits))
+              assert capacity(100.0) is None and capacity(180.0) is None
+              finding = capacity(181.0)
+              assert finding['title'] == 'Escalation: runner wait over its median', finding
+              assert finding['labels'] == ['escalation'] and finding['comment'], finding
+              body = finding['body']
+              assert 'Run: https://example.test/runs/7' in body and 'on runner band band-x.' in body, body
+              assert 'The run waited 3.0 min for runners against a median wait of 1.0 min' in body, body
+              assert 'Work time was 28.3 min' in body and 'not a regression' in body, body
+              # Over two minutes but not over 10%, fewer than three earlier waits, and runs that gate nothing are not judged.
+              assert capacity(3150.0, (3000.0,) * 5) is None and capacity(900.0, (60.0, 60.0)) is None
+              assert capacity(900.0, runs=prior[:2]) is None
+              assert capacity(900.0, event=run_of(7, 30, name='CodeQL')) is None
+
+          a_runner_wait_over_its_median_by_ten_percent_and_two_minutes_files_a_capacity_issue()
+          print('PASS a_runner_wait_over_its_median_by_ten_percent_and_two_minutes_files_a_capacity_issue')
+
           def work_units(message):
               return [{'title': 'Work units', 'message': message, 'annotation_level': 'notice'}]
 
@@ -785,11 +817,12 @@ jobs:
           print('PASS findings_file_once_and_every_slow_test_gets_an_issue')
 
           def fake_repository(minutes=30, bands=None, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group',
-                                  ratchet=None, floor=None, newer=0, pace=None, build=None, steps=None):
+                                  ratchet=None, floor=None, newer=0, pace=None, build=None, steps=None, extra_jobs=None):
               """Serves the REST calls judge makes for run 7, its earlier runs and the stored ratchet; `newer` runs finish after run 7.
 
               `pace` maps a run to (shard duration factor, test runs per shard) and `build` to (build duration factor, compile units, cache hit rate);
-              `steps` maps (run, job name) to its (step, seconds) pairs. Runs after run 7 are five times slower per unit."""
+              `steps` maps (run, job name) to its (step, seconds) pairs; `extra_jobs` maps a run to the names of jobs it ran besides the usual ones.
+              Runs after run 7 are five times slower per unit."""
               ratchet = {} if ratchet is None else ratchet
               counts = collections.Counter()
               names = required or ['Caller declaration', 'Format and lint', 'Docs', 'Build test archive', 'Doctests',
@@ -808,6 +841,7 @@ jobs:
                   for index, took in enumerate(shard_minutes):
                       found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index))
                       logs[base + 100 + index] = (shard_logs or {}).get((identifier, index), 'Summary [1.0s] 1 test run\n')
+                  found += [job(extra, 5, identifier=base + 200 + index) for index, extra in enumerate((extra_jobs or {}).get(identifier, []))]
                   declaration = next(item for item in found if item['name'] == 'Caller declaration') if 'Caller declaration' in names else None
                   if declaration:
                       selected, total, trigger = (selections or {}).get(identifier, (51, 51, 'newer run') if identifier > 7 else (1, 51, None))
@@ -940,6 +974,44 @@ jobs:
 
           judge_escalates_what_stands_out_of_the_pattern()
           print('PASS judge_escalates_what_stands_out_of_the_pattern')
+
+          def a_runner_wait_is_never_ci_slowness():
+              # With the usual jobs, a run that waited 40 s longer for a runner is quiet; the guard judges work, not the wall.
+              gh, _ = fake_repository(minutes=30 + 40 / 60)
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+              # Work at +11% fires as a regression only; the wall stays near the work.
+              gh, _ = fake_repository(minutes=33, pace={7: (1.11, 100)})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+              # A long wait is its own capacity issue and no regression.
+              gh, _ = fake_repository(minutes=35)
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings] == ['Escalation: runner wait over its median'], findings
+              # Both can happen in one run, and the wait never hides the regression.
+              gh, _ = fake_repository(minutes=40, pace={7: (1.11, 100)})
+              titles = sorted(finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS))
+              assert titles == ['CI run slower than its baseline: run 7', 'Escalation: runner wait over its median'], titles
+
+          a_runner_wait_is_never_ci_slowness()
+          print('PASS a_runner_wait_is_never_ci_slowness')
+
+          def a_run_is_compared_only_with_runs_that_executed_the_same_jobs():
+              # Run 7 ran an extra job (a release that attests) at a rate 50% over the others: no like-for-like baseline, no regression.
+              gh, _ = fake_repository(pace={7: (1.5, 100)}, extra_jobs={7: ['Release attestation']})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings] == ['Escalation: jobs or steps changed without matching work'], findings
+              assert '- Release attestation appeared' in findings[0]['body'], findings
+              # Run 7 is the only one without the extra job and two earlier runs are like it: fewer than three, so quiet.
+              gh, _ = fake_repository(pace={7: (1.5, 100)}, extra_jobs={n: ['Attest'] for n in (3, 4, 5, 6)})
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+              # Three like runs among the five earlier ones are enough: the unlike runs are skipped, not counted.
+              gh, _ = fake_repository(pace={7: (1.5, 100)}, extra_jobs={3: ['Attest'], 4: ['Attest']})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+              assert all(f'- https://example.test/runs/{n}\n' not in findings[0]['body'] for n in (3, 4)), findings
+
+          a_run_is_compared_only_with_runs_that_executed_the_same_jobs()
+          print('PASS a_run_is_compared_only_with_runs_that_executed_the_same_jobs')
 
           def judge_compares_a_run_only_with_runs_on_its_own_hardware_band():
               SIX = SETTINGS | {'window': 6}
@@ -1453,6 +1525,7 @@ jobs:
               assert 'merge-run-budget-minutes' not in guide and 'merge-run-budget-minutes' not in guards
               assert 'not raw wall time' in guide and 'natural growth' in guide and '`Work units`' in guide
               assert 'seconds per test run' in guide and 'seconds per compile unit' in guide
+              assert 'work time' in guide and 'runner wait' in guide and 'executed the same jobs' in guide
               assert 'median of its rates in the previous five successful runs' in guide and 'plus 10%' in guide
               assert 'runner band' in guide and 'lowest such median' in guide and 'runner-band: <label>' in guide
               # The ratchet is stored in one issue and only the guard lowers it.
@@ -1464,7 +1537,7 @@ jobs:
               assert 'label `escalation`' in guide and 'Nothing outside the pattern is absorbed silently' in guide
               for title in ['Escalation: time per test run outside its normal spread', 'Escalation: time per compile unit outside its normal spread',
                             'Escalation: jobs or steps changed without matching work', 'Escalation: compile cache hit rate outside its usual range',
-                            'Escalation: test selection share outside its usual range']:
+                            'Escalation: test selection share outside its usual range', 'Escalation: runner wait over its median']:
                   assert title in guide, title
 
           required_checks_and_documented_defaults_stay_pinned()

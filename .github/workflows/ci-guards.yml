@@ -213,6 +213,18 @@ jobs:
               else:
                   gh('issue', 'create', '-R', repository, '--title', RATCHET_TITLE, '--body-file', '-', body=body)
 
+          def job_set(jobs):
+              raise NotImplementedError('job_set')
+
+          def work_of(jobs):
+              raise NotImplementedError('work_of')
+
+          def wait_of(run, jobs):
+              raise NotImplementedError('wait_of')
+
+          def capacity_finding(run, band, wait, work, prior, waits):
+              raise NotImplementedError('capacity_finding')
+
           def band_of(jobs, annotations_of):
               """The runner hardware label of the run's slowest labelled job, the runner that sets its pace."""
               for job in sorted((job for job in jobs if seconds(job) is not None), key=seconds, reverse=True)[:3]:
