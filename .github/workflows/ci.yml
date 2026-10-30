@@ -1292,7 +1292,9 @@ jobs:
                                'the job shape (compiler, runner or caller directory) changed')
                   else:
                       cause = 'eviction: no test snapshot is left in the repository cache; it was evicted or never saved'
-          finish(f'::error::Compile cache hit rate {rate:.2f}% is below the {floor}% floor: {cause}', 1)
+          # A warning, never a failure: a change can invalidate the cache itself, and only a default-branch push seeds it again.
+          # The guards read this annotation and file the issue.
+          finish(f'::warning title=Compile cache floor::Compile cache hit rate {rate:.2f}% is below the {floor}% floor: {cause}')
           PYTHON
 
   test-prepare:
