@@ -226,9 +226,9 @@ jobs:
           guards = pathlib.Path('.github/workflows/ci-guards.yml').read_text(encoding='utf-8')
 
           def functions_of(step):
-              # Loads the step's imports and function definitions, never its entry point.
+              # Loads the step's imports, constants and function definitions, never its entry point.
               parsed = ast.parse(textwrap.dedent(body(step, guards)))
-              parsed.body = [node for node in parsed.body if isinstance(node, (ast.Import, ast.FunctionDef))]
+              parsed.body = [node for node in parsed.body if isinstance(node, (ast.Import, ast.FunctionDef, ast.Assign))]
               namespace = {}
               exec(compile(parsed, step, 'exec'), namespace)
               return namespace
