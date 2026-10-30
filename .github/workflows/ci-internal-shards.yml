@@ -1781,6 +1781,8 @@ jobs:
               assert 'not raw wall time' in guide and 'natural growth' in guide and '`Work units`' in guide
               assert 'seconds per test run' in guide and 'seconds per compile unit' in guide
               assert 'work time' in guide and 'runner wait' in guide and 'executed the same jobs' in guide
+              # A run's updated_at moves after its last job ends, so the wall time stops at that job (run 41098096027).
+              assert 'ends at its last job' in guide and 'updated_at' in guide and '41098096027' in guide
               # The test rate is the seconds of the step that ran the tests, never the whole job, and a job that overlaps another counts in full.
               assert 'S7759' in guide and '2 s per executed job' in guide and 'to the second' in guide and '15 s' not in guide, 'the stamp error bound and its reason'
               assert 'below its spread as well' in guide and 'above it outside the' in guide, 'the stamp bound covers both rate judges'
