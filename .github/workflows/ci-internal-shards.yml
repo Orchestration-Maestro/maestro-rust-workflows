@@ -331,3 +331,33 @@ jobs:
 
           judge_stays_quiet_on_a_healthy_run_and_reports_a_budget_breach()
           print('PASS judge_stays_quiet_on_a_healthy_run_and_reports_a_budget_breach')
+
+          SLOW_LOG = '\n'.join([
+              '2026-10-30T02:48:22.6648967Z         SLOW [> 30.000s] (─────────) maestro-tooling::integration browser_author_build::repairs',
+              '2026-10-30T02:49:22.6708479Z         SLOW [> 60.000s] (─────────) maestro-tooling::integration browser_author_build::repairs',
+              '2026-10-30T02:50:22.7069208Z   TRY 2 SLOW [> 30.000s] (─────────) maestro-wasmtime::integration guide::builds_from_a_clean_folder',
+              '2026-10-30T02:53:23.4168865Z      Summary [1629.798s] 1010 tests run: 1010 passed (7 slow, 2 flaky), 14656 skipped', ''])
+
+          def slow_marks_are_read_from_nextest_output():
+              assert judging['slow_tests'](SLOW_LOG) == {
+                  'maestro-tooling::integration browser_author_build::repairs': 60.0,
+                  'maestro-wasmtime::integration guide::builds_from_a_clean_folder': 30.0}
+              assert judging['slow_tests']('\x1b[32m        PASS\x1b[0m [   1.2s] crate test\n') == {}
+
+          slow_marks_are_read_from_nextest_output()
+          print('PASS slow_marks_are_read_from_nextest_output')
+
+          def each_slow_test_on_main_gets_one_issue():
+              findings = judging['slow_findings']({'b::two': 90.0, 'a::one': 30.0}, 30.0, run_of(7, 39))
+              assert [finding['title'] for finding in findings] == ['Test over 30 seconds: a::one', 'Test over 30 seconds: b::two']
+              assert all(finding['slow'] for finding in findings) and 'over 90 seconds' in findings[1]['body'], findings
+              assert 'Run: https://example.test/runs/7' in findings[0]['body'] and 'do not raise a timeout' in findings[0]['body']
+              gh, _ = fake_repository(shard_logs={(7, 3): SLOW_LOG})
+              titles = [finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS)]
+              assert titles == ['Test over 30 seconds: maestro-tooling::integration browser_author_build::repairs',
+                                'Test over 30 seconds: maestro-wasmtime::integration guide::builds_from_a_clean_folder'], titles
+              gh, _ = fake_repository(shard_logs={(7, 3): SLOW_LOG}, event='pull_request')
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+
+          each_slow_test_on_main_gets_one_issue()
+          print('PASS each_slow_test_on_main_gets_one_issue')
