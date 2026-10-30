@@ -417,14 +417,14 @@ jobs:
                           elif name == kind and float(value) > 0:
                               spent[kind] = spent.get(kind, 0) + took
                               units[kind] = units.get(kind, 0) + float(value)
-              return found, spent, units
+              return found, spent, units, {}
 
           def measures_of(jobs, annotations_of):
               """Seconds per unit of each kind of work in a run, and its compile cache hit rate."""
-              found, spent, units = totals_of(jobs, annotations_of)
+              found, spent, units, _ = totals_of(jobs, annotations_of)
               return found | {kind: spent[kind] / units[kind] for kind in spent}
 
-          def rate_finding(run, measured, units, prior, prior_measured, band, ratchet):
+          def rate_finding(run, measured, units, ran, prior, prior_measured, band, ratchet):
               """A run whose seconds per unit of work, for any kind, are more than 10% over the lower of the band's recent median and its stored ratchet level,
               and whose gap, over its units, is more than WORK_FLOOR seconds."""
               if not watched(run):
@@ -603,14 +603,14 @@ jobs:
                           break
                   prior.reverse()
                   like.reverse()
-                  measured, units = measures_of(jobs, annotations_of), totals_of(jobs, annotations_of)[2]
+                  measured, (units, ran_jobs) = measures_of(jobs, annotations_of), totals_of(jobs, annotations_of)[2:]
                   prior_measured = [measures_of(jobs_of(other['id']), annotations_of) for other in like]
                   medians = {kind: baseline_of([rates[kind] for rates in prior_measured if kind in rates]) for kind in WORK}
                   medians = {kind: value for kind, value in medians.items() if value is not None}
                   if medians:
                       number, levels = ratchet_issue(repository, gh)
                       kept = {kind: levels[level_of(run, band, kind)]['rate'] for kind in medians if level_of(run, band, kind) in levels}
-                      findings.append(rate_finding(run, measured, units, like, prior_measured, band, kept))
+                      findings.append(rate_finding(run, measured, units, ran_jobs, like, prior_measured, band, kept))
                       lowered = {level_of(run, band, kind): {'rate': value, 'reason': 'lowest median of the previous five successful runs on the level',
                                                              'run': run['id']}
                                  for kind, value in medians.items() if kind not in kept or value < kept[kind]}
