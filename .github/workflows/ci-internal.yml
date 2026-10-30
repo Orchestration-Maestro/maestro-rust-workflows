@@ -2253,7 +2253,8 @@ jobs:
           permit('ci', 'checks', 'Coverage / "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
           permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
           permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
-          permit('content', 'content', 'Mise bootstrap', '--retry', '3')
+          for name in ['Mise bootstrap', 'Content compile cache']:
+              permit('content', 'content', name, '--retry', '3')
 
           # Doctests reuse the test route's step definitions and bounds.
           for (path, job, step, kind, occurrence, value), reason in list(authority.items()):
@@ -2345,7 +2346,7 @@ jobs:
 
               def test_workflow_controls_match_authority(self):
                   report = require_recorded_controls(files)
-                  self.assertEqual(len(report.splitlines()), 93)
+                  self.assertEqual(len(report.splitlines()), 94)
                   print(report)
 
               def assert_policy(self, sources, admitted):
@@ -2607,7 +2608,7 @@ jobs:
 
               def test_inventory_requires_a_reason_for_each_occurrence(self):
                   report = require_recorded_controls(files, authority)
-                  self.assertEqual(len(report.splitlines()), 93)
+                  self.assertEqual(len(report.splitlines()), 94)
                   for row in authority:
                       self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
                       with self.assertRaises(AssertionError):
