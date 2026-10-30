@@ -168,15 +168,10 @@ jobs:
               return datetime.datetime.fromisoformat(value)
 
           def seconds(job):
+              """Seconds of a job or step that ran, None for a skipped one or one without times; a job and a step carry the same fields."""
               if job.get('conclusion') == 'skipped' or not job.get('started_at') or not job.get('completed_at'):
                   return None
               return (stamp(job['completed_at']) - stamp(job['started_at'])).total_seconds()
-
-          def step_seconds(step):
-              """Seconds of a step that ran, None for a skipped step or one without times."""
-              if step.get('conclusion') == 'skipped' or not step.get('started_at') or not step.get('completed_at'):
-                  return None
-              return (stamp(step['completed_at']) - stamp(step['started_at'])).total_seconds()
 
           def seeds(run):
               """A push to the default branch (`main`), the only run that saves compile snapshots."""
@@ -365,8 +360,8 @@ jobs:
               for job in executed(jobs):
                   found[job['name']] = seconds(job)
                   for step in job.get('steps', []):
-                      if step_seconds(step) is not None:
-                          found[f"{job['name']} / {step['name']}"] = step_seconds(step)
+                      if seconds(step) is not None:
+                          found[f"{job['name']} / {step['name']}"] = seconds(step)
               return found
 
           def shape_finding(run, band, jobs, prior, prior_jobs):
@@ -407,7 +402,7 @@ jobs:
                   kind = next((kind for kind, (name, _, _) in WORK.items() if job['name'].startswith(name)), None)
                   if kind is None:
                       continue
-                  took = sum(step_seconds(step) or 0 for step in job.get('steps', []) if step['name'] in ('Tests', 'Isolated tests')) if kind == 'tests' else seconds(job)
+                  took = sum(seconds(step) or 0 for step in job.get('steps', []) if step['name'] in ('Tests', 'Isolated tests')) if kind == 'tests' else seconds(job)
                   for note in annotations_of(job):
                       if note.get('title') != 'Work units':
                           continue
