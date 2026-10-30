@@ -172,8 +172,14 @@ jobs:
                   return None
               return (stamp(job['completed_at']) - stamp(job['started_at'])).total_seconds()
 
+          def step_seconds(step):
+              """Seconds of a step that ran, None for a skipped step or one without times."""
+              if step.get('conclusion') == 'skipped' or not step.get('started_at') or not step.get('completed_at'):
+                  return None
+              return (stamp(step['completed_at']) - stamp(step['started_at'])).total_seconds()
+
           def seeds(run):
-              """A push to the default branch, the only run that saves compile snapshots."""
+              """A push to the default branch (`main`), the only run that saves compile snapshots."""
               return run['event'] == 'push' and run['head_branch'] == 'main'
 
           def watched(run):
@@ -262,7 +268,7 @@ jobs:
               """The floor warnings of every compile job that judged its cache, as one standing issue."""
               lines = []
               for job in jobs:
-                  if any(step['name'] == 'Compile cache hit-rate floor' and step.get('conclusion') == 'success' for step in job.get('steps', [])):
+                  if reached(job, 'Compile cache hit-rate floor'):
                       lines += [f"- {job['name']}: {note['message']}" for note in annotations_of(job) if note.get('title') == 'Compile cache floor']
               if not lines:
                   return None
@@ -353,13 +359,11 @@ jobs:
           def timings(jobs):
               """Seconds of every job that ran and of every step in it that ran, by name."""
               found = {}
-              for job in jobs:
-                  if seconds(job) is None or job.get('conclusion') == 'cancelled':
-                      continue
+              for job in executed(jobs):
                   found[job['name']] = seconds(job)
                   for step in job.get('steps', []):
-                      if step.get('conclusion') != 'skipped' and step.get('started_at') and step.get('completed_at'):
-                          found[f"{job['name']} / {step['name']}"] = (stamp(step['completed_at']) - stamp(step['started_at'])).total_seconds()
+                      if step_seconds(step) is not None:
+                          found[f"{job['name']} / {step['name']}"] = step_seconds(step)
               return found
 
           def shape_finding(run, band, jobs, prior, prior_jobs):
@@ -393,12 +397,14 @@ jobs:
                                  + (f', full suite because {trigger}' if trigger else '')])
 
           def measures_of(jobs, annotations_of):
-              """Seconds per unit of each kind of work in a run, and its compile cache hit rate, from the work-unit annotations of its jobs."""
+              """Seconds per unit of each kind of work in a run, and its compile cache hit rate, from the work-unit annotations of its jobs.
+              A test shard counts the seconds of its Tests or Isolated tests step, so downloads and setup are not test work; the archive build counts its whole job."""
               found, spent, units = {}, {}, {}
-              for job in jobs:
+              for job in executed(jobs):
                   kind = next((kind for kind, (name, _, _) in WORK.items() if job['name'].startswith(name)), None)
-                  if kind is None or seconds(job) is None or job.get('conclusion') == 'cancelled':
+                  if kind is None:
                       continue
+                  took = sum(step_seconds(step) or 0 for step in job.get('steps', []) if step['name'] in ('Tests', 'Isolated tests')) if kind == 'tests' else seconds(job)
                   for note in annotations_of(job):
                       if note.get('title') != 'Work units':
                           continue
@@ -406,7 +412,7 @@ jobs:
                           if name == 'hit-rate':
                               found[name] = float(value)
                           elif name == kind and float(value) > 0:
-                              spent[kind] = spent.get(kind, 0) + seconds(job)
+                              spent[kind] = spent.get(kind, 0) + took
                               units[kind] = units.get(kind, 0) + float(value)
               return found | {kind: spent[kind] / units[kind] for kind in spent}
 

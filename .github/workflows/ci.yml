@@ -869,7 +869,7 @@ jobs:
           digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
           namespace = 'maestro-compile-v1-'
           prefix = f'{namespace}{digest}-'
-          seeder = '-' + re.escape(os.environ['CACHE_JOB']) + r'-\d+-'
+          seeder = r'-\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\d+-'
           call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
           suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX']) + '-' + call
           writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
