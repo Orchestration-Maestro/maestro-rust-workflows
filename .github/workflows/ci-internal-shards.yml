@@ -179,3 +179,259 @@ jobs:
 
           diagnostics_docs_follow_the_declared_shard_count()
           print('PASS diagnostics_docs_follow_the_declared_shard_count')
+
+          def prepare_declaration_keys_are_validated():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  path = directory / '.github/ci.toml'
+                  base = 'wasm_crates=[]\ncheck_targets=[]\n'
+                  path.write_text(base + 'test_prepare_packages=["sample"]\ntest_prepare_key="sh .config/key.sh"\n', encoding='utf-8')
+                  result, values = declaration(directory)
+                  assert result.returncode == 0, result.stderr
+                  assert json.loads(values['test_prepare_key']) == 'sh .config/key.sh'
+                  path.write_text(base, encoding='utf-8')
+                  result, values = declaration(directory)
+                  assert result.returncode == 0 and json.loads(values['test_prepare_key']) == '', result.stderr
+                  for declared, message in [
+                      ('test_prepare_packages="sample"', 'test_prepare_packages must be an array of nonempty strings'),
+                      ('test_prepare_packages=[1]', 'test_prepare_packages must be an array of nonempty strings'),
+                      ('test_prepare_packages=["missing"]', "test_prepare_packages contains unknown package 'missing'"),
+                      ('test_prepare_key=true', 'test_prepare_key must be a string'),
+                      ('test_prepare_key=["sh key.sh"]', 'test_prepare_key must be a string'),
+                      ('test_prepare_inputs=["inputs"]', "unknown keys ['test_prepare_inputs']")]:
+                      path.write_text(base + declared + '\n', encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and not values, (declared, result.stdout)
+                      assert result.stderr.strip() == '.github/ci.toml: ' + message, (declared, result.stderr)
+              schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
+              packages = schema['properties']['test_prepare_packages']
+              assert packages['type'] == 'array' and packages['items'] == {'type': 'string'} and packages['default'] == []
+              assert schema['properties']['test_prepare_key']['type'] == 'string'
+              assert schema['properties']['test_prepare_key']['default'] == ''
+              assert not {'test_prepare_packages', 'test_prepare_key'} & set(schema['required'])
+
+          prepare_declaration_keys_are_validated()
+          print('PASS prepare_declaration_keys_are_validated')
+
+          def prepare_gate_follows_selected_consumers():
+              def prepared(directory, event, extra=None):
+                  with tempfile.NamedTemporaryFile() as output:
+                      result = select_packages(directory, {'TEST_EVENT': event, 'GITHUB_OUTPUT': output.name} | (extra or {}))
+                      assert result.returncode == 0, result.stderr
+                      return dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding='utf-8').splitlines())['test_prepare']
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  members = ['consumer', 'plain']
+                  (directory / 'Cargo.toml').write_text('[workspace]\nresolver="2"\nmembers=["consumer", "plain"]\n', encoding='utf-8')
+                  for member in members:
+                      (directory / member / 'src').mkdir(parents=True)
+                      (directory / member / 'src/lib.rs').write_text('', encoding='utf-8')
+                      (directory / member / 'Cargo.toml').write_text(f'[package]\nname="{member}"\nversion="0.1.0"\nedition="2021"\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=directory, check=True)
+                  declared = 'wasm_crates=[]\ncheck_targets=[]\ntest_prepare="echo ready"\ntest_prepare_packages=["consumer"]\n'
+                  (directory / '.github/ci.toml').write_text(declared, encoding='utf-8')
+                  fixture_git(directory, 'init', '--quiet')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'base')
+                  base = fixture_git(directory, 'rev-parse', 'HEAD').strip()
+                  def change(member, text):
+                      (directory / member / 'src/lib.rs').write_text(text, encoding='utf-8')
+                      fixture_git(directory, 'commit', '-qam', 'change ' + member)
+                  change('plain', '// plain\n')
+                  assert prepared(directory, 'pull_request', {'BASE_REF': base}) == '""'
+                  change('consumer', '// consumer\n')
+                  assert prepared(directory, 'pull_request', {'BASE_REF': base}) == json.dumps('echo ready')
+                  assert prepared(directory, 'push', {'BASE_REF': ''}) == json.dumps('echo ready')
+                  # A shared input sends a merge group to the full suite, which includes the declared consumer.
+                  (directory / 'justfile').write_text('default:\n', encoding='utf-8')
+                  fixture_git(directory, 'add', '.')
+                  fixture_git(directory, 'commit', '-qm', 'shared input')
+                  assert prepared(directory, 'merge_group', {'BASE_REF': base}) == json.dumps('echo ready')
+                  # A declaration that names the preparation keys is itself a full-suite change on pull requests.
+                  fixture_git(directory, 'checkout', '-q', base)
+                  (directory / '.github/ci.toml').write_text(declared.replace('["consumer"]', '["consumer", "plain"]'), encoding='utf-8')
+                  fixture_git(directory, 'commit', '-qam', 'declare plain')
+                  assert prepared(directory, 'pull_request', {'BASE_REF': base}) == json.dumps('echo ready')
+                  # Without the key every selection keeps the command.
+                  fixture_git(directory, 'checkout', '-q', base)
+                  (directory / '.github/ci.toml').write_text(declared.replace('test_prepare_packages=["consumer"]\n', ''), encoding='utf-8')
+                  fixture_git(directory, 'commit', '-qam', 'drop the consumer list')
+                  base = fixture_git(directory, 'rev-parse', 'HEAD').strip()
+                  change('plain', '// plain again\n')
+                  assert prepared(directory, 'pull_request', {'BASE_REF': base}) == json.dumps('echo ready')
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              assert document['jobs']['declaration']['outputs']['test_prepare'] == '$' + '{{ steps.selection.outputs.test_prepare }}'
+
+          prepare_gate_follows_selected_consumers()
+          print('PASS prepare_gate_follows_selected_consumers')
+
+          def prepare_steps(document):
+              job = document['jobs']['test-prepare']
+              return job, {step['name']: step for step in job['steps']}
+
+          def condition(step):
+              return step['if'].removeprefix('$' + '{{ ').removesuffix(' }}')
+
+          def cache_identity_follows_the_caller_key():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              job, steps = prepare_steps(document)
+              names = list(steps)
+              order = ['Test tools', 'Test setup cache identity', 'Restore test setup cache', 'Prepare test setup',
+                       'Save test setup cache', 'Upload test setup']
+              assert [names.index(name) for name in order] == sorted(names.index(name) for name in order), names
+              declared = "needs.declaration.outputs.test_prepare_key != '\"\"'"
+              assert condition(steps['Test setup cache identity']) == declared
+              assert condition(steps['Restore test setup cache']) == declared
+              assert steps['Restore test setup cache']['with']['key'] == '$' + '{{ steps.setup-identity.outputs.key }}'
+              assert 'restore-keys' not in steps['Restore test setup cache']['with']
+              assert steps['Prepare test setup']['if'] == "steps.setup-cache.outputs.cache-hit != 'true'"
+              save = steps['Save test setup cache']
+              assert condition(save) == "steps.cache-identity.outputs.writer == 'true' && steps.setup-cache.outputs.cache-hit != 'true' && " + declared
+              assert save['with'] == {'path': '$' + '{{ runner.temp }}/test-setup.tar', 'key': '$' + '{{ steps.setup-identity.outputs.key }}'}
+              assert steps['Restore test setup cache']['with']['path'] == save['with']['path']
+              assert job['env']['TEST_PREPARE_KEY'] == '$' + '{{ fromJSON(needs.declaration.outputs.test_prepare_key) }}'
+              assert document['jobs']['declaration']['outputs']['test_prepare_key'] == '$' + '{{ steps.config.outputs.test_prepare_key }}'
+              def key(directory, printed='printf one', command='echo ready', extra=None):
+                  with tempfile.NamedTemporaryFile() as output:
+                      env = {'TEST_PREPARE': command, 'TEST_PREPARE_KEY': printed, 'GITHUB_OUTPUT': output.name,
+                             'CALLER_REPOSITORY': 'owner/caller', 'CALLER_DIRECTORY': '.', 'HOST_OS': 'Linux', 'HOST_ARCH': 'X64',
+                             'GITHUB_WORKSPACE': '/work', 'RUNNER_TEMP': str(directory)} | (extra or {})
+                      result = execute('Test setup cache identity', directory, env)
+                      values = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding='utf-8').splitlines())
+                      return result, values
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  result, values = key(directory)
+                  assert result.returncode == 0, result.stderr
+                  first = values['key']
+                  assert first.startswith('maestro-test-setup-v1-'), values
+                  assert key(directory)[1]['key'] == first
+                  (directory / 'key.txt').write_text('v1\n', encoding='utf-8')
+                  printed = key(directory, printed='cat key.txt')[1]['key']
+                  assert printed != first
+                  (directory / 'key.txt').write_text('v2\n', encoding='utf-8')
+                  assert key(directory, printed='cat key.txt')[1]['key'] != printed, 'the printed key must decide the cache key'
+                  (directory / 'key.txt').write_text('v1\n', encoding='utf-8')
+                  assert key(directory, printed='cat key.txt')[1]['key'] == printed
+                  # The key command runs from the caller's directory in a separate build directory.
+                  assert key(directory, printed='printf "%s" "$CARGO_TARGET_DIR" | tr / _')[1]['key'] != first
+                  for name, other in [('command', key(directory, command='echo other')),
+                                      ('host', key(directory, extra={'HOST_ARCH': 'ARM64'})),
+                                      ('directory', key(directory, extra={'CALLER_DIRECTORY': 'caller'})),
+                                      ('repository', key(directory, extra={'CALLER_REPOSITORY': 'owner/other'})),
+                                      ('workspace', key(directory, extra={'GITHUB_WORKSPACE': '/other'}))]:
+                      assert other[0].returncode == 0 and other[1]['key'] != first, name
+                  for printed, message in [
+                      ('exit 3', 'test_prepare_key failed with exit code 3'),
+                      ('printf ""', 'test_prepare_key must print one line of letters, digits, dots, dashes, underscores or colons, up to 128 characters'),
+                      ('printf "a\nb\n"', 'test_prepare_key must print one line of letters, digits, dots, dashes, underscores or colons, up to 128 characters'),
+                      ('printf "a b"', 'test_prepare_key must print one line of letters, digits, dots, dashes, underscores or colons, up to 128 characters'),
+                      ('printf "a/b"', 'test_prepare_key must print one line of letters, digits, dots, dashes, underscores or colons, up to 128 characters'),
+                      ('printf "%0129d" 0', 'test_prepare_key must print one line of letters, digits, dots, dashes, underscores or colons, up to 128 characters')]:
+                      result, values = key(directory, printed=printed)
+                      assert result.returncode != 0 and not values, printed
+                      assert message in result.stderr, (printed, result.stderr)
+
+          cache_identity_follows_the_caller_key()
+          print('PASS cache_identity_follows_the_caller_key')
+
+          def second_run_with_an_unchanged_key_restores_and_skips():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              job, steps = prepare_steps(document)
+              with tempfile.TemporaryDirectory() as temporary:
+                  cache = pathlib.Path(temporary) / 'cache'
+                  cache.mkdir()
+                  def run(name, printed, writer, command='echo once >> "$TEST_PREPARE_OUTPUT/count"'):
+                      runner = pathlib.Path(temporary) / name
+                      checkout = runner / 'caller'
+                      checkout.mkdir(parents=True)
+                      (checkout / 'key.txt').write_text(printed, encoding='utf-8')
+                      env = {'TEST_PREPARE': command, 'TEST_PREPARE_KEY': 'cat key.txt', 'RUNNER_TEMP': str(runner),
+                             'CALLER_REPOSITORY': 'owner/caller', 'CALLER_DIRECTORY': '.', 'HOST_OS': 'Linux', 'HOST_ARCH': 'X64',
+                             'GITHUB_WORKSPACE': '/work'}
+                      with tempfile.NamedTemporaryFile() as output:
+                          result = execute('Test setup cache identity', checkout, env | {'GITHUB_OUTPUT': output.name})
+                          assert result.returncode == 0, result.stderr
+                          key = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding='utf-8').splitlines())['key']
+                      # The restore step: a hit copies the saved file into place.
+                      hit = (cache / key).is_file()
+                      if hit:
+                          shutil.copyfile(cache / key, runner / 'test-setup.tar')
+                      context = {'steps.setup-cache.outputs.cache-hit': 'true' if hit else '',
+                                 'steps.cache-identity.outputs.writer': 'true' if writer else 'false',
+                                 'needs.declaration.outputs.test_prepare_key': json.dumps('cat key.txt')}
+                      prepared = evaluate(steps['Prepare test setup']['if'], context)
+                      if prepared:
+                          result = execute('Prepare test setup', checkout, env)
+                          assert result.returncode == 0, result.stdout + result.stderr
+                      saved = evaluate(steps['Save test setup cache']['if'], context)
+                      if saved:
+                          shutil.copyfile(runner / 'test-setup.tar', cache / key)
+                      return hit, bool(prepared), bool(saved), runner / 'test-setup.tar'
+                  # A pull request reads the cache and never writes it.
+                  assert run('pull-request', 'inputs-1', False)[:3] == (False, True, False)
+                  assert not list(cache.iterdir())
+                  # The first push prepares and saves; the second, with unchanged inputs, restores and skips.
+                  assert run('push-1', 'inputs-1', True)[:3] == (False, True, True)
+                  hit, prepared, saved, tarball = run('push-2', 'inputs-1', True)
+                  assert (hit, prepared, saved) == (True, False, False)
+                  listing = subprocess.check_output(['tar', '-tf', str(tarball)], text=True)
+                  assert 'test-setup/count' in listing
+                  assert subprocess.check_output(['tar', '-xOf', str(tarball), 'test-setup/count'], text=True) == 'once\n'
+                  # A pull request restores the same bundle without preparing.
+                  assert run('pull-request-2', 'inputs-1', False)[:3] == (True, False, False)
+                  # Changed inputs miss and prepare again.
+                  assert run('push-3', 'inputs-2', True)[:3] == (False, True, True)
+
+          second_run_with_an_unchanged_key_restores_and_skips()
+          print('PASS second_run_with_an_unchanged_key_restores_and_skips')
+
+          def every_bundle_reader_restores_on_a_hit():
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              base = {'cancelled()': False, 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
+                      'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.included_tests': 'false',
+                      'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'github.repository_id': 'caller',
+                      'inputs.working-directory': '.', 'matrix.shard': '1'}
+              def values(key, warm, **extra):
+                  # Longer names first: the evaluator substitutes by prefix.
+                  return {'needs.declaration.outputs.test_prepare_key': json.dumps(key),
+                          'needs.declaration.outputs.test_prepare': json.dumps('prepare'), 'inputs.warm-cache': warm} | base | extra
+              prepare = document['jobs']['test-prepare']['if']
+              # The warm build prepares, and so restores, only for a caller that declares a key.
+              assert evaluate(prepare, values('cat key.txt', True))
+              assert not evaluate(prepare, values('', True))
+              assert evaluate(prepare, values('cat key.txt', False))
+              assert evaluate(prepare, values('', False))
+              assert not evaluate(prepare, values('', False, **{'needs.declaration.outputs.test_prepare': json.dumps('')}))
+              assert not evaluate(prepare, values('cat key.txt', True, **{'needs.declaration.outputs.test_prepare': json.dumps('')}))
+              tests = document['jobs']['tests']['if']
+              for result, expected in [('success', True), ('skipped', True), ('failure', False), ('cancelled', False)]:
+                  assert bool(evaluate(tests, values('cat key.txt', True, **{'needs.test-prepare.result': result}))) == expected, result
+                  assert bool(evaluate(tests, values('cat key.txt', False, **{'needs.test-prepare.result': result}))) == expected, result
+              assert evaluate(tests, values('', True, **{'needs.test-build.result': 'skipped', 'needs.test-prepare.result': 'skipped'}))
+              assert not evaluate(tests, values('', False, **{'needs.test-build.result': 'failure'}))
+              steps = {step['name']: step for step in document['jobs']['tests']['steps']}
+              for name in ['Download test setup', 'Restore test setup']:
+                  gate = steps[name]['if']
+                  assert evaluate(gate, values('', False))
+                  assert evaluate(gate, values('cat key.txt', False))
+                  assert evaluate(gate, values('cat key.txt', True, **{'matrix.shard': 'warm'}))
+                  assert not evaluate(gate, values('', True, **{'matrix.shard': 'warm'}))
+                  assert not evaluate(gate, values('cat key.txt', False, **{'matrix.shard': 'doctests'}))
+                  assert not evaluate(gate, values('cat key.txt', False, **{'needs.declaration.outputs.test_prepare': json.dumps('')}))
+
+          every_bundle_reader_restores_on_a_hit()
+          print('PASS every_bundle_reader_restores_on_a_hit')
+
+          def docs_list_the_preparation_keys():
+              guide = ' '.join((root / 'docs/caller-checks.md').read_text(encoding='utf-8').split())
+              readme = ' '.join((root / 'README.md').read_text(encoding='utf-8').split())
+              for text in ['`test_prepare_packages`', '`test_prepare_key`']:
+                  assert text in guide and text in readme, text
+              assert 'test_prepare_inputs' not in guide + readme
+
+          docs_list_the_preparation_keys()
+          print('PASS docs_list_the_preparation_keys')
