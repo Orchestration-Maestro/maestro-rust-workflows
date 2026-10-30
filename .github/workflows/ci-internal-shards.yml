@@ -544,9 +544,12 @@ jobs:
               # Earlier runs of one band with their measured seconds per unit of work.
               return [run_of(n, 30) for n in range(1, count + 1)], [{'tests': rate} | more] * count
 
+          # A run with this many units of each kind: a rate gap of a second or more is far over the 15 s floor.
+          many = {'tests': 1000, 'compiles': 1000}
+
           def a_rate_more_than_ten_percent_over_its_baseline_files_an_issue():
               prior, measured = prior_runs(5, compiles=2.0)
-              finding = judging['rate_finding'](run_of(7, 33.3), {'tests': 11.1, 'compiles': 2.0}, prior, measured, 'amd-epyc-7763-4c', {})
+              finding = judging['rate_finding'](run_of(7, 33.3), {'tests': 11.1, 'compiles': 2.0}, many, prior, measured, 'amd-epyc-7763-4c', {})
               assert finding['title'] == 'CI run slower than its baseline: run 7', finding
               body = finding['body']
               assert 'Run: https://example.test/runs/7' in body, body
@@ -558,14 +561,14 @@ jobs:
               for n in range(1, 6):
                   assert f'- https://example.test/runs/{n}' in body, body
               for rate in (10.9, 11.0):
-                  assert judging['rate_finding'](run_of(8, 30), {'tests': rate}, prior, measured, 'band', {}) is None, rate
+                  assert judging['rate_finding'](run_of(8, 30), {'tests': rate}, many, prior, measured, 'band', {}) is None, rate
               # Above the band's normal spread (the earlier rates widened by 10%) it is also escalated; inside the spread it is only a regression.
               assert finding['labels'] == ['escalation'], finding
               spread = [{'tests': rate} for rate in (8.0, 10.0, 10.0, 12.0, 10.0)]
-              inside = judging['rate_finding'](run_of(8, 30), {'tests': 11.1}, prior, spread, 'band', {})
+              inside = judging['rate_finding'](run_of(8, 30), {'tests': 11.1}, many, prior, spread, 'band', {})
               assert inside['title'] == 'CI run slower than its baseline: run 8' and inside['labels'] == [], inside
               # Compile units are judged on their own rate.
-              body = judging['rate_finding'](run_of(8, 30), {'tests': 10.0, 'compiles': 2.22}, prior, measured, 'band', {})['body']
+              body = judging['rate_finding'](run_of(8, 30), {'tests': 10.0, 'compiles': 2.22}, many, prior, measured, 'band', {})['body']
               assert '- Build jobs: 2.22 s per compile unit against a baseline of 2.00 s (+11%, limit +10%)' in body and 'Test jobs' not in body, body
 
           a_rate_more_than_ten_percent_over_its_baseline_files_an_issue()
@@ -575,19 +578,19 @@ jobs:
               slow = run_of(9, 120)
               for count in (0, 1, 2):
                   prior, measured = prior_runs(count)
-                  assert judging['rate_finding'](slow, {'tests': 99.0}, prior, measured, 'band', {}) is None, count
+                  assert judging['rate_finding'](slow, {'tests': 99.0}, many, prior, measured, 'band', {}) is None, count
               prior, measured = prior_runs(3)
-              assert judging['rate_finding'](slow, {'tests': 99.0}, prior, measured, 'band', {}) is not None
+              assert judging['rate_finding'](slow, {'tests': 99.0}, many, prior, measured, 'band', {}) is not None
               assert judging['baseline_of']([18.0, 18.0]) is None and judging['baseline_of']([]) is None
               # The median keeps one fast run from lowering the bar.
               history = [run_of(n, 30) for n in range(3, 8)]
               measured = [{'tests': rate} for rate in (3.0, 10.0, 10.0, 10.0, 10.0)]
               assert judging['baseline_of']([3.0, 10.0, 10.0, 10.0, 10.0]) == 10.0
-              assert judging['rate_finding'](run_of(9, 30), {'tests': 10.9}, history, measured, 'band', {}) is None
-              assert 'baseline of 10.00 s' in judging['rate_finding'](run_of(9, 30), {'tests': 11.1}, history, measured, 'band', {})['body']
+              assert judging['rate_finding'](run_of(9, 30), {'tests': 10.9}, many, history, measured, 'band', {}) is None
+              assert 'baseline of 10.00 s' in judging['rate_finding'](run_of(9, 30), {'tests': 11.1}, many, history, measured, 'band', {})['body']
               # A kind with fewer than three earlier rates has no baseline, whatever the other kinds have.
               prior, measured = prior_runs(5)
-              assert judging['rate_finding'](slow, {'tests': 10.0, 'compiles': 99.0}, prior, measured, 'band', {}) is None
+              assert judging['rate_finding'](slow, {'tests': 10.0, 'compiles': 99.0}, many, prior, measured, 'band', {}) is None
 
           the_baseline_needs_three_samples_and_is_their_median()
           print('PASS the_baseline_needs_three_samples_and_is_their_median')
@@ -599,7 +602,7 @@ jobs:
                                                  ('merge_group', 'CodeQL', 'x', False), ('push', 'CodeQL', 'main', False),
                                                  ('schedule', 'Rust CI', 'main', False)]:
                   slow = run_of(9, 60, event, name=name, branch=branch)
-                  assert (judging['rate_finding'](slow, {'tests': 20.0}, prior, measured, 'band', {}) is not None) == fires, (event, name, branch)
+                  assert (judging['rate_finding'](slow, {'tests': 20.0}, many, prior, measured, 'band', {}) is not None) == fires, (event, name, branch)
 
           only_runs_that_gate_a_merge_are_judged()
           print('PASS only_runs_that_gate_a_merge_are_judged')
@@ -608,15 +611,30 @@ jobs:
               creep = [run_of(n, 30) for n in range(3, 8)]
               measured = [{'tests': rate} for rate in (12.0, 13.0, 14.0, 15.0, 16.0)]
               # The last five alone give a median of 14 and a limit of 15.4; the stored 10 keeps the limit at 11.
-              finding = judging['rate_finding'](run_of(9, 30), {'tests': 12.0}, creep, measured, 'band', {'tests': 10.0})
+              finding = judging['rate_finding'](run_of(9, 30), {'tests': 12.0}, many, creep, measured, 'band', {'tests': 10.0})
               assert finding and 'against a baseline of 10.00 s (+20%, limit +10%)' in finding['body'], finding
-              assert judging['rate_finding'](run_of(9, 30), {'tests': 10.9}, creep, measured, 'band', {'tests': 10.0}) is None
+              assert judging['rate_finding'](run_of(9, 30), {'tests': 10.9}, many, creep, measured, 'band', {'tests': 10.0}) is None
               # A stored level above the recent median never raises the line.
-              raised = judging['rate_finding'](run_of(9, 30), {'tests': 16.0}, creep, measured, 'band', {'tests': 30.0})
+              raised = judging['rate_finding'](run_of(9, 30), {'tests': 16.0}, many, creep, measured, 'band', {'tests': 30.0})
               assert raised and 'against a baseline of 14.00 s' in raised['body'], raised
 
           a_creeping_regression_fires_against_the_stored_ratchet()
           print('PASS a_creeping_regression_fires_against_the_stored_ratchet')
+
+          def a_rate_gap_under_fifteen_seconds_is_measurement_error_not_a_regression():
+              # Maestro release run 41095516017: a 19 s job measured 21 s (GitHub stamps job times to the second) and fired as +11%.
+              prior, measured = prior_runs(5, rate=19.0)
+              run = run_of(9, 30)
+              assert judging['rate_finding'](run, {'tests': 21.0}, {'tests': 1}, prior, measured, 'band', {}) is None
+              # The same +11% on a run with more work is a gap of more than 15 s and fires; exactly 15 s stays quiet.
+              assert judging['rate_finding'](run, {'tests': 21.0}, {'tests': 8}, prior, measured, 'band', {}) is not None
+              assert judging['rate_finding'](run, {'tests': 21.0}, {'tests': 7.5}, prior, measured, 'band', {}) is None
+              # A 20 s workflow that doubles still fires.
+              prior, measured = prior_runs(5, rate=20.0)
+              assert judging['rate_finding'](run, {'tests': 40.0}, {'tests': 1}, prior, measured, 'band', {}) is not None
+
+          a_rate_gap_under_fifteen_seconds_is_measurement_error_not_a_regression()
+          print('PASS a_rate_gap_under_fifteen_seconds_is_measurement_error_not_a_regression')
 
           def a_runs_band_is_the_hardware_label_of_its_slowest_labelled_job():
               jobs = [job('Windows check', 40, identifier=1), job('Test shard (1/16)', 30, identifier=2), job('Docs', 5, identifier=3)]
@@ -1715,6 +1733,7 @@ jobs:
               assert 'seconds per test run' in guide and 'seconds per compile unit' in guide
               assert 'work time' in guide and 'runner wait' in guide and 'executed the same jobs' in guide
               # The test rate is the seconds of the step that ran the tests, never the whole job, and a job that overlaps another counts in full.
+              assert 'more than 15 s' in guide and 'to the second' in guide, 'the 15 s floor and its reason'
               assert 'seconds of the step that ran the tests' in guide and '`Isolated tests`' in guide and 'downloads' in guide
               assert 'counts once' not in guide
               assert 'used to return nothing' not in guide and 'warm test shards and Doctests' not in guide
