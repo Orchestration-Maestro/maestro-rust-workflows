@@ -53,6 +53,8 @@ jobs:
           echo "$bin" >> "$GITHUB_PATH"
       - name: Content cache identity
         id: cache-identity
+        env:
+          CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           python3 - <<'PYTHON'
           import hashlib
@@ -67,7 +69,8 @@ jobs:
               toolchain = next((path.read_text(encoding='utf-8') for path in map(pathlib.Path, ['rust-toolchain.toml', 'rust-toolchain']) if path.is_file()), '')
               identity = [os.environ['RUNNER_OS'], os.environ['RUNNER_ARCH'], hashlib.sha256(lock.read_bytes()).hexdigest(), tools, toolchain]
               digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':'), sort_keys=True).encode('utf-8')).hexdigest()
-              values = {'enabled': 'true', 'key': f'maestro-compile-v1-{digest}-content'}
+              writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
+              values = {'enabled': 'true', 'key': f'maestro-compile-v1-{digest}-content', 'writer': str(writer).lower()}
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(''.join(f'{name}={value}\n' for name, value in values.items()))
           PYTHON
@@ -87,25 +90,37 @@ jobs:
         if: steps.cache-identity.outputs.enabled == 'true'
         env:
           CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
+          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         run: |
           version=0.18.0
-          platform=x86_64-unknown-linux-musl
-          digest=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89
+          case "$(uname -s):$(uname -m)" in
+            Linux:x86_64) platform=x86_64-unknown-linux-musl digest=45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89 ;;
+            Linux:aarch64) platform=aarch64-unknown-linux-musl digest=2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a ;;
+            Darwin:arm64) platform=aarch64-apple-darwin digest=308184519b646f5125289e8515b36f6ca65a13a041923994aebe702348674e8e ;;
+            *) echo 'Unsupported compile cache runner host' >&2; exit 1 ;;
+          esac
           name=sccache-v$version-$platform
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-sccache.XXXXXX")
           archive=$(mktemp)
           curl --fail --retry 3 --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
-          printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+          python3 - "$digest" "$archive" <<'PYTHON'
+          import hashlib
+          import sys
+          with open(sys.argv[2], 'rb') as source:
+              raise SystemExit(hashlib.file_digest(source, 'sha256').hexdigest() != sys.argv[1])
+          PYTHON
           tar -xzf "$archive" -C "$bin" --strip-components=1 "$name/sccache"
           rm "$archive"
+          test -x "$bin/sccache"
           echo "$bin" >> "$GITHUB_PATH"
-          if [ "$CACHE_RESTORE_OUTCOME" = failure ]; then
-            rm -rf "$RUNNER_TEMP/maestro-sccache"
-            echo 'Content cache restore failed; using an empty local cache'
+          if [ "$CACHE_RESTORE_OUTCOME" = failure ] || { [ "$CACHE_RESTORE_MATCHED" != true ] && [ "$CACHE_RESTORE_MATCHED" != false ]; }; then
+            rm -rf "$RUNNER_TEMP/maestro-sccache" "$HOME/.local/share/mise"
+            echo 'Compile cache snapshot restore failed; using an empty local cache'
           fi
           export SCCACHE_DIR="$RUNNER_TEMP/maestro-sccache" SCCACHE_CACHE_SIZE=1073741824
-          export SCCACHE_LOCAL_RW_MODE=READ_WRITE SCCACHE_GHA_ENABLED=false CARGO_INCREMENTAL=0 SCCACHE_SKIP_CACHE_CHECK=true
-          { echo CARGO_BUILD_RUSTC_WRAPPER=sccache; env | grep -E '^(SCCACHE_(DIR|CACHE_SIZE|LOCAL_RW_MODE|GHA_ENABLED|SKIP_CACHE_CHECK)|CARGO_INCREMENTAL)='; } >> "$GITHUB_ENV"
+          export SCCACHE_LOCAL_RW_MODE=READ_WRITE SCCACHE_GHA_ENABLED=false CARGO_INCREMENTAL=0
+          export SCCACHE_SKIP_CACHE_CHECK=true SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-error.log" SCCACHE_LOG=debug
+          { echo CARGO_BUILD_RUSTC_WRAPPER=sccache; env | grep -E '^(SCCACHE_(DIR|CACHE_SIZE|LOCAL_RW_MODE|GHA_ENABLED|SKIP_CACHE_CHECK|ERROR_LOG|LOG)|CARGO_INCREMENTAL)='; } >> "$GITHUB_ENV"
           PATH="$bin:$PATH" sccache --start-server
       - name: Caller tools
         run: mise install
@@ -115,13 +130,38 @@ jobs:
         id: cache-seal
         if: steps.cache-identity.outputs.enabled == 'true'
         run: |
-          if sccache --stop-server && [ -n "$(ls -A "$SCCACHE_DIR")" ]; then
-            echo eligible=true >> "$GITHUB_OUTPUT"
-          else
-            echo 'Content cache save skipped: server stop failed or cache empty'
+          if ! sccache --stop-server; then
+            echo 'Compile cache snapshot save skipped: server stop failed'
+            exit 0
           fi
+          python3 - <<'PYTHON'
+          import os
+          import pathlib
+          import stat
+          files = size = 0
+          try:
+              def failed(error):
+                  raise error
+              for directory, _, names in os.walk(os.environ['SCCACHE_DIR'], onerror=failed):
+                  for name in names:
+                      metadata = pathlib.Path(directory, name).lstat()
+                      if stat.S_ISREG(metadata.st_mode):
+                          files += 1
+                          size += metadata.st_size
+          except OSError:
+              print('Compile cache snapshot save skipped: cache inspection failed')
+          else:
+              print(f'Compile cache snapshot: {files} files, {size} bytes')
+              if not files or not size:
+                  print('Compile cache snapshot save skipped: empty cache')
+              elif size > 1073741824:
+                  print('Compile cache snapshot save skipped: exceeds 1073741824 bytes')
+              else:
+                  with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+                      output.write('eligible=true\n')
+          PYTHON
       - name: Save content cache
-        if: steps.cache-identity.outputs.enabled == 'true' && steps.cache-restore.outputs.cache-hit != 'true' && steps.cache-seal.outputs.eligible == 'true'
+        if: steps.cache-identity.outputs.enabled == 'true' && steps.cache-identity.outputs.writer == 'true' && steps.cache-restore.outputs.cache-hit != 'true' && steps.cache-seal.outputs.eligible == 'true'
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
