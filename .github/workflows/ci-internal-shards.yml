@@ -783,7 +783,7 @@ jobs:
 
           def each_judging_predicate_has_one_owner():
               # The jobs that ran, the seconds of a step that ran and a step reached to success are each decided once; every other reader calls the owner.
-              assert guards.count('seconds(job) is') == 1, 'executed() owns the jobs that ran'
+              assert "seconds(job) is None" not in guards and guards.count("job.get('conclusion') != 'cancelled'") == 1, 'executed() owns the jobs that ran'
               assert guards.count("stamp(step['completed_at'])") == 1, 'step_seconds() owns the seconds of a step that ran'
               assert "== 'Compile cache hit-rate floor'" not in guards and "reached(job, 'Compile cache hit-rate floor')" in guards, 'reached() owns the steps that succeeded'
 
@@ -879,7 +879,7 @@ jobs:
                                conclusion='cancelled' if identifier == 7 and name in cancelled else 'success')
                            for index, name in enumerate(names)]
                   for index, took in enumerate(shard_minutes):
-                      found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index))
+                      found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index, steps=[('Tests', took * factor * 60)]))
                       logs[base + 100 + index] = (shard_logs or {}).get((identifier, index), 'Summary [1.0s] 1 test run\n')
                   found += [job(extra, 5, identifier=base + 200 + index) for index, extra in enumerate((extra_jobs or {}).get(identifier, []))]
                   declaration = next(item for item in found if item['name'] == 'Caller declaration') if 'Caller declaration' in names else None
