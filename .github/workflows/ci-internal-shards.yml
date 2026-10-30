@@ -838,7 +838,8 @@ jobs:
               """Serves the REST calls judge makes for run 7, its earlier runs and the stored ratchet; `newer` runs finish after run 7.
 
               `pace` maps a run to (shard duration factor, test runs per shard) and `build` to (build duration factor, compile units, cache hit rate);
-              `steps` maps (run, job name) to its (step, seconds) pairs; `extra_jobs` maps a run to the names of jobs it ran besides the usual ones.
+              `steps` maps (run, job name) to its (step, seconds) pairs; `extra_jobs` maps a run to the names of jobs it ran besides the usual ones;
+              `floor` maps a run to the cache-floor warning of each named job.
               Runs after run 7 are five times slower per unit."""
               ratchet = {} if ratchet is None else ratchet
               counts = collections.Counter()
@@ -853,7 +854,8 @@ jobs:
                   factor, _ = pace.get(identifier, (1, 100))
                   built, _, _ = build.get(identifier, (1, 600, 99.5))
                   found = [job(name, 5 * built if name == 'Build test archive' else 5, identifier=base + index,
-                               steps=(steps or {}).get((identifier, name), [('Set up job', 5), ('Build docs', 240)] if name == 'Docs' else []))
+                               steps=(steps or {}).get((identifier, name), [('Set up job', 5), ('Build docs', 240)] if name == 'Docs' else [])
+                               + ([('Compile cache hit-rate floor', 1)] if name in (floor or {}).get(identifier, {}) else []))
                            for index, name in enumerate(names)]
                   for index, took in enumerate(shard_minutes):
                       found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index))
@@ -893,8 +895,8 @@ jobs:
                       if index < len(names) and names[index] == 'Build test archive':
                           _, compiles, hit_rate = build.get(identifier, (1, 600, 99.5))
                           notes += work_units(f'compiles: {compiles}; hit-rate: {hit_rate}')
-                          if (floor or {}).get(identifier):
-                              notes.append({'title': 'Compile cache floor', 'message': floor[identifier], 'annotation_level': 'warning'})
+                      if index < len(names) and names[index] in (floor or {}).get(identifier, {}):
+                          notes.append({'title': 'Compile cache floor', 'message': floor[identifier][names[index]], 'annotation_level': 'warning'})
                       return json.dumps(notes)
                   if re.search(r'actions/workflows/', text):
                       raise AssertionError('a required workflow is not listed under its own id: ' + text)
@@ -1109,24 +1111,33 @@ jobs:
           judge_reads_only_the_window_of_earlier_runs()
           print('PASS judge_reads_only_the_window_of_earlier_runs')
 
-          def a_cache_floor_warning_in_the_archive_build_files_or_updates_one_issue():
-              warning = "Compile cache hit rate 40.00% is below the 90% floor: cold snapshot: the restored snapshot k holds too few of this build's objects"
-              jobs = [job('Docs', 5, identifier=2), job('Build test archive', 12, identifier=1)]
-              notes = {1: [{'title': 'Runner hardware', 'message': 'runner-band: x'},
-                           {'title': 'Compile cache floor', 'message': warning, 'annotation_level': 'warning'}]}
+          def a_cache_floor_warning_in_any_compile_job_files_or_updates_one_issue():
+              cold = "Compile cache hit rate 40.00% is below the 90% floor in shape tests-coverage: cold snapshot: the restored snapshot k holds too few of this build's objects"
+              unseeded = 'Compile cache hit rate 0.00% is below the 90% floor in shape docs: no writer: no snapshot of this job exists while others do'
+              floor_step = [('Compile cache hit-rate floor', 1)]
+              jobs = [job('Docs', 5, identifier=2, steps=floor_step), job('Build test archive', 12, identifier=1, steps=floor_step),
+                      job('Format and lint', 4, identifier=3, steps=floor_step), job('Caller declaration', 1, identifier=4)]
+              notes = {1: [{'title': 'Runner hardware', 'message': 'runner-band: x'}, {'title': 'Compile cache floor', 'message': cold, 'annotation_level': 'warning'}],
+                       2: [{'title': 'Compile cache floor', 'message': unseeded, 'annotation_level': 'warning'}], 3: [], 4: []}
               finding = judging['cache_finding'](run_of(7, 39), jobs, lambda item: notes.get(item['id'], []))
               assert finding['title'] == 'Compile cache below its hit-rate floor' and finding['comment'], finding
-              assert 'Run: https://example.test/runs/7' in finding['body'] and 'Rust CI (merge_group, main)' in finding['body'] and warning in finding['body'], finding
-              assert judging['cache_finding'](run_of(7, 39), jobs, lambda item: notes[1][:1]) is None
-              assert judging['cache_finding'](run_of(7, 39), jobs[:1], lambda item: notes[1]) is None
-              gh, _ = fake_repository(floor={7: warning}, ratchet={})
-              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-              assert [item['title'] for item in findings] == ['Compile cache below its hit-rate floor'], findings
-              gh, _ = fake_repository(floor={7: warning}, event='pull_request', ratchet={})
+              assert 'Run: https://example.test/runs/7' in finding['body'] and 'Rust CI (merge_group, main)' in finding['body'], finding
+              assert f'- Build test archive: {cold}\n' in finding['body'] and f'- Docs: {unseeded}\n' in finding['body'], finding
+              assert 'Format and lint' not in finding['body'] and 'Caller declaration' not in finding['body'], finding
+              # Only jobs whose floor step ran are read; none with a quiet floor files anything.
+              read = []
+              assert judging['cache_finding'](run_of(7, 39), jobs, lambda item: read.append(item['id']) or []) is None and read == [2, 1, 3], read
+              assert judging['cache_finding'](run_of(7, 39), jobs[3:], lambda item: notes[2]) is None
+              for event in ('merge_group', 'pull_request'):
+                  gh, _ = fake_repository(floor={7: {'Build test archive': cold, 'Docs': unseeded}}, event=event, ratchet={})
+                  findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+                  assert [item['title'] for item in findings] == ['Compile cache below its hit-rate floor'], (event, findings)
+                  assert cold in findings[0]['body'] and unseeded in findings[0]['body'], (event, findings)
+              gh, _ = fake_repository(event='pull_request', ratchet={})
               assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
 
-          a_cache_floor_warning_in_the_archive_build_files_or_updates_one_issue()
-          print('PASS a_cache_floor_warning_in_the_archive_build_files_or_updates_one_issue')
+          a_cache_floor_warning_in_any_compile_job_files_or_updates_one_issue()
+          print('PASS a_cache_floor_warning_in_any_compile_job_files_or_updates_one_issue')
 
           SLOW_LOG = '\n'.join([
               '2026-10-30T02:48:22.6648967Z         SLOW [> 30.000s] (─────────) maestro-tooling::integration browser_author_build::repairs',
@@ -1415,7 +1426,7 @@ jobs:
           the_manual_accept_path_is_gone()
           print('PASS the_manual_accept_path_is_gone')
 
-          def run_cache_floor(shape, stats, matched, listing, namespace='maestro-compile-v1-'):
+          def run_cache_floor(shape, stats, matched, listing, namespace='maestro-compile-v1-', seeder=r'-tests-\d+-'):
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   (directory / 'bin').mkdir()
@@ -1429,21 +1440,21 @@ jobs:
                   return execute('Compile cache hit-rate floor', directory, {
                       'PATH': f"{directory / 'bin'}:{os.environ['PATH']}", 'RUNNER_TEMP': str(directory),
                       'GITHUB_REPOSITORY': 'owner/repo', 'GH_TOKEN': 'unused', 'CACHE_SHAPE': shape,
-                      'CACHE_MATCHED_KEY': matched, 'CACHE_PREFIX': namespace + 'aaa-', 'CACHE_NAMESPACE': namespace, 'CACHE_SEEDER': '-tests-'})
+                      'CACHE_MATCHED_KEY': matched, 'CACHE_PREFIX': namespace + 'aaa-', 'CACHE_NAMESPACE': namespace, 'CACHE_SEEDER': seeder})
 
           def stats_of(executed, rate):
               return '\n'.join([f'Compile requests                     {executed + 3}', f'Compile requests executed            {executed}',
                                 'Cache hits                           605', 'Cache misses                           0',
                                 f'Cache hits rate                   {rate:.2f} %', f'Cache hits rate (Rust)            {rate:.2f} %', ''])
 
-          def a_warm_build_below_the_cache_floor_warns_and_names_its_cause():
+          def a_build_below_the_cache_floor_warns_and_names_its_shape_and_cause():
               prefix = 'maestro-compile-v1-aaa-'
               for rate in (100, 99.67, 90):
                   result = run_cache_floor('tests-coverage', stats_of(610, rate), prefix + '1-tests', [])
                   assert result.returncode == 0 and f'Compile cache hit rate {rate:.2f}% (floor 90%)' in result.stdout, result.stdout + result.stderr
               cases = [('tests-coverage', 40, prefix + '1-tests', [prefix + '1-tests'], 'cold snapshot'),
                        ('tests-coverage', 0, '', ['maestro-compile-v1-bbb-1-1-tests-0-abc', 'maestro-compile-v1-ccc-1-1-docs-0-abc'], 'key change'),
-                       ('tests-coverage', 0, '', ['maestro-compile-v1-ccc-1-1-docs-0-abc'], 'eviction'),
+                       ('tests-coverage', 0, '', ['maestro-compile-v1-ccc-1-1-docs-0-abc'], 'no writer'),
                        ('tests-coverage', 0, '', [], 'eviction'),
                        ('tests-coverage', 0, '', None, 'cache list is unavailable'),
                        ('tests-coverage', 89.99, prefix + '1-tests', [], 'cold snapshot')]
@@ -1452,18 +1463,27 @@ jobs:
                   # A merge group never fails on the cache: its own change can invalidate it, and only a default-branch push seeds it again.
                   assert result.returncode == 0, (cause, result.stdout + result.stderr)
                   output = result.stdout + result.stderr
-                  assert f'::warning title=Compile cache floor::Compile cache hit rate {rate:.2f}% is below the 90% floor: {cause}' in output or (
+                  assert f'::warning title=Compile cache floor::Compile cache hit rate {rate:.2f}% is below the 90% floor in shape {shape}: {cause}' in output or (
                       cause == 'cache list is unavailable' and 'no snapshot restored' in output and cause in output), (cause, output)
                   assert '::error' not in output, (cause, output)
+              # Every shape a default-branch push seeds is judged, not only the coverage snapshot: five of them sat at 0% for four days.
+              for job, shape in [('tests', 'tests-plain'), ('quality', 'quality'), ('docs', 'docs'), ('checks', 'checks'), ('browser', 'browser'),
+                                 ('browser-tests', 'browser-tests'), ('test-prepare', 'test-prepare'), ('targets', 'targets-clippy-aarch64-unknown-linux-gnu')]:
+                  seeder = rf'-{job}-\d+-'
+                  result = run_cache_floor(shape, stats_of(610, 100), prefix + '1-' + job, [], seeder=seeder)
+                  assert result.returncode == 0 and 'Compile cache hit rate 100.00% (floor 90%)' in result.stdout, (shape, result.stdout + result.stderr)
+                  other = f'maestro-compile-v1-bbb-1-1-{job}-0-abc'
+                  for listing, cause in [([other], 'key change'), (['maestro-compile-v1-ccc-1-1-other-0-abc'], 'no writer'), ([], 'eviction')]:
+                      result = run_cache_floor(shape, stats_of(610, 0), '', listing, seeder=seeder)
+                      assert f'is below the 90% floor in shape {shape}: {cause}' in result.stdout, (shape, cause, result.stdout + result.stderr)
               # The key layout belongs to the identity step: a bumped namespace is read from it, not assumed.
               result = run_cache_floor('tests-coverage', stats_of(610, 0), '', ['maestro-compile-v2-bbb-1-1-tests-0-abc'], 'maestro-compile-v2-')
-              assert 'floor: key change' in result.stdout, result.stdout + result.stderr
-              for shape, executed in [('tests-plain', 610), ('tests-coverage', 0)]:
-                  result = run_cache_floor(shape, stats_of(executed, 0), '', [])
-                  assert result.returncode == 0 and 'not judged' in result.stdout, (shape, result.stdout + result.stderr)
+              assert 'floor in shape tests-coverage: key change' in result.stdout, result.stdout + result.stderr
+              result = run_cache_floor('tests-coverage', stats_of(0, 0), '', [])
+              assert result.returncode == 0 and 'not judged: no cacheable compilation ran' in result.stdout, result.stdout + result.stderr
 
-          a_warm_build_below_the_cache_floor_warns_and_names_its_cause()
-          print('PASS a_warm_build_below_the_cache_floor_warns_and_names_its_cause')
+          a_build_below_the_cache_floor_warns_and_names_its_shape_and_cause()
+          print('PASS a_build_below_the_cache_floor_warns_and_names_its_shape_and_cause')
 
           def the_shards_and_the_archive_build_report_their_work_units():
               with tempfile.TemporaryDirectory() as temporary:
@@ -1493,27 +1513,38 @@ jobs:
           the_shards_and_the_archive_build_report_their_work_units()
           print('PASS the_shards_and_the_archive_build_report_their_work_units')
 
-          def the_cache_floor_runs_after_the_statistics_in_the_build_job_only():
+          def every_job_that_saves_a_snapshot_judges_its_cache_floor_after_its_statistics():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+              savers = [name for name, text in jobs.items() if '- name: Save compile cache\n' in text]
+              assert savers == ['quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests'], savers
               holders = [name for name, text in jobs.items() if '- name: Compile cache hit-rate floor\n' in text]
-              assert holders == ['test-build'], holders
-              text = jobs['test-build']
-              assert text.index('- name: Compile cache statistics') < text.index('- name: Compile cache hit-rate floor')
-              step = text.split('- name: Compile cache hit-rate floor\n', 1)[1].split('\n      - name: ', 1)[0]
+              assert holders == savers, holders
+              for name in holders + ['doctests']:
+                  text = jobs[name]
+                  assert text.index('- name: Compile cache statistics') < text.index('- name: Save compile cache') if name != 'doctests' else True
+                  assert 'permissions:\n      contents: read\n      actions: read\n' in text.split('steps:', 1)[0], name
+                  if name != 'doctests':
+                      assert text.index('- name: Save compile cache') < text.index('- name: Compile cache hit-rate floor'), name
+              steps = {name: jobs[name].split('- name: Compile cache hit-rate floor\n', 1)[1].split('\n      - name: ', 1)[0] for name in holders}
+              step = steps['quality']
               for line in ['CACHE_SHAPE: $' + '{{ steps.cache-identity.outputs.shape }}',
                            'CACHE_MATCHED_KEY: $' + '{{ steps.cache-restore.outputs.cache-matched-key }}',
                            'CACHE_PREFIX: $' + '{{ steps.cache-identity.outputs.prefix }}',
                            'CACHE_NAMESPACE: $' + '{{ steps.cache-identity.outputs.namespace }}',
                            'CACHE_SEEDER: $' + '{{ steps.cache-identity.outputs.seeder }}',
-                           "if: job.status == 'success' && steps.cache-statistics.outcome == 'success'"]:
+                           "if: &sccache-floor-condition job.status == 'success' && steps.cache-statistics.outcome == 'success'",
+                           'env: &sccache-floor-env', 'run: &sccache-floor |']:
                   assert line in step, line
-              assert 'permissions:\n      contents: read\n      actions: read\n' in text.split('steps:', 1)[0]
+              # One owner of the step: the other jobs only alias it, so no shape is judged by a copy.
+              for name in holders[1:]:
+                  assert steps[name] == '        if: *sccache-floor-condition\n        env: *sccache-floor-env\n        run: *sccache-floor', (name, steps[name])
               assert "output.write(f'prefix={prefix}\\nkey={prefix}{suffix}\\nwriter={str(writer).lower()}\\nshape={shape}\\nnamespace={namespace}\\nseeder={seeder}\\n')" in workflow
-              # The floor reads the key layout from the identity step's outputs and spells none of it.
-              assert 'maestro-compile-v1-' not in step and "'-tests-'" not in step, step
+              assert "seeder = '-' + re.escape(os.environ['CACHE_JOB']) + r'-\\d+-'" in workflow
+              # The floor reads the key layout from the identity step's outputs, spells none of it, and judges every shape.
+              assert 'maestro-compile-v1-' not in step and "'-tests-'" not in step and 'tests-coverage' not in step, step
 
-          the_cache_floor_runs_after_the_statistics_in_the_build_job_only()
-          print('PASS the_cache_floor_runs_after_the_statistics_in_the_build_job_only')
+          every_job_that_saves_a_snapshot_judges_its_cache_floor_after_its_statistics()
+          print('PASS every_job_that_saves_a_snapshot_judges_its_cache_floor_after_its_statistics')
 
           def required_checks_and_documented_defaults_stay_pinned():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=guards, text=True))
@@ -1556,6 +1587,12 @@ jobs:
                             'Escalation: jobs or steps changed without matching work', 'Escalation: compile cache hit rate outside its usual range',
                             'Escalation: test selection share outside its usual range', 'Escalation: runner wait over its median']:
                   assert title in guide, title
+              floor = guide.split('### Compile-cache hit-rate floor', 1)[1].split('### Selection check', 1)[0].lower()
+              assert 'by design' not in floor and '0%' not in floor, 'a seeded shape is never at 0% by design'
+              for shape in ['format and lint', 'docs', 'doctests', 'build test archive', 'browser', 'target', 'tests-plain', 'tests-coverage', 'pull-request']:
+                  assert shape in floor, shape
+              for cause in ['cold snapshot', 'key change', 'no writer', 'eviction']:
+                  assert cause in floor, cause
 
           required_checks_and_documented_defaults_stay_pinned()
           print('PASS required_checks_and_documented_defaults_stay_pinned')
