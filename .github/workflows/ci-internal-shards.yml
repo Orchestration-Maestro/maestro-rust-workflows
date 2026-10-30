@@ -839,7 +839,7 @@ jobs:
 
               `pace` maps a run to (shard duration factor, test runs per shard) and `build` to (build duration factor, compile units, cache hit rate);
               `steps` maps (run, job name) to its (step, seconds) pairs; `extra_jobs` maps a run to the names of jobs it ran besides the usual ones;
-              `floor` maps a run to the cache-floor warning of each named job.
+              `floor` maps a run to the cache-floor warning of each named job (every run then ran the floor step in those jobs).
               Runs after run 7 are five times slower per unit."""
               ratchet = {} if ratchet is None else ratchet
               counts = collections.Counter()
@@ -855,7 +855,7 @@ jobs:
                   built, _, _ = build.get(identifier, (1, 600, 99.5))
                   found = [job(name, 5 * built if name == 'Build test archive' else 5, identifier=base + index,
                                steps=(steps or {}).get((identifier, name), [('Set up job', 5), ('Build docs', 240)] if name == 'Docs' else [])
-                               + ([('Compile cache hit-rate floor', 1)] if name in (floor or {}).get(identifier, {}) else []))
+                               + ([('Compile cache hit-rate floor', 1)] if name in {judged for named in (floor or {}).values() for judged in named} else []))
                            for index, name in enumerate(names)]
                   for index, took in enumerate(shard_minutes):
                       found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index))
@@ -1537,7 +1537,7 @@ jobs:
                   assert line in step, line
               # One owner of the step: the other jobs only alias it, so no shape is judged by a copy.
               for name in holders[1:]:
-                  assert steps[name] == '        if: *sccache-floor-condition\n        env: *sccache-floor-env\n        run: *sccache-floor', (name, steps[name])
+                  assert steps[name].rstrip('\n') == '        if: *sccache-floor-condition\n        env: *sccache-floor-env\n        run: *sccache-floor', (name, steps[name])
               assert "output.write(f'prefix={prefix}\\nkey={prefix}{suffix}\\nwriter={str(writer).lower()}\\nshape={shape}\\nnamespace={namespace}\\nseeder={seeder}\\n')" in workflow
               assert "seeder = '-' + re.escape(os.environ['CACHE_JOB']) + r'-\\d+-'" in workflow
               # The floor reads the key layout from the identity step's outputs, spells none of it, and judges every shape.
