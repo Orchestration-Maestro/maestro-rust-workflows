@@ -205,7 +205,16 @@ jobs:
                           return found[1]
               return 'unknown'
 
-          def budget_finding(run, jobs, prior, jobs_of, band):
+          def baseline_seconds(durations):
+              raise NotImplementedError('baseline_seconds')
+
+          def cache_finding(run, jobs, annotations_of):
+              raise NotImplementedError('cache_finding')
+
+          def accept_ratchet(repository, gh, level, seconds, reason, run_id):
+              raise NotImplementedError('accept_ratchet')
+
+          def budget_finding(run, jobs, prior, jobs_of, band, ratchet=None):
               """A run more than 10% over the ratchet of earlier successful runs of its workflow, event and runner band."""
               baseline = ratchet_seconds([wall(earlier) for earlier in prior])
               if not watched(run) or baseline is None:
