@@ -258,7 +258,7 @@ jobs:
               body = finding['body']
               assert 'Run: https://example.test/runs/7' in body, body
               assert 'Rust CI (merge_group, main) took 33.3 min against a baseline of 30.0 min (+11%, limit +10%) on runner band amd-epyc-7763-4c.' in body, body
-              assert 'Baseline runs (previous successful runs of the same workflow and event):' in body, body
+              assert 'Latest baseline runs (successful, same workflow, event and runner band):' in body, body
               for n in range(1, 6):
                   assert f'- https://example.test/runs/{n}' in body, body
               grown = [line for line in body.splitlines() if line.startswith('- ') and 'min (' in line]

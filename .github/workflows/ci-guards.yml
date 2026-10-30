@@ -188,11 +188,28 @@ jobs:
           def job_times(jobs):
               return {job['name']: seconds(job) for job in jobs if seconds(job) is not None and job.get('conclusion') != 'cancelled'}
 
-          def budget_finding(run, jobs, prior, jobs_of):
-              """A run more than 10% over the median wall time of the previous five successful runs of its workflow and event."""
-              if not watched(run) or len(prior) < 3:
+          def ratchet_seconds(durations):
+              """The lowest median of five consecutive runs so far, so a staircase of small regressions cannot raise the line; None below three runs."""
+              lowest = None
+              for end in range(3, len(durations) + 1):
+                  median = statistics.median(durations[max(0, end - 5):end])
+                  lowest = median if lowest is None else min(lowest, median)
+              return lowest
+
+          def band_of(jobs, annotations_of):
+              """The runner hardware label of the run's slowest labelled job, the runner that sets its pace."""
+              for job in sorted((job for job in jobs if seconds(job) is not None), key=seconds, reverse=True)[:3]:
+                  for note in annotations_of(job):
+                      found = re.search(r'runner-band: (\S+)', f"{note.get('title') or ''} {note.get('message') or ''}")
+                      if found:
+                          return found[1]
+              return 'unknown'
+
+          def budget_finding(run, jobs, prior, jobs_of, band):
+              """A run more than 10% over the ratchet of earlier successful runs of its workflow, event and runner band."""
+              baseline = ratchet_seconds([wall(earlier) for earlier in prior])
+              if not watched(run) or baseline is None:
                   return None
-              baseline = statistics.median(wall(earlier) for earlier in prior[-5:])
               took = wall(run)
               if took <= baseline * 1.10:
                   return None
@@ -206,9 +223,9 @@ jobs:
               runs = '\n'.join(f"- {earlier['html_url']}" for earlier in prior[-5:])
               return {'title': f"CI run slower than its baseline: run {run['id']}",
                       'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) took {took / 60:.1f} min against a baseline "
-                              f"of {baseline / 60:.1f} min (+{(took / baseline - 1) * 100:.0f}%, limit +10%).\n\n"
-                              f"Baseline runs (previous successful runs of the same workflow and event):\n{runs}\n\n"
-                              f"Jobs that grew most (now against their mean in the baseline runs):\n{listed}\n"}
+                              f"of {baseline / 60:.1f} min (+{(took / baseline - 1) * 100:.0f}%, limit +10%) on runner band {band}.\n\n"
+                              f"Latest baseline runs (successful, same workflow, event and runner band):\n{runs}\n\n"
+                              f"Jobs that grew most (now against their mean in those runs):\n{listed}\n"}
 
           def selection_of(log):
               """Selected and total test packages and the full-suite trigger, as the selection step logs them."""
@@ -302,13 +319,18 @@ jobs:
               """Every finding for one completed run."""
               def api(path):
                   return json.loads(gh('api', f'repos/{repository}/{path}'))
+              known = {}
               def jobs_of(identifier):
-                  pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repository}/actions/runs/{identifier}/jobs?per_page=100'))
-                  return [job for page in pages for job in page['jobs']]
+                  if identifier not in known:
+                      pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repository}/actions/runs/{identifier}/jobs?per_page=100'))
+                      known[identifier] = [job for page in pages for job in page['jobs']]
+                  return known[identifier]
               def runs_like(run, status):
                   # A required workflow is not listed under its own id, so list the repository's runs and keep this workflow's.
                   listed = api(f"actions/runs?event={run['event']}&status={status}&per_page=100")['workflow_runs']
                   return [other for other in listed if other['workflow_id'] == run['workflow_id']]
+              def annotations_of(job):
+                  return json.loads(gh('api', f"repos/{repository}/check-runs/{job['id']}/annotations"))
               def log_of(job):
                   return gh('api', '--allow-escape-sequences', f"repos/{repository}/actions/jobs/{job['id']}/logs")
               def shard_slow(jobs):
@@ -322,9 +344,14 @@ jobs:
               if run['status'] != 'completed' or run['conclusion'] == 'cancelled':
                   return []
               jobs = jobs_of(run_id)
-              prior = sorted((other for other in runs_like(run, 'success') if watched(other) and other['run_started_at'] < run['run_started_at']),
-                             key=lambda other: other['run_started_at'])[-5:]
-              findings = [budget_finding(run, jobs, prior, jobs_of)]
+              candidates = sorted((other for other in runs_like(run, 'success') if watched(other) and other['run_started_at'] < run['run_started_at']),
+                                  key=lambda other: other['run_started_at'])[-20:]
+              prior, band = [], None
+              # No median of earlier runs is below the fastest one, so a run within 10% of it needs no hardware lookup.
+              if len(candidates) >= 3 and wall(run) > 1.10 * min(wall(other) for other in candidates):
+                  band = band_of(jobs, annotations_of)
+                  prior = [other for other in candidates if band_of(jobs_of(other['id']), annotations_of) == band]
+              findings = [budget_finding(run, jobs, prior, jobs_of, band)]
               on_main = run['event'] in ('merge_group', 'push')
               if on_main:
                   findings.append(required_finding(run, jobs, settings['required']))

@@ -950,19 +950,42 @@ read the run fails instead of passing.
 
 ### Merge-run time budget
 
-There is no fixed minutes budget. A run that has finished is compared with its
-own history: the median wall time of the previous five successful runs of the
-same workflow and event, plus 10%. A run over that line files "CI run slower
-than its baseline: run N" at once. It names the run, links the baseline runs and
-lists the six jobs that grew most against their mean in those runs. Merge
-groups, pull requests and pushes to `main` are judged; CodeQL and every other
-run are not, because they gate nothing. Fewer than three earlier successful
-runs means no baseline and no issue. Using the median means one unusually fast
-run does not lower the line. The same rule runs as a local watcher on Maestro.
+There is no fixed minutes budget. A run that has finished is compared with the
+history of its own workflow, event and runner band, and a run more than 10%
+over its baseline files "CI run slower than its baseline: run N" at once. The
+issue names the run, links the latest baseline runs and lists the six jobs that
+grew most against their mean in those runs.
+
+Hosted Linux runners come in two speed bands: the same work, cache and image
+ran 1.45 to 1.6 times slower on some runners (maestro-rust-workflows runs
+40990998136 and 40931459907). Every Linux job therefore starts with a `Runner
+hardware` step that prints the CPU model and core count, adds a notice
+annotation and appends the line to the job summary, with a stable label:
+
+```text
+Runner hardware: AMD EPYC 7763 64-Core Processor, 4 cores (runner-band: amd-epyc-7763-64-core-4c)
+```
+
+A run's runner band is the label of its slowest labelled job, which sets the
+run's pace. The guard reads it from the annotation (`runner-band: <label>`); a
+run with no label is in the band `unknown`. Among the last 20 earlier successful
+runs of the same workflow and event, only those in the same band count.
+
+The baseline is the median wall time of the previous five successful runs in
+the band, held down by a ratchet: it is the lowest such median seen in that
+history, so a staircase of small regressions cannot raise the line. The limit is
+the baseline plus 10%. Fewer than three earlier runs in the band means no
+baseline and no issue. Merge groups, pull requests and pushes to `main` are
+judged; CodeQL and every other run are not, because they gate nothing. The
+history is the 20 runs the guard reads, so after a lasting change in the runners
+the ratchet follows once the older runs have left that window.
+
 Source: Maestro merge-group runs 40990557025 and 40990555729 took 39.3 and 39.8
 minutes with 16 shards, so at that level the line sits near 43 minutes; it
-moves down by itself as the 32-shard change makes runs shorter. To respond, open
-the run link, start from the job that grew most and fix its cause.
+moves down by itself as the 32-shard change makes runs shorter. The guard looks
+up the band only when a run is more than 10% slower than the fastest of the 20,
+so healthy runs cost no extra calls. To respond, open the run link, start from
+the job that grew most and fix its cause.
 
 ### Compile-cache hit-rate floor
 
