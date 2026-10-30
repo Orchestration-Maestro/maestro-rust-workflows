@@ -993,6 +993,13 @@ anyone acting and files nothing. Two kinds of work are measured:
   prints `compiles: N; hit-rate: P`, the executed compile requests and the hit
   rate of the sccache statistics.
 
+The seconds are work time, never wall time: the union of the jobs' start-to-end
+intervals, so a job that overlaps another counts once, a gap with no job
+executing counts for nothing, and skipped and cancelled jobs are not work. A run
+is compared only with earlier runs that executed the same jobs (the same job
+names), so a run that added or lost a job has no like-for-like baseline until
+three runs have the new set.
+
 A run whose rate for either kind is more than 10% over its baseline is a
 regression and files "CI run slower than its baseline: run N" at once. The
 issue names the run and the band, gives each regressed rate against its baseline
@@ -1029,6 +1036,16 @@ A stored level has one writer: only the guard lowers it, when the recent median
 is lower, and nothing raises it; no input does. A lasting slowdown keeps firing
 until its cause is fixed. A deliberate new cost that is not natural growth needs
 its own owner decision first.
+
+The runner wait is its own measure: the run's wall time minus its work time,
+which is the time spent pending for a concurrency group or a runner, before the
+first job or between jobs. It is never CI slowness. It is out of pattern only
+when it is over the median wait of the like-for-like baseline runs by more than
+10% and by more than 2 minutes, and then the guard files "Escalation: runner
+wait over its median" (a capacity issue, never a regression). Source: Maestro
+run 41006271785 waited 36.8 min before its first job and worked 17.0 min, and
+the advisory run 41059668738 of this repository waited 16 s and 28 s longer for
+runners than before while its work time matched.
 
 Source: no rate is fixed in advance; the first baseline of a band is its first
 three runs. Maestro merge-group runs 40990557025 and 40990555729 took 39.3 and

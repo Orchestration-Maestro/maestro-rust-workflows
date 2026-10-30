@@ -213,17 +213,38 @@ jobs:
               else:
                   gh('issue', 'create', '-R', repository, '--title', RATCHET_TITLE, '--body-file', '-', body=body)
 
+          def executed(jobs):
+              """The jobs that ran: not skipped, not cancelled."""
+              return [job for job in jobs if seconds(job) is not None and job.get('conclusion') != 'cancelled']
+
           def job_set(jobs):
-              raise NotImplementedError('job_set')
+              """Names of the jobs that ran: a run is compared only with runs that executed the same ones."""
+              return {job['name'] for job in executed(jobs)}
 
           def work_of(jobs):
-              raise NotImplementedError('work_of')
+              """Seconds during which at least one job of a run was executing: the union of the jobs' start-to-end intervals."""
+              total, end = 0.0, None
+              for start, finish in sorted((stamp(job['started_at']), stamp(job['completed_at'])) for job in executed(jobs)):
+                  if end is None or start > end:
+                      total += (finish - start).total_seconds()
+                  elif finish > end:
+                      total += (finish - end).total_seconds()
+                  end = finish if end is None or finish > end else end
+              return total
 
           def wait_of(run, jobs):
-              raise NotImplementedError('wait_of')
+              """Seconds of a run's wall time with no job executing: the wait for runners, never CI work."""
+              return max((stamp(run['updated_at']) - stamp(run['run_started_at'])).total_seconds() - work_of(jobs), 0.0)
 
           def capacity_finding(run, band, wait, work, prior, waits):
-              raise NotImplementedError('capacity_finding')
+              """A runner wait over the median wait of like-for-like runs by more than 10% and by more than 2 minutes: capacity, not a regression."""
+              baseline = baseline_of(waits)
+              if not watched(run) or baseline is None or wait <= baseline * 1.10 or wait - baseline <= 120:
+                  return None
+              return escalation(run, 'runner wait over its median', [f"- {earlier['html_url']}" for earlier in prior],
+                                [f'- The run waited {wait / 60:.1f} min for runners against a median wait of {baseline / 60:.1f} min; '
+                                 'the limit is the median plus 10% and 2 minutes',
+                                 f'- Work time was {work / 60:.1f} min. The time guard judges work per unit, so this is runner capacity, not a regression'], band)
 
           def band_of(jobs, annotations_of):
               """The runner hardware label of the run's slowest labelled job, the runner that sets its pace."""
@@ -504,27 +525,35 @@ jobs:
               findings = []
               if watched(run):
                   band = band_of(jobs, annotations_of)
-                  prior = []
+                  ran = job_set(jobs)
+                  prior, like = [], []
                   for other in [other for other in earlier if watched(other)][:window]:
-                      if band_of(jobs_of(other['id']), annotations_of) == band:
+                      other_jobs = jobs_of(other['id'])
+                      if band_of(other_jobs, annotations_of) != band:
+                          continue
+                      if len(prior) < 5:
                           prior.append(other)
-                          if len(prior) == 5:
-                              break
+                      if len(like) < 5 and job_set(other_jobs) == ran:
+                          like.append(other)
+                      if len(prior) == 5 and len(like) == 5:
+                          break
                   prior.reverse()
+                  like.reverse()
                   measured = measures_of(jobs, annotations_of)
-                  prior_measured = [measures_of(jobs_of(other['id']), annotations_of) for other in prior]
+                  prior_measured = [measures_of(jobs_of(other['id']), annotations_of) for other in like]
                   medians = {kind: baseline_of([rates[kind] for rates in prior_measured if kind in rates]) for kind in WORK}
                   medians = {kind: value for kind, value in medians.items() if value is not None}
                   if medians:
                       number, levels = ratchet_issue(repository, gh)
                       kept = {kind: levels[level_of(run, band, kind)]['rate'] for kind in medians if level_of(run, band, kind) in levels}
-                      findings.append(rate_finding(run, measured, prior, prior_measured, band, kept))
+                      findings.append(rate_finding(run, measured, like, prior_measured, band, kept))
                       lowered = {level_of(run, band, kind): {'rate': value, 'reason': 'lowest median of the previous five successful runs on the level',
                                                              'run': run['id']}
                                  for kind, value in medians.items() if kind not in kept or value < kept[kind]}
                       if lowered:
                           save_ratchet(repository, gh, number, levels | lowered)
-                  findings.extend(range_findings(run, band, measured, prior, prior_measured))
+                  findings.extend(range_findings(run, band, measured, like, prior_measured))
+                  findings.append(capacity_finding(run, band, wait_of(run, jobs), work_of(jobs), like, [wait_of(other, jobs_of(other['id'])) for other in like]))
                   findings.append(shape_finding(run, band, jobs, prior, [jobs_of(other['id']) for other in prior]))
               on_main = run['event'] in ('merge_group', 'push')
               if on_main:
