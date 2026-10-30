@@ -420,3 +420,84 @@ jobs:
 
           a_pinned_job_that_did_not_run_is_reported()
           print('PASS a_pinned_job_that_did_not_run_is_reported')
+
+          def selection_rows(*shares):
+              return [(identifier, selected, 51, trigger) for identifier, (selected, trigger) in enumerate(shares, 1)]
+
+          def selection_is_read_from_the_declaration_log():
+              log = '\n'.join(['2026-10-30T02:00:00.1234567Z   print(f"Selected package count: {len(selected)}/{len(members)}")',
+                               '2026-10-30T02:00:01.1234567Z Full-suite fallback: shared input: Cargo.toml',
+                               '2026-10-30T02:00:02.1234567Z \x1b[36;1mSelected package count: 51/51\x1b[0m', ''])
+              assert judging['selection_of'](log) == (51, 51, 'shared input: Cargo.toml'), judging['selection_of'](log)
+              assert judging['selection_of']('Selected package count: 1/51\n') == (1, 51, None)
+              assert judging['selection_of']('no selection here\n') is None
+
+          selection_is_read_from_the_declaration_log()
+          print('PASS selection_is_read_from_the_declaration_log')
+
+          def a_sustained_wide_selection_files_an_issue():
+              wide = selection_rows(*[(51, 'baseline missing')] * 5)
+              finding = judging['selection_finding'](wide, 25.0, 5)
+              assert finding['title'] == 'Test selection share above its range', finding
+              assert 'median share of workspace test packages selected over the last 5 runs is 100%; the expected ceiling is 25%' in finding['body']
+              assert '- run 1: 51/51 packages (100%), full suite because baseline missing' in finding['body'], finding
+              narrow = selection_rows(*[(1, None)] * 4, (51, 'shared input: Cargo.toml'))
+              assert judging['selection_finding'](narrow, 25.0, 5) is None
+              assert judging['selection_finding'](wide[:4], 25.0, 5) is None
+              assert judging['selection_finding'](selection_rows((12, None), (12, None), (12, None)), 25.0, 3) is None
+              assert judging['selection_finding'](selection_rows((13, None), (13, None), (13, None)), 25.0, 3) is not None
+
+          a_sustained_wide_selection_files_an_issue()
+          print('PASS a_sustained_wide_selection_files_an_issue')
+
+          def judge_reports_a_sustained_wide_selection():
+              gh, _ = fake_repository(selections={identifier: (51, 51, 'baseline missing') for identifier in range(1, 8)})
+              titles = [item['title'] for item in judging['judge']('7', 'owner/repo', gh, SETTINGS)]
+              assert titles == ['Test selection share above its range'], titles
+              gh, _ = fake_repository(selections={identifier: (51, 51, None) for identifier in range(6, 8)})
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+
+          judge_reports_a_sustained_wide_selection()
+          print('PASS judge_reports_a_sustained_wide_selection')
+
+          def selection_reports_its_share_and_trigger_file():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c","d"]\n', encoding='utf-8')
+                  for name, dependency in [('a', None), ('b', 'a'), ('c', 'b'), ('d', None)]:
+                      crate = directory / name
+                      (crate / 'src').mkdir(parents=True)
+                      manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n'
+                      if dependency:
+                          manifest += f'[dependencies]\n{dependency}={{path="../{dependency}"}}\n'
+                      (crate / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+                      (crate / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+                  subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+                  git = partial(fixture_git, directory)
+                  git('add', '.')
+                  git('commit', '-qm', 'base')
+                  base = git('rev-parse', 'HEAD')
+                  for changed, share, expected in [('d/src/lib.rs', '25% (1/4 test packages)', (1, 4, None)),
+                                                   ('a/src/lib.rs', '75% (3/4 test packages)', (3, 4, None)),
+                                                   ('Cargo.toml', '100% (4/4 test packages)', (4, 4, 'shared input: Cargo.toml')),
+                                                   ('.github/workflows/ci.yml', '100% (4/4 test packages)', (4, 4, 'shared input: .github/workflows/ci.yml'))]:
+                      path = directory / changed
+                      path.parent.mkdir(parents=True, exist_ok=True)
+                      path.write_text(path.read_text(encoding='utf-8') + '\n# changed\n' if path.exists() else '# changed\n', encoding='utf-8')
+                      git('add', '.')
+                      git('commit', '-qm', 'change')
+                      output = directory / '.git/selection'
+                      output.write_text('', encoding='utf-8')
+                      summary = directory / '.git/summary'
+                      summary.write_text('', encoding='utf-8')
+                      result = select_packages(directory, {'TEST_EVENT': 'pull_request', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                           'GITHUB_STEP_SUMMARY': str(summary)})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      assert f'Selection share: {share}' in result.stdout, result.stdout
+                      assert f'Selection share: {share}' in summary.read_text(encoding='utf-8'), summary.read_text(encoding='utf-8')
+                      assert judging['selection_of'](result.stdout) == expected, (changed, result.stdout)
+                      git('reset', '--hard', base)
+
+          selection_reports_its_share_and_trigger_file()
+          print('PASS selection_reports_its_share_and_trigger_file')
