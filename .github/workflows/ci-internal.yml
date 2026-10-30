@@ -6589,7 +6589,7 @@ jobs:
               internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding="utf-8")
               group = re.search(r'^  group: (.+)$', workflow, re.MULTILINE).group(1)
               assert group == 'rust-ci-$' + "{{ github.event_name == 'push' && format('{0}-{1}', github.workflow, github.sha) || github.ref }}$" + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
-                  'Two callers on one pushed commit share a concurrency group and wait for each other'
+                  'The push group must name the caller and the commit, other runs the ref, and keyed calls the key'
               keys = []
               for job in ['sample', 'declared', 'test-tools']:
                   section = re.split(r'\n  \S', internal.split(f'  {job}:\n', 1)[1], maxsplit=1)[0]

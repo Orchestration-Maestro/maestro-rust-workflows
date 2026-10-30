@@ -91,9 +91,9 @@ when that save succeeds and later jobs restore the compatible snapshot.
 
 ## Reusable-call concurrency
 
-A pull-request or merge-group run is grouped by ref. A push run is grouped by
+Every run except a push is grouped by ref. A push run is grouped by
 the calling workflow's name and the pushed commit, so two caller workflows on
-one commit run at the same time and later landings still never wait for each
+one commit run at the same time and later landings never wait for each
 other. The optional workflow input `concurrency-key` defaults to an empty
 string, which adds nothing to the group. If a workflow calls this
 reusable workflow more than once, give each calling job a distinct, stable
