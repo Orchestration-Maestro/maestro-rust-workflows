@@ -258,6 +258,37 @@ preparation logic and exported environment. Shared CI does not interpret its
 setup-script definitions. The existing `concurrency-key` distinguishes both
 artifacts when a workflow makes several calls.
 
+`test_prepare_packages` names the workspace packages that read the prepared files.
+When it is set and a run selects none of them, the declaration drops the command:
+`Prepare test setup` does not start, and the shards skip the download and restore.
+A run that selects a listed package keeps the command, and so does a full-suite
+run, such as a main push or a merge group that falls back to the whole workspace.
+A change to the key, to `test_prepare` or to `test_prepare_key` selects the
+whole workspace. Names must be workspace packages; anything else fails the
+declaration. Without the key every run that tests prepares.
+
+`test_prepare_key` is a second standalone shell command that prints one line naming
+the inputs of the `test_prepare` command, up to 128 letters, digits, dots, dashes,
+underscores or colons; a content hash of the files the command reads is typical. It
+runs from the caller's working directory after the caller's tools are available,
+with `CARGO_TARGET_DIR` set to the same separate build directory as the preparation.
+The prepared directory is cached under a key built from that line, the
+`test_prepare` command, the compiler version, the host, the caller's directory and
+the checkout path. `Prepare test setup` restores it on a hit and skips the
+`test_prepare` command. A warm build restores it in the same way, so it uses the
+bundle in place of building the files again; without the key a warm build does not
+prepare. Every numeric shard then downloads the restored directory as before. Only
+pushes to the default branch write the cache, so a pull request or a merge group
+reads what the last push saved. A key that fails, or prints anything else, fails the
+job. Print every input the command reads: an unlisted input does not change the key
+and can leave a stale directory in place. Without the key nothing is cached.
+
+```toml
+test_prepare = "sh .config/prepare-tests.sh"
+test_prepare_packages = ["wasm-host", "wasm-guest"]
+test_prepare_key = "sh .config/prepare-tests-key.sh"
+```
+
 ### Test diagnostics
 
 Declared callers receive `MAESTRO_TEST_DIAGNOSTICS_DIR`, an absolute path to

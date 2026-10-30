@@ -257,6 +257,19 @@
       "type": "string",
       "default": ""
     },
+    "test_prepare_packages": {
+      "description": "Exact workspace package names that read the prepared test setup. When set, the preparation job runs only if a selected package is listed; a full-suite run always selects them.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
+    "test_prepare_key": {
+      "description": "Standalone shell command that prints one line naming the inputs of the test_prepare command (letters, digits, dots, dashes, underscores or colons, up to 128 characters). When set, the prepared bundle is cached under a key built from that line, the command, the compiler and the host. Every job that needs the bundle restores it on a hit, and a hit skips the test_prepare command. Only default-branch pushes write the cache.",
+      "type": "string",
+      "default": ""
+    },
     "test_shard_count": {
       "description": "Number of parallel test shards; every shard collects coverage.",
       "type": "integer",
