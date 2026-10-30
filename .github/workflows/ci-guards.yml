@@ -153,7 +153,13 @@ jobs:
 
           def budget_finding(run, jobs, budget):
               """A merge-run over its minutes budget, with the run link and its slowest jobs."""
-              raise NotImplementedError('budget_finding')
+              minutes = (stamp(run['updated_at']) - stamp(run['run_started_at'])).total_seconds() / 60
+              if minutes <= budget:
+                  return None
+              slowest = sorted(((seconds(job), job['name']) for job in jobs if seconds(job) is not None), reverse=True)[:5]
+              listed = '\n'.join(f'- {name}: {took / 60:.1f} min' for took, name in slowest)
+              return {'title': f"Merge run over its time budget: run {run['id']}",
+                      'body': f"Run: {run['html_url']}\nTook {minutes:.1f} minutes; the budget is {budget:g} minutes.\n\nSlowest jobs:\n{listed}\n"}
 
           def selection_of(log):
               """Selected and total test packages and the full-suite trigger, as the selection step logs them."""
@@ -185,7 +191,20 @@ jobs:
 
           def file_issues(findings, repository, gh, slow_limit):
               """Open an issue for each finding no open issue already carries; returns the titles filed."""
-              raise NotImplementedError('file_issues')
+              existing = {item['title'] for item in json.loads(gh('issue', 'list', '-R', repository, '--state', 'open',
+                                                                  '--limit', '1000', '--json', 'title'))}
+              filed, slow = [], 0
+              for finding in findings:
+                  if finding['title'] in existing:
+                      continue
+                  if finding.get('slow'):
+                      if slow >= slow_limit:
+                          continue
+                      slow += 1
+                  gh('issue', 'create', '-R', repository, '--title', finding['title'], '--body-file', '-', body=finding['body'])
+                  filed.append(finding['title'])
+                  existing.add(finding['title'])
+              return filed
 
           def judge(run_id, repository, gh, settings):
               """Every finding for one completed run."""
