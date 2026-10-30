@@ -731,11 +731,28 @@ jobs:
               assert 'Work time was 28.3 min' in body and 'not a regression' in body, body
               # Over two minutes but not over 10%, fewer than three earlier waits, and runs that gate nothing are not judged.
               assert capacity(3150.0, (3000.0,) * 5) is None and capacity(900.0, (60.0, 60.0)) is None
-              assert capacity(900.0, runs=prior[:2]) is None
               assert capacity(900.0, event=run_of(7, 30, name='CodeQL')) is None
 
           a_runner_wait_over_its_median_by_ten_percent_and_two_minutes_files_a_capacity_issue()
           print('PASS a_runner_wait_over_its_median_by_ten_percent_and_two_minutes_files_a_capacity_issue')
+
+          def a_run_pending_before_its_first_job_is_a_capacity_finding_not_slow_work():
+              # Maestro run 41006271785 (2026-10-30): created 05:03:25, its first job started 05:40:11 and the run ended 05:57:09.
+              run = run_of(7, 0) | {'run_started_at': '2026-10-30T05:03:25Z', 'updated_at': '2026-10-30T05:57:09Z'}
+              jobs = [job('Caller declaration', 0, identifier=1) | {'started_at': '2026-10-30T05:40:11Z', 'completed_at': '2026-10-30T05:41:15Z'},
+                      job('Build test archive', 0, identifier=2) | {'started_at': '2026-10-30T05:41:15Z', 'completed_at': '2026-10-30T05:57:09Z'}]
+              wait, work = judging['wait_of'](run, jobs), judging['work_of'](jobs)
+              assert (round(wait / 60, 1), round(work / 60, 1)) == (36.8, 17.0), (wait, work)
+              prior, _ = prior_runs(5)
+              finding = judging['capacity_finding'](run, 'unknown', wait, work, prior, [60.0] * 5)
+              assert finding['title'] == 'Escalation: runner wait over its median', finding
+              assert 'The run waited 36.8 min for runners against a median wait of 1.0 min' in finding['body'], finding
+              assert 'Work time was 17.0 min' in finding['body'], finding
+              # The advisory run 41059668738 waited 16 s and 28 s for runners longer than before: seconds, not minutes, so it stays quiet.
+              assert judging['capacity_finding'](run, 'unknown', 90.0, 163.0, prior, [3.0 + 2.0] * 5) is None
+
+          a_run_pending_before_its_first_job_is_a_capacity_finding_not_slow_work()
+          print('PASS a_run_pending_before_its_first_job_is_a_capacity_finding_not_slow_work')
 
           def work_units(message):
               return [{'title': 'Work units', 'message': message, 'annotation_level': 'notice'}]
@@ -956,7 +973,7 @@ jobs:
           def judge_escalates_what_stands_out_of_the_pattern():
               docs = [('Set up job', 5), ('Build docs', 240)]
               cases = [({'steps': {(7, 'Docs'): docs + [('Download corpus', 20)]}}, 'Escalation: jobs or steps changed without matching work'),
-                       ({'pace': {7: (0.5, 100)}}, 'Escalation: time per test run outside its normal spread'),
+                       ({'pace': {7: (0.5, 100)}, 'minutes': 15.5}, 'Escalation: time per test run outside its normal spread'),
                        ({'build': {7: (1, 600, 60.0)}}, 'Escalation: compile cache hit rate outside its usual range'),
                        ({'selections': {7: (51, 51, 'shared input: Cargo.toml')}}, 'Escalation: test selection share outside its usual range')]
               for changed, title in cases:
