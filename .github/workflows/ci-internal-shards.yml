@@ -834,12 +834,15 @@ jobs:
           print('PASS findings_file_once_and_every_slow_test_gets_an_issue')
 
           def fake_repository(minutes=30, bands=None, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group',
-                                  ratchet=None, floor=None, newer=0, pace=None, build=None, steps=None, extra_jobs=None):
+                                  ratchet=None, floor=None, newer=0, pace=None, build=None, steps=None, extra_jobs=None,
+                                  seeding=None, conclusion='success', cancelled=(), usage_gb=3.0):
               """Serves the REST calls judge makes for run 7, its earlier runs and the stored ratchet; `newer` runs finish after run 7.
 
               `pace` maps a run to (shard duration factor, test runs per shard) and `build` to (build duration factor, compile units, cache hit rate);
               `steps` maps (run, job name) to its (step, seconds) pairs; `extra_jobs` maps a run to the names of jobs it ran besides the usual ones;
-              `floor` maps a run to the cache-floor warning of each named job (every run then ran the floor step in those jobs).
+              `floor` maps a run to the cache-floor warning of each named job (every run then ran the floor step in those jobs);
+              `seeding` is (the jobs that save a snapshot, the cache entries run 7 left): every run then reports those saves and leaves one entry
+              per saving job, except run 7; `conclusion` and `cancelled` set how run 7 and which of its jobs ended; `usage_gb` is the repository cache in use.
               Runs after run 7 are five times slower per unit."""
               ratchet = {} if ratchet is None else ratchet
               counts = collections.Counter()
@@ -855,7 +858,10 @@ jobs:
                   built, _, _ = build.get(identifier, (1, 600, 99.5))
                   found = [job(name, 5 * built if name == 'Build test archive' else 5, identifier=base + index,
                                steps=(steps or {}).get((identifier, name), [('Set up job', 5), ('Build docs', 240)] if name == 'Docs' else [])
-                               + ([('Compile cache hit-rate floor', 1)] if name in {judged for named in (floor or {}).values() for judged in named} else []))
+                               + ([('Compile cache hit-rate floor', 1)] if name in {judged for named in (floor or {}).values() for judged in named} else [])
+                               + ([('Compile cache statistics', 1)] + [('Save compile cache', 1)] * (name in seeding[0]) if seeding and name in
+                                  ('Format and lint', 'Docs', 'Build test archive') else []),
+                               conclusion='cancelled' if identifier == 7 and name in cancelled else 'success')
                            for index, name in enumerate(names)]
                   for index, took in enumerate(shard_minutes):
                       found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index))
@@ -867,8 +873,12 @@ jobs:
                       logs[declaration['id']] = (f'2026-10-30T02:00:00.1234567Z Full-suite fallback: {trigger}\n' if trigger else '') + (
                           f'2026-10-30T02:00:01.1234567Z Selected package count: {selected}/{total}\n')
                   return found
-              runs = {identifier: run_of(identifier, minutes if identifier == 7 else 200 if identifier > 7 else 30, event)
+              runs = {identifier: run_of(identifier, minutes if identifier == 7 else 200 if identifier > 7 else 30, event, conclusion if identifier == 7 else 'success')
                       for identifier in range(1, 8 + newer)}
+              stored = []
+              for identifier in range(1, 8):
+                  left = seeding[1] if seeding and identifier == 7 else len(seeding[0]) if seeding else 0
+                  stored += [{'key': f'maestro-compile-v1-{n:064x}-{identifier}-1-docs-0-abc', 'ref': 'refs/heads/main', 'size_in_bytes': 100 * 1024**2} for n in range(left)]
               # Other workflows of the repository share the listing; their wide selections must not count.
               decoys = [dict(run_of(identifier, 30, event), workflow_id=3) for identifier in range(101, 105)]
               for decoy in decoys:
@@ -898,6 +908,15 @@ jobs:
                       if index < len(names) and names[index] in (floor or {}).get(identifier, {}):
                           notes.append({'title': 'Compile cache floor', 'message': floor[identifier][names[index]], 'annotation_level': 'warning'})
                       return json.dumps(notes)
+                  if re.search(r'actions/cache/usage$', text):
+                      counts['usage'] += 1
+                      return json.dumps({'active_caches_size_in_bytes': int(usage_gb * 1024**3), 'active_caches_count': len(stored)})
+                  if re.search(r'actions/cache/storage-limit$', text):
+                      return json.dumps({'max_cache_size_gb': 10})
+                  if m := re.search(r'actions/caches\?(\S+)', text):
+                      counts['caches'] += 1
+                      listed = [item for item in stored if 'ref=' not in m[1] or f"ref={item['ref']}" in m[1]]
+                      return json.dumps([{'actions_caches': sorted(listed, key=lambda item: item['size_in_bytes'], reverse=True) if 'sort=size_in_bytes' in m[1] else listed}])
                   if re.search(r'actions/workflows/', text):
                       raise AssertionError('a required workflow is not listed under its own id: ' + text)
                   if m := re.search(r'actions/runs\?event=(\w+)&status=(\w+)', text):
@@ -1138,6 +1157,85 @@ jobs:
 
           a_cache_floor_warning_in_any_compile_job_files_or_updates_one_issue()
           print('PASS a_cache_floor_warning_in_any_compile_job_files_or_updates_one_issue')
+
+          def a_default_branch_run_that_left_snapshots_unsaved_files_an_issue():
+              title = 'Escalation: default-branch run did not seed its compile snapshots'
+              saving = ['Format and lint', 'Docs', 'Build test archive']
+              statistics = [('Compile cache statistics', 1)]
+              jobs = [job(name, 5, identifier=index + 1, steps=statistics + [('Save compile cache', 1)]) for index, name in enumerate(saving)]
+              jobs.append(job('Caller declaration', 1, identifier=9))
+              def entries(count, identifier=7):
+                  return [{'key': f'maestro-compile-v1-{n:064x}-{identifier}-1-docs-0-abc', 'ref': 'refs/heads/main', 'size_in_bytes': 1} for n in range(count)]
+              run = run_of(7, 30, event='push')
+              assert judging['snapshot_finding'](run, jobs, entries(3)) is None
+              # Entries of other runs are not this run's.
+              finding = judging['snapshot_finding'](run, jobs, entries(2) + entries(5, 6))
+              assert finding['title'] == title and finding['comment'] and finding['labels'] == ['escalation'], finding
+              assert 'Run: https://example.test/runs/7' in finding['body'], finding
+              assert '- 3 jobs reported a saved snapshot but the repository cache holds 2 for this run' in finding['body'], finding
+              # A run whose compile jobs all skipped the save step saved nothing at all.
+              unsaved = [job(name, 5, identifier=index + 1, steps=statistics) for index, name in enumerate(saving)]
+              finding = judging['snapshot_finding'](run, unsaved, [])
+              assert '- 3 jobs measured their compile cache but none saved a snapshot' in finding['body'], finding
+              assert judging['snapshot_finding'](run, [job('Caller declaration', 1)], []) is None
+              # A cancelled run names the jobs it left unfinished, even when what it saved is all stored.
+              stopped = jobs[:1] + [job('Docs', 5, 'cancelled', identifier=2), job('Build test archive', 5, 'cancelled', identifier=3)]
+              finding = judging['snapshot_finding'](run_of(7, 30, 'push', 'cancelled'), stopped, entries(1))
+              assert '- The run was cancelled with 2 jobs unfinished: Docs, Build test archive' in finding['body'], finding
+              assert 'cancelled' in finding['body'] and judging['snapshot_finding'](run_of(7, 30, 'push', 'cancelled'), jobs, entries(3)) is None
+
+              seeding = (saving, 3)
+              gh, _ = fake_repository(event='push', seeding=seeding, ratchet={})
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+              gh, _ = fake_repository(event='push', seeding=(saving, 2), ratchet={})
+              assert [item['title'] for item in judging['judge']('7', 'owner/repo', gh, SETTINGS)] == [title]
+              # A cancelled default-branch run is judged for its snapshots only; its wall and rates mean nothing.
+              gh, _ = fake_repository(event='push', seeding=(saving, 1), conclusion='cancelled', cancelled=['Docs', 'Build test archive'], minutes=90, ratchet={})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [item['title'] for item in findings] == [title], findings
+              assert 'cancelled with 2 jobs unfinished: Docs, Build test archive' in findings[0]['body'], findings
+              # A cancelled merge group or pull request has no snapshot to judge, and a merge group never reads the cache list for its saves.
+              for event in ('merge_group', 'pull_request'):
+                  gh, _ = fake_repository(event=event, seeding=(saving, 1), conclusion='cancelled', cancelled=['Docs'], ratchet={})
+                  assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == [], event
+                  assert gh.counts['caches'] == 0, (event, gh.counts)
+
+          a_default_branch_run_that_left_snapshots_unsaved_files_an_issue()
+          print('PASS a_default_branch_run_that_left_snapshots_unsaved_files_an_issue')
+
+          def the_repository_cache_over_90_percent_of_its_limit_files_an_issue():
+              title = 'Repository cache above 90% of its limit'
+              run = run_of(7, 30)
+              # Maestro on 2026-10-30: 22 entries and 10,928,201,953 bytes against a 10 GB limit.
+              usage = {'active_caches_size_in_bytes': 10928201953, 'active_caches_count': 22}
+              caches = [{'key': 'maestro-compile-v1-34922d71-41067106725-1-doctests-0-e3b0c442', 'ref': 'refs/pull/119/merge', 'size_in_bytes': 743361834},
+                        {'key': 'maestro-compile-v1-d64fd68a-41067106725-1-test-build-0', 'ref': 'refs/heads/main', 'size_in_bytes': 1055336357},
+                        {'key': 'maestro-compile-v1-7c366038-41067106725-1-targets-0-e3b0c442', 'ref': 'refs/heads/main', 'size_in_bytes': 250877247}]
+              finding = judging['usage_finding'](run, usage, 10, caches)
+              assert finding['title'] == title and finding['comment'], finding
+              body = finding['body']
+              assert 'Run: https://example.test/runs/7' in body, body
+              assert 'The repository cache holds 10.18 GiB in 22 entries against its 10 GiB limit (101.8%); the threshold is 90%' in body, body
+              # The largest entries by ref, biggest first.
+              assert body.index('- refs/heads/main: 0.98 GiB maestro-compile-v1-d64fd68a') < body.index('- refs/pull/119/merge: 0.69 GiB maestro-compile-v1-34922d71') < body.index('- refs/heads/main: 0.23 GiB'), body
+              limit = 10 * 1024**3
+              assert judging['usage_finding'](run, usage | {'active_caches_size_in_bytes': limit * 9 // 10}, 10, caches) is None
+              assert judging['usage_finding'](run, usage | {'active_caches_size_in_bytes': limit * 9 // 10 + 1}, 10, caches)['title'] == title
+              assert judging['usage_finding'](run, usage | {'active_caches_size_in_bytes': 3 * 1024**3}, 10, caches) is None
+
+              for event in ('merge_group', 'pull_request'):
+                  gh, _ = fake_repository(event=event, usage_gb=11.66, ratchet={})
+                  findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+                  assert [item['title'] for item in findings] == [title], (event, findings)
+                  assert '11.66 GiB' in findings[0]['body'] and gh.counts['caches'] == 1, (event, findings, gh.counts)
+                  gh, _ = fake_repository(event=event, usage_gb=9.0, ratchet={})
+                  assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == [] and gh.counts['caches'] == 0 and gh.counts['usage'] == 1, (event, gh.counts)
+              # Every judged run reads the usage, a cancelled default-branch run too.
+              gh, _ = fake_repository(event='push', seeding=(['Docs'], 1), conclusion='cancelled', usage_gb=11.66, ratchet={})
+              assert [item['title'] for item in judging['judge']('7', 'owner/repo', gh, SETTINGS)] == [title]
+
+          the_repository_cache_over_90_percent_of_its_limit_files_an_issue()
+          print('PASS the_repository_cache_over_90_percent_of_its_limit_files_an_issue')
 
           SLOW_LOG = '\n'.join([
               '2026-10-30T02:48:22.6648967Z         SLOW [> 30.000s] (─────────) maestro-tooling::integration browser_author_build::repairs',
@@ -1593,6 +1691,11 @@ jobs:
                   assert shape in floor, shape
               for cause in ['cold snapshot', 'key change', 'no writer', 'eviction']:
                   assert cause in floor, cause
+              snapshots = guide.split('### Compile snapshots and cache usage', 1)[1].split('### Selection check', 1)[0]
+              for text in ['Escalation: default-branch run did not seed its compile snapshots', 'Repository cache above 90% of its limit', 'cancelled',
+                           '`actions/cache/usage`', 'storage-limit', '11.66 GB', '40322701820', '10 GB']:
+                  assert text in snapshots, text
+              assert "github.event.workflow_run.event == 'push'" in guide and "github.event.workflow_run.event == 'merge_group'" in guide
 
           required_checks_and_documented_defaults_stay_pinned()
           print('PASS required_checks_and_documented_defaults_stay_pinned')
