@@ -928,11 +928,15 @@ jobs:
               pace = {identifier: (5, 100) for identifier in range(8, 20)} | (pace or {})
               build = build or {}
               logs = {}
+              def wall_of(identifier):
+                  return minutes if identifier == 7 else 200 if identifier > 7 else 30
               def jobs_for(identifier):
                   base = identifier * 1000
                   factor, _ = pace.get(identifier, (1, 100))
                   built, _, _ = build.get(identifier, (1, 600, 99.5))
-                  found = [job(name, 5 * built if name == 'Build test archive' else 5, identifier=base + index,
+                  # A run ends at its last job: the jobs start inside the run, after the wait that makes up the rest of its wall time.
+                  begin = identifier * 120 + max(wall_of(identifier) - max([5 * built] + [took * factor for took in shard_minutes]), 0)
+                  found = [job(name, 5 * built if name == 'Build test archive' else 5, identifier=base + index, start=begin,
                                steps=(steps or {}).get((identifier, name), [('Set up job', 5), ('Build docs', 240)] if name == 'Docs' else [])
                                + ([('Compile cache hit-rate floor', 1)] if name in {judged for named in (floor or {}).values() for judged in named} else [])
                                + ([('Compile cache statistics', 1)] + [('Save compile cache', 1)] * (name in seeding[0]) if seeding and name in
@@ -940,17 +944,17 @@ jobs:
                                conclusion='cancelled' if identifier == 7 and name in cancelled else 'success')
                            for index, name in enumerate(names)]
                   for index, took in enumerate(shard_minutes):
-                      found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index,
+                      found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index, start=begin,
                                        steps=(steps or {}).get((identifier, f'Test shard ({index + 1}/16)'), []) + [('Tests', took * factor * 60)]))
                       logs[base + 100 + index] = (shard_logs or {}).get((identifier, index), 'Summary [1.0s] 1 test run\n')
-                  found += [job(extra, 5, identifier=base + 200 + index) for index, extra in enumerate((extra_jobs or {}).get(identifier, []))]
+                  found += [job(extra, 5, identifier=base + 200 + index, start=begin) for index, extra in enumerate((extra_jobs or {}).get(identifier, []))]
                   declaration = next(item for item in found if item['name'] == 'Caller declaration') if 'Caller declaration' in names else None
                   if declaration:
                       selected, total, trigger = (selections or {}).get(identifier, (51, 51, 'newer run') if identifier > 7 else (1, 51, None))
                       logs[declaration['id']] = (f'2026-10-30T02:00:00.1234567Z Full-suite fallback: {trigger}\n' if trigger else '') + (
                           f'2026-10-30T02:00:01.1234567Z Selected package count: {selected}/{total}\n')
                   return found
-              runs = {identifier: run_of(identifier, minutes if identifier == 7 else 200 if identifier > 7 else 30, event, conclusion if identifier == 7 else 'success')
+              runs = {identifier: run_of(identifier, wall_of(identifier), event, conclusion if identifier == 7 else 'success')
                       for identifier in range(1, 8 + newer)}
               stored = []
               for identifier in range(1, 8):
