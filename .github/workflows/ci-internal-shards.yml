@@ -518,6 +518,12 @@ jobs:
                       body = bytearray(server.blob[start:end + 1])
                       if server.corrupt and start > 0:
                           body[0] ^= 0xff
+                      if server.fault == 'fail' and start > 0:
+                          return self.send_error(500)
+                      if server.fault == 'ignored' and start > 0:
+                          return self.reply(200, server.blob)
+                      if server.fault == 'short' and start > 0:
+                          body = body[:-1]
                       return self.reply(206, bytes(body), {'Content-Range': f'bytes {start}-{end}/{len(server.blob)}'})
                   self.reply(200, server.blob)
 
@@ -529,10 +535,10 @@ jobs:
                   self.end_headers()
                   self.wfile.write(body)
 
-          def download(ranges=True, corrupt=False, digest=True, listing_fails=False):
+          def download(ranges=True, corrupt=False, digest=True, listing_fails=False, fault=None):
               server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Storage)
               server.blob, server.requests = archive(), []
-              server.ranges, server.corrupt, server.digest, server.listing_fails = ranges, corrupt, digest, listing_fails
+              server.ranges, server.corrupt, server.digest, server.listing_fails, server.fault = ranges, corrupt, digest, listing_fails, fault
               threading.Thread(target=server.serve_forever, daemon=True).start()
               try:
                   with tempfile.TemporaryDirectory() as temporary:
@@ -571,6 +577,8 @@ jobs:
               assert all(request[2] == 'Bearer secret-token' for request in server.requests if request[0] != '/blob'), server.requests
               assert all(request[2] is None for request in blob), blob
               assert 'fallback=true' not in outputs and leftovers == [], (outputs, leftovers)
+              # One signed URL serves the probe and every range, so the API budget does not grow with the range count.
+              assert len([request for request in server.requests if request[0].endswith('/zip')]) == 1, server.requests
 
           def a_server_without_ranges_gets_one_stream():
               result, server, files, extracted, outputs, leftovers = download(ranges=False)
@@ -591,6 +599,14 @@ jobs:
                   assert files == [] and 'fallback=true' in outputs and leftovers == [], (case, outputs)
                   assert line(result)[3] == '0', result.stdout
 
+          def a_failing_range_hands_the_whole_download_over_without_a_retry():
+              for fault in ['fail', 'ignored', 'short']:
+                  result, server, files, extracted, outputs, leftovers = download(fault=fault)
+                  assert result.returncode == 0, (fault, result.stderr)
+                  assert files == [] and 'fallback=true' in outputs and leftovers == [], (fault, files, outputs, leftovers)
+                  assert line(result)[1:4:2] == ('0', '0'), (fault, result.stdout)
+                  assert len([request for request in server.requests if request[0].endswith('/zip')]) == 1, (fault, server.requests)
+
           def both_downloads_share_one_script_and_keep_the_single_stream_action():
               pin = 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'
               names = list(steps)
@@ -600,14 +616,15 @@ jobs:
                   assert step['env']['ARTIFACT_NAME'].startswith(artifact), name
                   assert step['env']['GH_TOKEN'] == '$' + '{{ github.token }}'
                   assert single['uses'].startswith(pin), name
-                  gate, handover = [condition['if'].removeprefix('$' + '{{ ').removesuffix(' }}') for condition in (step, single)]
-                  assert handover == gate + " && steps.%s.outputs.fallback == 'true'" % step['id'], name
+                  # A skipped download sets no output, so the fallback output alone carries the download step's gate.
+                  assert single['if'] == '$' + "{{ steps.%s.outputs.fallback == 'true' }}" % step['id'], name
                   assert single['with']['name'] == step['env']['ARTIFACT_NAME'], name
                   assert names.index(name) + 1 == names.index(name + ' in one stream') < names.index('Restore test setup'), names
               assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
 
           for check in [parallel_ranges_extract_and_report_the_transfer, a_server_without_ranges_gets_one_stream,
                         a_corrupted_range_fails_on_the_digest_and_never_extracts, an_unusable_listing_hands_over_to_the_single_stream_action,
+                        a_failing_range_hands_the_whole_download_over_without_a_retry,
                         both_downloads_share_one_script_and_keep_the_single_stream_action]:
               check()
               print('PASS', check.__name__)
