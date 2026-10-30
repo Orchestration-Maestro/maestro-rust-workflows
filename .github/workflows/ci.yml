@@ -1438,10 +1438,10 @@ jobs:
               def redirect_request(self, *arguments):
                   return None
 
-          opener = urllib.request.build_opener(KeepRedirect)
+          urllib.request.install_opener(urllib.request.build_opener(KeepRedirect))
 
           def get(url, headers):
-              return opener.open(urllib.request.Request(url, headers=headers), timeout=120)
+              return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120)
 
           def api_get(path):
               return get(f'{api}/{path}', {'Authorization': f"Bearer {os.environ['GH_TOKEN']}", 'Accept': 'application/vnd.github+json'})
