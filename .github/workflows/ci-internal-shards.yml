@@ -758,22 +758,37 @@ jobs:
               return [{'title': 'Work units', 'message': message, 'annotation_level': 'notice'}]
 
           def measures_are_seconds_per_unit_of_work_read_from_the_work_unit_annotations():
-              jobs = [job('Test shard (1/3)', 10, identifier=1), job('Test shard (2/3)', 30, identifier=2), job('Test shard (3/3)', 5, identifier=3),
-                      job('Test shard (4/4)', 5, 'skipped', identifier=4), job('Build test archive', 5, identifier=5), job('Docs', 9, identifier=6)]
+              downloads = [('Download archive', 120)]
+              skipped_tests = {'name': 'Tests', 'conclusion': 'skipped', 'started_at': moment(0), 'completed_at': moment(0)}
+              jobs = [job('Test shard (1/3)', 10, identifier=1, steps=downloads + [('Tests', 150)]),
+                      job('Test shard (2/3)', 30, identifier=2, steps=downloads + [('Isolated tests', 450)]),
+                      job('Test shard (3/3)', 5, identifier=3, steps=[('Tests', 100)]), job('Test shard (4/4)', 5, 'skipped', identifier=4, steps=[('Tests', 100)]),
+                      job('Build test archive', 5, identifier=5), job('Docs', 9, identifier=6)]
+              jobs[1]['steps'].append(skipped_tests)
               notes = {1: work_units('tests: 100'), 2: work_units('tests: 300'), 3: work_units('tests: 0'), 4: work_units('tests: 50'),
                        5: work_units('compiles: 600; hit-rate: 99.5'), 6: work_units('tests: 7')}
               asked = []
               def annotations_of(item):
                   asked.append(item['id'])
                   return notes.get(item['id'], [])
-              # Shard seconds over shard test runs; a shard that ran no test, a skipped job and an unmeasured job add nothing.
-              assert judging['measures_of'](jobs, annotations_of) == {'tests': 6.0, 'compiles': 0.5, 'hit-rate': 99.5}, judging['measures_of'](jobs, annotations_of)
+              # The seconds of the Tests or Isolated tests step over the shards' test runs, so a download adds no test work (the whole shards took 6.0 s per test run);
+              # a shard that ran no test, a skipped job and an unmeasured job add nothing; the archive build counts its whole job.
+              assert judging['measures_of'](jobs, annotations_of) == {'tests': 1.5, 'compiles': 0.5, 'hit-rate': 99.5}, judging['measures_of'](jobs, annotations_of)
               assert 6 not in asked, asked
               assert judging['measures_of'](jobs, lambda item: [{'message': 'tests: 100'}]) == {}
               assert judging['measures_of']([], lambda item: []) == {}
 
           measures_are_seconds_per_unit_of_work_read_from_the_work_unit_annotations()
           print('PASS measures_are_seconds_per_unit_of_work_read_from_the_work_unit_annotations')
+
+          def each_judging_predicate_has_one_owner():
+              # The jobs that ran, the seconds of a step that ran and a step reached to success are each decided once; every other reader calls the owner.
+              assert guards.count('seconds(job) is') == 1, 'executed() owns the jobs that ran'
+              assert guards.count("stamp(step['completed_at'])") == 1, 'step_seconds() owns the seconds of a step that ran'
+              assert "== 'Compile cache hit-rate floor'" not in guards and "reached(job, 'Compile cache hit-rate floor')" in guards, 'reached() owns the steps that succeeded'
+
+          each_judging_predicate_has_one_owner()
+          print('PASS each_judging_predicate_has_one_owner')
 
           def every_linux_job_records_its_runner_hardware():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
@@ -1525,7 +1540,31 @@ jobs:
           the_manual_accept_path_is_gone()
           print('PASS the_manual_accept_path_is_gone')
 
-          def run_cache_floor(shape, stats, matched, listing, namespace='maestro-compile-v1-', seeder=r'-tests-\d+-'):
+          def identity_of(job):
+              # The outputs of the real identity step for one job: its key and the pattern that finds the keys of that job.
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  env = {'CALLER_REPOSITORY': 'example/caller', 'CALLER_DIRECTORY': '.', 'HOST_OS': 'Linux', 'HOST_ARCH': 'X64', 'CACHE_JOB': job,
+                         'CACHE_INDEX': '0', 'CACHE_CALL': 'consumer', 'CACHE_COVERAGE': 'true', 'CACHE_ENABLED': 'true', 'CACHE_WARM': 'false',
+                         'SHARD': '1', 'GITHUB_RUN_ID': '10', 'GITHUB_RUN_ATTEMPT': '1', 'CACHE_TARGET': 'aarch64-unknown-linux-gnu',
+                         'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/heads/main', 'CACHE_DEFAULT_BRANCH': 'main',
+                         'GITHUB_OUTPUT': str(directory / 'output')}
+                  result = execute('Compile cache identity', directory, env)
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  return dict(line.split('=', 1) for line in (directory / 'output').read_text(encoding='utf-8').splitlines())
+
+          def a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_only():
+              jobs = ['tests', 'doctests', 'test-build', 'test-prepare', 'quality', 'docs', 'checks', 'browser', 'browser-tests', 'targets']
+              identities = {job: identity_of(job) for job in jobs}
+              for job, identity in identities.items():
+                  for other, seen in identities.items():
+                      assert bool(re.search(identity['seeder'], seen['key'])) == (job == other), (job, other, identity['seeder'], seen['key'])
+
+          a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_only()
+          print('PASS a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_only')
+
+          def run_cache_floor(shape, stats, matched, listing, namespace='maestro-compile-v1-', seeder=None):
+              seeder = seeder or identity_of('tests')['seeder']
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   (directory / 'bin').mkdir()
@@ -1554,6 +1593,8 @@ jobs:
               cases = [('tests-coverage', 40, prefix + '1-tests', [prefix + '1-tests'], 'cold snapshot'),
                        ('tests-coverage', 0, '', ['maestro-compile-v1-bbb-1-1-tests-0-abc', 'maestro-compile-v1-ccc-1-1-docs-0-abc'], 'key change'),
                        ('tests-coverage', 0, '', ['maestro-compile-v1-ccc-1-1-docs-0-abc'], 'no writer'),
+                       # Snapshots of the browser tests job are not snapshots of the tests job.
+                       ('tests-coverage', 0, '', ['maestro-compile-v1-ccc-1-1-browser-tests-0-abc'], 'no writer'),
                        ('tests-coverage', 0, '', [], 'eviction'),
                        ('tests-coverage', 0, '', None, 'cache list is unavailable'),
                        ('tests-coverage', 89.99, prefix + '1-tests', [], 'cold snapshot')]
@@ -1568,7 +1609,7 @@ jobs:
               # Every shape a default-branch push seeds is judged, not only the coverage snapshot: five of them sat at 0% for four days.
               for job, shape in [('tests', 'tests-plain'), ('quality', 'quality'), ('docs', 'docs'), ('checks', 'checks'), ('browser', 'browser'),
                                  ('browser-tests', 'browser-tests'), ('test-prepare', 'test-prepare'), ('targets', 'targets-clippy-aarch64-unknown-linux-gnu')]:
-                  seeder = rf'-{job}-\d+-'
+                  seeder = identity_of(job)['seeder']
                   result = run_cache_floor(shape, stats_of(610, 100), prefix + '1-' + job, [], seeder=seeder)
                   assert result.returncode == 0 and 'Compile cache hit rate 100.00% (floor 90%)' in result.stdout, (shape, result.stdout + result.stderr)
                   other = f'maestro-compile-v1-bbb-1-1-{job}-0-abc'
@@ -1638,7 +1679,7 @@ jobs:
               for name in holders[1:]:
                   assert steps[name].rstrip('\n') == '        if: *sccache-floor-condition\n        env: *sccache-floor-env\n        run: *sccache-floor', (name, steps[name])
               assert "output.write(f'prefix={prefix}\\nkey={prefix}{suffix}\\nwriter={str(writer).lower()}\\nshape={shape}\\nnamespace={namespace}\\nseeder={seeder}\\n')" in workflow
-              assert "seeder = '-' + re.escape(os.environ['CACHE_JOB']) + r'-\\d+-'" in workflow
+              assert "seeder = r'-\\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\\d+-'" in workflow
               # The floor reads the key layout from the identity step's outputs, spells none of it, and judges every shape.
               assert 'maestro-compile-v1-' not in step and "'-tests-'" not in step and 'tests-coverage' not in step, step
 
@@ -1673,6 +1714,10 @@ jobs:
               assert 'not raw wall time' in guide and 'natural growth' in guide and '`Work units`' in guide
               assert 'seconds per test run' in guide and 'seconds per compile unit' in guide
               assert 'work time' in guide and 'runner wait' in guide and 'executed the same jobs' in guide
+              # The test rate is the seconds of the step that ran the tests, never the whole job, and a job that overlaps another counts in full.
+              assert 'seconds of the step that ran the tests' in guide and '`Isolated tests`' in guide and 'downloads' in guide
+              assert 'counts once' not in guide
+              assert 'used to return nothing' not in guide and 'warm test shards and Doctests' not in guide
               assert 'median of its rates in the previous five successful runs' in guide and 'plus 10%' in guide
               assert 'runner band' in guide and 'lowest such median' in guide and 'runner-band: <label>' in guide
               # The ratchet is stored in one issue and only the guard lowers it.
@@ -1694,8 +1739,12 @@ jobs:
                   assert cause in floor, cause
               snapshots = guide.split('### Compile snapshots and cache usage', 1)[1].split('### Selection check', 1)[0]
               for text in ['Escalation: default-branch run did not seed its compile snapshots', 'Repository cache above 90% of its limit', 'cancelled',
-                           '`actions/cache/usage`', 'storage-limit', '11.66 GB', '40369902252', '10 GB']:
+                           '`actions/cache/usage`', 'storage-limit', '10,928,201,953 bytes', '10.18 GiB', '40369902252', '10 GiB', 'evicts the oldest snapshots']:
                   assert text in snapshots, text
+              assert 'GB' not in snapshots.replace('GiB', ''), 'one unit, GiB, as the finding prints'
+              assert 'at 90% of the storage limit the API reports' in snapshots, 'the threshold and its reason'
+              budget = guide.split('Source: no rate is fixed in advance', 1)[1].split('### Compile-cache hit-rate floor', 1)[0]
+              assert 'cache usage' in budget and 'storage limit' in budget and 'cache list' in budget and 'floor annotations' in budget, 'the call budget counts the cache reads'
               assert "github.event.workflow_run.event == 'push'" in guide and "github.event.workflow_run.event == 'merge_group'" in guide
 
           required_checks_and_documented_defaults_stay_pinned()
