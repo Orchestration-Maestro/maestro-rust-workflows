@@ -580,3 +580,64 @@ jobs:
 
           exception_check_fails_the_job_when_an_issue_is_closed()
           print('PASS exception_check_fails_the_job_when_an_issue_is_closed')
+
+          def run_cache_floor(shape, stats, matched, listing):
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'bin').mkdir()
+                  fake = directory / 'bin/gh'
+                  fake.write_text('#!/bin/sh\n' + ('echo \'' + json.dumps({'actions_caches': [{'key': key} for key in listing]}) + '\'\n'
+                                                    if listing is not None else 'echo denied >&2\nexit 1\n'), encoding='utf-8')
+                  fake.chmod(0o755)
+                  (directory / 'sccache-stats').write_text(stats, encoding='utf-8')
+                  return execute('Compile cache hit-rate floor', directory, {
+                      'PATH': f"{directory / 'bin'}:{os.environ['PATH']}", 'RUNNER_TEMP': str(directory),
+                      'GITHUB_REPOSITORY': 'owner/repo', 'GH_TOKEN': 'unused', 'CACHE_SHAPE': shape,
+                      'CACHE_MATCHED_KEY': matched, 'CACHE_PREFIX': 'maestro-compile-v1-aaa-'})
+
+          def stats_of(executed, rate):
+              return '\n'.join([f'Compile requests                     {executed + 3}', f'Compile requests executed            {executed}',
+                                'Cache hits                           605', 'Cache misses                           0',
+                                f'Cache hits rate                   {rate:.2f} %', f'Cache hits rate (Rust)            {rate:.2f} %', ''])
+
+          def a_warm_build_below_the_cache_floor_fails_and_names_its_cause():
+              prefix = 'maestro-compile-v1-aaa-'
+              for rate in (100, 99.67, 90):
+                  result = run_cache_floor('tests-coverage', stats_of(610, rate), prefix + '1-tests', [])
+                  assert result.returncode == 0 and f'Compile cache hit rate {rate:.2f}% (floor 90%)' in result.stdout, result.stdout + result.stderr
+              cases = [('tests-coverage', 40, prefix + '1-tests', [prefix + '1-tests'], 'cold snapshot'),
+                       ('tests-coverage', 0, '', ['maestro-compile-v1-bbb-1-1-tests-0-abc', 'maestro-compile-v1-ccc-1-1-docs-0-abc'], 'key change'),
+                       ('tests-coverage', 0, '', ['maestro-compile-v1-ccc-1-1-docs-0-abc'], 'eviction'),
+                       ('tests-coverage', 0, '', [], 'eviction'),
+                       ('tests-coverage', 0, '', None, 'cache list is unavailable'),
+                       ('tests-coverage', 89.99, prefix + '1-tests', [], 'cold snapshot')]
+              for shape, rate, matched, listing, cause in cases:
+                  result = run_cache_floor(shape, stats_of(610, rate), matched, listing)
+                  assert result.returncode == 1, (cause, result.stdout + result.stderr)
+                  output = result.stdout + result.stderr
+                  assert f'::error::Compile cache hit rate {rate:.2f}% is below the 90% floor: {cause}' in output or (
+                      cause == 'cache list is unavailable' and 'no snapshot restored' in output and cause in output), (cause, output)
+              for shape, executed in [('tests-plain', 610), ('tests-coverage', 0)]:
+                  result = run_cache_floor(shape, stats_of(executed, 0), '', [])
+                  assert result.returncode == 0 and 'not judged' in result.stdout, (shape, result.stdout + result.stderr)
+
+          a_warm_build_below_the_cache_floor_fails_and_names_its_cause()
+          print('PASS a_warm_build_below_the_cache_floor_fails_and_names_its_cause')
+
+          def the_cache_floor_runs_after_the_statistics_in_the_build_job_only():
+              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+              holders = [name for name, text in jobs.items() if '- name: Compile cache hit-rate floor\n' in text]
+              assert holders == ['test-build'], holders
+              text = jobs['test-build']
+              assert text.index('- name: Compile cache statistics') < text.index('- name: Compile cache hit-rate floor')
+              step = text.split('- name: Compile cache hit-rate floor\n', 1)[1].split('\n      - name: ', 1)[0]
+              for line in ['CACHE_SHAPE: $' + '{{ steps.cache-identity.outputs.shape }}',
+                           'CACHE_MATCHED_KEY: $' + '{{ steps.cache-restore.outputs.cache-matched-key }}',
+                           'CACHE_PREFIX: $' + '{{ steps.cache-identity.outputs.prefix }}',
+                           "if: job.status == 'success' && steps.cache-statistics.outcome == 'success'"]:
+                  assert line in step, line
+              assert 'permissions:\n      contents: read\n      actions: read\n' in text.split('steps:', 1)[0]
+              assert "output.write(f'prefix={prefix}\\nkey={prefix}{suffix}\\nwriter={str(writer).lower()}\\nshape={shape}\\n')" in workflow
+
+          the_cache_floor_runs_after_the_statistics_in_the_build_job_only()
+          print('PASS the_cache_floor_runs_after_the_statistics_in_the_build_job_only')
