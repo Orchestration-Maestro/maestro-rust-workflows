@@ -748,16 +748,31 @@ jobs:
           print('PASS a_job_or_step_that_appears_disappears_or_grows_without_matching_work_escalates')
 
           def work_time_is_the_union_of_the_job_intervals_and_the_runner_wait_is_the_rest():
-              jobs = [job('A', 10, identifier=1), job('B', 15, identifier=2, start=5), job('C', 10, identifier=3, start=30), job('F', 3, identifier=6, start=32),
-                      job('D', 60, 'skipped', identifier=4), job('E', 60, 'cancelled', identifier=5)]
+              # Run 7 starts at minute 840 of the fixture clock, so its jobs start there.
+              at = 840
+              jobs = [job('A', 10, identifier=1, start=at), job('B', 15, identifier=2, start=at + 5), job('C', 10, identifier=3, start=at + 30),
+                      job('F', 3, identifier=6, start=at + 32), job('D', 60, 'skipped', identifier=4, start=at), job('E', 60, 'cancelled', identifier=5, start=at)]
               # [0, 20] and [30, 40] minutes: the overlap counts once, the gap between them and the nested job add nothing, skipped and cancelled jobs are not work.
               assert judging['work_of'](jobs) == 30 * 60 and judging['work_of']([]) == 0
-              assert judging['wait_of'](run_of(7, 50), jobs) == 20 * 60
-              assert judging['wait_of'](run_of(7, 20), jobs) == 0
+              # The run ends when its last job does: 40 minutes of wall time less 30 of work, wherever the run's last update falls.
+              assert judging['wait_of'](run_of(7, 50), jobs) == 10 * 60
+              assert judging['wait_of'](run_of(7, 20), jobs) == 10 * 60
               assert judging['job_set'](jobs) == {'A', 'B', 'C', 'F'}
 
           work_time_is_the_union_of_the_job_intervals_and_the_runner_wait_is_the_rest()
           print('PASS work_time_is_the_union_of_the_job_intervals_and_the_runner_wait_is_the_rest')
+
+          def a_run_ends_at_its_last_job_not_at_its_last_update():
+              # Run 41098096027 (2026-10-30): its last job ended 17:38:57 and updated_at read 17:56:00, after a re-requested check; no job waited over 10 s.
+              run = run_of(7, 0) | {'run_started_at': '2026-10-30T17:30:00Z', 'updated_at': '2026-10-30T17:56:00Z'}
+              built = job('Build test archive', 0, identifier=1) | {'started_at': '2026-10-30T17:30:05Z', 'completed_at': '2026-10-30T17:35:00Z'}
+              tested = job('Test shard (1/16)', 0, identifier=2) | {'started_at': '2026-10-30T17:35:04Z', 'completed_at': '2026-10-30T17:38:57Z'}
+              assert judging['wait_of'](run, [built, tested]) == 9.0
+              # A run with no job to end it waited for nothing.
+              assert judging['wait_of'](run, []) == 0
+
+          a_run_ends_at_its_last_job_not_at_its_last_update()
+          print('PASS a_run_ends_at_its_last_job_not_at_its_last_update')
 
           def a_runner_wait_over_its_median_by_ten_percent_and_two_minutes_files_a_capacity_issue():
               prior, _ = prior_runs(5)
