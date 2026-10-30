@@ -464,3 +464,154 @@ jobs:
 
           docs_list_the_preparation_keys()
           print('PASS docs_list_the_preparation_keys')
+      - name: Content cache at workflow seam
+        shell: python
+        run: |
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import tarfile
+          import tempfile
+
+          root = pathlib.Path.cwd()
+          shared = (root / '.github/workflows/ci.yml').read_text(encoding='utf-8')
+          content = (root / '.github/workflows/content.yml').read_text(encoding='utf-8')
+          document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=content, text=True))
+          steps = {step['name']: step for step in document['jobs']['content']['steps']}
+          restore_uses = re.search(r'^        uses: (actions/cache/restore@\S+)', shared, re.MULTILINE)[1]
+          save_uses = re.search(r'^        uses: (actions/cache/save@\S+)', shared, re.MULTILINE)[1]
+
+          def run(name, directory, env, replace=()):
+              body = steps[name]['run']
+              for old, new in replace:
+                  body = body.replace(old, new)
+              return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body], cwd=directory,
+                                    env=os.environ | env, capture_output=True, text=True)
+
+          def outputs(directory, **env):
+              output = directory / 'output'
+              output.write_text('', encoding='utf-8')
+              result = run('Content cache identity', directory,
+                           {'RUNNER_OS': 'Linux', 'RUNNER_ARCH': 'X64', 'GITHUB_OUTPUT': str(output)} | env)
+              assert result.returncode == 0, result.stdout + result.stderr
+              return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+
+          def content_cache_key_follows_lock_and_toolchain():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'mise.toml').write_text('[tools]\njust="1.58.0"\nrust="1.91.0"\n', encoding='utf-8')
+                  assert outputs(directory) == {'enabled': 'false'}, 'a caller without a Cargo.lock keeps no cache'
+                  lock = directory / 'Cargo.lock'
+                  lock.write_text('version = 4\n', encoding='utf-8')
+                  base = outputs(directory)
+                  assert base['enabled'] == 'true' and base['key'].startswith('maestro-compile-v1-'), base
+                  assert outputs(directory) == base, 'the key is stable for unchanged inputs'
+                  (directory / 'justfile').write_text('check:\n', encoding='utf-8')
+                  assert outputs(directory) == base, 'a caller recipe change keeps the build'
+                  assert outputs(directory, RUNNER_OS='macOS')['key'] != base['key']
+                  assert outputs(directory, RUNNER_ARCH='ARM64')['key'] != base['key']
+                  lock.write_text('version = 4\n[[package]]\nname = "a"\n', encoding='utf-8')
+                  assert outputs(directory)['key'] != base['key'], 'a changed Cargo.lock misses'
+                  lock.write_text('version = 4\n', encoding='utf-8')
+                  (directory / 'mise.toml').write_text('[tools]\njust="1.58.0"\nrust="1.92.0"\n', encoding='utf-8')
+                  assert outputs(directory)['key'] != base['key'], 'a changed toolchain misses'
+
+          content_cache_key_follows_lock_and_toolchain()
+          print('PASS content_cache_key_follows_lock_and_toolchain', flush=True)
+
+          def content_cache_steps_share_the_compile_cache_pins():
+              assert list(steps) == ['Checkout', 'Caller check files', 'Mise bootstrap', 'Content cache identity',
+                                     'Restore content cache', 'Content compile cache', 'Caller tools', 'Caller check',
+                                     'Seal content cache', 'Save content cache']
+              for name in ['Restore content cache', 'Content compile cache', 'Seal content cache', 'Save content cache']:
+                  assert "steps.cache-identity.outputs.enabled == 'true'" in steps[name]['if'], name
+              for name in ['Caller check files', 'Mise bootstrap', 'Caller tools', 'Caller check']:
+                  assert 'if' not in steps[name] and 'continue-on-error' not in steps[name], name
+              assert [name for name, step in steps.items() if 'continue-on-error' in step] == ['Restore content cache', 'Save content cache']
+              restore, save = steps['Restore content cache'], steps['Save content cache']
+              assert restore['id'] == 'cache-restore' and restore['continue-on-error'] is True and restore['uses'] == restore_uses
+              assert save['continue-on-error'] is True and save['uses'] == save_uses
+              assert restore['with']['key'] == save['with']['key'] == '$' + '{{ steps.cache-identity.outputs.key }}'
+              assert 'restore-keys' not in restore['with'], 'a changed lock or toolchain must rebuild'
+              assert restore['with']['path'] == save['with']['path']
+              assert '$' + '{{ runner.temp }}/maestro-sccache' in restore['with']['path'] and '~/.local/share/mise' in restore['with']['path']
+              assert save['if'] == ("steps.cache-identity.outputs.enabled == 'true' && "
+                                    "steps.cache-restore.outputs.cache-hit != 'true' && "
+                                    "steps.cache-seal.outputs.eligible == 'true'")
+              assert steps['Seal content cache']['id'] == 'cache-seal'
+              install = steps['Content compile cache']['run']
+              version = re.search(r'^          version=(\S+)$', shared, re.MULTILINE)[1]
+              linux = re.search(r'Linux:x86_64\) platform=(\S+) digest=(\S+) ;;', shared)
+              assert f'version={version}' in install and linux[1] in install and linux[2] in install
+
+          content_cache_steps_share_the_compile_cache_pins()
+          print('PASS content_cache_steps_share_the_compile_cache_pins', flush=True)
+
+          def content_compile_cache_exports_the_shared_wrapper():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  archive = directory / 'archive.tar.gz'
+                  tool = directory / 'sccache'
+                  tool.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALLS"\n', encoding='utf-8')
+                  tool.chmod(0o755)
+                  with tarfile.open(archive, 'w:gz') as bundle:
+                      bundle.add(tool, 'sccache-v0.18.0-x86_64-unknown-linux-musl/sccache')
+                  digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+                  fetch = directory / 'curl'
+                  fetch.write_text(f'#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\ncp {archive} "$2"\n', encoding='utf-8')
+                  fetch.chmod(0o755)
+                  linux = re.search(r'Linux:x86_64\) platform=\S+ digest=(\S+) ;;', shared)[1]
+                  env = {'PATH': str(directory) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary, 'CALLS': str(directory / 'calls'),
+                         'GITHUB_PATH': str(directory / 'path'), 'GITHUB_ENV': str(directory / 'env'),
+                         'CACHE_RESTORE_OUTCOME': 'success'}
+                  stale = pathlib.Path(temporary, 'maestro-sccache')
+                  stale.mkdir()
+                  (stale / 'partial').touch()
+                  result = run('Content compile cache', directory, env | {'CACHE_RESTORE_OUTCOME': 'failure'}, [(linux, digest)])
+                  assert result.returncode == 0, result.stdout + result.stderr
+                  assert not (stale / 'partial').exists(), 'a failed restore starts from an empty local cache'
+                  settings = (directory / 'env').read_text(encoding='utf-8').splitlines()
+                  assert 'CARGO_BUILD_RUSTC_WRAPPER=sccache' in settings and 'CARGO_INCREMENTAL=0' in settings
+                  assert f'SCCACHE_DIR={stale}' in settings
+                  assert (directory / 'calls').read_text(encoding='utf-8') == '--start-server\n'
+                  (directory / 'path').unlink()
+                  result = run('Content compile cache', directory, env, [(linux, '0' * 64)])
+                  assert result.returncode != 0 and not (directory / 'path').exists(), 'a corrupted download never enters PATH'
+
+          content_compile_cache_exports_the_shared_wrapper()
+          print('PASS content_compile_cache_exports_the_shared_wrapper', flush=True)
+
+          def content_cache_seal_marks_only_a_stopped_non_empty_cache():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  cache = directory / 'cache'
+                  cache.mkdir()
+                  tool = directory / 'sccache'
+                  tool.write_text('#!/bin/sh\nexit "${STOP_STATUS:-0}"\n', encoding='utf-8')
+                  tool.chmod(0o755)
+                  output = directory / 'output'
+                  for status, files, eligible in [('0', False, False), ('0', True, True), ('1', True, False)]:
+                      output.write_text('', encoding='utf-8')
+                      for item in cache.iterdir():
+                          item.unlink()
+                      if files:
+                          (cache / 'entry').write_text('object', encoding='utf-8')
+                      env = {'PATH': str(directory) + os.pathsep + os.environ['PATH'], 'SCCACHE_DIR': str(cache),
+                             'GITHUB_OUTPUT': str(output), 'STOP_STATUS': status}
+                      result = run('Seal content cache', directory, env)
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      assert (output.read_text(encoding='utf-8') == 'eligible=true\n') == eligible, (status, files)
+
+          content_cache_seal_marks_only_a_stopped_non_empty_cache()
+          print('PASS content_cache_seal_marks_only_a_stopped_non_empty_cache', flush=True)
+
+          def content_cache_is_documented():
+              readme = ' '.join((root / 'README.md').read_text(encoding='utf-8').split())
+              assert 'a `Cargo.lock` restores one compiled-cache snapshot and the mise tools' in readme
+              assert 'Callers without a `Cargo.lock` run no cache steps' in readme
+
+          content_cache_is_documented()
+          print('PASS content_cache_is_documented', flush=True)

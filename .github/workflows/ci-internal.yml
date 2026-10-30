@@ -116,7 +116,7 @@ jobs:
               assert 'permissions:\n  contents: read\n' in content and 'persist-credentials: false' in content
               assert re.findall(r'^    if: (.+)$', content, re.MULTILINE) == [
                   "$" + "{{ github.repository_id != '1404598722' }}"]
-              assert not re.search(r'continue-on-error:', content)
+              assert content.count('continue-on-error: true') == 2
               for action in re.findall(r'uses: (\S+)', content):
                   assert re.fullmatch(r'[^@]+@[0-9a-f]{40}', action), action
               assert content_body('Caller tools').strip() == 'mise install'
@@ -174,8 +174,6 @@ jobs:
                       result = content_run('Caller check files', directory)
                       assert result.returncode == 0, result.stdout + result.stderr
                       path.unlink()
-                  names = re.findall(r'^      - name: (.+)$', content, re.MULTILINE)
-                  assert names == ['Checkout', 'Caller check files', 'Mise bootstrap', 'Caller tools', 'Caller check']
 
           content_requires_caller_files_and_pins()
           print('PASS content_requires_caller_files_and_pins', flush=True)
