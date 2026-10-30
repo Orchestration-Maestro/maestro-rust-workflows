@@ -549,7 +549,7 @@ jobs:
                   gh, _ = fake_repository(event=event, newer=3, ratchet={})
                   assert judging['judge']('7', 'owner/repo', gh, narrow) == [], event
                   counts = gh.counts
-                  assert counts['runs'] == 2 and counts['jobs'] <= 1 + 3 and counts['annotations'] <= 3 * (1 + 3), counts
+                  assert counts['runs'] == 2 and counts['jobs'] <= 1 + 3 and counts['annotations'] <= 3 * (1 + 3) + (event == 'merge_group'), counts
                   assert {number for number in range(1, 11) if counts[f'logs of run {number}']} == {5, 6, 7}, counts
                   # Declaration logs on a balanced pull request; on a merge group also the shard logs of the judged run.
                   assert counts['logs'] == (3 if event == 'pull_request' else 3 + 16), counts
