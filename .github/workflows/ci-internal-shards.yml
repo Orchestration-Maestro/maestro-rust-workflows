@@ -518,6 +518,13 @@ jobs:
                   lock.write_text('version = 4\n', encoding='utf-8')
                   (directory / 'mise.toml').write_text('[tools]\njust="1.58.0"\nrust="1.92.0"\n', encoding='utf-8')
                   assert outputs(directory)['key'] != base['key'], 'a changed toolchain misses'
+                  (directory / 'mise.toml').write_text('[tools]\njust="1.58.0"\nrust="1.91.0"\n', encoding='utf-8')
+                  toolchain = directory / 'rust-toolchain.toml'
+                  toolchain.write_text('[toolchain]\nchannel = "1.98.0"\n', encoding='utf-8')
+                  pinned = outputs(directory)['key']
+                  assert pinned != base['key'], 'a rustup toolchain file is part of the toolchain'
+                  toolchain.write_text('[toolchain]\nchannel = "1.99.0"\n', encoding='utf-8')
+                  assert outputs(directory)['key'] != pinned, 'a changed rustup toolchain misses'
 
           content_cache_key_follows_lock_and_toolchain()
           print('PASS content_cache_key_follows_lock_and_toolchain', flush=True)
