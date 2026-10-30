@@ -637,7 +637,8 @@ jobs:
               assert [depart(value, [10.0, 10.0, 10.0]) for value in (9.0, 10.0, 11.0)] == [None, None, None]
               assert depart(11.01, [10.0, 10.0, 10.0]) == 'above' and depart(8.99, [10.0, 10.0, 10.0]) == 'below'
               # The spread is the whole range of the earlier values, not their median.
-              assert depart(12.5, [8.0, 10.0, 12.0]) is None and depart(6.9, [8.0, 10.0, 12.0]) is None and depart(13.1, [8.0, 10.0, 12.0]) == 'above'
+              assert depart(12.5, [8.0, 10.0, 12.0]) is None and depart(7.1, [8.0, 10.0, 12.0]) is None
+              assert depart(13.1, [8.0, 10.0, 12.0]) == 'above' and depart(6.9, [8.0, 10.0, 12.0]) == 'below'
               # Fewer than three earlier values give no spread.
               assert depart(99.0, [10.0, 10.0]) is None and depart(99.0, []) is None
 
