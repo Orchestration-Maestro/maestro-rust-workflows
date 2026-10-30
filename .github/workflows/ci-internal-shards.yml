@@ -464,6 +464,81 @@ jobs:
 
           docs_list_the_preparation_keys()
           print('PASS docs_list_the_preparation_keys')
+
+          def archive_profile_declaration_is_validated():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+                  (directory / '.github').mkdir()
+                  path = directory / '.github/ci.toml'
+                  base = 'wasm_crates=[]\ncheck_targets=[]\n'
+                  for declared, expected in [('', None), ('test_archive_profile=""', None), ('test_archive_profile="archived"', 'archived'),
+                                             ('test_archive_profile="ci_Archive-2"', 'ci_Archive-2')]:
+                      path.write_text(base + declared + '\n', encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode == 0, (declared, result.stderr)
+                      assert values.get('test_archive_profile') == expected, (declared, values)
+                  for declared, message in [
+                      ('test_archive_profile=1', 'test_archive_profile must be a string'),
+                      ('test_archive_profile=["archived"]', 'test_archive_profile must be a string'),
+                      ('test_archive_profile="a\\u0007"', 'test_archive_profile cannot contain control characters or surrogates'),
+                      ('test_archive_profile="two words"', 'test_archive_profile must be a nextest profile name'),
+                      ('test_archive_profile="-archived"', 'test_archive_profile must be a nextest profile name'),
+                      ('test_archive_profile="a/b"', 'test_archive_profile must be a nextest profile name')]:
+                      path.write_text(base + declared + '\n', encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and not values, (declared, result.stdout)
+                      assert result.stderr.strip() == '.github/ci.toml: ' + message, (declared, result.stderr)
+              schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
+              assert schema['properties']['test_archive_profile'] == {
+                  'description': 'Nextest profile that archived test shards run under; other runs keep the default profile.',
+                  'type': 'string', 'pattern': '^([A-Za-z0-9][A-Za-z0-9_-]*)?$', 'default': ''}
+              assert 'test_archive_profile' not in schema['required']
+              declared = (root / 'fixtures/declared/.github/ci.toml').read_text(encoding='utf-8')
+              assert 'test_archive_profile = "archived"' in declared
+              assert '[profile.archived]' in (root / 'fixtures/declared/.config/nextest.toml').read_text(encoding='utf-8')
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              assert document['jobs']['declaration']['outputs']['test_archive_profile'] == '$' + '{{ steps.config.outputs.test_archive_profile }}'
+              for job in ['tests', 'doctests']:
+                  assert document['jobs'][job]['env']['TEST_ARCHIVE_PROFILE'] == '$' + '{{ needs.declaration.outputs.test_archive_profile }}', job
+
+          archive_profile_declaration_is_validated()
+          print('PASS archive_profile_declaration_is_validated')
+
+          def archived_shards_export_the_declared_profile_only():
+              for shard, archive, profile, expected in [
+                  ('1', 'test-binaries.tar.zst', 'archived', 'archived'),
+                  ('2', 'test-binaries.tar.zst', '', 'unset'),
+                  ('2', '', 'archived', 'unset'),
+                  ('doctests', '', 'archived', 'unset'),
+              ]:
+                  with tempfile.TemporaryDirectory() as temporary:
+                      directory = pathlib.Path(temporary)
+                      tools, log = install_recording_runner(directory)
+                      probe = tools / 'cargo-nextest'
+                      probe.write_text('#!/bin/sh\nprintf %s "${NEXTEST_PROFILE-unset}" > "$0.profile"\n', encoding='utf-8')
+                      result = execute('Isolated tests', directory, {
+                          'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                          'RUNNER_TEMP': temporary, 'SHARD': shard, 'WARM_CACHE': 'false', 'COLLECT_COVERAGE': 'false',
+                          'TEST_ARCHIVE': archive and str(directory / archive), 'TEST_ARCHIVE_PROFILE': profile,
+                          'TEST_PACKAGES': '["sample"]', 'CARGO_COVERAGE_MIN_LINES': ''})
+                      assert result.returncode == 0, result.stdout + result.stderr
+                      recorded = tools / 'cargo-nextest.profile'
+                      if shard == 'doctests':
+                          assert not recorded.exists()
+                      else:
+                          assert recorded.read_text(encoding='utf-8') == expected, (shard, archive, profile)
+
+          archived_shards_export_the_declared_profile_only()
+          print('PASS archived_shards_export_the_declared_profile_only')
+
+          def docs_list_the_archive_profile_key():
+              guide = ' '.join((root / 'docs/caller-checks.md').read_text(encoding='utf-8').split())
+              readme = ' '.join((root / 'README.md').read_text(encoding='utf-8').split())
+              assert '`test_archive_profile`' in guide and '`test_archive_profile`' in readme
+
+          docs_list_the_archive_profile_key()
+          print('PASS docs_list_the_archive_profile_key')
       - name: Artifact download at workflow seam
         shell: python
         run: |
