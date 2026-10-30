@@ -980,13 +980,23 @@ read the run fails instead of passing.
 | `slow-test-seconds` | 30 | Test-time limit |
 | `hang-limit-seconds` | 120 | Test-time limit |
 
-### Merge-run time budget
+### Time per unit of work
 
-There is no fixed minutes budget. A run that has finished is compared with the
-history of its own workflow, event and runner band, and a run more than 10%
-over its baseline files "CI run slower than its baseline: run N" at once. The
-issue names the run, links the latest baseline runs and lists the six jobs that
-grew most against their mean in those runs.
+The guard holds time per unit of work, not raw wall time. A run that does twice
+the work and takes twice as long is natural growth: it is accepted without
+anyone acting and files nothing. Two kinds of work are measured:
+
+- Test jobs, in seconds per test run. Each test shard ends with a `Work units`
+  notice, `tests: N`, read from the nextest summary; the rate is the shards'
+  seconds over the shards' test runs.
+- Build jobs, in seconds per compile unit. The `Build test archive` cache step
+  prints `compiles: N; hit-rate: P`, the executed compile requests and the hit
+  rate of the sccache statistics.
+
+A run whose rate for either kind is more than 10% over its baseline is a
+regression and files "CI run slower than its baseline: run N" at once. The
+issue names the run and the band, gives each regressed rate against its baseline
+and links the latest baseline runs. Fix it at its cause; nothing accepts it.
 
 Hosted Linux runners come in two speed bands: the same work, cache and image
 ran 1.45 to 1.6 times slower on some runners (maestro-rust-workflows runs
@@ -1004,12 +1014,12 @@ run with no label is in the band `unknown`. Of the last `selection-window`
 earlier successful runs of the same workflow and event (10 by default), only
 those in the same band count, and a run newer than the judged one never does.
 
-The recent baseline is the median wall time of the previous five successful
-runs in the band. The guard also keeps the lowest such median it has seen for
-each level, a workflow, event and band, in one open issue titled "CI time
-ratchet". The baseline is the lower of the two, so a staircase of small
+The recent baseline of a kind is the median of its rates in the previous five
+successful runs in the band. The guard also keeps the lowest such median it has
+seen for each level, a workflow, event, band and kind, in one open issue titled
+"CI time ratchet". The baseline is the lower of the two, so a staircase of small
 regressions cannot raise the line, and the limit is the baseline plus 10%.
-Fewer than three earlier runs in the band means no baseline and no issue.
+Fewer than three earlier rates in the band means no baseline and no issue.
 Merge groups, pull requests and pushes to `main` are judged; CodeQL and every
 other run are not, because they gate nothing. Keep the ratchet issue open: the
 guard rebuilds a missing one from the next runs, and a lasting slowdown it has
@@ -1017,17 +1027,20 @@ not seen is then taken as the new level.
 
 A stored level has one writer: only the guard lowers it, when the recent median
 is lower, and nothing raises it; no input does. A lasting slowdown keeps firing
-until its cause is fixed.
+until its cause is fixed. A deliberate new cost that is not natural growth needs
+its own owner decision first.
 
-Source: Maestro merge-group runs 40990557025 and 40990555729 took 39.3 and 39.8
-minutes with 16 shards, so at that level the line sits near 43 minutes; it
-moves down by itself as the 32-shard change makes runs shorter. A judged run
-reads the jobs and annotations of at most `selection-window` earlier runs, and
-shard logs only on a merge group or main push, or when the shards are
-unbalanced. With 32 shards and the default window that is at most about 95
-calls, and about 125 when the shards are unbalanced, against the job token's
-1,000 calls an hour for the whole repository. To respond, open the run link, start from the job that grew most and fix its
-cause.
+Source: no rate is fixed in advance; the first baseline of a band is its first
+three runs. Maestro merge-group runs 40990557025 and 40990555729 took 39.3 and
+39.8 minutes with 16 shards, and the baseline moves down by itself as the
+32-shard change makes runs shorter. A judged run
+reads the jobs of at most `selection-window` earlier runs, the annotations of
+the test shards and the archive build of the judged run and of at most five
+baseline runs, and shard logs only on a merge group or main push, or when the
+shards are unbalanced. With 32 shards and the default window that is at most
+about 285 calls, and about 315 when the shards are unbalanced, against the job
+token's 1,000 calls an hour for the whole repository. To respond, open the run
+link and fix the cause of the kind that regressed.
 
 ### Compile-cache hit-rate floor
 
@@ -1109,3 +1122,33 @@ already reports it. The self-test checks every pinned name against `ci.yml`,
 and checks that this repository's ruleset checks, `Required repository quality`
 and `Required consumer tests`, still exist, so renaming a job fails there first.
 When you rename a job on purpose, change the pin and the ruleset in one change.
+### Escalations
+
+Anything that stands out of the pattern is escalated explicitly: the guard files
+an issue with the label `escalation`, or adds a comment to the open one with the
+same title, naming the run, its baseline runs and what departed from them.
+Nothing outside the pattern is absorbed silently. The normal spread of a rate is
+the range of the band's earlier rates widened by 10% of their median; for a hit
+rate or a share it is the range of the earlier values widened by 10 points.
+Three earlier values are needed for a spread. Each title is standing, so a
+departure that repeats shows as comments on one issue:
+
+- "Escalation: time per test run outside its normal spread" and "Escalation:
+  time per compile unit outside its normal spread": a rate below the band's
+  spread, which means work that did not run. A rate above the spread is the
+  regression above, filed once with the same label.
+- "Escalation: jobs or steps changed without matching work": a job or step
+  that appears, disappears or grows (past the earlier range plus 10% and 30
+  seconds) in a successful run. The test shards and the archive build are
+  judged by their rate, so they are only checked for appearing and disappearing.
+- "Escalation: compile cache hit rate outside its usual range": the hit rate of
+  the archive build, read from its `Work units` notice, outside the earlier
+  hit rates widened by 10 points.
+- "Escalation: test selection share outside its usual range": the run's share
+  of workspace test packages selected, outside the earlier runs' shares
+  widened by 10 points.
+
+To respond, open the run link, find what departed and either fix its cause or,
+if the change is deliberate, take it to the owner; the guard stays quiet again
+once the earlier runs show the new pattern.
+
