@@ -816,6 +816,7 @@ jobs:
               # The jobs that ran, the seconds of a job or step that ran and a step reached to success are each decided once; every other reader calls the owner.
               assert "seconds(job) is None" not in guards and guards.count("job.get('conclusion') != 'cancelled'") == 1, 'executed() owns the jobs that ran'
               assert 'def step_seconds' not in guards and guards.count("get('started_at')") == 1, 'seconds() owns the seconds of a job or step that ran'
+              assert "startswith('Test shard (')" not in guards and guards.count('startswith(measuring)') == 1, 'kind_of() owns which jobs are test shards'
               assert "== 'Compile cache hit-rate floor'" not in guards and "reached(job, 'Compile cache hit-rate floor')" in guards, 'reached() owns the steps that succeeded'
 
           each_judging_predicate_has_one_owner()
