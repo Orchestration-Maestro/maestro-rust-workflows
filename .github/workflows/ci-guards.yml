@@ -235,6 +235,18 @@ jobs:
                                       'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n{note['message']}\n"}
               return None
 
+          def departure(value, history, pad):
+              raise NotImplementedError('departure')
+
+          def range_findings(run, band, measured, prior, prior_measured):
+              raise NotImplementedError('range_findings')
+
+          def shape_finding(run, band, jobs, prior, prior_jobs):
+              raise NotImplementedError('shape_finding')
+
+          def selection_departure(run, rows):
+              raise NotImplementedError('selection_departure')
+
           def measures_of(jobs, annotations_of):
               """Seconds per unit of each kind of work in a run, and its compile cache hit rate, from the work-unit annotations of its jobs."""
               found, spent, units = {}, {}, {}

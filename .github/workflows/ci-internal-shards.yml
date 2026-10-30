@@ -559,6 +559,11 @@ jobs:
                   assert f'- https://example.test/runs/{n}' in body, body
               for rate in (10.9, 11.0):
                   assert judging['rate_finding'](run_of(8, 30), {'tests': rate}, prior, measured, 'band', {}) is None, rate
+              # Above the band's normal spread (the earlier rates widened by 10%) it is also escalated; inside the spread it is only a regression.
+              assert finding['labels'] == ['escalation'], finding
+              spread = [{'tests': rate} for rate in (8.0, 10.0, 10.0, 12.0, 10.0)]
+              inside = judging['rate_finding'](run_of(8, 30), {'tests': 11.1}, prior, spread, 'band', {})
+              assert inside['title'] == 'CI run slower than its baseline: run 8' and inside['labels'] == [], inside
               # Compile units are judged on their own rate.
               body = judging['rate_finding'](run_of(8, 30), {'tests': 10.0, 'compiles': 2.22}, prior, measured, 'band', {})['body']
               assert '- Build jobs: 2.22 s per compile unit against a baseline of 2.00 s (+11%, limit +10%)' in body and 'Test jobs' not in body, body
@@ -627,6 +632,78 @@ jobs:
           a_runs_band_is_the_hardware_label_of_its_slowest_labelled_job()
           print('PASS a_runs_band_is_the_hardware_label_of_its_slowest_labelled_job')
 
+          def a_value_outside_the_spread_of_its_earlier_values_departs():
+              depart = lambda value, history, pad=1.0: judging['departure'](value, history, pad)
+              assert [depart(value, [10.0, 10.0, 10.0]) for value in (9.0, 10.0, 11.0)] == [None, None, None]
+              assert depart(11.01, [10.0, 10.0, 10.0]) == 'above' and depart(8.99, [10.0, 10.0, 10.0]) == 'below'
+              # The spread is the whole range of the earlier values, not their median.
+              assert depart(12.5, [8.0, 10.0, 12.0]) is None and depart(6.9, [8.0, 10.0, 12.0]) is None and depart(13.1, [8.0, 10.0, 12.0]) == 'above'
+              # Fewer than three earlier values give no spread.
+              assert depart(99.0, [10.0, 10.0]) is None and depart(99.0, []) is None
+
+          a_value_outside_the_spread_of_its_earlier_values_departs()
+          print('PASS a_value_outside_the_spread_of_its_earlier_values_departs')
+
+          def a_rate_below_the_normal_spread_or_a_cache_rate_off_its_range_escalates():
+              prior, measured = prior_runs(5, compiles=2.0, **{'hit-rate': 99.5})
+              run = run_of(7, 30)
+              low = judging['range_findings'](run, 'band-x', {'tests': 8.0, 'compiles': 2.0, 'hit-rate': 99.5}, prior, measured)
+              assert [finding['title'] for finding in low] == ['Escalation: time per test run outside its normal spread'], low
+              assert low[0]['labels'] == ['escalation'] and low[0]['comment'], low
+              body = low[0]['body']
+              assert 'Run: https://example.test/runs/7' in body and 'Rust CI (merge_group, main) on runner band band-x.' in body, body
+              assert "8.00 s per test run, below the band's normal spread of 9.00 to 11.00 s" in body, body
+              assert all(f'- https://example.test/runs/{n}' in body for n in range(1, 6)), body
+              cache = judging['range_findings'](run, 'band-x', {'tests': 10.0, 'hit-rate': 60.0}, prior, measured)
+              assert [finding['title'] for finding in cache] == ['Escalation: compile cache hit rate outside its usual range'], cache
+              assert 'Compile cache hit rate 60.00%, below its usual range of 89.50% to 100.00%' in cache[0]['body'], cache
+              slow = judging['range_findings'](run, 'band-x', {'tests': 10.0, 'compiles': 3.0, 'hit-rate': 99.5}, prior, measured)
+              assert [finding['title'] for finding in slow] == [], slow
+              # A rate above the spread is the regression finding's to file, so it is not filed twice.
+              assert judging['range_findings'](run, 'band-x', {'tests': 12.0}, prior, measured) == []
+              # Fewer than three earlier values: nothing stands out yet.
+              few, measured = prior_runs(2, **{'hit-rate': 99.5})
+              assert judging['range_findings'](run, 'band-x', {'tests': 1.0, 'hit-rate': 1.0}, few, measured) == []
+
+          a_rate_below_the_normal_spread_or_a_cache_rate_off_its_range_escalates()
+          print('PASS a_rate_below_the_normal_spread_or_a_cache_rate_off_its_range_escalates')
+
+          def jobs_of_a_run(extra=(), docs=240, shards=20, skip=(), corpus=None):
+              named = [('Docs', 5, [('Set up job', 5), ('Build docs', docs)] + ([('Download corpus', corpus)] if corpus else [])), ('Format and lint', 4, [('Lint', 100)]),
+                       ('Doctests', 3, []), ('Test shard (1/16)', shards, [('Tests', 600)]), ('Build test archive', 12, [('Build test archive', 500)])]
+              found = [job(name, minutes, 'skipped' if name in skip else 'success', identifier=n, steps=steps) for n, (name, minutes, steps) in enumerate(named)]
+              return found + list(extra)
+
+          def a_job_or_step_that_appears_disappears_or_grows_without_matching_work_escalates():
+              prior = [run_of(n, 30) for n in range(1, 6)]
+              before = [jobs_of_a_run()] * 5
+              shape = lambda jobs, run=run_of(7, 30), history=before, runs=prior: judging['shape_finding'](run, 'band-x', jobs, runs, history)
+              assert shape(jobs_of_a_run()) is None
+              # Only the work is judged for the shards and the archive build: they take twice as long with no finding.
+              assert shape(jobs_of_a_run(shards=40)) is None
+              finding = shape(jobs_of_a_run(corpus=20))
+              assert finding['title'] == 'Escalation: jobs or steps changed without matching work', finding
+              assert finding['labels'] == ['escalation'] and finding['comment'], finding
+              body = finding['body']
+              assert '- Docs / Download corpus appeared' in body and 'Run: https://example.test/runs/7' in body, body
+              assert 'on runner band band-x.' in body and all(f'- https://example.test/runs/{n}' in body for n in range(1, 6)), body
+              assert 'disappeared' not in body and 'grew' not in body, body
+              assert '- New job appeared' in shape(jobs_of_a_run(extra=[job('New job', 3, identifier=9)]))['body']
+              gone = shape(jobs_of_a_run(skip=['Doctests']))
+              assert '- Doctests disappeared' in gone['body'], gone
+              # A step that grows past the earlier range plus 10% (and 30 s) escalates, a small change does not.
+              assert shape(jobs_of_a_run(docs=265)) is None
+              grown = shape(jobs_of_a_run(docs=275))
+              assert '- Docs / Build docs grew to 275 s (earlier: 240 to 240 s)' in grown['body'], grown
+              # A shard that did not run is a changed shard set.
+              assert '- Test shard (1/16) disappeared' in shape(jobs_of_a_run(skip=['Test shard (1/16)']))['body']
+              # Only a successful run with three earlier runs is compared.
+              assert judging['shape_finding'](dict(run_of(7, 30), conclusion='failure'), 'band-x', jobs_of_a_run(skip=['Doctests']), prior, before) is None
+              assert judging['shape_finding'](run_of(7, 30), 'band-x', jobs_of_a_run(skip=['Doctests']), prior[:2], before[:2]) is None
+
+          a_job_or_step_that_appears_disappears_or_grows_without_matching_work_escalates()
+          print('PASS a_job_or_step_that_appears_disappears_or_grows_without_matching_work_escalates')
+
           def work_units(message):
               return [{'title': 'Work units', 'message': message, 'annotation_level': 'notice'}]
 
@@ -690,6 +767,18 @@ jobs:
               assert filed == ['Already open', 'Fresh'], filed
               assert [call[0][:3] for call in calls if call[0][1] in ('comment', 'create')] == [('issue', 'comment', '5'), ('issue', 'create', '-R')], calls
               assert calls[1][1] == 'again', calls
+              assert not [call for call in calls if call[0][0] == 'label'], calls
+              # An escalation is labelled, the label is made once, and a standing one comments on its open issue.
+              calls.clear()
+              flagged = {'comment': True, 'labels': ['escalation']}
+              filed = judging['file_issues']([{'title': 'Escalation: new', 'body': 'first'} | flagged, {'title': 'Already open', 'body': 'again'} | flagged,
+                                              {'title': 'Escalation: other', 'body': 'second'} | flagged], 'owner/repo', gh)
+              assert filed == ['Escalation: new', 'Already open', 'Escalation: other'], filed
+              made = [call[0] for call in calls if call[0][:2] == ('label', 'create')]
+              assert len(made) == 1 and made[0][:6] == ('label', 'create', 'escalation', '-R', 'owner/repo', '--force'), made
+              creates = [call[0] for call in calls if call[0][:2] == ('issue', 'create')]
+              assert len(creates) == 2 and all(argv[argv.index('--label') + 1] == 'escalation' for argv in creates), creates
+              assert [call[0][:3] for call in calls if call[0][1] == 'comment'] == [('issue', 'comment', '5')], calls
 
           findings_file_once_and_every_slow_test_gets_an_issue()
           print('PASS findings_file_once_and_every_slow_test_gets_an_issue')
@@ -776,6 +865,8 @@ jobs:
                   if argv[:2] == ('issue', 'create'):
                       created.append((argv[argv.index('--title') + 1], body))
                       return ''
+                  if argv[:2] == ('label', 'create'):
+                      return ''
                   raise AssertionError(f'unexpected gh call: {text}')
               created = []
               gh.counts = counts
@@ -826,6 +917,28 @@ jobs:
 
           natural_growth_stays_quiet()
           print('PASS natural_growth_stays_quiet')
+
+          def judge_escalates_what_stands_out_of_the_pattern():
+              docs = [('Set up job', 5), ('Build docs', 240)]
+              cases = [({'steps': {(7, 'Docs'): docs + [('Download corpus', 20)]}}, 'Escalation: jobs or steps changed without matching work'),
+                       ({'pace': {7: (0.5, 100)}}, 'Escalation: time per test run outside its normal spread'),
+                       ({'build': {7: (1, 600, 60.0)}}, 'Escalation: compile cache hit rate outside its usual range'),
+                       ({'selections': {7: (51, 51, 'shared input: Cargo.toml')}}, 'Escalation: test selection share outside its usual range')]
+              for changed, title in cases:
+                  gh, _ = fake_repository(**changed)
+                  findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+                  assert [finding['title'] for finding in findings] == [title], (title, findings)
+                  assert findings[0]['labels'] == ['escalation'] and 'Run: https://example.test/runs/7' in findings[0]['body'], findings
+              # The same departures on a pull request are escalated too.
+              gh, _ = fake_repository(event='pull_request', steps={(7, 'Docs'): docs + [('Download corpus', 20)]})
+              assert [finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS)] == [cases[0][1]]
+              # A rate that regressed is one issue, labelled, not a regression plus an escalation.
+              gh, _ = fake_repository(pace={7: (1.5, 100)})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'] and findings[0]['labels'] == ['escalation'], findings
+
+          judge_escalates_what_stands_out_of_the_pattern()
+          print('PASS judge_escalates_what_stands_out_of_the_pattern')
 
           def judge_compares_a_run_only_with_runs_on_its_own_hardware_band():
               SIX = SETTINGS | {'window': 6}
@@ -1042,6 +1155,27 @@ jobs:
 
           a_sustained_wide_selection_files_an_issue()
           print('PASS a_sustained_wide_selection_files_an_issue')
+
+          def a_selection_share_outside_its_usual_range_escalates():
+              narrow = selection_rows(*[(1, None)] * 5)
+              run = run_of(7, 30)
+              finding = judging['selection_departure'](run, [(7, 51, 51, 'shared input: Cargo.toml')] + narrow)
+              assert finding['title'] == 'Escalation: test selection share outside its usual range', finding
+              assert finding['labels'] == ['escalation'] and finding['comment'], finding
+              body = finding['body']
+              assert 'Run: https://example.test/runs/7' in body, body
+              assert '- This run selected 51/51 test packages (100%), above the usual range of 0% to 12%, full suite because shared input: Cargo.toml' in body, body
+              assert '- run 1: 1/51 packages (2%)' in body, body
+              # Inside the earlier range widened by 10 points, or with fewer than three earlier runs, nothing stands out.
+              assert judging['selection_departure'](run, [(7, 6, 51, None)] + narrow) is None
+              assert judging['selection_departure'](run, [(7, 51, 51, None)] + narrow[:2]) is None
+              wide = selection_rows(*[(51, 'baseline missing')] * 5)
+              assert judging['selection_departure'](run, [(7, 51, 51, None)] + wide) is None
+              below = judging['selection_departure'](run, [(7, 1, 51, None)] + wide)
+              assert 'below the usual range of 90% to 100%' in below['body'], below
+
+          a_selection_share_outside_its_usual_range_escalates()
+          print('PASS a_selection_share_outside_its_usual_range_escalates')
 
           def judge_reports_a_sustained_wide_selection():
               gh, _ = fake_repository(selections={identifier: (51, 51, 'baseline missing') for identifier in range(1, 8)})
@@ -1302,8 +1436,8 @@ jobs:
               for name in ['Required repository quality', 'Required consumer tests']:
                   assert name in internal_names, name
               guide = ' '.join((root / 'docs/caller-checks.md').read_text(encoding='utf-8').split())
-              for heading in ['## CI speed guards', '### Merge-run time budget', '### Compile-cache hit-rate floor', '### Selection check',
-                              '### Shard balance', '### Test-time limit', '### Required checks']:
+              for heading in ['## CI speed guards', '### Time per unit of work', '### Compile-cache hit-rate floor', '### Selection check',
+                              '### Shard balance', '### Test-time limit', '### Required checks', '### Escalations']:
                   assert heading in guide, heading
               inputs = document['on']['workflow_call']['inputs']
               for name, value in inputs.items():
@@ -1316,13 +1450,21 @@ jobs:
                   assert source in guide, source
               # The time guard is relative to the run's own baseline; a fixed minutes budget is not allowed.
               assert 'merge-run-budget-minutes' not in guide and 'merge-run-budget-minutes' not in guards
-              assert 'median wall time of the previous five successful runs' in guide and 'plus 10%' in guide
+              assert 'not raw wall time' in guide and 'natural growth' in guide and '`Work units`' in guide
+              assert 'seconds per test run' in guide and 'seconds per compile unit' in guide
+              assert 'median of its rates in the previous five successful runs' in guide and 'plus 10%' in guide
               assert 'runner band' in guide and 'lowest such median' in guide and 'runner-band: <label>' in guide
               # The ratchet is stored in one issue and only the guard lowers it.
               assert 'issue titled "CI time ratchet"' in guide and 'only the guard lowers it' in guide
               # The cache floor warns; the guards file one issue for it. The slow-test issues have no cap.
               assert 'never fails the build' in guide and 'Compile cache below its hit-rate floor' in guide
               assert 'one issue for every test' in guide
+              # Everything out of the pattern is escalated under one label, with a standing title per departure.
+              assert 'label `escalation`' in guide and 'Nothing outside the pattern is absorbed silently' in guide
+              for title in ['Escalation: time per test run outside its normal spread', 'Escalation: time per compile unit outside its normal spread',
+                            'Escalation: jobs or steps changed without matching work', 'Escalation: compile cache hit rate outside its usual range',
+                            'Escalation: test selection share outside its usual range']:
+                  assert title in guide, title
 
           required_checks_and_documented_defaults_stay_pinned()
           print('PASS required_checks_and_documented_defaults_stay_pinned')
