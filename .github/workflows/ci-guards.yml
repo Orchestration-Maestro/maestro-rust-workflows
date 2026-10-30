@@ -235,17 +235,93 @@ jobs:
                                       'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n{note['message']}\n"}
               return None
 
-          def departure(value, history, pad):
-              raise NotImplementedError('departure')
+          def spread_of(history, pad, ceiling=None):
+              """The range of earlier values widened by `pad`, never below zero or above the ceiling; None below three values."""
+              if len(history) < 3:
+                  return None
+              high = max(history) + pad
+              return max(min(history) - pad, 0), high if ceiling is None else min(high, ceiling)
+
+          def departure(value, history, pad, ceiling=None):
+              """'below' or 'above' when a value is outside the spread of its earlier values, else None."""
+              spread = spread_of(history, pad, ceiling)
+              if spread is None:
+                  return None
+              return 'below' if value < spread[0] else 'above' if value > spread[1] else None
+
+          def rate_pad(history):
+              """10% of the median of earlier rates: how far a rate may stray from them before it stands out."""
+              return 0.10 * statistics.median(history or [0])
+
+          def escalation(run, what, baseline, lines, band=None):
+              """An issue for something out of the pattern, with the run, its baseline and what departed from it; the title is standing, so a repeat comments on the open issue."""
+              where = f' on runner band {band}' if band else ''
+              return {'title': f'Escalation: {what}', 'comment': True, 'labels': ['escalation'],
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}){where}.\n\n"
+                              'Baseline (earlier successful runs of the same workflow and event):\n' + '\n'.join(baseline)
+                              + '\n\nWhat departed from it:\n' + '\n'.join(lines) + '\n'}
 
           def range_findings(run, band, measured, prior, prior_measured):
-              raise NotImplementedError('range_findings')
+              """Escalations for a rate below its band's normal spread (a rate above it is the regression's) and for a compile cache hit rate off its usual range."""
+              baseline = [f"- {earlier['html_url']}" for earlier in prior]
+              found = []
+              for kind, (_, _, unit) in WORK.items():
+                  history = [rates[kind] for rates in prior_measured if kind in rates]
+                  if kind in measured and departure(measured[kind], history, rate_pad(history)) == 'below':
+                      low, high = spread_of(history, rate_pad(history))
+                      found.append(escalation(run, f'time per {unit} outside its normal spread', baseline,
+                                              [f"- {measured[kind]:.2f} s per {unit}, below the band's normal spread of {low:.2f} to {high:.2f} s "
+                                               '(the earlier rates, widened by 10%)'], band))
+              history = [rates['hit-rate'] for rates in prior_measured if 'hit-rate' in rates]
+              side = departure(measured['hit-rate'], history, 10, 100) if 'hit-rate' in measured else None
+              if side:
+                  low, high = spread_of(history, 10, 100)
+                  found.append(escalation(run, 'compile cache hit rate outside its usual range', baseline,
+                                          [f"- Compile cache hit rate {measured['hit-rate']:.2f}%, {side} its usual range of {low:.2f}% to {high:.2f}% "
+                                           '(the earlier hit rates, widened by 10 points)'], band))
+              return found
+
+          def timings(jobs):
+              """Seconds of every job that ran and of every step in it that ran, by name."""
+              found = {}
+              for job in jobs:
+                  if seconds(job) is None or job.get('conclusion') == 'cancelled':
+                      continue
+                  found[job['name']] = seconds(job)
+                  for step in job.get('steps', []):
+                      if step.get('conclusion') != 'skipped' and step.get('started_at') and step.get('completed_at'):
+                          found[f"{job['name']} / {step['name']}"] = (stamp(step['completed_at']) - stamp(step['started_at'])).total_seconds()
+              return found
 
           def shape_finding(run, band, jobs, prior, prior_jobs):
-              raise NotImplementedError('shape_finding')
+              """Jobs and steps of a successful run that appear, disappear or grow (past the earlier range plus 10% and 30 s) without matching work.
+              The jobs that measure work are judged by their rate, so they are only checked for appearing and disappearing."""
+              if run['conclusion'] != 'success' or len(prior_jobs) < 3:
+                  return None
+              now, before = timings(jobs), [timings(earlier) for earlier in prior_jobs]
+              lines = [f'- {name} appeared' for name in sorted(now.keys() - set().union(*before))]
+              lines += [f'- {name} disappeared' for name in sorted(set.intersection(*map(set, before)) - now.keys())]
+              for name, value in sorted(now.items()):
+                  history = [earlier[name] for earlier in before if name in earlier]
+                  if not any(name.startswith(measuring) for measuring, _, _ in WORK.values()) and departure(value, history, max(rate_pad(history), 30)) == 'above':
+                      lines.append(f'- {name} grew to {value:.0f} s (earlier: {min(history):.0f} to {max(history):.0f} s)')
+              if not lines:
+                  return None
+              return escalation(run, 'jobs or steps changed without matching work', [f"- {earlier['html_url']}" for earlier in prior], lines, band)
 
           def selection_departure(run, rows):
-              raise NotImplementedError('selection_departure')
+              """The judged run's test package share when it is outside the usual range of the earlier runs' shares, widened by 10 points."""
+              (_, selected, total, trigger), history = rows[0], rows[1:]
+              shares = [chosen * 100 / count for _, chosen, count, _ in history]
+              share = selected * 100 / total
+              side = departure(share, shares, 10, 100)
+              if side is None:
+                  return None
+              low, high = spread_of(shares, 10, 100)
+              return escalation(run, 'test selection share outside its usual range',
+                                [f'- run {identifier}: {chosen}/{count} packages ({chosen * 100 / count:.0f}%)' for identifier, chosen, count, _ in history],
+                                [f'- This run selected {selected}/{total} test packages ({share:.0f}%), {side} the usual range of {low:.0f}% to {high:.0f}%'
+                                 + (f', full suite because {trigger}' if trigger else '')])
 
           def measures_of(jobs, annotations_of):
               """Seconds per unit of each kind of work in a run, and its compile cache hit rate, from the work-unit annotations of its jobs."""
@@ -269,19 +345,21 @@ jobs:
               """A run whose seconds per unit of work, for any kind, are more than 10% over the lower of the band's recent median and its stored ratchet level."""
               if not watched(run):
                   return None
-              lines = []
+              lines, outside = [], False
               for kind, (_, jobs, unit) in WORK.items():
-                  baseline = baseline_of([rates[kind] for rates in prior_measured if kind in rates])
+                  history = [rates[kind] for rates in prior_measured if kind in rates]
+                  baseline = baseline_of(history)
                   if baseline is None or kind not in measured:
                       continue
                   baseline = min(baseline, ratchet.get(kind, baseline))
                   if measured[kind] > baseline * 1.10:
+                      outside = outside or departure(measured[kind], history, rate_pad(history)) == 'above'
                       lines.append(f"- {jobs}: {measured[kind]:.2f} s per {unit} against a baseline of {baseline:.2f} s "
                                    f"(+{(measured[kind] / baseline - 1) * 100:.0f}%, limit +10%)\n  Ratchet level: `{level_of(run, band, kind)}`")
               if not lines:
                   return None
               runs = '\n'.join(f"- {earlier['html_url']}" for earlier in prior)
-              return {'title': f"CI run slower than its baseline: run {run['id']}",
+              return {'title': f"CI run slower than its baseline: run {run['id']}", 'labels': ['escalation'] if outside else [],
                       'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) on runner band {band}.\n"
                               'Time per unit of work against the lower of the band\'s recent median and its stored ratchet level:\n\n'
                               + '\n'.join(lines) + f"\n\nLatest baseline runs (successful, same workflow, event and runner band):\n{runs}\n"}
@@ -361,11 +439,16 @@ jobs:
               """Open an issue for each finding no open issue already carries; a finding marked for comment is added to its open issue. Returns the titles filed or commented."""
               existing = {item['title']: item['number'] for item in json.loads(gh('issue', 'list', '-R', repository, '--state', 'open',
                                                                                  '--limit', '1000', '--json', 'number,title'))}
-              filed = []
+              filed, made = [], set()
               for finding in findings:
                   title = finding['title']
                   if title not in existing:
-                      gh('issue', 'create', '-R', repository, '--title', title, '--body-file', '-', body=finding['body'])
+                      for label in finding.get('labels', []):
+                          if label not in made:
+                              gh('label', 'create', label, '-R', repository, '--force', '--description', 'Out of the pattern: a CI guard found a departure to investigate')
+                              made.add(label)
+                      labelled = [argument for label in finding.get('labels', []) for argument in ('--label', label)]
+                      gh('issue', 'create', '-R', repository, '--title', title, *labelled, '--body-file', '-', body=finding['body'])
                       existing[title] = None
                   elif finding.get('comment') and existing[title]:
                       gh('issue', 'comment', str(existing[title]), '-R', repository, '--body-file', '-', body=finding['body'])
@@ -432,6 +515,8 @@ jobs:
                                  for kind, value in medians.items() if kind not in kept or value < kept[kind]}
                       if lowered:
                           save_ratchet(repository, gh, number, levels | lowered)
+                  findings.extend(range_findings(run, band, measured, prior, prior_measured))
+                  findings.append(shape_finding(run, band, jobs, prior, [jobs_of(other['id']) for other in prior]))
               on_main = run['event'] in ('merge_group', 'push')
               if on_main:
                   findings.append(required_finding(run, jobs, settings['required']))
@@ -451,6 +536,8 @@ jobs:
                   if chosen:
                       rows.append((other['id'], *chosen))
               findings.append(selection_finding(rows, settings['ceiling'], window))
+              if watched(run) and rows and rows[0][0] == run['id']:
+                  findings.append(selection_departure(run, rows))
               return [finding for finding in findings if finding]
 
           def main():
