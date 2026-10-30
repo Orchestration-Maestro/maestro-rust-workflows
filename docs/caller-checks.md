@@ -903,3 +903,132 @@ unreadable logs, missing permissions and revert conflicts fail with the original
 run link. A conflict can leave the failure issue without a revert PR: resolve
 the conflict in a normal reviewed PR, not by force-pushing main. Non-suite job
 failures are reported as safeguard failures rather than blamed on another PR.
+
+## CI speed guards
+
+Six guards keep the merge queue from slowing down again. Each one fails a check
+or files an issue on its own; none waits for someone to notice. The numbers
+below are the first values measured on Maestro, the largest caller, and each has
+its source next to it. Tighten them with `with:` inputs once the 32-shard and
+build-once changes have run on that caller.
+
+`ci-guards.yml` holds the guards that judge a finished run, plus the exception
+check. A caller gives it the completed run to judge from a `workflow_run`
+listener, and runs it without a run id on pull requests for the exception check:
+
+```yaml
+on:
+  workflow_run:
+    workflows: [Rust CI]
+    types: [completed]
+jobs:
+  guards:
+    if: github.event.workflow_run.event == 'merge_group'
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci-guards.yml@<reviewed commit>
+    with:
+      run-id: ${{ github.event.workflow_run.id }}
+```
+
+Pin the reference to a reviewed commit and list the listener workflow in
+`privileged_trigger_workflows`, as for the post-landing reporter. Issues are
+filed with the automatic job token. An open issue with the same title is never
+filed twice, so a breach that persists leaves one issue, and a job that cannot
+read the run fails instead of passing.
+
+| Input | Default | Used by |
+| --- | --- | --- |
+| `merge-run-budget-minutes` | 45 | Merge-run time budget |
+| `selection-window` | 10 | Selection check |
+| `selection-share-ceiling-percent` | 25 | Selection check |
+| `shard-balance-margin` | 1.5 | Shard balance |
+| `slow-test-seconds` | 30 | Test-time limit |
+| `slow-issue-limit` | 10 | Test-time limit |
+| `hang-limit-seconds` | 120 | Test-time limit |
+
+### Merge-run time budget
+
+A completed merge-group run that took longer than `merge-run-budget-minutes`
+files "Merge run over its time budget: run N" with the run link and its five
+slowest jobs. The default is 45 minutes. Source: merge-group runs 40990557025
+and 40990555729 on Maestro took 39.3 and 39.8 minutes with 16 shards. The 32-shard
+change is expected to bring a run to about 22 minutes, so lower the budget then.
+To respond, open the run link, start from the slowest job and fix its cause.
+Raising the budget only hides the regression.
+
+### Compile-cache hit-rate floor
+
+`Build test archive` fails when the compile-cache hit rate is under 90% and the
+build uses the coverage snapshot, which is every merge-group and main-push
+run. Pull-request builds, and jobs that no warm build seeds (format and lint,
+docs, doctests, browser builds), are not judged. The floor is fixed in
+`ci.yml`. Source: the archive build of merge-group runs 40990557025,
+40990555729, 40968689273 and 40946549381 hit 100.00%, 100.00%, 100.00% and
+99.67%; the unseeded jobs sit at 0% by design. The error names one cause:
+
+- **Cold snapshot:** a snapshot was restored but lacks this build's objects.
+  Run the warm build on the default branch to seed it again.
+- **Key change:** no snapshot matches the job shape, though others exist. The
+  compiler, runner or caller directory changed; the next warm build on the
+  default branch seeds the new key.
+- **Eviction:** no test snapshot is left in the repository cache. Check the
+  cache size and the seven-day expiry, then run the warm build.
+
+### Selection check
+
+The selection step logs and summarizes `Selection share: N% (a/b test
+packages)`. When a change widens the run to the full suite it also logs
+`Full-suite fallback: <trigger>`, with the file when one caused it. The guard
+reads this from the last `selection-window` completed runs of the same event
+and files "Test selection share above its range" when their median share is
+above `selection-share-ceiling-percent`. The issue lists each run's share and
+trigger. Source: of 14 Maestro pull-request runs from 21:00 UTC on 29 October
+2026, 11 selected 1 to 3 of 51 packages (median 2%) and 3 ran all 51. All five
+merge groups inspected (40990557025, 40990555729, 40968689273, 40946549381 and
+40993559130) ran 51 of 51 because the coverage baseline was missing or not an
+ancestor, so no narrowed merge group has been measured yet. To respond, read the
+triggers in the issue: a missing or stale baseline needs a full-workspace run to
+land first, and a shared input that keeps widening runs belongs in `test_inputs`.
+
+### Shard balance
+
+When the slowest `Test shard` job takes more than `shard-balance-margin` times
+the median shard, the guard files "Test shards unbalanced: run N". The issue
+names the slow tests in that shard that are new, or reached a higher slow mark,
+since the last green run of the same event. Nextest prints only slow marks, so
+growth shows as a higher mark rather than exact seconds. The default is 1.5.
+Source: the slowest shard was 1.18 and 1.20 times the median in runs 40990557025
+and 40990555729, and 1.32 times in the 32-shard proof run 40974924871. To
+respond, fix or split the named tests, then check priorities in the nextest
+configuration.
+
+### Test-time limit
+
+Nextest flags a test slow after `slow-test-seconds` (30), and the caller's
+`slow-timeout` period should match. Every test flagged in a merge-group or main
+run gets one issue, "Test over 30 seconds: <test>", and one run files at most
+`slow-issue-limit` new ones. Fix the test at its cause; do not raise a timeout.
+
+The kill is one hang limit, `hang-limit-seconds` (120). A nextest override may
+exceed it only for a test that needs more, and the comment directly above its
+`slow-timeout` must name the issue that removes it. The `Test-time exceptions` job
+fails for an override that names no issue or only closed ones, and names the
+filter. Close the issue only after removing the override. Source: 30 and 120
+seconds are the limits Maestro chose after a single 30-second kill failed 79 of
+99 shard jobs in one day; its one exception, `browser_author_bootstraps_from_empty_build_state`,
+needs 208 seconds.
+
+### Required checks
+
+For a full merge-group or main run, `ci-guards.yml` pins the jobs that must run:
+`Caller declaration`, `Format and lint`, `Docs`, `Build test archive`, the
+`Test shard` jobs, `Doctests`, `Tests (ubuntu-latest)` and `Dependency, source
+and coverage checks`. A pinned job that is missing or skipped files "Required
+checks missing from run N" naming it. A failed job is not a missing one; the run
+already reports it. The self-test checks every pinned name against `ci.yml`,
+and checks that this repository's ruleset checks, `Required repository quality`
+and `Required consumer tests`, still exist, so renaming a job fails there first.
+When you rename a job on purpose, change the pin and the ruleset in one change.
