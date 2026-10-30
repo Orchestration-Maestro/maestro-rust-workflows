@@ -73,7 +73,7 @@ An optional caller `test_prepare` command runs beside the host build and writes
 reusable outputs to `TEST_PREPARE_OUTPUT` (`target/test-setup`). Shards download
 those files separately and setup scripts reuse them. `test_prepare_packages`
 limits the command to runs that select a package reading its output, and
-`test_prepare_key` caches the output across runs. Doctests compile and run in
+`test_prepare_inputs` caches the output across runs. Doctests compile and run in
 parallel in their own leg. See [test shards](docs/caller-checks.md#test-shards).
 
 ## Compile cache

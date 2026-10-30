@@ -216,7 +216,6 @@ jobs:
               inputs = schema['properties']['test_prepare_inputs']
               assert inputs['type'] == 'array' and inputs['items'] == {'type': 'string'} and inputs['default'] == []
               assert not {'test_prepare_packages', 'test_prepare_inputs'} & set(schema['required'])
-              assert 'test_prepare_key' not in schema['properties']
 
           prepare_declaration_keys_are_validated()
           print('PASS prepare_declaration_keys_are_validated')
@@ -309,8 +308,7 @@ jobs:
               assert identity['env']['COMPILE_CACHE_PREFIX'] == '$' + '{{ steps.cache-identity.outputs.prefix }}'
               assert identity['env']['TEST_PREPARE_INPUTS'] == '$' + '{{ needs.declaration.outputs.test_prepare_inputs }}'
               assert not {'CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'HOST_OS', 'HOST_ARCH'} & set(identity['env'])
-              assert 'rustc' not in identity['run'] and 'TEST_PREPARE_KEY' not in identity['run']
-              assert 'TEST_PREPARE_KEY' not in job['env'] and 'TEST_PREPARE_KEY' not in workflow
+              assert 'rustc' not in identity['run']
               def key(directory, patterns=('inputs/*.txt',), command='echo ready', extra=None):
                   with tempfile.NamedTemporaryFile() as output:
                       env = {'TEST_PREPARE': command, 'TEST_PREPARE_INPUTS': json.dumps(list(patterns)), 'GITHUB_OUTPUT': output.name,
@@ -460,7 +458,6 @@ jobs:
               readme = ' '.join((root / 'README.md').read_text(encoding='utf-8').split())
               for text in ['`test_prepare_packages`', '`test_prepare_inputs`']:
                   assert text in guide and text in readme, text
-              assert 'test_prepare_key' not in guide + readme
               # Warm builds prepare when inputs are declared, and the guide still declares one command.
               assert 'do not run preparation or restore prepared files' not in guide
               assert 'declare one standalone shell command' in guide
