@@ -1588,7 +1588,7 @@ jobs:
                             'Escalation: test selection share outside its usual range', 'Escalation: runner wait over its median']:
                   assert title in guide, title
               floor = guide.split('### Compile-cache hit-rate floor', 1)[1].split('### Selection check', 1)[0].lower()
-              assert 'by design' not in floor and '0%' not in floor, 'a seeded shape is never at 0% by design'
+              assert 'by design' not in floor and not re.search(r'(?<![\d.])0%', floor), 'a seeded shape is never at 0% by design'
               for shape in ['format and lint', 'docs', 'doctests', 'build test archive', 'browser', 'target', 'tests-plain', 'tests-coverage', 'pull-request']:
                   assert shape in floor, shape
               for cause in ['cold snapshot', 'key change', 'no writer', 'eviction']:
