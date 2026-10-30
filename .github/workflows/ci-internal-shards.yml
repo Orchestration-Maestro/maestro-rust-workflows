@@ -971,8 +971,9 @@ jobs:
               assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
               assert '(+11%, limit +10%)' in findings[0]['body'], findings
               assert '- https://example.test/runs/2' in findings[0]['body'] and '- https://example.test/runs/1' not in findings[0]['body']
-              cancelled = run_of(7, 90, conclusion='cancelled')
-              assert judging['judge']('7', 'owner/repo', lambda *argv, body=None: json.dumps(cancelled), SETTINGS) == []
+              # A cancelled merge group is judged for the cache only; its wall time and rates mean nothing.
+              gh, _ = fake_repository(minutes=90, conclusion='cancelled')
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
 
           judge_stays_quiet_on_a_healthy_run_and_reports_a_rate_breach()
           print('PASS judge_stays_quiet_on_a_healthy_run_and_reports_a_rate_breach')
