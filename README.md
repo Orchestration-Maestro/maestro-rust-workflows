@@ -144,8 +144,10 @@ optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
 with shared verified runtime pins, and a [nightly fuzz job](docs/caller-checks.md#nightly-fuzz-job)
 that files one issue per distinct finding. Callers can also run the
 [full suite after landing](docs/caller-checks.md#full-suite-after-landing), which files a
-failure issue and a revert proposal for a failed landing. A repository's `rust-toolchain.toml`
-selects its toolchain through rustup.
+failure issue and a revert proposal for a failed landing, and the
+[CI speed guards](docs/caller-checks.md#ci-speed-guards), which fail a check or file an
+issue when a merge run, the compile cache, test selection, shard balance, slow tests or the
+required jobs drift. A repository's `rust-toolchain.toml` selects its toolchain through rustup.
 
 Every caller also gets the dependency and source checks: cargo-deny
 (licenses, bans, sources and advisories; pull requests and merge groups check

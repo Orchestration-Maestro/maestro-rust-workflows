@@ -176,6 +176,31 @@ jobs:
       fuzz_manifest: ${{ steps.config.outputs.fuzz_manifest }}
       fuzz_targets: ${{ steps.config.outputs.fuzz_targets }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: &runner-hardware |
+          python3 - <<'PYTHON'
+          import os
+          import platform
+          import re
+          model = ''
+          with open(os.environ.get('CPUINFO_FILE', '/proc/cpuinfo'), encoding='utf-8') as cpuinfo:
+              for line in cpuinfo:
+                  if line.startswith('model name'):
+                      model = line.split(':', 1)[1].strip()
+                      break
+          model = model or platform.machine()
+          cores = os.environ.get('CPU_CORES') or str(len(os.sched_getaffinity(0)))
+          words = re.sub(r'\((?:r|tm)\)|@.*$|\b(?:cpu|processor)\b', '', model.lower())
+          label = re.sub(r'[^a-z0-9]+', '-', words).strip('-') + f'-{cores}c'
+          line = f'Runner hardware: {model}, {cores} cores (runner-band: {label})'
+          print(line)
+          print(f'::notice title=Runner hardware::runner-band: {label}')
+          if os.environ.get('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+                  summary.write(line + '\n')
+          PYTHON
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -570,6 +595,7 @@ jobs:
           members = set(head['workspace_members'])
           roots = {p: pathlib.Path(packages[p]['manifest_path']).parent.relative_to(pathlib.Path.cwd()) for p in members}
           selected = set(members)
+          trigger = None
           browser_changed = False
           included_readers = set()
           base = os.environ.get('BASE_REF')
@@ -668,6 +694,7 @@ jobs:
                   path = pathlib.Path(filename)
                   if filename in ('Cargo.toml', 'rust-toolchain', 'rust-toolchain.toml', '.github/ci.schema.json') or filename.startswith('.github/workflows/'):
                       selected = set(members)
+                      trigger = f'shared input: {filename}'
                       break
                   if filename in ('Cargo.lock', '.github/ci.toml'):
                       continue
@@ -678,14 +705,16 @@ jobs:
                   selected.update(owners, *routes)
                   if not owners and not routes and (event == 'merge_group' or (path.suffix not in ('.md',) and not filename.startswith('docs/'))):
                       selected = set(members)
+                      trigger = f'unknown path: {filename}'
                       if event == 'merge_group':
-                          fallback = f'unknown path: {filename}'
+                          fallback = trigger
                       break
               if '.github/ci.toml' in changed:
                   before, after = declarations()
                   browser_changed = before.get('browser_test_crates', []) != after.get('browser_test_crates', [])
                   if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
                       selected = set(members)
+                      trigger = 'shared input: .github/ci.toml'
               if 'Cargo.lock' in changed and selected != members:
                   # Resolve both revisions, comparing transitive dependency identities and features.
                   with tempfile.TemporaryDirectory() as temporary:
@@ -725,13 +754,20 @@ jobs:
               fallback = 'no workspace test packages selected'
           if event == 'merge_group' and fallback:
               selected = set(members)
-              print(f'Full-suite fallback: {fallback}')
+              trigger = fallback
+          if trigger:
+              print(f'Full-suite fallback: {trigger}')
           names = sorted(packages[p]['name'] for p in selected)
           print('Coverage scope: ' + ('full workspace' if selected == members else 'selected packages'))
           requested = set(config.get('browser_test_crates', []))
           browser_tests = bool(requested and (browser_changed or requested.intersection(names)))
           print(f'Selected test packages ({event}): {names}')
           print(f'Selected package count: {len(selected)}/{len(members)}')
+          share = f'Selection share: {len(selected) * 100 / len(members):.0f}% ({len(selected)}/{len(members)} test packages)'
+          print(share)
+          if os.environ.get('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+                  summary.write(share + '\n' + (f'Full-suite fallback: {trigger}\n' if trigger else ''))
           # A change can introduce an advisory only through the lockfile or the declared exceptions.
           check_advisories = event not in ('pull_request', 'merge_group') or not base
           if not check_advisories:
@@ -773,6 +809,9 @@ jobs:
           if-no-files-found: error
 
   quality:
+    permissions:
+      contents: read
+      actions: read
     needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
@@ -783,6 +822,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -813,6 +856,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           import subprocess
           shape = os.environ['CACHE_JOB']
           if shape in ('tests', 'test-build', 'doctests'):
@@ -823,7 +867,9 @@ jobs:
           compiler = subprocess.check_output(['rustc', '-vV'], text=True)
           identity = [os.environ[name] for name in ['CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'HOST_OS', 'HOST_ARCH']] + [compiler, shape]
           digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
-          prefix = f'maestro-compile-v1-{digest}-'
+          namespace = 'maestro-compile-v1-'
+          prefix = f'{namespace}{digest}-'
+          seeder = r'-\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\d+-'
           call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
           suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX']) + '-' + call
           writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
@@ -831,7 +877,7 @@ jobs:
               shard = os.environ.get('SHARD', '')
               writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\n')
+              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\nshape={shape}\nnamespace={namespace}\nseeder={seeder}\n')
           PYTHON
       - name: Restore compile cache
         id: cache-restore
@@ -993,8 +1039,66 @@ jobs:
         with: &sccache-save
           path: ${{ runner.temp }}/maestro-sccache
           key: ${{ steps.cache-identity.outputs.key }}
+      - name: Compile cache hit-rate floor
+        if: &sccache-floor-condition job.status == 'success' && steps.cache-statistics.outcome == 'success'
+        env: &sccache-floor-env
+          CACHE_SHAPE: ${{ steps.cache-identity.outputs.shape }}
+          CACHE_MATCHED_KEY: ${{ steps.cache-restore.outputs.cache-matched-key }}
+          CACHE_PREFIX: ${{ steps.cache-identity.outputs.prefix }}
+          CACHE_NAMESPACE: ${{ steps.cache-identity.outputs.namespace }}
+          CACHE_SEEDER: ${{ steps.cache-identity.outputs.seeder }}
+          GH_TOKEN: ${{ github.token }}
+        run: &sccache-floor |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import sys
+          def finish(message, status=0):
+              print(message)
+              sys.exit(status)
+          floor = 90
+          shape = os.environ['CACHE_SHAPE']
+          stats = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'sccache-stats').read_text(encoding='utf-8')
+          executed = re.search(r'(?m)^Compile requests executed +(\d+)', stats)
+          rate = re.search(r'(?m)^Cache hits rate +([0-9.]+) %', stats)
+          if not executed or not int(executed[1]) or not rate:
+              finish('Compile cache hit rate not judged: no cacheable compilation ran')
+          rate = float(rate[1])
+          # The guards read the compile units and the hit rate of every build from this notice.
+          print(f'::notice title=Work units::compiles: {executed[1]}; hit-rate: {rate:.2f}')
+          if rate >= floor:
+              finish(f'Compile cache hit rate {rate:.2f}% (floor {floor}%)')
+          matched, prefix = os.environ['CACHE_MATCHED_KEY'], os.environ['CACHE_PREFIX']
+          if matched:
+              cause = f"cold snapshot: the restored snapshot {matched} holds too few of this build's objects; seed it again from the default branch"
+          else:
+              listing = subprocess.run(['gh', 'api', f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/caches?key={os.environ['CACHE_NAMESPACE']}&per_page=100"],
+                                       capture_output=True, text=True)
+              if listing.returncode:
+                  cause = 'no snapshot restored (key change, no writer or eviction; the cache list is unavailable)'
+              else:
+                  others = [cache['key'] for cache in json.loads(listing.stdout)['actions_caches'] if not cache['key'].startswith(prefix)]
+                  own = [key for key in others if re.search(os.environ['CACHE_SEEDER'], key)]
+                  if own:
+                      cause = (f'key change: no snapshot matches {prefix} but {len(own)} snapshots of this job exist under other keys; '
+                               'the job shape (compiler, runner or caller directory) changed')
+                  elif others:
+                      cause = (f'no writer: the repository cache holds {len(others)} snapshots of other jobs but none of this shape; '
+                               'no default-branch push saves it')
+                  else:
+                      cause = 'eviction: the repository cache holds no compile snapshot; they were evicted or never saved'
+          # A warning, never a failure: a change can invalidate the cache itself, and only a default-branch push seeds it again.
+          # The guards read this annotation and file the issue.
+          finish(f'::warning title=Compile cache floor::Compile cache hit rate {rate:.2f}% is below the {floor}% floor in shape {shape}: {cause}')
+          PYTHON
 
   docs:
+    permissions:
+      contents: read
+      actions: read
     needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
@@ -1005,6 +1109,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1057,9 +1165,16 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   test-build:
     needs: declaration
+    permissions:
+      contents: read
+      actions: read
     outputs:
       coverage_checkout_root: ${{ steps.archive-root.outputs.path }}
     name: Build test archive
@@ -1075,6 +1190,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1208,8 +1327,15 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   test-prepare:
+    permissions:
+      contents: read
+      actions: read
     needs: declaration
     name: Prepare test setup
     if: ${{ needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
@@ -1222,6 +1348,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1338,8 +1468,15 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   tests:
+    permissions:
+      contents: read
+      actions: read
     needs: [declaration, test-build, test-prepare]
     permissions:
       contents: read
@@ -1367,6 +1504,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps: &test-steps
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1783,6 +1924,18 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
               output.write('### Flaky tests (passed on retry)\n' + ('\n'.join('- ' + name for name in flaky) if flaky else 'None') + '\n')
           PYTHON
+      - name: Test work units
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import pathlib
+          import re
+          path = pathlib.Path('nextest.log')
+          text = re.sub(r'\x1b\[[0-9;]*m', '', path.read_text(encoding='utf-8')) if path.exists() else ''
+          summary = re.search(r'(?m)^\s*Summary \[\s*[0-9.]+s\] (\d+) tests? run', text)
+          if summary:
+              print(f'::notice title=Work units::tests: {summary[1]}')
+          PYTHON
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && (inputs.warm-cache || matrix.shard == 'doctests')
@@ -1800,6 +1953,10 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
       - name: Upload shard coverage
         if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -1809,6 +1966,9 @@ jobs:
           if-no-files-found: error
 
   doctests:
+    permissions:
+      contents: read
+      actions: read
     name: ${{ matrix.shard == 'doctests' && 'Doctests' }}
     needs: declaration
     if: ${{ (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
@@ -1827,6 +1987,10 @@ jobs:
     if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: All test shards passed
         env:
           RESULT: ${{ needs.tests.result }}
@@ -1875,6 +2039,9 @@ jobs:
           if-no-files-found: error
 
   checks:
+    permissions:
+      contents: read
+      actions: read
     name: Dependency, source and coverage checks
     needs: declaration
     if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
@@ -1887,6 +2054,10 @@ jobs:
       QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
       CHECK_ADVISORIES: ${{ needs.declaration.outputs.check_advisories }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2159,6 +2330,10 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   fuzz:
     name: Fuzz ${{ matrix.name }}
@@ -2178,6 +2353,10 @@ jobs:
       QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
       FUZZ_MANIFEST: ${{ needs.declaration.outputs.fuzz_manifest }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2282,6 +2461,10 @@ jobs:
     outputs:
       findings: ${{ steps.scan.outputs.findings }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2328,6 +2511,9 @@ jobs:
           PYTHON
 
   targets:
+    permissions:
+      contents: read
+      actions: read
     name: Check (${{ matrix.target }})
     needs: declaration
     if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
@@ -2343,6 +2529,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2402,8 +2592,15 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   browser:
+    permissions:
+      contents: read
+      actions: read
     name: Wasm and browser build
     needs: declaration
     if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
@@ -2413,6 +2610,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2490,8 +2691,15 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   browser-tests:
+    permissions:
+      contents: read
+      actions: read
     name: Chromium browser tests
     needs: declaration
     if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true' }}
@@ -2501,6 +2709,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2598,3 +2810,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor

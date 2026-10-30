@@ -1,0 +1,680 @@
+name: CI guards
+
+on:
+  workflow_call:
+    inputs:
+      run-id:
+        description: Completed Rust CI run to judge (a merge-group run for the time, shard and slow-test guards); empty runs only the test-time exception check
+        type: string
+        default: ''
+      selection-window:
+        description: Completed runs of the same workflow and event, up to and including the judged run, that every guard reads - for the selection share and for the earlier runs searched for a run's baseline
+        type: number
+        default: 10
+      selection-share-ceiling-percent:
+        description: Median share of workspace test packages selected over the window above which an issue is filed
+        type: number
+        default: 25
+      shard-balance-margin:
+        description: Slowest test shard may take at most this multiple of the median shard
+        type: number
+        default: 1.5
+      slow-test-seconds:
+        description: Seconds after which nextest flags a test slow; each such test on main gets one issue
+        type: number
+        default: 30
+      hang-limit-seconds:
+        description: Longest kill time a nextest override may declare without an open issue
+        type: number
+        default: 120
+      nextest-config:
+        description: Path of the caller's nextest configuration
+        type: string
+        default: .config/nextest.toml
+
+permissions:
+  contents: read
+
+jobs:
+  exceptions:
+    name: Test-time exceptions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test-time exceptions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          NEXTEST_CONFIG: ${{ inputs.nextest-config }}
+          HANG_LIMIT_SECONDS: ${{ inputs.hang-limit-seconds }}
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import sys
+          import tomllib
+
+          def period_seconds(period):
+              units = {'ms': 0.001, 's': 1, 'm': 60, 'h': 3600}
+              return sum(int(count) * units[unit] for count, unit in re.findall(r'(\d+)(ms|s|m|h)', period))
+
+          def nextest_exceptions(text, hang_seconds):
+              """Overrides whose kill time passes the hang limit, with the issues named above their slow-timeout."""
+              found = []
+              for block in re.split(r'(?m)^(?=\[\[profile\.[^\]]+\.overrides\]\])', text)[1:]:
+                  lines = block.splitlines()
+                  own = []
+                  for line in lines:
+                      if own and line.startswith('['):
+                          break
+                      own.append(line)
+                  override = tomllib.loads('\n'.join(own))['profile']
+                  override = next(iter(override.values()))['overrides'][0]
+                  timeout = override.get('slow-timeout')
+                  if not isinstance(timeout, dict) or 'terminate-after' not in timeout:
+                      continue
+                  seconds = period_seconds(timeout['period']) * timeout['terminate-after']
+                  if seconds <= hang_seconds:
+                      continue
+                  at = next(index for index, line in enumerate(own) if line.startswith('slow-timeout'))
+                  issues = []
+                  for line in reversed(own[:at]):
+                      if not line.startswith('#'):
+                          break
+                      issues = [int(number) for number in re.findall(r'#(\d+)', line)] + issues
+                  found.append({'filter': override.get('filter', ''), 'seconds': seconds, 'issues': issues})
+              return found
+
+          def exception_findings(exceptions, state_of):
+              """One message per exception that names no issue or only closed ones."""
+              messages = []
+              for item in exceptions:
+                  label = f"the {item['seconds']:g}-second exception for {item['filter']}"
+                  if not item['issues']:
+                      messages.append(f'{label} names no issue; put its issue number in the comment above slow-timeout')
+                  elif all(state_of(number) == 'CLOSED' for number in item['issues']):
+                      listed = ', '.join(f'#{number}' for number in item['issues'])
+                      messages.append(f'{label} is refused: {listed} is closed, so fix the test and remove the exception')
+              return messages
+
+          def main():
+              path = pathlib.Path(os.environ['NEXTEST_CONFIG'])
+              if not path.is_file():
+                  print(f'No {path}: no exceptions to check')
+                  return
+              def state_of(number):
+                  result = subprocess.run(['gh', 'issue', 'view', str(number), '-R', os.environ['REPOSITORY'], '--json', 'state'],
+                                          capture_output=True, text=True)
+                  if result.returncode:
+                      raise RuntimeError(f'gh issue view {number} failed: {result.stderr.strip()}')
+                  return json.loads(result.stdout)['state']
+              exceptions = nextest_exceptions(path.read_text(encoding='utf-8'), float(os.environ['HANG_LIMIT_SECONDS']))
+              messages = exception_findings(exceptions, state_of)
+              for message in messages:
+                  print(f'::error file={path}::{message}')
+              print(f'{len(exceptions)} test-time exceptions, {len(messages)} refused')
+              if messages:
+                  sys.exit(1)
+
+          if __name__ == '__main__':
+              main()
+
+  guards:
+    name: Run guards
+    if: ${{ inputs.run-id != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - name: Judge the run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run-id }}
+          SELECTION_WINDOW: ${{ inputs.selection-window }}
+          SELECTION_CEILING: ${{ inputs.selection-share-ceiling-percent }}
+          SHARD_MARGIN: ${{ inputs.shard-balance-margin }}
+          SLOW_SECONDS: ${{ inputs.slow-test-seconds }}
+          # Jobs a full run must execute; a trailing * matches a name prefix.
+          REQUIRED_CHECKS: >-
+            ["Caller declaration", "Format and lint", "Docs", "Build test archive", "Test shard (*",
+            "Doctests", "Tests (ubuntu-latest)", "Dependency, source and coverage checks"]
+        shell: python
+        run: |
+          import datetime
+          import json
+          import os
+          import re
+          import statistics
+          import subprocess
+          import sys
+
+          def clean(log):
+              log = re.sub(r'\x1b\[[0-9;]*m', '', log)
+              return re.sub(r'(?m)^\d{4}-\d\d-\d\dT[\d:.]+Z ', '', log)
+
+          def stamp(value):
+              return datetime.datetime.fromisoformat(value)
+
+          def seconds(job):
+              """Seconds of a job or step that ran, None for a skipped one or one without times; a job and a step carry the same fields."""
+              if job.get('conclusion') == 'skipped' or not job.get('started_at') or not job.get('completed_at'):
+                  return None
+              return (stamp(job['completed_at']) - stamp(job['started_at'])).total_seconds()
+
+          def seeds(run):
+              """A push to the default branch (`main`), the only run that saves compile snapshots."""
+              return run['event'] == 'push' and run['head_branch'] == 'main'
+
+          def watched(run):
+              """Merge groups, pull requests and pushes to main gate a merge; CodeQL and other runs do not."""
+              return run['name'] != 'CodeQL' and (run['event'] in ('merge_group', 'pull_request') or seeds(run))
+
+          # Per kind of work: the name of the jobs that do it, and how a finding names those jobs and one unit of their work.
+          WORK = {'tests': ('Test shard (', 'Test jobs', 'test run'),
+                  'compiles': ('Build test archive', 'Build jobs', 'compile unit')}
+
+          # The steps of a test shard that run the tests: the only seconds of a shard that count as test work.
+          TEST_STEPS = ('Tests', 'Isolated tests')
+
+          def kind_of(name):
+              """The kind of work a job name measures, None for any other job."""
+              return next((kind for kind, (measuring, _, _) in WORK.items() if name.startswith(measuring)), None)
+
+          def rated(name):
+              """Whether the rate finding already judges the seconds of a timing: the archive build, a shard job and the step of a shard that runs its tests.
+              Any other step of a shard is judged for growth like a step of any job; a download there is transfer, never test work."""
+              job, _, step = name.partition(' / ')
+              return kind_of(job) == 'compiles' or (kind_of(job) == 'tests' and (not step or step in TEST_STEPS))
+
+          RATCHET_TITLE = 'CI time ratchet'
+
+          # GitHub stamps job and step times to the second, 1 s at each boundary, so a work-time gap is measurable only above 2 s per executed job (S7759).
+          STAMP_ERROR = 2
+
+          def measurable(gap, units, ran):
+              """Whether a gap in seconds per unit, over the units done by this many executed jobs, is more than their stamp error."""
+              return gap * units > STAMP_ERROR * ran
+
+          def level_of(run, band, kind):
+              """The key of a ratchet level: a run is compared only with runs of its workflow, event and runner band, per kind of work."""
+              return f"{run['workflow_id']}/{run['event']}/{band}/{kind}"
+
+          def baseline_of(rates):
+              """The median seconds per unit of earlier runs in the level; None below three runs."""
+              return statistics.median(rates) if len(rates) >= 3 else None
+
+          def ratchet_issue(repository, gh):
+              """The open issue that stores the ratchet, as (number, levels); (None, {}) until the first level is stored."""
+              listed = json.loads(gh('issue', 'list', '-R', repository, '--state', 'open', '--search', f'"{RATCHET_TITLE}" in:title',
+                                     '--json', 'number,title,body'))
+              for item in listed:
+                  if item['title'] == RATCHET_TITLE:
+                      block = re.search(r'```json\n(.*?)\n```', item['body'], re.DOTALL)
+                      if not block:
+                          raise RuntimeError(f"issue #{item['number']} holds no ratchet block")
+                      return item['number'], json.loads(block[1])['levels']
+              return None, {}
+
+          def save_ratchet(repository, gh, number, levels):
+              """Write the levels to the ratchet issue, creating the issue on first use."""
+              body = ('The CI guards keep the lowest median seconds per unit of work of each level here. Do not edit it by hand: only the guard lowers a level, '
+                      'and nothing raises one.\n\n'
+                      f"```json\n{json.dumps({'levels': levels}, indent=2, sort_keys=True)}\n```\n")
+              if number:
+                  gh('issue', 'edit', str(number), '-R', repository, '--body-file', '-', body=body)
+              else:
+                  gh('issue', 'create', '-R', repository, '--title', RATCHET_TITLE, '--body-file', '-', body=body)
+
+          def executed(jobs):
+              """The jobs that ran: not skipped, not cancelled."""
+              return [job for job in jobs if seconds(job) is not None and job.get('conclusion') != 'cancelled']
+
+          def job_set(jobs):
+              """Names of the jobs that ran: a run is compared only with runs that executed the same ones."""
+              return {job['name'] for job in executed(jobs)}
+
+          def work_of(jobs):
+              """Seconds during which at least one job of a run was executing: the union of the jobs' start-to-end intervals."""
+              total, end = 0.0, None
+              for start, finish in sorted((stamp(job['started_at']), stamp(job['completed_at'])) for job in executed(jobs)):
+                  if end is None or start > end:
+                      total += (finish - start).total_seconds()
+                  elif finish > end:
+                      total += (finish - end).total_seconds()
+                  end = finish if end is None or finish > end else end
+              return total
+
+          def wait_of(run, jobs):
+              """Seconds of a run's wall time with no job executing: the wait for runners, never CI work."""
+              return max((stamp(run['updated_at']) - stamp(run['run_started_at'])).total_seconds() - work_of(jobs), 0.0)
+
+          def capacity_finding(run, band, wait, work, prior, waits):
+              """A runner wait over the median wait of like-for-like runs by more than 10% and by more than 2 minutes: capacity, not a regression."""
+              baseline = baseline_of(waits)
+              if not watched(run) or baseline is None or wait <= baseline * 1.10 or wait - baseline <= 120:
+                  return None
+              return escalation(run, 'runner wait over its median', [f"- {earlier['html_url']}" for earlier in prior],
+                                [f'- The run waited {wait / 60:.1f} min for runners against a median wait of {baseline / 60:.1f} min; '
+                                 'the limit is the median plus 10% and 2 minutes',
+                                 f'- Work time was {work / 60:.1f} min. The time guard judges work per unit, so this is runner capacity, not a regression'], band)
+
+          def band_of(jobs, annotations_of):
+              """The runner hardware label of the run's slowest labelled job, the runner that sets its pace."""
+              for job in sorted((job for job in jobs if seconds(job) is not None), key=seconds, reverse=True)[:3]:
+                  for note in annotations_of(job):
+                      found = re.search(r'runner-band: (\S+)', f"{note.get('title') or ''} {note.get('message') or ''}")
+                      if found:
+                          return found[1]
+              return 'unknown'
+
+          def cache_finding(run, jobs, annotations_of):
+              """The floor warnings of every compile job that judged its cache, as one standing issue."""
+              lines = []
+              for job in jobs:
+                  if reached(job, 'Compile cache hit-rate floor'):
+                      lines += [f"- {job['name']}: {note['message']}" for note in annotations_of(job) if note.get('title') == 'Compile cache floor']
+              if not lines:
+                  return None
+              return {'title': 'Compile cache below its hit-rate floor', 'comment': True,
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n" + '\n'.join(lines) + '\n'}
+
+          def reached(job, step):
+              """Whether the job ran the named step to success."""
+              return any(item['name'] == step and item.get('conclusion') == 'success' for item in job.get('steps', []))
+
+          def snapshot_finding(run, jobs, caches):
+              """A default-branch run that left compile snapshots unsaved: saves reported without a cache entry, none saved at all, or jobs cancelled before theirs."""
+              measuring = [job for job in jobs if reached(job, 'Compile cache statistics')]
+              saving = [job for job in jobs if reached(job, 'Save compile cache')]
+              stored = [cache for cache in caches if re.search(rf"-[0-9a-f]{{64}}-{run['id']}-\d+-", cache['key'])]
+              unfinished = [job['name'] for job in jobs if job.get('conclusion') == 'cancelled']
+              lines = []
+              if len(stored) < len(saving):
+                  lines.append(f'- {len(saving)} jobs reported a saved snapshot but the repository cache holds {len(stored)} for this run')
+              if measuring and not saving:
+                  lines.append(f'- {len(measuring)} jobs measured their compile cache but none saved a snapshot')
+              if unfinished:
+                  lines.append(f"- The run was cancelled with {len(unfinished)} jobs unfinished: {', '.join(unfinished)}")
+              if not lines:
+                  return None
+              return {'title': 'Escalation: default-branch run did not seed its compile snapshots', 'comment': True, 'labels': ['escalation'],
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
+                              'What departed from one saved snapshot per seeded shape:\n' + '\n'.join(lines) + '\n'}
+
+          def usage_finding(run, usage, limit_gb, caches):
+              """The repository cache over 90% of its storage limit, with its largest entries by ref."""
+              limit, used = limit_gb * 1024**3, usage['active_caches_size_in_bytes']
+              if used <= limit * 0.9:
+                  return None
+              largest = '\n'.join(f"- {cache['ref']}: {cache['size_in_bytes'] / 1024**3:.2f} GiB {cache['key']}"
+                                  for cache in sorted(caches, key=lambda cache: cache['size_in_bytes'], reverse=True)[:5])
+              return {'title': 'Repository cache above 90% of its limit', 'comment': True,
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
+                              f"The repository cache holds {used / 1024**3:.2f} GiB in {usage['active_caches_count']} entries against its {limit_gb:g} GiB limit "
+                              f"({used / limit:.1%}); the threshold is 90%. Over the limit, GitHub evicts the oldest snapshots.\n\nLargest entries by ref:\n{largest}\n"}
+
+          def spread_of(history, pad, ceiling=None):
+              """The range of earlier values widened by `pad`, never below zero or above the ceiling; None below three values."""
+              if len(history) < 3:
+                  return None
+              high = max(history) + pad
+              return max(min(history) - pad, 0), high if ceiling is None else min(high, ceiling)
+
+          def departure(value, history, pad, ceiling=None):
+              """'below' or 'above' when a value is outside the spread of its earlier values, else None."""
+              spread = spread_of(history, pad, ceiling)
+              if spread is None:
+                  return None
+              return 'below' if value < spread[0] else 'above' if value > spread[1] else None
+
+          def rate_pad(history):
+              """10% of the median of earlier rates: how far a rate may stray from them before it stands out."""
+              return 0.10 * statistics.median(history or [0])
+
+          def escalation(run, what, baseline, lines, band=None):
+              """An issue for something out of the pattern, with the run, its baseline and what departed from it; the title is standing, so a repeat comments on the open issue."""
+              where = f' on runner band {band}' if band else ''
+              return {'title': f'Escalation: {what}', 'comment': True, 'labels': ['escalation'],
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}){where}.\n\n"
+                              'Baseline (earlier successful runs of the same workflow and event):\n' + '\n'.join(baseline)
+                              + '\n\nWhat departed from it:\n' + '\n'.join(lines) + '\n'}
+
+          def range_findings(run, band, measured, units, ran, prior, prior_measured):
+              """Escalations for a rate below its band's normal spread by more than the stamp error (a rate above it is the regression's)
+              and for a compile cache hit rate off its usual range."""
+              baseline = [f"- {earlier['html_url']}" for earlier in prior]
+              found = []
+              for kind, (_, _, unit) in WORK.items():
+                  history = [rates[kind] for rates in prior_measured if kind in rates]
+                  if (kind in measured and departure(measured[kind], history, rate_pad(history)) == 'below'
+                          and measurable(baseline_of(history) - measured[kind], units[kind], ran[kind])):
+                      low, high = spread_of(history, rate_pad(history))
+                      found.append(escalation(run, f'time per {unit} outside its normal spread', baseline,
+                                              [f"- {measured[kind]:.2f} s per {unit}, below the band's normal spread of {low:.2f} to {high:.2f} s "
+                                               '(the earlier rates, widened by 10%)'], band))
+              history = [rates['hit-rate'] for rates in prior_measured if 'hit-rate' in rates]
+              side = departure(measured['hit-rate'], history, 10, 100) if 'hit-rate' in measured else None
+              if side:
+                  low, high = spread_of(history, 10, 100)
+                  found.append(escalation(run, 'compile cache hit rate outside its usual range', baseline,
+                                          [f"- Compile cache hit rate {measured['hit-rate']:.2f}%, {side} its usual range of {low:.2f}% to {high:.2f}% "
+                                           '(the earlier hit rates, widened by 10 points)'], band))
+              return found
+
+          def timings(jobs):
+              """Seconds of every job that ran and of every step in it that ran, by name."""
+              found = {}
+              for job in executed(jobs):
+                  found[job['name']] = seconds(job)
+                  for step in job.get('steps', []):
+                      if seconds(step) is not None:
+                          found[f"{job['name']} / {step['name']}"] = seconds(step)
+              return found
+
+          def shape_finding(run, band, jobs, prior, prior_jobs):
+              """Jobs and steps of a successful run that appear, disappear or grow (past the earlier range plus 10% and 30 s) without matching work.
+              The seconds a rate judges (see `rated`) are only checked for appearing and disappearing."""
+              if run['conclusion'] != 'success' or len(prior_jobs) < 3:
+                  return None
+              now, before = timings(jobs), [timings(earlier) for earlier in prior_jobs]
+              lines = [f'- {name} appeared' for name in sorted(now.keys() - set().union(*before))]
+              lines += [f'- {name} disappeared' for name in sorted(set.intersection(*map(set, before)) - now.keys())]
+              for name, value in sorted(now.items()):
+                  history = [earlier[name] for earlier in before if name in earlier]
+                  if not rated(name) and departure(value, history, max(rate_pad(history), 30)) == 'above':
+                      lines.append(f'- {name} grew to {value:.0f} s (earlier: {min(history):.0f} to {max(history):.0f} s)')
+              if not lines:
+                  return None
+              return escalation(run, 'jobs or steps changed without matching work', [f"- {earlier['html_url']}" for earlier in prior], lines, band)
+
+          def selection_departure(run, rows):
+              """The judged run's test package share when it is outside the usual range of the earlier runs' shares, widened by 10 points."""
+              (_, selected, total, trigger), history = rows[0], rows[1:]
+              shares = [chosen * 100 / count for _, chosen, count, _ in history]
+              share = selected * 100 / total
+              side = departure(share, shares, 10, 100)
+              if side is None:
+                  return None
+              low, high = spread_of(shares, 10, 100)
+              return escalation(run, 'test selection share outside its usual range',
+                                [f'- run {identifier}: {chosen}/{count} packages ({chosen * 100 / count:.0f}%)' for identifier, chosen, count, _ in history],
+                                [f'- This run selected {selected}/{total} test packages ({share:.0f}%), {side} the usual range of {low:.0f}% to {high:.0f}%'
+                                 + (f', full suite because {trigger}' if trigger else '')])
+
+          def totals_of(jobs, annotations_of):
+              """The compile cache hit rate, and the seconds spent, units done and jobs executed per kind of work, from the work-unit annotations of a run's jobs.
+              A test shard counts the seconds of its Tests or Isolated tests step, so downloads and setup are not test work; the archive build counts its whole job."""
+              found, spent, units, ran = {}, {}, {}, {}
+              for job in executed(jobs):
+                  kind = kind_of(job['name'])
+                  if kind is None:
+                      continue
+                  took = sum(seconds(step) or 0 for step in job.get('steps', []) if step['name'] in TEST_STEPS) if kind == 'tests' else seconds(job)
+                  for note in annotations_of(job):
+                      if note.get('title') != 'Work units':
+                          continue
+                      for name, value in re.findall(r'(tests|compiles|hit-rate): ([0-9.]+)', note['message']):
+                          if name == 'hit-rate':
+                              found[name] = float(value)
+                          elif name == kind and float(value) > 0:
+                              spent[kind] = spent.get(kind, 0) + took
+                              units[kind] = units.get(kind, 0) + float(value)
+                              ran[kind] = ran.get(kind, 0) + 1
+              return found, spent, units, ran
+
+          def measures_of(jobs, annotations_of):
+              """Seconds per unit of each kind of work in a run, and its compile cache hit rate."""
+              found, spent, units, _ = totals_of(jobs, annotations_of)
+              return found | {kind: spent[kind] / units[kind] for kind in spent}
+
+          def rate_finding(run, measured, units, ran, prior, prior_measured, band, ratchet):
+              """A run whose seconds per unit of work, for any kind, are more than 10% over the lower of the band's recent median and its stored ratchet level,
+              and whose gap, over its units, is more than the stamp error of the jobs that did them."""
+              if not watched(run):
+                  return None
+              lines, outside = [], False
+              for kind, (_, jobs, unit) in WORK.items():
+                  history = [rates[kind] for rates in prior_measured if kind in rates]
+                  baseline = baseline_of(history)
+                  if baseline is None or kind not in measured:
+                      continue
+                  baseline = min(baseline, ratchet.get(kind, baseline))
+                  if measured[kind] > baseline * 1.10 and measurable(measured[kind] - baseline, units[kind], ran[kind]):
+                      outside = outside or departure(measured[kind], history, rate_pad(history)) == 'above'
+                      lines.append(f"- {jobs}: {measured[kind]:.2f} s per {unit} against a baseline of {baseline:.2f} s "
+                                   f"(+{(measured[kind] / baseline - 1) * 100:.0f}%, limit +10%)\n  Ratchet level: `{level_of(run, band, kind)}`")
+              if not lines:
+                  return None
+              runs = '\n'.join(f"- {earlier['html_url']}" for earlier in prior)
+              return {'title': f"CI run slower than its baseline: run {run['id']}", 'labels': ['escalation'] if outside else [],
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) on runner band {band}.\n"
+                              'Time per unit of work against the lower of the band\'s recent median and its stored ratchet level:\n\n'
+                              + '\n'.join(lines) + f"\n\nLatest baseline runs (successful, same workflow, event and runner band):\n{runs}\n"}
+
+          def selection_of(log):
+              """Selected and total test packages and the full-suite trigger, as the selection step logs them."""
+              log = clean(log)
+              count = re.search(r'(?m)^Selected package count: (\d+)/(\d+)$', log)
+              if not count:
+                  return None
+              fallback = re.search(r'(?m)^Full-suite fallback: (.+)$', log)
+              return int(count[1]), int(count[2]), fallback[1] if fallback else None
+
+          def selection_finding(rows, ceiling, window):
+              """A sustained share: the median over a full window of runs is above the ceiling."""
+              if len(rows) < window:
+                  return None
+              shares = [selected * 100 / total for _, selected, total, _ in rows]
+              median = statistics.median(shares)
+              if median <= ceiling:
+                  return None
+              listed = '\n'.join(f"- run {run_id}: {selected}/{total} packages ({selected * 100 / total:.0f}%)"
+                                 + (f", full suite because {trigger}" if trigger else '')
+                                 for run_id, selected, total, trigger in rows)
+              return {'title': 'Test selection share above its range',
+                      'body': f'The median share of workspace test packages selected over the last {len(rows)} runs is '
+                              f'{median:.0f}%; the expected ceiling is {ceiling:g}%.\n\n{listed}\n'}
+
+          def slow_tests(log):
+              """Longest slow mark nextest printed for each test."""
+              found = {}
+              for mark, binary, name in re.findall(r'SLOW \[\s*>\s*([0-9.]+)s\]\s+\([^)]*\)\s+(\S+)\s+(\S+)', clean(log)):
+                  test = f'{binary} {name}'
+                  found[test] = max(found.get(test, 0), float(mark))
+              return found
+
+          def grown_tests(current, previous):
+              """The five slow tests that grew most: new, or past a higher slow mark than before."""
+              grown = [(test, now, previous.get(test)) for test, now in current.items() if now > previous.get(test, 0)]
+              return sorted(grown, key=lambda item: item[1] - (item[2] or 0), reverse=True)[:5]
+
+          def shard_finding(run, jobs, margin, grown):
+              """The slowest test shard is beyond the margin over the median; names the tests that grew."""
+              took = sorted((seconds(job), job['name']) for job in jobs
+                            if kind_of(job['name']) == 'tests' and seconds(job) is not None)
+              if len(took) < 2:
+                  return None
+              median = statistics.median(value for value, _ in took)
+              slowest, name = took[-1]
+              if slowest <= margin * median:
+                  return None
+              lines = '\n'.join(f"- `{test}`: over {now:g} s now, " + (f'over {before:g} s before' if before else 'not slow before')
+                                for test, now, before in grown) or '- no test crossed a higher slow mark'
+              return {'title': f"Test shards unbalanced: run {run['id']}",
+                      'body': f"Run: {run['html_url']}\n{name} took {slowest / 60:.1f} min against a median shard of {median / 60:.1f} min "
+                              f"({slowest / median:.2f} times; the margin is {margin:g}).\n\nSlow tests in that shard that grew:\n{lines}\n"}
+
+          def slow_findings(slow, limit, run):
+              """One issue per test that ran past the slow mark."""
+              return [{'title': f'Test over {limit:g} seconds: {test}',
+                       'body': f"Run: {run['html_url']}\nNextest flagged this test slow, over {mark:g} seconds. "
+                               'Fix the test at its cause; do not raise a timeout.\n'}
+                      for test, mark in sorted(slow.items())]
+
+          def required_finding(run, jobs, pinned):
+              """Pinned jobs that did not run at all, so a renamed or removed gate cannot pass silently."""
+              ran = [job['name'] for job in jobs if job.get('conclusion') in ('success', 'failure')]
+              missing = [name for name in pinned if not any(
+                  job.startswith(name[:-1]) if name.endswith('*') else job == name for job in ran)]
+              if not missing:
+                  return None
+              return {'title': f"Required checks missing from run {run['id']}",
+                      'body': f"Run: {run['html_url']}\nThese pinned jobs did not run: " + ', '.join(f'`{name}`' for name in missing) +
+                              '.\nA job was renamed, removed or skipped; restore it or update the pinned list.\n'}
+
+          def file_issues(findings, repository, gh):
+              """Open an issue, with the finding's labels, for each finding no open issue already carries; a finding marked for comment is added to its open issue. Returns the titles filed or commented."""
+              existing = {item['title']: item['number'] for item in json.loads(gh('issue', 'list', '-R', repository, '--state', 'open',
+                                                                                 '--limit', '1000', '--json', 'number,title'))}
+              filed, made = [], set()
+              for finding in findings:
+                  title = finding['title']
+                  if title not in existing:
+                      for label in finding.get('labels', []):
+                          if label not in made:
+                              gh('label', 'create', label, '-R', repository, '--force', '--description', 'Out of the pattern: a CI guard found a departure to investigate')
+                              made.add(label)
+                      labelled = [argument for label in finding.get('labels', []) for argument in ('--label', label)]
+                      gh('issue', 'create', '-R', repository, '--title', title, *labelled, '--body-file', '-', body=finding['body'])
+                      existing[title] = None
+                  elif finding.get('comment') and existing[title]:
+                      gh('issue', 'comment', str(existing[title]), '-R', repository, '--body-file', '-', body=finding['body'])
+                  else:
+                      continue
+                  filed.append(title)
+              return filed
+
+          def judge(run_id, repository, gh, settings):
+              """Every finding for one completed run; also lowers the stored ratchet level of the run's band when the earlier runs show a lower median."""
+              def api(path):
+                  return json.loads(gh('api', f'repos/{repository}/{path}'))
+              known = {}
+              def jobs_of(identifier):
+                  if identifier not in known:
+                      pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repository}/actions/runs/{identifier}/jobs?per_page=100'))
+                      known[identifier] = [job for page in pages for job in page['jobs']]
+                  return known[identifier]
+              def runs_like(run, status):
+                  # A required workflow is not listed under its own id, so list the repository's runs and keep this workflow's earlier ones, newest first.
+                  listed = api(f"actions/runs?event={run['event']}&status={status}&per_page=100")['workflow_runs']
+                  older = [other for other in listed if other['workflow_id'] == run['workflow_id'] and other['created_at'] < run['created_at']]
+                  return sorted(older, key=lambda other: other['created_at'], reverse=True)
+              noted = {}
+              def annotations_of(job):
+                  if job['id'] not in noted:
+                      noted[job['id']] = json.loads(gh('api', f"repos/{repository}/check-runs/{job['id']}/annotations"))
+                  return noted[job['id']]
+              def log_of(job):
+                  return gh('api', '--allow-escape-sequences', f"repos/{repository}/actions/jobs/{job['id']}/logs")
+              def shard_slow(jobs):
+                  found = {}
+                  for job in jobs:
+                      if kind_of(job['name']) == 'tests':
+                          for test, mark in slow_tests(log_of(job)).items():
+                              found[test] = max(found.get(test, 0), mark)
+                  return found
+              def caches_of(query):
+                  pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repository}/actions/caches?{query}'))
+                  return [cache for page in pages for cache in page['actions_caches']]
+              run = api(f'actions/runs/{run_id}')
+              if run['status'] != 'completed':
+                  return []
+              jobs = jobs_of(run['id'])
+              usage, limit = api('actions/cache/usage'), api('actions/cache/storage-limit')['max_cache_size_gb']
+              findings = [usage_finding(run, usage, limit, [])]
+              if findings[0]:
+                  findings = [usage_finding(run, usage, limit, caches_of('sort=size_in_bytes&direction=desc&per_page=100'))]
+              if seeds(run):
+                  findings.append(snapshot_finding(run, jobs, caches_of(f"ref=refs/heads/{run['head_branch']}&per_page=100")))
+              if run['conclusion'] == 'cancelled':
+                  return [finding for finding in findings if finding]
+              window = settings['window']
+              earlier = runs_like(run, 'success')
+              if watched(run):
+                  band = band_of(jobs, annotations_of)
+                  ran = job_set(jobs)
+                  prior, like = [], []
+                  for other in [other for other in earlier if watched(other)][:window]:
+                      other_jobs = jobs_of(other['id'])
+                      if band_of(other_jobs, annotations_of) != band:
+                          continue
+                      if len(prior) < 5:
+                          prior.append(other)
+                      if len(like) < 5 and job_set(other_jobs) == ran:
+                          like.append(other)
+                      if len(prior) == 5 and len(like) == 5:
+                          break
+                  prior.reverse()
+                  like.reverse()
+                  measured, (units, ran_jobs) = measures_of(jobs, annotations_of), totals_of(jobs, annotations_of)[2:]
+                  prior_measured = [measures_of(jobs_of(other['id']), annotations_of) for other in like]
+                  medians = {kind: baseline_of([rates[kind] for rates in prior_measured if kind in rates]) for kind in WORK}
+                  medians = {kind: value for kind, value in medians.items() if value is not None}
+                  if medians:
+                      number, levels = ratchet_issue(repository, gh)
+                      kept = {kind: levels[level_of(run, band, kind)]['rate'] for kind in medians if level_of(run, band, kind) in levels}
+                      findings.append(rate_finding(run, measured, units, ran_jobs, like, prior_measured, band, kept))
+                      lowered = {level_of(run, band, kind): {'rate': value, 'reason': 'lowest median of the previous five successful runs on the level',
+                                                             'run': run['id']}
+                                 for kind, value in medians.items() if kind not in kept or value < kept[kind]}
+                      if lowered:
+                          save_ratchet(repository, gh, number, levels | lowered)
+                  findings.extend(range_findings(run, band, measured, units, ran_jobs, like, prior_measured))
+                  findings.append(capacity_finding(run, band, wait_of(run, jobs), work_of(jobs), like, [wait_of(other, jobs_of(other['id'])) for other in like]))
+                  findings.append(shape_finding(run, band, jobs, prior, [jobs_of(other['id']) for other in prior]))
+                  findings.append(cache_finding(run, jobs, annotations_of))
+              on_main = run['event'] in ('merge_group', 'push')
+              if on_main:
+                  findings.append(required_finding(run, jobs, settings['required']))
+              unbalanced = shard_finding(run, jobs, settings['margin'], [])
+              slow = shard_slow(jobs) if unbalanced or on_main else {}
+              if unbalanced:
+                  previous = shard_slow(jobs_of(earlier[0]['id'])) if earlier else {}
+                  unbalanced = shard_finding(run, jobs, settings['margin'], grown_tests(slow, previous))
+              findings.append(unbalanced)
+              if on_main:
+                  findings.extend(slow_findings(slow, settings['slow'], run))
+              rows = []
+              for other in ([run] + [other for other in runs_like(run, 'completed') if other['conclusion'] in ('success', 'failure')])[:window]:
+                  declaration = next((job for job in jobs_of(other['id']) if job['name'] == 'Caller declaration'), None)
+                  chosen = selection_of(log_of(declaration)) if declaration else None
+                  if chosen:
+                      rows.append((other['id'], *chosen))
+              findings.append(selection_finding(rows, settings['ceiling'], window))
+              if watched(run) and rows and rows[0][0] == run['id']:
+                  findings.append(selection_departure(run, rows))
+              return [finding for finding in findings if finding]
+
+          def main():
+              def gh(*argv, body=None):
+                  result = subprocess.run(['gh', *argv], input=body, capture_output=True, text=True)
+                  if result.returncode:
+                      raise RuntimeError(f'gh {argv[0]} {argv[1]} failed: {result.stderr.strip()}')
+                  return result.stdout
+              settings = {'window': int(float(os.environ['SELECTION_WINDOW'])),
+                          'ceiling': float(os.environ['SELECTION_CEILING']), 'margin': float(os.environ['SHARD_MARGIN']),
+                          'slow': float(os.environ['SLOW_SECONDS']), 'required': json.loads(os.environ['REQUIRED_CHECKS'])}
+              repository = os.environ['REPOSITORY']
+              try:
+                  findings = judge(os.environ['RUN_ID'], repository, gh, settings) if os.environ['RUN_ID'] else []
+                  filed = file_issues(findings, repository, gh)
+              except (RuntimeError, KeyError, ValueError, OSError) as error:
+                  sys.exit(f'CI guards failed: {error}')
+              print(f'{len(findings)} findings, {len(filed)} issues filed')
+              for title in filed:
+                  print(f'Filed: {title}')
+
+          if __name__ == '__main__':
+              main()
