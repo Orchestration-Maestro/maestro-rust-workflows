@@ -203,6 +203,10 @@ jobs:
           # GitHub stamps job and step times to the second, 1 s at each boundary, so a work-time gap is measurable only above 2 s per executed job (S7759).
           STAMP_ERROR = 2
 
+          def measurable(gap, units, ran):
+              """Whether a gap in seconds per unit, over the units done by this many executed jobs, is more than their stamp error."""
+              return gap * units > STAMP_ERROR * ran
+
           def level_of(run, band, kind):
               """The key of a ratchet level: a run is compared only with runs of its workflow, event and runner band, per kind of work."""
               return f"{run['workflow_id']}/{run['event']}/{band}/{kind}"
@@ -348,12 +352,14 @@ jobs:
                               + '\n\nWhat departed from it:\n' + '\n'.join(lines) + '\n'}
 
           def range_findings(run, band, measured, units, ran, prior, prior_measured):
-              """Escalations for a rate below its band's normal spread (a rate above it is the regression's) and for a compile cache hit rate off its usual range."""
+              """Escalations for a rate below its band's normal spread by more than the stamp error (a rate above it is the regression's)
+              and for a compile cache hit rate off its usual range."""
               baseline = [f"- {earlier['html_url']}" for earlier in prior]
               found = []
               for kind, (_, _, unit) in WORK.items():
                   history = [rates[kind] for rates in prior_measured if kind in rates]
-                  if kind in measured and departure(measured[kind], history, rate_pad(history)) == 'below':
+                  if (kind in measured and departure(measured[kind], history, rate_pad(history)) == 'below'
+                          and measurable(baseline_of(history) - measured[kind], units[kind], ran[kind])):
                       low, high = spread_of(history, rate_pad(history))
                       found.append(escalation(run, f'time per {unit} outside its normal spread', baseline,
                                               [f"- {measured[kind]:.2f} s per {unit}, below the band's normal spread of {low:.2f} to {high:.2f} s "
@@ -445,7 +451,7 @@ jobs:
                   if baseline is None or kind not in measured:
                       continue
                   baseline = min(baseline, ratchet.get(kind, baseline))
-                  if measured[kind] > baseline * 1.10 and (measured[kind] - baseline) * units[kind] > STAMP_ERROR * ran[kind]:
+                  if measured[kind] > baseline * 1.10 and measurable(measured[kind] - baseline, units[kind], ran[kind]):
                       outside = outside or departure(measured[kind], history, rate_pad(history)) == 'above'
                       lines.append(f"- {jobs}: {measured[kind]:.2f} s per {unit} against a baseline of {baseline:.2f} s "
                                    f"(+{(measured[kind] / baseline - 1) * 100:.0f}%, limit +10%)\n  Ratchet level: `{level_of(run, band, kind)}`")
