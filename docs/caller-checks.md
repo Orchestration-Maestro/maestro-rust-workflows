@@ -1061,26 +1061,40 @@ link and fix the cause of the kind that regressed.
 
 ### Compile-cache hit-rate floor
 
-`Build test archive` warns when the compile-cache hit rate is under 90% and the
-build uses the coverage snapshot, which is every merge-group and main-push
-run. It never fails the build: a change can invalidate the cache itself, such as
-a toolchain bump, and only a push to the default branch saves a snapshot again,
-so a failing floor would block the merge group on every retry. Pull-request builds, and jobs that no warm build seeds (format and lint,
-docs, doctests, browser builds), are not judged. The floor is fixed in
-`ci.yml`. Source: the archive build of merge-group runs 40990557025,
-40990555729, 40968689273 and 40946549381 hit 100.00%, 100.00%, 100.00% and
-99.67%; the unseeded jobs sit at 0% by design. The warning is an annotation
-that names one cause. The guards read it from a merge-group or main-push run and
-file "Compile cache below its hit-rate floor", or add a comment to the open
-issue, so repeated cold builds on default-branch pushes, which are the
-regression, show as a growing list of comments:
+Every job that saves a compile snapshot warns when its compile-cache hit rate is
+under 90%: Format and lint, Docs, Build test archive, Prepare test setup, the
+warm test shards and Doctests, Dependency, source and coverage checks, each
+target check and the Wasm and Chromium browser builds. A default-branch push
+seeds every one of these shapes (`tests-coverage`, `tests-plain`, `quality`,
+`docs`, `checks`, `targets-clippy-<target>`, `browser`, `browser-tests` and
+`test-prepare`), so each is judged on merge groups, pull requests and
+default-branch runs alike; only a run in which no cacheable compilation ran is
+not judged. It never fails the build: a change can invalidate the cache itself,
+such as a toolchain bump, and only a push to the default branch saves a
+snapshot again, so a failing floor would block the merge group on every retry.
+The floor is fixed in `ci.yml`. Source: the archive build of merge-group runs
+40990557025, 40990555729, 40968689273 and 40946549381 hit 100.00%, 100.00%,
+100.00% and 99.67%. Before the check covered every shape, Format and lint, Docs,
+Doctests and the browser builds of Maestro merge groups 40322701820, 40620121647,
+40870001533 and 40993559130 compiled cold, about 4,040 misses per group, because
+the warm-up stayed on a release without their writer, and the first group after a
+default-branch push (40996420703) restored all five at 100%. The warning is an
+annotation that names the shape and one cause. The guards read it from a
+merge-group or main-push run, and from a pull-request run when a caller passes
+one, and file "Compile cache below its hit-rate floor", or add a comment to the
+open issue listing each job and its warning, so repeated cold builds on
+default-branch pushes, which are the regression, show as a growing list of
+comments:
 
 - **Cold snapshot:** a snapshot was restored but lacks this build's objects.
   Run the warm build on the default branch to seed it again.
-- **Key change:** no snapshot matches the job shape, though others exist. The
-  compiler, runner or caller directory changed; the next warm build on the
-  default branch seeds the new key.
-- **Eviction:** no test snapshot is left in the repository cache. Check the
+- **Key change:** no snapshot matches the job shape, though others of the same
+  job exist. The compiler, runner or caller directory changed; the next warm
+  build on the default branch seeds the new key.
+- **No writer:** the repository cache holds snapshots of other jobs but none of
+  this shape, so no default-branch push saves it. Check that the caller's warm-up
+  runs a release of this workflow that has the writer.
+- **Eviction:** the repository cache holds no compile snapshot at all. Check the
   cache size and the seven-day expiry, then run the warm build.
 
 ### Selection check

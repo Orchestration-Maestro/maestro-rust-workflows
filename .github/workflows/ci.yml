@@ -809,6 +809,9 @@ jobs:
           if-no-files-found: error
 
   quality:
+    permissions:
+      contents: read
+      actions: read
     needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
@@ -853,6 +856,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           import subprocess
           shape = os.environ['CACHE_JOB']
           if shape in ('tests', 'test-build', 'doctests'):
@@ -865,7 +869,7 @@ jobs:
           digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
           namespace = 'maestro-compile-v1-'
           prefix = f'{namespace}{digest}-'
-          seeder = '-tests-'
+          seeder = '-' + re.escape(os.environ['CACHE_JOB']) + r'-\d+-'
           call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
           suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX']) + '-' + call
           writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
@@ -1035,8 +1039,66 @@ jobs:
         with: &sccache-save
           path: ${{ runner.temp }}/maestro-sccache
           key: ${{ steps.cache-identity.outputs.key }}
+      - name: Compile cache hit-rate floor
+        if: &sccache-floor-condition job.status == 'success' && steps.cache-statistics.outcome == 'success'
+        env: &sccache-floor-env
+          CACHE_SHAPE: ${{ steps.cache-identity.outputs.shape }}
+          CACHE_MATCHED_KEY: ${{ steps.cache-restore.outputs.cache-matched-key }}
+          CACHE_PREFIX: ${{ steps.cache-identity.outputs.prefix }}
+          CACHE_NAMESPACE: ${{ steps.cache-identity.outputs.namespace }}
+          CACHE_SEEDER: ${{ steps.cache-identity.outputs.seeder }}
+          GH_TOKEN: ${{ github.token }}
+        run: &sccache-floor |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import sys
+          def finish(message, status=0):
+              print(message)
+              sys.exit(status)
+          floor = 90
+          shape = os.environ['CACHE_SHAPE']
+          stats = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'sccache-stats').read_text(encoding='utf-8')
+          executed = re.search(r'(?m)^Compile requests executed +(\d+)', stats)
+          rate = re.search(r'(?m)^Cache hits rate +([0-9.]+) %', stats)
+          if not executed or not int(executed[1]) or not rate:
+              finish('Compile cache hit rate not judged: no cacheable compilation ran')
+          rate = float(rate[1])
+          # The guards read the compile units and the hit rate of every build from this notice.
+          print(f'::notice title=Work units::compiles: {executed[1]}; hit-rate: {rate:.2f}')
+          if rate >= floor:
+              finish(f'Compile cache hit rate {rate:.2f}% (floor {floor}%)')
+          matched, prefix = os.environ['CACHE_MATCHED_KEY'], os.environ['CACHE_PREFIX']
+          if matched:
+              cause = f"cold snapshot: the restored snapshot {matched} holds too few of this build's objects; seed it again from the default branch"
+          else:
+              listing = subprocess.run(['gh', 'api', f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/caches?key={os.environ['CACHE_NAMESPACE']}&per_page=100"],
+                                       capture_output=True, text=True)
+              if listing.returncode:
+                  cause = 'no snapshot restored (key change, no writer or eviction; the cache list is unavailable)'
+              else:
+                  others = [cache['key'] for cache in json.loads(listing.stdout)['actions_caches'] if not cache['key'].startswith(prefix)]
+                  own = [key for key in others if re.search(os.environ['CACHE_SEEDER'], key)]
+                  if own:
+                      cause = (f'key change: no snapshot matches {prefix} but {len(own)} snapshots of this job exist under other keys; '
+                               'the job shape (compiler, runner or caller directory) changed')
+                  elif others:
+                      cause = (f'no writer: the repository cache holds {len(others)} snapshots of other jobs but none of this shape; '
+                               'no default-branch push saves it')
+                  else:
+                      cause = 'eviction: the repository cache holds no compile snapshot; they were evicted or never saved'
+          # A warning, never a failure: a change can invalidate the cache itself, and only a default-branch push seeds it again.
+          # The guards read this annotation and file the issue.
+          finish(f'::warning title=Compile cache floor::Compile cache hit rate {rate:.2f}% is below the {floor}% floor in shape {shape}: {cause}')
+          PYTHON
 
   docs:
+    permissions:
+      contents: read
+      actions: read
     needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
@@ -1103,6 +1165,10 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   test-build:
     needs: declaration
@@ -1262,61 +1328,14 @@ jobs:
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
       - name: Compile cache hit-rate floor
-        if: job.status == 'success' && steps.cache-statistics.outcome == 'success'
-        env:
-          CACHE_SHAPE: ${{ steps.cache-identity.outputs.shape }}
-          CACHE_MATCHED_KEY: ${{ steps.cache-restore.outputs.cache-matched-key }}
-          CACHE_PREFIX: ${{ steps.cache-identity.outputs.prefix }}
-          CACHE_NAMESPACE: ${{ steps.cache-identity.outputs.namespace }}
-          CACHE_SEEDER: ${{ steps.cache-identity.outputs.seeder }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 - <<'PYTHON'
-          import json
-          import os
-          import pathlib
-          import re
-          import subprocess
-          import sys
-          def finish(message, status=0):
-              print(message)
-              sys.exit(status)
-          floor = 90
-          shape = os.environ['CACHE_SHAPE']
-          stats = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'sccache-stats').read_text(encoding='utf-8')
-          executed = re.search(r'(?m)^Compile requests executed +(\d+)', stats)
-          rate = re.search(r'(?m)^Cache hits rate +([0-9.]+) %', stats)
-          if not executed or not int(executed[1]) or not rate:
-              finish('Compile cache hit rate not judged: no cacheable compilation ran')
-          rate = float(rate[1])
-          # The guards read the compile units and the hit rate of every build from this notice.
-          print(f'::notice title=Work units::compiles: {executed[1]}; hit-rate: {rate:.2f}')
-          if shape != 'tests-coverage':
-              finish(f'Compile cache hit rate not judged: {shape} is not seeded by a warm build')
-          if rate >= floor:
-              finish(f'Compile cache hit rate {rate:.2f}% (floor {floor}%)')
-          matched, prefix = os.environ['CACHE_MATCHED_KEY'], os.environ['CACHE_PREFIX']
-          if matched:
-              cause = f"cold snapshot: the restored snapshot {matched} holds too few of this build's objects; seed it again from the default branch"
-          else:
-              listing = subprocess.run(['gh', 'api', f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/caches?key={os.environ['CACHE_NAMESPACE']}&per_page=100"],
-                                       capture_output=True, text=True)
-              if listing.returncode:
-                  cause = 'no snapshot restored (key change or eviction; the cache list is unavailable)'
-              else:
-                  others = [cache['key'] for cache in json.loads(listing.stdout)['actions_caches']
-                            if os.environ['CACHE_SEEDER'] in cache['key'] and not cache['key'].startswith(prefix)]
-                  if others:
-                      cause = (f'key change: no snapshot matches {prefix} but {len(others)} test snapshots exist under other keys; '
-                               'the job shape (compiler, runner or caller directory) changed')
-                  else:
-                      cause = 'eviction: no test snapshot is left in the repository cache; it was evicted or never saved'
-          # A warning, never a failure: a change can invalidate the cache itself, and only a default-branch push seeds it again.
-          # The guards read this annotation and file the issue.
-          finish(f'::warning title=Compile cache floor::Compile cache hit rate {rate:.2f}% is below the {floor}% floor: {cause}')
-          PYTHON
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   test-prepare:
+    permissions:
+      contents: read
+      actions: read
     needs: declaration
     name: Prepare test setup
     if: ${{ needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
@@ -1449,8 +1468,15 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   tests:
+    permissions:
+      contents: read
+      actions: read
     needs: [declaration, test-build, test-prepare]
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
     if: ${{ !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
@@ -1796,6 +1822,10 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
       - name: Upload shard coverage
         if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -1805,6 +1835,9 @@ jobs:
           if-no-files-found: error
 
   doctests:
+    permissions:
+      contents: read
+      actions: read
     name: ${{ matrix.shard == 'doctests' && 'Doctests' }}
     needs: declaration
     if: ${{ (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
@@ -1875,6 +1908,9 @@ jobs:
           if-no-files-found: error
 
   checks:
+    permissions:
+      contents: read
+      actions: read
     name: Dependency, source and coverage checks
     needs: declaration
     if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
@@ -2163,6 +2199,10 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   fuzz:
     name: Fuzz ${{ matrix.name }}
@@ -2340,6 +2380,9 @@ jobs:
           PYTHON
 
   targets:
+    permissions:
+      contents: read
+      actions: read
     name: Check (${{ matrix.target }})
     needs: declaration
     if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
@@ -2418,8 +2461,15 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   browser:
+    permissions:
+      contents: read
+      actions: read
     name: Wasm and browser build
     needs: declaration
     if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
@@ -2510,8 +2560,15 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   browser-tests:
+    permissions:
+      contents: read
+      actions: read
     name: Chromium browser tests
     needs: declaration
     if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true' }}
@@ -2622,3 +2679,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor

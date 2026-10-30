@@ -256,14 +256,15 @@ jobs:
               return 'unknown'
 
           def cache_finding(run, jobs, annotations_of):
-              """The warning the compile-cache floor left on the archive build, as one standing issue."""
+              """The floor warnings of every compile job that judged its cache, as one standing issue."""
+              lines = []
               for job in jobs:
-                  if job['name'] == 'Build test archive':
-                      for note in annotations_of(job):
-                          if note.get('title') == 'Compile cache floor':
-                              return {'title': 'Compile cache below its hit-rate floor', 'comment': True,
-                                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n{note['message']}\n"}
-              return None
+                  if any(step['name'] == 'Compile cache hit-rate floor' and step.get('conclusion') == 'success' for step in job.get('steps', [])):
+                      lines += [f"- {job['name']}: {note['message']}" for note in annotations_of(job) if note.get('title') == 'Compile cache floor']
+              if not lines:
+                  return None
+              return {'title': 'Compile cache below its hit-rate floor', 'comment': True,
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n" + '\n'.join(lines) + '\n'}
 
           def spread_of(history, pad, ceiling=None):
               """The range of earlier values widened by `pad`, never below zero or above the ceiling; None below three values."""
@@ -555,10 +556,10 @@ jobs:
                   findings.extend(range_findings(run, band, measured, like, prior_measured))
                   findings.append(capacity_finding(run, band, wait_of(run, jobs), work_of(jobs), like, [wait_of(other, jobs_of(other['id'])) for other in like]))
                   findings.append(shape_finding(run, band, jobs, prior, [jobs_of(other['id']) for other in prior]))
+                  findings.append(cache_finding(run, jobs, annotations_of))
               on_main = run['event'] in ('merge_group', 'push')
               if on_main:
                   findings.append(required_finding(run, jobs, settings['required']))
-                  findings.append(cache_finding(run, jobs, annotations_of))
               unbalanced = shard_finding(run, jobs, settings['margin'], [])
               slow = shard_slow(jobs) if unbalanced or on_main else {}
               if unbalanced:
