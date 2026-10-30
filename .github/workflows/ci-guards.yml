@@ -7,10 +7,6 @@ on:
         description: Completed Rust CI run to judge (a merge-group run for the time, shard and slow-test guards); empty runs only the test-time exception check
         type: string
         default: ''
-      merge-run-budget-minutes:
-        description: Minutes a merge-group run may take before an issue is filed
-        type: number
-        default: 45
       selection-window:
         description: Completed runs of the same event that make a sustained selection share
         type: number
@@ -150,7 +146,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           RUN_ID: ${{ inputs.run-id }}
-          BUDGET_MINUTES: ${{ inputs.merge-run-budget-minutes }}
           SELECTION_WINDOW: ${{ inputs.selection-window }}
           SELECTION_CEILING: ${{ inputs.selection-share-ceiling-percent }}
           SHARD_MARGIN: ${{ inputs.shard-balance-margin }}
@@ -182,15 +177,38 @@ jobs:
                   return None
               return (stamp(job['completed_at']) - stamp(job['started_at'])).total_seconds()
 
-          def budget_finding(run, jobs, budget):
-              """A merge-run over its minutes budget, with the run link and its slowest jobs."""
-              minutes = (stamp(run['updated_at']) - stamp(run['run_started_at'])).total_seconds() / 60
-              if minutes <= budget:
+          def wall(run):
+              return (stamp(run['updated_at']) - stamp(run['run_started_at'])).total_seconds()
+
+          def watched(run):
+              """Merge groups, pull requests and pushes to main gate a merge; CodeQL and other runs do not."""
+              return run['name'] != 'CodeQL' and (run['event'] in ('merge_group', 'pull_request')
+                                                  or (run['event'] == 'push' and run['head_branch'] == 'main'))
+
+          def job_times(jobs):
+              return {job['name']: seconds(job) for job in jobs if seconds(job) is not None and job.get('conclusion') != 'cancelled'}
+
+          def budget_finding(run, jobs, prior, jobs_of):
+              """A run more than 10% over the median wall time of the previous five successful runs of its workflow and event."""
+              if not watched(run) or len(prior) < 3:
                   return None
-              slowest = sorted(((seconds(job), job['name']) for job in jobs if seconds(job) is not None), reverse=True)[:5]
-              listed = '\n'.join(f'- {name}: {took / 60:.1f} min' for took, name in slowest)
-              return {'title': f"Merge run over its time budget: run {run['id']}",
-                      'body': f"Run: {run['html_url']}\nTook {minutes:.1f} minutes; the budget is {budget:g} minutes.\n\nSlowest jobs:\n{listed}\n"}
+              baseline = statistics.median(wall(earlier) for earlier in prior[-5:])
+              took = wall(run)
+              if took <= baseline * 1.10:
+                  return None
+              before = {}
+              for earlier in prior[-5:]:
+                  for name, value in job_times(jobs_of(earlier['id'])).items():
+                      before.setdefault(name, []).append(value)
+              grown = sorted(((value - sum(before[name]) / len(before[name]), name, value)
+                              for name, value in job_times(jobs).items() if name in before), reverse=True)[:6]
+              listed = '\n'.join(f'- {name}: {value / 60:.1f} min ({change / 60:+.1f} min)' for change, name, value in grown)
+              runs = '\n'.join(f"- {earlier['html_url']}" for earlier in prior[-5:])
+              return {'title': f"CI run slower than its baseline: run {run['id']}",
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) took {took / 60:.1f} min against a baseline "
+                              f"of {baseline / 60:.1f} min (+{(took / baseline - 1) * 100:.0f}%, limit +10%).\n\n"
+                              f"Baseline runs (previous successful runs of the same workflow and event):\n{runs}\n\n"
+                              f"Jobs that grew most (now against their mean in the baseline runs):\n{listed}\n"}
 
           def selection_of(log):
               """Selected and total test packages and the full-suite trigger, as the selection step logs them."""
@@ -304,7 +322,9 @@ jobs:
               if run['status'] != 'completed' or run['conclusion'] == 'cancelled':
                   return []
               jobs = jobs_of(run_id)
-              findings = [budget_finding(run, jobs, settings['budget'])]
+              prior = sorted((other for other in runs_like(run, 'success') if watched(other) and other['run_started_at'] < run['run_started_at']),
+                             key=lambda other: other['run_started_at'])[-5:]
+              findings = [budget_finding(run, jobs, prior, jobs_of)]
               on_main = run['event'] in ('merge_group', 'push')
               if on_main:
                   findings.append(required_finding(run, jobs, settings['required']))
@@ -336,7 +356,7 @@ jobs:
                   if result.returncode:
                       raise RuntimeError(f'gh {argv[0]} {argv[1]} failed: {result.stderr.strip()}')
                   return result.stdout
-              settings = {'budget': float(os.environ['BUDGET_MINUTES']), 'window': int(float(os.environ['SELECTION_WINDOW'])),
+              settings = {'window': int(float(os.environ['SELECTION_WINDOW'])),
                           'ceiling': float(os.environ['SELECTION_CEILING']), 'margin': float(os.environ['SHARD_MARGIN']),
                           'slow': float(os.environ['SLOW_SECONDS']), 'required': json.loads(os.environ['REQUIRED_CHECKS'])}
               repository = os.environ['REPOSITORY']

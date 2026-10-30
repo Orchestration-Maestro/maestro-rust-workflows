@@ -941,7 +941,6 @@ read the run fails instead of passing.
 
 | Input | Default | Used by |
 | --- | --- | --- |
-| `merge-run-budget-minutes` | 45 | Merge-run time budget |
 | `selection-window` | 10 | Selection check |
 | `selection-share-ceiling-percent` | 25 | Selection check |
 | `shard-balance-margin` | 1.5 | Shard balance |
@@ -951,13 +950,19 @@ read the run fails instead of passing.
 
 ### Merge-run time budget
 
-A completed merge-group run that took longer than `merge-run-budget-minutes`
-files "Merge run over its time budget: run N" with the run link and its five
-slowest jobs. The default is 45 minutes. Source: merge-group runs 40990557025
-and 40990555729 on Maestro took 39.3 and 39.8 minutes with 16 shards. The 32-shard
-change is expected to bring a run to about 22 minutes, so lower the budget then.
-To respond, open the run link, start from the slowest job and fix its cause.
-Raising the budget only hides the regression.
+There is no fixed minutes budget. A run that has finished is compared with its
+own history: the median wall time of the previous five successful runs of the
+same workflow and event, plus 10%. A run over that line files "CI run slower
+than its baseline: run N" at once. It names the run, links the baseline runs and
+lists the six jobs that grew most against their mean in those runs. Merge
+groups, pull requests and pushes to `main` are judged; CodeQL and every other
+run are not, because they gate nothing. Fewer than three earlier successful
+runs means no baseline and no issue. Using the median means one unusually fast
+run does not lower the line. The same rule runs as a local watcher on Maestro.
+Source: Maestro merge-group runs 40990557025 and 40990555729 took 39.3 and 39.8
+minutes with 16 shards, so at that level the line sits near 43 minutes; it
+moves down by itself as the 32-shard change makes runs shorter. To respond, open
+the run link, start from the job that grew most and fix its cause.
 
 ### Compile-cache hit-rate floor
 
