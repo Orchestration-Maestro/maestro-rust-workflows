@@ -91,8 +91,11 @@ when that save succeeds and later jobs restore the compatible snapshot.
 
 ## Reusable-call concurrency
 
-The optional workflow input `concurrency-key` defaults to an empty string,
-keeping the existing per-ref concurrency group. If a workflow calls this
+A pull-request or merge-group run is grouped by ref. A push run is grouped by
+the calling workflow's name and the pushed commit, so two caller workflows on
+one commit run at the same time and later landings still never wait for each
+other. The optional workflow input `concurrency-key` defaults to an empty
+string, which adds nothing to the group. If a workflow calls this
 reusable workflow more than once, give each calling job a distinct, stable
 key (case-insensitive), such as `concurrency-key: quality`. Reuse that key on
 later pushes so a new pull-request run cancels the older invocation of the
@@ -891,8 +894,8 @@ an already-selected job queued, not silently rerun on another host.
 A caller can run `ci.yml` on every push to `main`, without `warm-cache` or scan
 inputs. Checkout uses the push's exact commit. This runs every test shard,
 doctests and declared browser tests, regardless of merge-group selection.
-Push runs have separate concurrency groups by commit: later landings cannot
-cancel a run or replace a queued landing.
+Push runs have separate concurrency groups by calling workflow and commit: later
+landings cannot cancel a run or replace a queued landing.
 
 Maestro's `Full suite after landing` workflow owns that call. Its
 `Failed landing reports` workflow listens for completed main-push runs with
