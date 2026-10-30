@@ -1,0 +1,227 @@
+name: CI guards
+
+on:
+  workflow_call:
+    inputs:
+      run-id:
+        description: Completed Rust CI run to judge (a merge-group run for the time, shard and slow-test guards); empty runs only the test-time exception check
+        type: string
+        default: ''
+      merge-run-budget-minutes:
+        description: Minutes a merge-group run may take before an issue is filed
+        type: number
+        default: 45
+      selection-window:
+        description: Completed runs of the same event that make a sustained selection share
+        type: number
+        default: 10
+      selection-share-ceiling-percent:
+        description: Median share of workspace test packages selected over the window above which an issue is filed
+        type: number
+        default: 25
+      shard-balance-margin:
+        description: Slowest test shard may take at most this multiple of the median shard
+        type: number
+        default: 1.5
+      slow-test-seconds:
+        description: Seconds after which nextest flags a test slow; each such test on main gets one issue
+        type: number
+        default: 30
+      slow-issue-limit:
+        description: New slow-test issues one run may file (open issues are never filed twice)
+        type: number
+        default: 10
+      hang-limit-seconds:
+        description: Longest kill time a nextest override may declare without an open issue
+        type: number
+        default: 120
+      nextest-config:
+        description: Path of the caller's nextest configuration
+        type: string
+        default: .config/nextest.toml
+
+permissions:
+  contents: read
+
+jobs:
+  exceptions:
+    name: Test-time exceptions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test-time exceptions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          NEXTEST_CONFIG: ${{ inputs.nextest-config }}
+          HANG_LIMIT_SECONDS: ${{ inputs.hang-limit-seconds }}
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import sys
+          import tomllib
+
+          def period_seconds(period):
+              units = {'ms': 0.001, 's': 1, 'm': 60, 'h': 3600}
+              return sum(int(count) * units[unit] for count, unit in re.findall(r'(\d+)(ms|s|m|h)', period))
+
+          def nextest_exceptions(text, hang_seconds):
+              """Overrides whose kill time passes the hang limit, with the issues named above their slow-timeout."""
+              raise NotImplementedError('nextest_exceptions')
+
+          def exception_findings(exceptions, state_of):
+              """One message per exception that names no issue or only closed ones."""
+              raise NotImplementedError('exception_findings')
+
+          def main():
+              path = pathlib.Path(os.environ['NEXTEST_CONFIG'])
+              if not path.is_file():
+                  print(f'No {path}: no exceptions to check')
+                  return
+              def state_of(number):
+                  result = subprocess.run(['gh', 'issue', 'view', str(number), '-R', os.environ['REPOSITORY'], '--json', 'state'],
+                                          capture_output=True, text=True)
+                  if result.returncode:
+                      raise RuntimeError(f'gh issue view {number} failed: {result.stderr.strip()}')
+                  return json.loads(result.stdout)['state']
+              exceptions = nextest_exceptions(path.read_text(encoding='utf-8'), float(os.environ['HANG_LIMIT_SECONDS']))
+              messages = exception_findings(exceptions, state_of)
+              for message in messages:
+                  print(f'::error file={path}::{message}')
+              print(f'{len(exceptions)} test-time exceptions, {len(messages)} refused')
+              if messages:
+                  sys.exit(1)
+
+          if __name__ == '__main__':
+              main()
+
+  guards:
+    name: Run guards
+    if: ${{ inputs.run-id != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - name: Judge the run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ inputs.run-id }}
+          BUDGET_MINUTES: ${{ inputs.merge-run-budget-minutes }}
+          SELECTION_WINDOW: ${{ inputs.selection-window }}
+          SELECTION_CEILING: ${{ inputs.selection-share-ceiling-percent }}
+          SHARD_MARGIN: ${{ inputs.shard-balance-margin }}
+          SLOW_SECONDS: ${{ inputs.slow-test-seconds }}
+          SLOW_ISSUE_LIMIT: ${{ inputs.slow-issue-limit }}
+          # Jobs a full run must execute; a trailing * matches a name prefix.
+          REQUIRED_CHECKS: >-
+            ["Caller declaration", "Format and lint", "Docs", "Build test archive", "Test shard (*",
+            "Doctests", "Tests (ubuntu-latest)", "Dependency, source and coverage checks"]
+        shell: python
+        run: |
+          import datetime
+          import json
+          import os
+          import re
+          import statistics
+          import subprocess
+          import sys
+
+          def clean(log):
+              log = re.sub(r'\x1b\[[0-9;]*m', '', log)
+              return re.sub(r'(?m)^\d{4}-\d\d-\d\dT[\d:.]+Z ', '', log)
+
+          def stamp(value):
+              return datetime.datetime.fromisoformat(value)
+
+          def seconds(job):
+              if job.get('conclusion') == 'skipped' or not job.get('started_at') or not job.get('completed_at'):
+                  return None
+              return (stamp(job['completed_at']) - stamp(job['started_at'])).total_seconds()
+
+          def budget_finding(run, jobs, budget):
+              """A merge-run over its minutes budget, with the run link and its slowest jobs."""
+              raise NotImplementedError('budget_finding')
+
+          def selection_of(log):
+              """Selected and total test packages and the full-suite trigger, as the selection step logs them."""
+              raise NotImplementedError('selection_of')
+
+          def selection_finding(rows, ceiling, window):
+              """A sustained share: the median over a full window of runs is above the ceiling."""
+              raise NotImplementedError('selection_finding')
+
+          def slow_tests(log):
+              """Longest slow mark nextest printed for each test."""
+              raise NotImplementedError('slow_tests')
+
+          def grown_tests(current, previous):
+              """The five slow tests that grew most: new, or past a higher slow mark than before."""
+              raise NotImplementedError('grown_tests')
+
+          def shard_finding(run, jobs, margin, grown):
+              """The slowest test shard is beyond the margin over the median; names the tests that grew."""
+              raise NotImplementedError('shard_finding')
+
+          def slow_findings(slow, limit, run):
+              """One issue per test that ran past the slow mark."""
+              raise NotImplementedError('slow_findings')
+
+          def required_finding(run, jobs, pinned):
+              """Pinned jobs that did not run at all, so a renamed or removed gate cannot pass silently."""
+              raise NotImplementedError('required_finding')
+
+          def file_issues(findings, repository, gh, slow_limit):
+              """Open an issue for each finding no open issue already carries; returns the titles filed."""
+              raise NotImplementedError('file_issues')
+
+          def judge(run_id, repository, gh, settings):
+              """Every finding for one completed run."""
+              def api(path):
+                  return json.loads(gh('api', f'repos/{repository}/{path}'))
+              def jobs_of(identifier):
+                  pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repository}/actions/runs/{identifier}/jobs?per_page=100'))
+                  return [job for page in pages for job in page['jobs']]
+              def log_of(job):
+                  return gh('api', '--allow-escape-sequences', f"repos/{repository}/actions/jobs/{job['id']}/logs")
+              run = api(f'actions/runs/{run_id}')
+              if run['status'] != 'completed' or run['conclusion'] == 'cancelled':
+                  return []
+              jobs = jobs_of(run_id)
+              findings = [budget_finding(run, jobs, settings['budget'])]
+              on_main = run['event'] in ('merge_group', 'push')
+              return [finding for finding in findings if finding]
+
+          def main():
+              def gh(*argv, body=None):
+                  result = subprocess.run(['gh', *argv], input=body, capture_output=True, text=True)
+                  if result.returncode:
+                      raise RuntimeError(f'gh {argv[0]} {argv[1]} failed: {result.stderr.strip()}')
+                  return result.stdout
+              settings = {'budget': float(os.environ['BUDGET_MINUTES']), 'window': int(float(os.environ['SELECTION_WINDOW'])),
+                          'ceiling': float(os.environ['SELECTION_CEILING']), 'margin': float(os.environ['SHARD_MARGIN']),
+                          'slow': float(os.environ['SLOW_SECONDS']), 'required': json.loads(os.environ['REQUIRED_CHECKS'])}
+              repository = os.environ['REPOSITORY']
+              try:
+                  findings = judge(os.environ['RUN_ID'], repository, gh, settings)
+                  filed = file_issues(findings, repository, gh, int(float(os.environ['SLOW_ISSUE_LIMIT'])))
+              except (RuntimeError, KeyError, ValueError, OSError) as error:
+                  sys.exit(f'CI guards failed: {error}')
+              print(f'{len(findings)} findings, {len(filed)} issues filed')
+              for title in filed:
+                  print(f'Filed: {title}')
+
+          if __name__ == '__main__':
+              main()
