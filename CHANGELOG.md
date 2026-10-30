@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.19.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.18.1...v0.19.0) (2026-10-30)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main 7ee2cb06 ([#261](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/261)) ([633ee07](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/633ee07464cf19a3129c294b0256e752aeb93359))
+
+
+### Features
+
+* **ci:** guard CI speed so it cannot drift back ([#246](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/246)) ([9d49c0f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/9d49c0faafc931a0d5241aff4c6b462f3446715d))
+
+
+### Bug Fixes
+
+* **ci:** download shard artifacts in parallel ranges ([#258](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/258)) ([df92e06](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/df92e06d47b5b39f5cd735adc70bbe13f43f5dab))
+* **ci:** end a run at its last job in the CI guards ([#260](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/260)) ([e9ac000](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/e9ac000a1d038906738077994b8c2f3ae6c4b0af))
+* **ci:** name the calling workflow in the push concurrency group ([#255](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/255)) ([2613544](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/2613544f20276283a089f61cec81ae907a0cecd4))
+
 ## [0.18.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.18.0...v0.18.1) (2026-10-30)
 
 
