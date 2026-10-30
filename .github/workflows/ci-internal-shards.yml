@@ -782,7 +782,7 @@ jobs:
           judge_compares_a_run_only_with_runs_on_its_own_hardware_band()
           print('PASS judge_compares_a_run_only_with_runs_on_its_own_hardware_band')
 
-          def the_ratchet_is_lowered_by_the_guard_and_raised_only_by_an_accept():
+          def the_ratchet_is_only_lowered_by_the_guard():
               key = '9/merge_group/unknown'
               ratchet = {}
               gh, _ = fake_repository(ratchet=ratchet)
@@ -796,24 +796,16 @@ jobs:
               gh, _ = fake_repository(minutes=20, prior_minutes={n: 20 for n in range(1, 7)}, ratchet=ratchet)
               assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
               assert stored_levels(ratchet)[key]['seconds'] == 1200, ratchet
-              # A lasting move to slower runners keeps firing until someone accepts it with a reason.
-              gh, _ = fake_repository(minutes=40, prior_minutes={n: 40 for n in range(1, 7)}, ratchet=ratchet)
-              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
-              assert 'baseline of 20.0 min' in findings[0]['body'], findings
-              judging['accept_ratchet']('owner/repo', gh, key, 2400, 'the pool moved to slower runners, measured in runs 1 to 6', '555')
-              assert stored_levels(ratchet)[key] == {'seconds': 2400, 'reason': 'the pool moved to slower runners, measured in runs 1 to 6', 'run': 555}, ratchet
-              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
-              for refused in [('', 2400, 'why'), (key, 0, 'why'), (key, 2400, ' ')]:
-                  try:
-                      judging['accept_ratchet']('owner/repo', gh, *refused, '555')
-                  except ValueError:
-                      continue
-                  raise AssertionError(refused)
-              assert stored_levels(ratchet)[key]['seconds'] == 2400, ratchet
+              # A lasting move to slower runners keeps firing: nothing raises the level, so it is fixed at its cause.
+              for attempt in range(2):
+                  gh, _ = fake_repository(minutes=40, prior_minutes={n: 40 for n in range(1, 7)}, ratchet=ratchet)
+                  findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+                  assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+                  assert 'baseline of 20.0 min' in findings[0]['body'], findings
+                  assert stored_levels(ratchet)[key]['seconds'] == 1200, ratchet
 
-          the_ratchet_is_lowered_by_the_guard_and_raised_only_by_an_accept()
-          print('PASS the_ratchet_is_lowered_by_the_guard_and_raised_only_by_an_accept')
+          the_ratchet_is_only_lowered_by_the_guard()
+          print('PASS the_ratchet_is_only_lowered_by_the_guard')
 
           def judge_holds_a_creeping_run_to_the_stored_level():
               key = '9/merge_group/unknown'
@@ -1114,39 +1106,22 @@ jobs:
           exception_check_fails_the_job_when_an_issue_is_closed()
           print('PASS exception_check_fails_the_job_when_an_issue_is_closed')
 
-          def the_accept_inputs_set_a_level_through_the_step():
-              with tempfile.TemporaryDirectory() as temporary:
-                  directory = pathlib.Path(temporary)
-                  (directory / 'bin').mkdir()
-                  fake = directory / 'bin/gh'
-                  fake.write_text('#!/bin/sh\ncase "$1 $2" in "issue list") echo \'[]\';; "issue create") cat > "$STORED";; esac\n', encoding='utf-8')
-                  fake.chmod(0o755)
-                  env = os.environ | {'PATH': f"{directory / 'bin'}:{os.environ['PATH']}", 'STORED': str(directory / 'stored'), 'REPOSITORY': 'owner/repo',
-                                      'RUN_ID': '', 'GITHUB_RUN_ID': '555', 'SELECTION_WINDOW': '10', 'SELECTION_CEILING': '25', 'SHARD_MARGIN': '1.5',
-                                      'SLOW_SECONDS': '30', 'REQUIRED_CHECKS': '[]', 'ACCEPT_LEVEL': '', 'ACCEPT_SECONDS': '0', 'ACCEPT_REASON': ''}
-                  def step(**changed):
-                      return subprocess.run(['python3', '-c', body('Judge the run', guards)], env=env | changed, cwd=directory, capture_output=True, text=True)
-                  result = step()
-                  assert result.returncode == 0 and '0 findings, 0 issues filed' in result.stdout and not (directory / 'stored').exists(), result.stdout + result.stderr
-                  result = step(ACCEPT_LEVEL='9/merge_group/x', ACCEPT_SECONDS='2400', ACCEPT_REASON='slower pool')
-                  assert result.returncode == 0 and 'Accepted 9/merge_group/x at 2400 s' in result.stdout, result.stdout + result.stderr
-                  stored = (directory / 'stored').read_text(encoding='utf-8')
-                  assert '"9/merge_group/x": {' in stored and '"reason": "slower pool"' in stored and '"run": 555' in stored and '"seconds": 2400.0' in stored, stored
-                  (directory / 'stored').unlink()
-                  result = step(ACCEPT_LEVEL='9/merge_group/x', ACCEPT_SECONDS='2400', ACCEPT_REASON=' ')
-                  assert result.returncode != 0 and 'CI guards failed: accepting a level needs the level' in result.stderr, result.stdout + result.stderr
-                  assert not (directory / 'stored').exists()
-
-          the_accept_inputs_set_a_level_through_the_step()
-          print('PASS the_accept_inputs_set_a_level_through_the_step')
-
-          def the_guards_job_runs_for_a_judged_run_or_an_accept():
-              # Without the accept branch a call that sets only a level skips the job and stores nothing.
+          def the_manual_accept_path_is_gone():
+              # No person raises a baseline (OD-637): no input, step, job condition or documented path accepts a level.
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=guards, text=True))
+              inputs = document['on']['workflow_call']['inputs']
+              assert not [name for name in inputs if name.startswith('accept')], list(inputs)
+              for text in ['ACCEPT_', 'accept_ratchet', 'accept-level', 'Accepted ']:
+                  assert text not in guards, text
+              assert 'accept_ratchet' not in judging, list(judging)
               job = guards.split('\n  guards:\n', 1)[1].split('\n    runs-on:', 1)[0]
-              assert "if: $" + "{{ inputs.run-id != '' || inputs.accept-level != '' }}" in job, job
+              assert "if: $" + "{{ inputs.run-id != '' }}" in job, job
+              guide = (root / 'docs/caller-checks.md').read_text(encoding='utf-8')
+              for text in ['accept-level', 'accept-seconds', 'accept-reason', 'only an accept']:
+                  assert text not in guide, text
 
-          the_guards_job_runs_for_a_judged_run_or_an_accept()
-          print('PASS the_guards_job_runs_for_a_judged_run_or_an_accept')
+          the_manual_accept_path_is_gone()
+          print('PASS the_manual_accept_path_is_gone')
 
           def run_cache_floor(shape, stats, matched, listing, namespace='maestro-compile-v1-'):
               with tempfile.TemporaryDirectory() as temporary:
@@ -1241,16 +1216,14 @@ jobs:
               # Every input the table lists exists, so a removed input cannot stay documented.
               listed = set(re.findall(r'\| `([a-z-]+)` \|', guide.split('## CI speed guards', 1)[1]))
               assert listed <= set(inputs), listed - set(inputs)
-              for name in ['accept-level', 'accept-seconds', 'accept-reason']:
-                  assert name in inputs and f'`{name}`' in guide, name
               for source in ['40990557025', '40990555729', '40968689273', '40946549381']:
                   assert source in guide, source
               # The time guard is relative to the run's own baseline; a fixed minutes budget is not allowed.
               assert 'merge-run-budget-minutes' not in guide and 'merge-run-budget-minutes' not in guards
               assert 'median wall time of the previous five successful runs' in guide and 'plus 10%' in guide
               assert 'runner band' in guide and 'lowest such median' in guide and 'runner-band: <label>' in guide
-              # The ratchet is stored in one issue and raised only by an explicit accept with a reason.
-              assert 'issue titled "CI time ratchet"' in guide and 'only an accept with a reason raises it' in guide
+              # The ratchet is stored in one issue and only the guard lowers it.
+              assert 'issue titled "CI time ratchet"' in guide and 'only the guard lowers it' in guide
               # The cache floor warns; the guards file one issue for it. The slow-test issues have no cap.
               assert 'never fails the build' in guide and 'Compile cache below its hit-rate floor' in guide
               assert 'one issue for every test' in guide
