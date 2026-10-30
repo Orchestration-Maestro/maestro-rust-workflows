@@ -521,7 +521,7 @@ jobs:
                       if server.fault == 'fail' and start > 0:
                           return self.send_error(500)
                       if server.fault == 'ignored' and start > 0:
-                          return self.reply(200, server.blob)
+                          return self.reply(200, bytes(body))
                       if server.fault == 'short' and start > 0:
                           body = body[:-1]
                       return self.reply(206, bytes(body), {'Content-Range': f'bytes {start}-{end}/{len(server.blob)}'})
@@ -538,6 +538,7 @@ jobs:
           def download(ranges=True, corrupt=False, digest=True, listing_fails=False, fault=None):
               server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Storage)
               server.blob, server.requests = archive(), []
+              server.handle_error = lambda *arguments: None  # a client that gave up on a range resets its connection
               server.ranges, server.corrupt, server.digest, server.listing_fails, server.fault = ranges, corrupt, digest, listing_fails, fault
               threading.Thread(target=server.serve_forever, daemon=True).start()
               try:
