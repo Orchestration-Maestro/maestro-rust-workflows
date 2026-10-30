@@ -172,9 +172,6 @@ jobs:
                   return None
               return (stamp(job['completed_at']) - stamp(job['started_at'])).total_seconds()
 
-          def wall(run):
-              return (stamp(run['updated_at']) - stamp(run['run_started_at'])).total_seconds()
-
           def watched(run):
               """Merge groups, pull requests and pushes to main gate a merge; CodeQL and other runs do not."""
               return run['name'] != 'CodeQL' and (run['event'] in ('merge_group', 'pull_request')
@@ -436,7 +433,7 @@ jobs:
                               '.\nA job was renamed, removed or skipped; restore it or update the pinned list.\n'}
 
           def file_issues(findings, repository, gh):
-              """Open an issue for each finding no open issue already carries; a finding marked for comment is added to its open issue. Returns the titles filed or commented."""
+              """Open an issue, with the finding's labels, for each finding no open issue already carries; a finding marked for comment is added to its open issue. Returns the titles filed or commented."""
               existing = {item['title']: item['number'] for item in json.loads(gh('issue', 'list', '-R', repository, '--state', 'open',
                                                                                  '--limit', '1000', '--json', 'number,title'))}
               filed, made = [], set()
