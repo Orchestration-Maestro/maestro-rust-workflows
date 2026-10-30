@@ -257,8 +257,10 @@ jobs:
               return total
 
           def wait_of(run, jobs):
-              """Seconds of a run's wall time with no job executing: the wait for runners, never CI work."""
-              return max((stamp(run['updated_at']) - stamp(run['run_started_at'])).total_seconds() - work_of(jobs), 0.0)
+              """Seconds of a run's wall time with no job executing: the wait for runners, never CI work.
+              The run ends when its last executed job does: its updated_at keeps moving after that, when a check is re-requested."""
+              ended = max((stamp(job['completed_at']) for job in executed(jobs)), default=stamp(run['run_started_at']))
+              return max((ended - stamp(run['run_started_at'])).total_seconds() - work_of(jobs), 0.0)
 
           def capacity_finding(run, band, wait, work, prior, waits):
               """A runner wait over the median wait of like-for-like runs by more than 10% and by more than 2 minutes: capacity, not a regression."""

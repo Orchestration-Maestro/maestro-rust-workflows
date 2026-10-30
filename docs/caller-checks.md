@@ -1069,7 +1069,10 @@ its own owner decision first.
 
 The runner wait is its own measure: the run's wall time minus its work time,
 which is the time spent pending for a concurrency group or a runner, before the
-first job or between jobs. It is never CI slowness. It is out of pattern only
+first job or between jobs. A run ends at its last job's end, never at its
+`updated_at`, which keeps moving after the last job when a check is re-requested
+or the pull request changes: run 41098096027 ended its last job at 17:38:57,
+`updated_at` read 17:56:00, and no job waited over 10 s. It is never CI slowness. It is out of pattern only
 when it is over the median wait of the like-for-like baseline runs by more than
 10% and by more than 2 minutes, and then the guard files "Escalation: runner
 wait over its median" (a capacity issue, never a regression). Source: Maestro

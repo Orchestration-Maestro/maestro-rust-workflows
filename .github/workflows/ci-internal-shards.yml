@@ -913,16 +913,31 @@ jobs:
           print('PASS a_job_or_step_that_appears_disappears_or_grows_without_matching_work_escalates')
 
           def work_time_is_the_union_of_the_job_intervals_and_the_runner_wait_is_the_rest():
-              jobs = [job('A', 10, identifier=1), job('B', 15, identifier=2, start=5), job('C', 10, identifier=3, start=30), job('F', 3, identifier=6, start=32),
-                      job('D', 60, 'skipped', identifier=4), job('E', 60, 'cancelled', identifier=5)]
+              # Run 7 starts at minute 840 of the fixture clock, so its jobs start there.
+              at = 840
+              jobs = [job('A', 10, identifier=1, start=at), job('B', 15, identifier=2, start=at + 5), job('C', 10, identifier=3, start=at + 30),
+                      job('F', 3, identifier=6, start=at + 32), job('D', 60, 'skipped', identifier=4, start=at), job('E', 60, 'cancelled', identifier=5, start=at)]
               # [0, 20] and [30, 40] minutes: the overlap counts once, the gap between them and the nested job add nothing, skipped and cancelled jobs are not work.
               assert judging['work_of'](jobs) == 30 * 60 and judging['work_of']([]) == 0
-              assert judging['wait_of'](run_of(7, 50), jobs) == 20 * 60
-              assert judging['wait_of'](run_of(7, 20), jobs) == 0
+              # The run ends when its last job does: 40 minutes of wall time less 30 of work, wherever the run's last update falls.
+              assert judging['wait_of'](run_of(7, 50), jobs) == 10 * 60
+              assert judging['wait_of'](run_of(7, 20), jobs) == 10 * 60
               assert judging['job_set'](jobs) == {'A', 'B', 'C', 'F'}
 
           work_time_is_the_union_of_the_job_intervals_and_the_runner_wait_is_the_rest()
           print('PASS work_time_is_the_union_of_the_job_intervals_and_the_runner_wait_is_the_rest')
+
+          def a_run_ends_at_its_last_job_not_at_its_last_update():
+              # Run 41098096027 (2026-10-30): its last job ended 17:38:57 and updated_at read 17:56:00, after a re-requested check; no job waited over 10 s.
+              run = run_of(7, 0) | {'run_started_at': '2026-10-30T17:30:00Z', 'updated_at': '2026-10-30T17:56:00Z'}
+              built = job('Build test archive', 0, identifier=1) | {'started_at': '2026-10-30T17:30:05Z', 'completed_at': '2026-10-30T17:35:00Z'}
+              tested = job('Test shard (1/16)', 0, identifier=2) | {'started_at': '2026-10-30T17:35:04Z', 'completed_at': '2026-10-30T17:38:57Z'}
+              assert judging['wait_of'](run, [built, tested]) == 9.0
+              # A run with no job to end it waited for nothing.
+              assert judging['wait_of'](run, []) == 0
+
+          a_run_ends_at_its_last_job_not_at_its_last_update()
+          print('PASS a_run_ends_at_its_last_job_not_at_its_last_update')
 
           def a_runner_wait_over_its_median_by_ten_percent_and_two_minutes_files_a_capacity_issue():
               prior, _ = prior_runs(5)
@@ -1078,11 +1093,15 @@ jobs:
               pace = {identifier: (5, 100) for identifier in range(8, 20)} | (pace or {})
               build = build or {}
               logs = {}
+              def wall_of(identifier):
+                  return minutes if identifier == 7 else 200 if identifier > 7 else 30
               def jobs_for(identifier):
                   base = identifier * 1000
                   factor, _ = pace.get(identifier, (1, 100))
                   built, _, _ = build.get(identifier, (1, 600, 99.5))
-                  found = [job(name, 5 * built if name == 'Build test archive' else 5, identifier=base + index,
+                  # A run ends at its last job: the jobs start inside the run, after the wait that makes up the rest of its wall time.
+                  begin = identifier * 120 + max(wall_of(identifier) - max([5 * built] + [took * factor for took in shard_minutes]), 0)
+                  found = [job(name, 5 * built if name == 'Build test archive' else 5, identifier=base + index, start=begin,
                                steps=(steps or {}).get((identifier, name), [('Set up job', 5), ('Build docs', 240)] if name == 'Docs' else [])
                                + ([('Compile cache hit-rate floor', 1)] if name in {judged for named in (floor or {}).values() for judged in named} else [])
                                + ([('Compile cache statistics', 1)] + [('Save compile cache', 1)] * (name in seeding[0]) if seeding and name in
@@ -1090,17 +1109,17 @@ jobs:
                                conclusion='cancelled' if identifier == 7 and name in cancelled else 'success')
                            for index, name in enumerate(names)]
                   for index, took in enumerate(shard_minutes):
-                      found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index,
+                      found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index, start=begin,
                                        steps=(steps or {}).get((identifier, f'Test shard ({index + 1}/16)'), []) + [('Tests', took * factor * 60)]))
                       logs[base + 100 + index] = (shard_logs or {}).get((identifier, index), 'Summary [1.0s] 1 test run\n')
-                  found += [job(extra, 5, identifier=base + 200 + index) for index, extra in enumerate((extra_jobs or {}).get(identifier, []))]
+                  found += [job(extra, 5, identifier=base + 200 + index, start=begin) for index, extra in enumerate((extra_jobs or {}).get(identifier, []))]
                   declaration = next(item for item in found if item['name'] == 'Caller declaration') if 'Caller declaration' in names else None
                   if declaration:
                       selected, total, trigger = (selections or {}).get(identifier, (51, 51, 'newer run') if identifier > 7 else (1, 51, None))
                       logs[declaration['id']] = (f'2026-10-30T02:00:00.1234567Z Full-suite fallback: {trigger}\n' if trigger else '') + (
                           f'2026-10-30T02:00:01.1234567Z Selected package count: {selected}/{total}\n')
                   return found
-              runs = {identifier: run_of(identifier, minutes if identifier == 7 else 200 if identifier > 7 else 30, event, conclusion if identifier == 7 else 'success')
+              runs = {identifier: run_of(identifier, wall_of(identifier), event, conclusion if identifier == 7 else 'success')
                       for identifier in range(1, 8 + newer)}
               stored = []
               for identifier in range(1, 8):
@@ -1927,6 +1946,8 @@ jobs:
               assert 'not raw wall time' in guide and 'natural growth' in guide and '`Work units`' in guide
               assert 'seconds per test run' in guide and 'seconds per compile unit' in guide
               assert 'work time' in guide and 'runner wait' in guide and 'executed the same jobs' in guide
+              # A run's updated_at moves after its last job ends, so the wall time stops at that job (run 41098096027).
+              assert 'ends at its last job' in guide and 'updated_at' in guide and '41098096027' in guide
               # The test rate is the seconds of the step that ran the tests, never the whole job, and a job that overlaps another counts in full.
               assert 'S7759' in guide and '2 s per executed job' in guide and 'to the second' in guide and '15 s' not in guide, 'the stamp error bound and its reason'
               assert 'below its spread as well' in guide and 'above it outside the' in guide, 'the stamp bound covers both rate judges'
