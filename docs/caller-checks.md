@@ -994,18 +994,22 @@ the work and takes twice as long is natural growth: it is accepted without
 anyone acting and files nothing. Two kinds of work are measured:
 
 - Test jobs, in seconds per test run. Each test shard ends with a `Work units`
-  notice, `tests: N`, read from the nextest summary; the rate is the shards'
-  seconds over the shards' test runs.
+  notice, `tests: N`, read from the nextest summary; the rate is the seconds of
+  the step that ran the tests (`Tests` or `Isolated tests`) over the shards'
+  test runs, within a runner band. Downloads and setup are never test work, and
+  shards that run side by side each add their own seconds.
 - Build jobs, in seconds per compile unit. The `Build test archive` cache step
   prints `compiles: N; hit-rate: P`, the executed compile requests and the hit
   rate of the sccache statistics.
 
-The seconds are work time, never wall time: the union of the jobs' start-to-end
-intervals, so a job that overlaps another counts once, a gap with no job
-executing counts for nothing, and skipped and cancelled jobs are not work. A run
-is compared only with earlier runs that executed the same jobs (the same job
-names), so a run that added or lost a job has no like-for-like baseline until
-three runs have the new set.
+The seconds are work time, never wall time: a gap with no job executing counts
+for nothing, and skipped and cancelled jobs are not work. The union of the jobs'
+start-to-end intervals is the run's work time, which only the runner wait below
+subtracts. A run is compared only
+with earlier runs that executed the same jobs (the same job names), so a run
+that added or lost a job has no like-for-like baseline until three runs have the
+new set. The stored ratchet level of a band, kind and workflow is shared across
+job sets.
 
 A run whose rate for either kind is more than 10% over its baseline is a
 regression and files "CI run slower than its baseline: run N" at once. The
@@ -1062,16 +1066,21 @@ reads the jobs of at most `selection-window` earlier runs, the annotations of
 the test shards and the archive build of the judged run and of at most five
 baseline runs, and shard logs only on a merge group or main push, or when the
 shards are unbalanced. With 32 shards and the default window that is at most
-about 285 calls, and about 315 when the shards are unbalanced, against the job
-token's 1,000 calls an hour for the whole repository. To respond, open the run
+about 285 calls for the time guards and about 315 when the shards are
+unbalanced, against the job token's 1,000 calls an hour for the whole
+repository. The cache reads add two calls (cache usage and the storage limit),
+up to six pages of the cache list (the largest entries past 90%, and the
+snapshots of a default-branch run), and the floor annotations of the other
+jobs that ran a floor step, about 15, so about 310 and 340. To respond, open the run
 link and fix the cause of the kind that regressed.
 
 ### Compile-cache hit-rate floor
 
 Every job that saves a compile snapshot warns when its compile-cache hit rate is
 under 90%: Format and lint, Docs, Build test archive, Prepare test setup, the
-warm test shards and Doctests, Dependency, source and coverage checks, each
-target check and the Wasm and Chromium browser builds. A default-branch push
+test shards and Doctests, Dependency, source and coverage checks, each Linux and
+macOS target check (the Windows target checks skip the statistics step, so they
+are never judged) and the Wasm and Chromium browser builds. A default-branch push
 seeds every one of these shapes (`tests-coverage`, `tests-plain`, `quality`,
 `docs`, `checks`, `targets-clippy-<target>`, `browser`, `browser-tests` and
 `test-prepare`), so each is judged on merge groups, pull requests and
@@ -1107,8 +1116,8 @@ comments:
 ### Compile snapshots and cache usage
 
 A push to the default branch is the only run that saves compile snapshots, so
-the guards judge those runs themselves, cancelled ones included (a cancelled run
-used to return nothing), and the repository cache they fill.
+the guards judge those runs themselves, cancelled ones included, and the
+repository cache they fill.
 
 - "Escalation: default-branch run did not seed its compile snapshots" is filed
   when the run's jobs reported more saved snapshots than the repository cache
@@ -1116,17 +1125,19 @@ used to return nothing), and the repository cache they fill.
   only here), when jobs measured their compile cache and none saved, or when the
   run was cancelled with jobs unfinished. The cache list is read for the run's
   default branch and matched by the run id in the snapshot key. Source: on
-  2026-10-26 between 16:13 and 21:00 UTC other caches filled the 10 GB limit and
+  2026-10-26 between 16:13 and 21:00 UTC other caches filled the 10 GiB limit and
   every default-branch snapshot was evicted, and eight merge groups
   (40369902252 to 40395312817) compiled the test shape cold at 0% to 28.8%, their
   test shards taking a median 17.4 min against 13.2 min afterwards.
 - "Repository cache above 90% of its limit" is filed when the cache in use
   (`actions/cache/usage`) is over 90% of the repository's storage limit
-  (`actions/cache/storage-limit`, 10 GB on Maestro), with the five largest
-  entries by ref. It is read for every judged run. Over the limit GitHub evicts
-  the oldest snapshots, which is how the 2026-10-26 cold groups happened.
-  Source: Maestro held 11.66 GB in 22 entries on 2026-10-30 against its 10 GB
-  limit. To respond, delete the pull-request entries the issue lists, or
+  (`actions/cache/storage-limit`, 10 GiB on Maestro), with the five largest
+  entries by ref. It fires at 90% of the storage limit the API reports, not at
+  a size fixed in the workflow, because over the limit GitHub evicts the oldest
+  snapshots, which is how the 2026-10-26 cold groups happened, and the margin
+  gives the guard time to file before that. It is read for every judged run.
+  Source: Maestro held 10,928,201,953 bytes (10.18 GiB) in 22 entries on
+  2026-10-30 against its 10 GiB limit. The guide and the finding use GiB. To respond, delete the pull-request entries the issue lists, or
   shrink what the snapshots hold.
 
 Both titles are standing: a repeat adds a comment to the open issue.
