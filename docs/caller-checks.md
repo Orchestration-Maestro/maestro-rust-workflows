@@ -182,9 +182,8 @@ Main pushes always select every workspace package.
 Pull requests skip tests unless the [included-input rule](#pull-request-selection-and-retries) applies.
 
 `test_shard_count` sets the number of shards. It is an optional whole number
-from 1 to 60, the runner concurrency limit of the plan, and defaults to 16. Any
-other value, including a float, a string or a boolean, fails the declaration job
-with `test_shard_count must be a whole number from 1 to 60`.
+from 1 to 60 and defaults to 16. Any other value, including a float, a string or
+a boolean, fails the declaration job with `test_shard_count must be a whole number from 1 to 60`.
 
 ```toml
 test_shard_count = 32
@@ -283,9 +282,10 @@ from running.
 
 Artifact names are
 `test-diagnostics-<repository-id>-<caller-digest>-shard-<shard>-run-<run-id>-attempt-<run-attempt>`.
-The shard field is `1` through the declared `test_shard_count`, or `doctests` for the parallel doctest leg
-(`shard-doctests`). That leg normally has no `nextest.log`; the same missing-file
-tolerance applies. The caller digest is the full lowercase SHA-256 of the UTF-8 compact JSON array
+The shard field is `1` through the declared `test_shard_count`, or `doctests`
+for the parallel doctest leg (`shard-doctests`). That leg normally has no
+`nextest.log`; the same missing-file tolerance applies. The caller digest is the
+full lowercase SHA-256 of the UTF-8 compact JSON array
 `[checkout-repository-or-github.repository, working-directory-or-".", concurrency-key-or-""]`,
 with Unicode unescaped. It distinguishes repositories, caller directories and
 reusable call keys without exposing path characters in artifact names.
