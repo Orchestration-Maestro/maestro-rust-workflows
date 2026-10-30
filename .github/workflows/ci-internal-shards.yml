@@ -724,7 +724,7 @@ jobs:
                                 'Cache hits                           605', 'Cache misses                           0',
                                 f'Cache hits rate                   {rate:.2f} %', f'Cache hits rate (Rust)            {rate:.2f} %', ''])
 
-          def a_warm_build_below_the_cache_floor_fails_and_names_its_cause():
+          def a_warm_build_below_the_cache_floor_warns_and_names_its_cause():
               prefix = 'maestro-compile-v1-aaa-'
               for rate in (100, 99.67, 90):
                   result = run_cache_floor('tests-coverage', stats_of(610, rate), prefix + '1-tests', [])
@@ -737,16 +737,18 @@ jobs:
                        ('tests-coverage', 89.99, prefix + '1-tests', [], 'cold snapshot')]
               for shape, rate, matched, listing, cause in cases:
                   result = run_cache_floor(shape, stats_of(610, rate), matched, listing)
-                  assert result.returncode == 1, (cause, result.stdout + result.stderr)
+                  # A merge group never fails on the cache: its own change can invalidate it, and only a default-branch push seeds it again.
+                  assert result.returncode == 0, (cause, result.stdout + result.stderr)
                   output = result.stdout + result.stderr
-                  assert f'::error::Compile cache hit rate {rate:.2f}% is below the 90% floor: {cause}' in output or (
+                  assert f'::warning title=Compile cache floor::Compile cache hit rate {rate:.2f}% is below the 90% floor: {cause}' in output or (
                       cause == 'cache list is unavailable' and 'no snapshot restored' in output and cause in output), (cause, output)
+                  assert '::error' not in output, (cause, output)
               for shape, executed in [('tests-plain', 610), ('tests-coverage', 0)]:
                   result = run_cache_floor(shape, stats_of(executed, 0), '', [])
                   assert result.returncode == 0 and 'not judged' in result.stdout, (shape, result.stdout + result.stderr)
 
-          a_warm_build_below_the_cache_floor_fails_and_names_its_cause()
-          print('PASS a_warm_build_below_the_cache_floor_fails_and_names_its_cause')
+          a_warm_build_below_the_cache_floor_warns_and_names_its_cause()
+          print('PASS a_warm_build_below_the_cache_floor_warns_and_names_its_cause')
 
           def the_cache_floor_runs_after_the_statistics_in_the_build_job_only():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
