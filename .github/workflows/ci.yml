@@ -1341,6 +1341,9 @@ jobs:
 
   tests:
     needs: [declaration, test-build, test-prepare]
+    permissions:
+      contents: read
+      actions: read
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
     if: ${{ !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
@@ -1401,13 +1404,141 @@ jobs:
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
         run: *fetch-locked-manifests
       - name: Download test archive
+        id: archive-download
         if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: test-archive-${{ inputs.concurrency-key || 'root' }}
+          ARTIFACT_PATH: .
+        run: &download-artifact |
+          python3 - <<'PYTHON'
+          import hashlib
+          import http.client
+          import json
+          import os
+          import pathlib
+          import shutil
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import zipfile
+          from concurrent.futures import ThreadPoolExecutor
+
+          # The artifact is a zip in blob storage. One stream is slow on some regions, so fetch it in parallel ranges,
+          # check its size and digest, then extract. An unusable listing or transfer hands over to the single-stream action.
+          STREAMS, MINIMUM_RANGE, ATTEMPTS = 16, 1 << 20, 3
+          TRANSPORT = (OSError, http.client.HTTPException)
+          name, destination = os.environ['ARTIFACT_NAME'], pathlib.Path(os.environ['ARTIFACT_PATH'])
+          api = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/actions"
+          partial = pathlib.Path(os.environ['RUNNER_TEMP']) / f'{name}.zip'
+
+          class KeepRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *arguments):
+                  return None
+
+          opener = urllib.request.build_opener(KeepRedirect)
+
+          def get(url, headers):
+              return opener.open(urllib.request.Request(url, headers=headers), timeout=120)
+
+          def api_get(path):
+              return get(f'{api}/{path}', {'Authorization': f"Bearer {os.environ['GH_TOKEN']}", 'Accept': 'application/vnd.github+json'})
+
+          def storage_url(artifact):
+              # The signed URL lasts about a minute, so every request resolves its own and the token never reaches storage.
+              try:
+                  api_get(f"artifacts/{artifact['id']}/zip").close()
+              except urllib.error.HTTPError as redirect:
+                  if redirect.code == 302:
+                      return redirect.headers['Location']
+                  raise
+              raise OSError('artifact download did not redirect to storage')
+
+          def fetch(url, start, end):
+              with get(url, {'Range': f'bytes={start}-{end}'}) as response, open(partial, 'r+b') as target:
+                  if response.status != 206:
+                      raise OSError('storage ignored the range')
+                  target.seek(start)
+                  shutil.copyfileobj(response, target, 1 << 20)
+                  if target.tell() != end + 1:
+                      raise OSError('short range')
+
+          def fetch_range(artifact, start, end):
+              for attempt in range(ATTEMPTS):
+                  try:
+                      return fetch(storage_url(artifact), start, end)
+                  except TRANSPORT:
+                      if attempt == ATTEMPTS - 1:
+                          raise
+
+          def download(artifact):
+              size = artifact['size_in_bytes']
+              with get(storage_url(artifact), {'Range': 'bytes=0-0'}) as probe, open(partial, 'wb') as target:
+                  if probe.status != 206:
+                      shutil.copyfileobj(probe, target, 1 << 20)
+                      return 1
+                  target.truncate(size)
+              streams = max(1, min(STREAMS, size // MINIMUM_RANGE))
+              step = -(-size // streams)
+              with ThreadPoolExecutor(streams) as pool:
+                  for future in [pool.submit(fetch_range, artifact, start, min(start + step, size) - 1) for start in range(0, size, step)]:
+                      future.result()
+              return streams
+
+          def fall_back(reason, started):
+              print(f'::warning::{reason}; using the single-stream download', file=sys.stderr)
+              print(f'artifact-download name={name} bytes=0 seconds={time.monotonic() - started:.2f} streams=0')
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+                  output.write('fallback=true\n')
+
+          started = time.monotonic()
+          try:
+              with api_get(f"runs/{os.environ['GITHUB_RUN_ID']}/artifacts?" + urllib.parse.urlencode({'name': name, 'per_page': 100})) as listing:
+                  artifacts = [item for item in json.load(listing)['artifacts'] if item['name'] == name and not item['expired']]
+              artifact = max(artifacts, key=lambda item: item['id'])
+              expected = artifact.get('digest') or ''
+              if not expected.startswith('sha256:'):
+                  raise OSError('artifact has no sha256 digest')
+              started = time.monotonic()
+              streams = download(artifact)
+              seconds = time.monotonic() - started
+          except (*TRANSPORT, KeyError, ValueError) as error:
+              partial.unlink(missing_ok=True)
+              fall_back(f'{type(error).__name__}: {error}', started)
+              sys.exit(0)
+          try:
+              size, hasher = partial.stat().st_size, hashlib.sha256()
+              with open(partial, 'rb') as source:
+                  for block in iter(lambda: source.read(1 << 20), b''):
+                      hasher.update(block)
+              if size != artifact['size_in_bytes']:
+                  raise SystemExit(f"{name}: size mismatch, expected {artifact['size_in_bytes']} bytes, got {size}")
+              if 'sha256:' + hasher.hexdigest() != expected:
+                  raise SystemExit(f'{name}: digest mismatch, expected {expected}, got sha256:{hasher.hexdigest()}')
+              with zipfile.ZipFile(partial) as bundle:
+                  bundle.extractall(destination)
+          finally:
+              partial.unlink(missing_ok=True)
+          print(f"artifact-download name={name} bytes={size} seconds={seconds:.2f} streams={streams}")
+          PYTHON
+      - name: Download test archive in one stream
+        if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && steps.archive-download.outputs.fallback == 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: test-archive-${{ inputs.concurrency-key || 'root' }}
           path: ${{ inputs.working-directory || '.' }}
       - name: Download test setup
+        id: setup-download
         if: ${{ matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
+          ARTIFACT_PATH: ${{ runner.temp }}/maestro-test-setup
+        run: *download-artifact
+      - name: Download test setup in one stream
+        if: ${{ matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && steps.setup-download.outputs.fallback == 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: test-setup-${{ inputs.concurrency-key || 'root' }}

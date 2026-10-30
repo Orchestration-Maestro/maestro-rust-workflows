@@ -223,6 +223,14 @@ available for tests that intentionally start child builds. `Doctests` compiles a
 runs doctests once in parallel with the build, including on included-input PR runs.
 Warm-cache runs keep their existing compile route and cache shape.
 
+Each shard fetches the archive and the test setup bundle in 16 parallel byte ranges from
+artifact storage, checks the size and SHA-256 digest the Actions API reports, then extracts.
+A digest or size mismatch fails the step before anything is extracted. If the listing has no
+digest or the transfer fails, the step hands over to the single-stream `download-artifact`
+action. Each download prints one line, `artifact-download name=<artifact> bytes=<n>
+seconds=<s> streams=<n>`, so the time guard can read transfer rate apart from test time;
+`streams=0` marks a handover.
+
 A caller that needs prepared files can declare one standalone shell command:
 
 ```toml
