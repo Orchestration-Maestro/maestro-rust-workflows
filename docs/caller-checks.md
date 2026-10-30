@@ -1021,8 +1021,9 @@ regression and files "CI run slower than its baseline: run N" at once. The
 bound is the measurement's own error (supervisor ruling S7759): GitHub stamps
 job and step times to the second, 1 s at each boundary, so a work-time
 difference is measurable only above 2 s per executed job. A difference within
-it is neither a regression nor an escalation; anything above it at +10% fires,
-and anything outside the band's spread escalates. The
+it is neither a regression nor an escalation, for a rate below its spread as well;
+anything above it at +10% fires, and anything above it outside the band's
+spread escalates. The
 issue names the run and the band, gives each regressed rate against its baseline
 and links the latest baseline runs. Fix it at its cause; nothing accepts it.
 
