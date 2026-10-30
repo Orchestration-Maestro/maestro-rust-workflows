@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.18.0...v0.18.1) (2026-10-30)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main 8836dda3 ([#250](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/250)) ([bfc691d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/bfc691de91a593fcab217ebf444d57a698be5dc6))
+* prepare tests only for consumers and reuse unchanged output ([#245](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/245)) ([f72e3d8](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/f72e3d8389ba1651ccc079c8ea13467ba8ee1903))
+
 ## [0.18.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.17.0...v0.18.0) (2026-10-30)
 
 

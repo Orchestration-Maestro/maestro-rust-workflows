@@ -15,7 +15,7 @@ fails. See [Compile cache](../README.md#compile-cache) for snapshot shapes,
 fail-open transfers and storage limits.
 Advance all proof checkout references together after checking locked dependencies.
 The proof uses `8836dda32cf5badfc2979518009fe339b03956a3`, the Maestro main
-revision that qualified release 0.19.0, and it still includes the native
+revision that qualifies the current release, and it still includes the native
 residency-helper compilation repair. Its first parent,
 `f19953345c5f502a0dd48369eea47cd165d5e41b`, supplies the warm build and
 selected-package base.
