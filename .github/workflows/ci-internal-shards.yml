@@ -1241,6 +1241,34 @@ jobs:
           a_warm_build_below_the_cache_floor_warns_and_names_its_cause()
           print('PASS a_warm_build_below_the_cache_floor_warns_and_names_its_cause')
 
+          def the_shards_and_the_archive_build_report_their_work_units():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  log = directory / 'nextest.log'
+                  log.write_text('\x1b[32;1m     Summary\x1b[0m [1629.798s] \x1b[1m1010\x1b[0m tests run: 1010 passed (7 slow, 2 flaky), 14656 skipped\n', encoding='utf-8')
+                  result = execute('Test work units', directory, {})
+                  assert result.returncode == 0 and '::notice title=Work units::tests: 1010\n' in result.stdout, result.stdout + result.stderr
+                  log.write_text('     Summary [   0.5s] 1 test run: 1 passed, 3 skipped\n', encoding='utf-8')
+                  assert '::notice title=Work units::tests: 1\n' in execute('Test work units', directory, {}).stdout
+                  # A shard without a summary (doctests, a failed build) reports nothing and does not fail.
+                  for text in ['error: no tests to run\n', None]:
+                      log.write_text(text, encoding='utf-8') if text else log.unlink()
+                      result = execute('Test work units', directory, {})
+                      assert result.returncode == 0 and 'Work units' not in result.stdout, result.stdout + result.stderr
+              prefix = 'maestro-compile-v1-aaa-'
+              for shape, executed, rate in [('tests-coverage', 610, 99.67), ('tests-plain', 610, 0), ('tests-coverage', 610, 40)]:
+                  result = run_cache_floor(shape, stats_of(executed, rate), prefix + '1-tests', [])
+                  assert f'::notice title=Work units::compiles: 610; hit-rate: {rate:.2f}\n' in result.stdout, (shape, result.stdout + result.stderr)
+              result = run_cache_floor('tests-coverage', stats_of(0, 0), '', [])
+              assert result.returncode == 0 and 'Work units' not in result.stdout, result.stdout + result.stderr
+              jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+              text = jobs['tests']
+              assert text.index('- name: Flaky test summary') < text.index('- name: Test work units'), 'the summary step comes before the work units'
+              assert '- name: Test work units\n        if: always()\n' in text, 'the work units are reported even when a test fails'
+
+          the_shards_and_the_archive_build_report_their_work_units()
+          print('PASS the_shards_and_the_archive_build_report_their_work_units')
+
           def the_cache_floor_runs_after_the_statistics_in_the_build_job_only():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               holders = [name for name, text in jobs.items() if '- name: Compile cache hit-rate floor\n' in text]
