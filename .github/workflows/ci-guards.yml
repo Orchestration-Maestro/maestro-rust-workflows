@@ -287,6 +287,10 @@ jobs:
               def jobs_of(identifier):
                   pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repository}/actions/runs/{identifier}/jobs?per_page=100'))
                   return [job for page in pages for job in page['jobs']]
+              def runs_like(run, status):
+                  # A required workflow is not listed under its own id, so list the repository's runs and keep this workflow's.
+                  listed = api(f"actions/runs?event={run['event']}&status={status}&per_page=100")['workflow_runs']
+                  return [other for other in listed if other['workflow_id'] == run['workflow_id']]
               def log_of(job):
                   return gh('api', '--allow-escape-sequences', f"repos/{repository}/actions/jobs/{job['id']}/logs")
               def shard_slow(jobs):
@@ -307,14 +311,14 @@ jobs:
               slow = shard_slow(jobs)
               unbalanced = shard_finding(run, jobs, settings['margin'], [])
               if unbalanced:
-                  earlier = [other for other in api(f"actions/workflows/{run['workflow_id']}/runs?event={run['event']}&status=success&per_page=10")['workflow_runs']
+                  earlier = [other for other in runs_like(run, 'success')
                              if other['id'] != run['id'] and other['created_at'] < run['created_at']]
                   previous = shard_slow(jobs_of(earlier[0]['id'])) if earlier else {}
                   unbalanced = shard_finding(run, jobs, settings['margin'], grown_tests(slow, previous))
               findings.append(unbalanced)
               if on_main:
                   findings.extend(slow_findings(slow, settings['slow'], run))
-              recent = api(f"actions/workflows/{run['workflow_id']}/runs?event={run['event']}&status=completed&per_page={settings['window'] + 5}")['workflow_runs']
+              recent = runs_like(run, 'completed')
               rows = []
               for other in recent:
                   if other['conclusion'] not in ('success', 'failure'):
