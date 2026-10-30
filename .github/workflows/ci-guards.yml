@@ -171,7 +171,11 @@ jobs:
 
           def slow_tests(log):
               """Longest slow mark nextest printed for each test."""
-              raise NotImplementedError('slow_tests')
+              found = {}
+              for mark, binary, name in re.findall(r'SLOW \[\s*>\s*([0-9.]+)s\]\s+\([^)]*\)\s+(\S+)\s+(\S+)', clean(log)):
+                  test = f'{binary} {name}'
+                  found[test] = max(found.get(test, 0), float(mark))
+              return found
 
           def grown_tests(current, previous):
               """The five slow tests that grew most: new, or past a higher slow mark than before."""
@@ -183,7 +187,10 @@ jobs:
 
           def slow_findings(slow, limit, run):
               """One issue per test that ran past the slow mark."""
-              raise NotImplementedError('slow_findings')
+              return [{'title': f'Test over {limit:g} seconds: {test}', 'slow': True,
+                       'body': f"Run: {run['html_url']}\nNextest flagged this test slow, over {mark:g} seconds. "
+                               'Fix the test at its cause; do not raise a timeout.\n'}
+                      for test, mark in sorted(slow.items())]
 
           def required_finding(run, jobs, pinned):
               """Pinned jobs that did not run at all, so a renamed or removed gate cannot pass silently."""
@@ -215,12 +222,22 @@ jobs:
                   return [job for page in pages for job in page['jobs']]
               def log_of(job):
                   return gh('api', '--allow-escape-sequences', f"repos/{repository}/actions/jobs/{job['id']}/logs")
+              def shard_slow(jobs):
+                  found = {}
+                  for job in jobs:
+                      if job['name'].startswith('Test shard ('):
+                          for test, mark in slow_tests(log_of(job)).items():
+                              found[test] = max(found.get(test, 0), mark)
+                  return found
               run = api(f'actions/runs/{run_id}')
               if run['status'] != 'completed' or run['conclusion'] == 'cancelled':
                   return []
               jobs = jobs_of(run_id)
               findings = [budget_finding(run, jobs, settings['budget'])]
               on_main = run['event'] in ('merge_group', 'push')
+              slow = shard_slow(jobs)
+              if on_main:
+                  findings.extend(slow_findings(slow, settings['slow'], run))
               return [finding for finding in findings if finding]
 
           def main():
