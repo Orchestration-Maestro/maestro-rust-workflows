@@ -152,7 +152,8 @@ jobs:
     outputs:
       linux_runner: ${{ steps.runner.outputs.labels }}
       enabled: ${{ steps.config.outputs.enabled }}
-      test_prepare: ${{ steps.config.outputs.test_prepare }}
+      test_prepare: ${{ steps.selection.outputs.test_prepare }}
+      test_prepare_inputs: ${{ steps.config.outputs.test_prepare_inputs }}
       warm_test_filter: ${{ steps.config.outputs.warm_test_filter }}
       packages: ${{ steps.selection.outputs.packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
@@ -266,11 +267,11 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(test_prepare=json.dumps(''), warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -295,20 +296,20 @@ jobs:
               if type(count) is not int or not 1 <= count <= 60:
                   raise SystemExit(f'{path}: test_shard_count must be a whole number from 1 to 60')
               values['test_shard_count'] = str(count)
-              values['test_prepare'] = json.dumps(config.get('test_prepare', ''))
+              values['test_prepare_inputs'] = json.dumps(config.get('test_prepare_inputs', []))
               values['warm_test_filter'] = json.dumps(config.get('warm_test_filter', 'none()'))
               values['reserved_ports'] = ','.join(map(str, ports))
               values['additional_locked_manifests'] = json.dumps(config.get('additional_locked_manifests', []))
               threshold = config.get('coverage_min_lines', 80)
               if type(threshold) not in (int, float) or not 80 <= threshold <= 100:
                   raise SystemExit(f'{path}: coverage_min_lines must be a number from 80 to 100')
-              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_packages', 'test_prepare_inputs'):
                   if not isinstance(config.get(key, []), list) or any(type(item) is not str or not item for item in config.get(key, [])):
                       raise SystemExit(f'{path}: {key} must be an array of nonempty strings')
               def validate_toml_string(key, value):
                   if any(ord(char) < 32 or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
                       raise SystemExit(f'{path}: {key} cannot contain control characters or surrogates')
-              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_packages', 'test_prepare_inputs'):
                   for value in config.get(key, []):
                       validate_toml_string(key, value)
               def contained_manifest(value):
@@ -420,12 +421,20 @@ jobs:
                   if crate not in packages:
                       raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
               values.update(browser_test_crates=json.dumps(sorted(set(browser_tests))))
+              for name in config.get('test_prepare_packages', []):
+                  if name not in packages:
+                      raise SystemExit(f'{path}: test_prepare_packages contains unknown package {name!r}')
+              def repository_relative(key):
+                  return bool(pathlib.PurePosixPath(key).parts) and not key.startswith('/') and '\\' not in key and '..' not in pathlib.PurePosixPath(key).parts
+              for pattern in config.get('test_prepare_inputs', []):
+                  if not repository_relative(pattern):
+                      raise SystemExit(f'{path}: test_prepare_inputs entries must be repository-relative paths')
               inputs = config.get('test_inputs', {})
               if not isinstance(inputs, dict) or any(not isinstance(names, list) or any(type(name) is not str for name in names) for names in inputs.values()):
                   raise SystemExit(f'{path}: test_inputs must map repository paths to arrays of package names')
               for key, names in inputs.items():
                   validate_toml_string('test_inputs', key)
-                  if not pathlib.PurePosixPath(key).parts or key.startswith('/') or '\\' in key or '..' in pathlib.PurePosixPath(key).parts:
+                  if not repository_relative(key):
                       raise SystemExit(f'{path}: test_inputs keys must be repository-relative paths')
                   for name in names:
                       if name not in packages:
@@ -675,7 +684,7 @@ jobs:
               if '.github/ci.toml' in changed:
                   before, after = declarations()
                   browser_changed = before.get('browser_test_crates', []) != after.get('browser_test_crates', [])
-                  if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
+                  if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
                       selected = set(members)
               if 'Cargo.lock' in changed and selected != members:
                   # Resolve both revisions, comparing transitive dependency identities and features.
@@ -737,6 +746,10 @@ jobs:
           print(f'Advisory check ({event}): {"required" if check_advisories else "skipped, no change to Cargo.lock or the declared exceptions"}')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
+              # The preparation job runs only when a selected package reads its output.
+              consumers = config.get('test_prepare_packages')
+              prepare = json.dumps(config.get('test_prepare', '') if consumers is None or set(consumers) & set(names) else '')
+              output.write('test_prepare=' + prepare + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
               layout = {'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                         'package_roots': {packages[p]['name']: roots[p].as_posix() for p in sorted(members)},
@@ -1199,7 +1212,7 @@ jobs:
   test-prepare:
     needs: declaration
     name: Prepare test setup
-    if: ${{ needs.declaration.outputs.test_prepare != '""' && !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -1251,7 +1264,44 @@ jobs:
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: *caller-tools
+      - name: Test setup cache identity
+        id: setup-identity
+        if: ${{ needs.declaration.outputs.test_prepare_inputs != '[]' }}
+        env:
+          COMPILE_CACHE_PREFIX: ${{ steps.cache-identity.outputs.prefix }}
+          TEST_PREPARE_INPUTS: ${{ needs.declaration.outputs.test_prepare_inputs }}
+        run: |
+          python3 - <<'PYTHON'
+          import glob
+          import hashlib
+          import json
+          import os
+          # The compile cache prefix names repository, directory, host and compiler; the command, checkout path and input file contents complete the identity.
+          files = {}
+          for pattern in json.loads(os.environ['TEST_PREPARE_INPUTS']):
+              matches = [name for name in glob.glob(pattern, recursive=True, include_hidden=True) if os.path.isfile(name)]
+              if not matches:
+                  raise SystemExit(f'test_prepare_inputs pattern {pattern!r} matches no file')
+              for name in matches:
+                  with open(name, 'rb') as source:
+                      files[name] = hashlib.sha256(source.read()).hexdigest()
+          identity = [os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE'], sorted(files.items())]
+          digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'key=maestro-test-setup-v1-{digest}\n')
+          PYTHON
+      - name: Restore test setup cache
+        id: setup-cache
+        if: ${{ needs.declaration.outputs.test_prepare_inputs != '[]' }}
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/test-setup.tar
+          key: ${{ steps.setup-identity.outputs.key }}
+          enableCrossOsArchive: false
+          fail-on-cache-miss: false
       - name: Prepare test setup
+        if: steps.setup-cache.outputs.cache-hit != 'true'
         timeout-minutes: 45
         run: |
           export TEST_PREPARE_OUTPUT="$PWD/target/test-setup"
@@ -1259,6 +1309,13 @@ jobs:
           mkdir -p "$TEST_PREPARE_OUTPUT"
           bash -e -o pipefail -c "$TEST_PREPARE"
           tar -C target -cf "$RUNNER_TEMP/test-setup.tar" test-setup
+      - name: Save test setup cache
+        if: ${{ steps.cache-identity.outputs.writer == 'true' && steps.setup-cache.outputs.cache-hit != 'true' && needs.declaration.outputs.test_prepare_inputs != '[]' }}
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/test-setup.tar
+          key: ${{ steps.setup-identity.outputs.key }}
       - name: Upload test setup
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1285,7 +1342,7 @@ jobs:
   tests:
     needs: [declaration, test-build, test-prepare]
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
-    if: ${{ !cancelled() && (inputs.warm-cache || (needs.test-build.result == 'success' && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped'))) && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1350,13 +1407,13 @@ jobs:
           name: test-archive-${{ inputs.concurrency-key || 'root' }}
           path: ${{ inputs.working-directory || '.' }}
       - name: Download test setup
-        if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' }}
+        if: ${{ matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: test-setup-${{ inputs.concurrency-key || 'root' }}
           path: ${{ runner.temp }}/maestro-test-setup
       - name: Restore test setup
-        if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' }}
+        if: ${{ matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') }}
         run: |
           mkdir -p target
           tar -C target -xf "$RUNNER_TEMP/maestro-test-setup/test-setup.tar"

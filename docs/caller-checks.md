@@ -241,7 +241,8 @@ and restores it at `target/test-setup` in each numeric shard. Archived isolated
 shards receive `TEST_PREPARE_OUTPUT` as the absolute path to that restored
 directory, replacing any inherited value. Callers may rely on it to locate
 prepared files during archived execution when `test_prepare` is declared. Warm-cache
-runs also receive this path, but do not run preparation or restore prepared files.
+runs also receive this path, but run preparation and restore prepared files only
+when `test_prepare_inputs` is declared.
 Archived runs without `test_prepare` likewise have no prepared files restored.
 
 Archived isolated numeric shards receive `TEST_ARCHIVE=1` on both plain and
@@ -258,6 +259,37 @@ they must reuse those files instead of preparing them again. The caller owns the
 preparation logic and exported environment. Shared CI does not interpret its
 setup-script definitions. The existing `concurrency-key` distinguishes both
 artifacts when a workflow makes several calls.
+
+`test_prepare_packages` names the workspace packages that read the prepared files.
+When it is set and a run selects none of them, the declaration drops the command:
+`Prepare test setup` does not start, and the shards skip the download and restore.
+A run that selects a listed package keeps the command, and so does a full-suite
+run, such as a main push or a merge group that falls back to the whole workspace.
+A change to this list, to `test_prepare` or to `test_prepare_inputs` selects the
+whole workspace. Names must be workspace packages; anything else fails the
+declaration. Without the list every run that tests prepares.
+
+`test_prepare_inputs` lists the files the `test_prepare` command reads, as
+repository-relative path globs from the caller's working directory, such as
+`.config/prepare-tests.sh` or `tools/**/*.toml`. `**` matches any depth, hidden
+files included. The prepared directory is cached under a key built from the
+contents of every matching file, the `test_prepare` command, the compile cache
+identity (repository, directory, host and compiler), and the checkout path. A
+glob that matches no file fails the job. `Prepare test setup` restores the
+bundle on a hit and skips the `test_prepare` command. A warm build restores it
+in the same way, so it uses the bundle in place of building the files again;
+without the list a warm build does not prepare. Every numeric shard then
+downloads the restored directory as before. Only pushes to the default branch
+write the cache, so a pull request or a merge group reads what the last push
+saved. Declare every input the command reads: an unlisted input does not change
+the key and can leave a stale directory in place. Without the list nothing is
+cached.
+
+```toml
+test_prepare = "sh .config/prepare-tests.sh"
+test_prepare_packages = ["wasm-host", "wasm-guest"]
+test_prepare_inputs = [".config/prepare-tests.sh", "tools/**/*.toml"]
+```
 
 ### Test diagnostics
 
