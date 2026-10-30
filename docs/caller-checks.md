@@ -283,7 +283,7 @@ from running.
 
 Artifact names are
 `test-diagnostics-<repository-id>-<caller-digest>-shard-<shard>-run-<run-id>-attempt-<run-attempt>`.
-The shard field is `1` through `16`, or `doctests` for the parallel doctest leg
+The shard field is `1` through the declared `test_shard_count`, or `doctests` for the parallel doctest leg
 (`shard-doctests`). That leg normally has no `nextest.log`; the same missing-file
 tolerance applies. The caller digest is the full lowercase SHA-256 of the UTF-8 compact JSON array
 `[checkout-repository-or-github.repository, working-directory-or-".", concurrency-key-or-""]`,
