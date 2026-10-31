@@ -2569,6 +2569,44 @@ def selected_coverage_merges_only_unchanged_baseline_packages():
 selected_coverage_merges_only_unchanged_baseline_packages()
 print('PASS selected_coverage_merges_only_unchanged_baseline_packages')
 
+def coverage_merge_looks_up_each_source_path_owner_once():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        for folder in ['coverage', 'baseline']:
+            (directory / folder).mkdir()
+        layout = {'head': 'fixture',
+                  'package_roots': {'selected': 'crates/a', 'unchanged': 'crates/b', 'nested': 'crates/a/nested'},
+                  'shard_count': 2}
+        (directory / 'baseline/manifest.json').write_text(
+            json.dumps(layout | {'checkout_root': '/old/runner/caller'}), encoding='utf-8')
+        def records(root, selected_hits):
+            return ''.join(f'SF:{root}/{path}/src/lib.rs\nDA:1,{hits}\nend_of_record\n'
+                           for path, hits in [('crates/a', selected_hits), ('crates/b', 1),
+                                              ('crates/a/nested', 1 if root.startswith('/old') else 0),
+                                              ('external/dependency', 0)])
+        for shard, hits in [(1, 1), (2, 0)]:
+            (directory / f'coverage/shard-{shard}.lcov').write_text(records('/current/caller', hits), encoding='utf-8')
+            (directory / f'baseline/shard-{shard}.lcov').write_text(records('/old/runner/caller', 1), encoding='utf-8')
+        lookups = directory / 'owner-lookups'
+        counted = (document['env']['PACKAGE_OWNER'] + '\n_owner = package_owner\n'
+                   'def package_owner(path, roots):\n'
+                   f"    open({str(lookups)!r}, 'a', encoding='utf-8').write(path.as_posix() + '\\n')\n"
+                   '    return _owner(path, roots)\n')
+        env = {'TEST_SHARD_COUNT': '2', 'COVERAGE_REPORT_COUNT': '2',
+               'COVERAGE_SCOPE': 'selected packages: selected', 'TEST_PACKAGES': '["selected"]',
+               'COVERAGE_LAYOUT': json.dumps(layout), 'COVERAGE_CHECKOUT_ROOT': '/current/caller',
+               'COVERAGE_BASELINE_DIR': str(directory / 'baseline'), 'PACKAGE_OWNER': counted}
+        result = execute('Merge coverage', directory, env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout, result.stdout
+        assert 'Workspace line coverage (gate): 100.00% (3/3)' in result.stdout, result.stdout
+        # Four source paths in each of the two report directories, however many shards repeat them.
+        assert len(lookups.read_text(encoding='utf-8').splitlines()) == 8, lookups.read_text(encoding='utf-8')
+
+coverage_merge_looks_up_each_source_path_owner_once()
+print('PASS coverage_merge_looks_up_each_source_path_owner_once')
+
 def baseline_selection_includes_changes_before_group_base():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
