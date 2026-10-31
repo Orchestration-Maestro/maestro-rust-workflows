@@ -310,13 +310,27 @@ cached.
 
 When the exact key misses, `Prepare test setup` restores the closest earlier
 bundle saved under the same compile cache identity, checkout path and
-`test_prepare` command, which is the last push's bundle. It extracts the bundle
-to its own directory, separate from `TEST_PREPARE_OUTPUT`, and sets
-`TEST_PREPARE_BASE` to that directory before the command runs. The command may
-copy or reuse any file there whose own inputs are unchanged and must still write
-every file it needs to `TEST_PREPARE_OUTPUT`. When no earlier bundle exists, or it
-cannot be read, `TEST_PREPARE_BASE` is unset. An exact hit still skips the
-command.
+`test_prepare` command, which is the last push's bundle. A merge group and the
+push that lands it add bundles that earlier runs of the same workflow
+uploaded:
+
+- A merge group adds, for each pull request it merges (found from the `(#N)`
+  that ends its commit subject), the bundle of that pull request's newest
+  successful run at the head being merged.
+- A push to the default branch adds the bundle of the successful merge group run
+  of the pushed commit.
+- A pull request run adds nothing, so every added bundle was built by the code
+  being merged, starting from a bundle the default branch saved. Runs from forks
+  are never added.
+
+`Prepare test setup` extracts each bundle to its own directory, separate from
+`TEST_PREPARE_OUTPUT`, and sets `TEST_PREPARE_BASE` to the list of those
+directories before the command runs: the restored bundle first, then the added
+ones, joined with `:`. A bundle that cannot be downloaded or read is left out.
+The command may copy or reuse any file in a listed directory whose own inputs
+are unchanged, and must still write every file it needs to
+`TEST_PREPARE_OUTPUT`. When no bundle is available, `TEST_PREPARE_BASE` is
+unset. An exact hit still skips the command.
 
 ```toml
 test_prepare = "sh .config/prepare-tests.sh"
