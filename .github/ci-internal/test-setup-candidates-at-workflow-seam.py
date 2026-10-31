@@ -1,0 +1,83 @@
+import json
+import os
+import pathlib
+import subprocess
+import tempfile
+
+workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
+document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+steps = {step['name']: step for step in document['jobs']['test-prepare']['steps']}
+SELECT = 'Test setup candidates'
+ARTIFACT = 'test-setup-root'
+
+def execute(name, cwd, extra):
+    env = {key: value for key, value in os.environ.items() if not key.startswith('GITHUB_')} | extra
+    return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', steps[name]['run']],
+                          cwd=cwd, env=env, text=True, capture_output=True)
+
+def run(identifier, head, conclusion='success', numbers=(), repository='o/r'):
+    return {'id': identifier, 'head_sha': head, 'conclusion': conclusion, 'head_repository': {'full_name': repository},
+            'pull_requests': [{'number': number} for number in numbers]}
+
+def artifacts(*expired):
+    return {'artifacts': [{'name': ARTIFACT, 'expired': value} for value in expired]}
+
+def selected(routes, **extra):
+    """Run the selection step against a gh that answers only the given routes; return its output and the routes asked."""
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        log = directory / 'asked'
+        (directory / 'routes.json').write_text(json.dumps(routes), encoding='utf-8')
+        (directory / 'bin').mkdir()
+        gh = directory / 'bin/gh'
+        gh.write_text('#!/usr/bin/env python3\nimport json, os, sys\n'
+                      f'routes = json.load(open({str(directory / "routes.json")!r}))\n'
+                      f'open({str(log)!r}, "a").write(sys.argv[2] + "\\n")\n'
+                      'path = sys.argv[2].removeprefix("repos/o/r/")\n'
+                      'if path not in routes:\n    sys.exit("unexpected request: " + path)\n'
+                      'print(json.dumps(routes[path]))\n', encoding='utf-8')
+        gh.chmod(0o700)
+        output = directory / 'output'
+        env = {'PATH': f'{directory / "bin"}:' + os.environ['PATH'], 'GITHUB_OUTPUT': str(output), 'GITHUB_REPOSITORY': 'o/r',
+               'GITHUB_RUN_ID': '100', 'GITHUB_REF': 'refs/heads/main', 'CACHE_DEFAULT_BRANCH': 'main',
+               'ARTIFACT_NAME': ARTIFACT, 'GITHUB_SHA': 'merged', 'MERGE_GROUP_BASE_SHA': 'base'} | extra
+        result = execute(SELECT, directory, env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        return output.read_text(encoding='utf-8'), log.read_text(encoding='utf-8') if log.exists() else ''
+
+PAGE = 'actions/workflows/55/runs?event=pull_request&per_page=100&page=1'
+GROUP = {'actions/runs/100': {'workflow_id': 55},
+         'compare/base...merged?per_page=100': {'commits': [{'commit': {'message': message}} for message in
+                                                            ['feat: first (#7)\n\nbody (#99)', 'fix: second (#8)', 'chore: no number', 'fix: fork (#9)']]}}
+
+def a_merge_group_gets_the_bundles_of_its_pull_request_runs():
+    routes = GROUP | {PAGE: {'workflow_runs': [
+        run(30, 'b', 'failure', [7]), run(31, 'b', 'success', [7]), run(32, 'a', 'success', [7]),
+        run(40, 'd', 'success', [8]), run(41, 'd', 'success', [8]), run(42, 'c', 'success', [8]),
+        run(50, 'f', 'success', [], 'fork/r'), run(51, 'g', 'success', [9], 'fork/r'), run(60, 'z', 'success', [12])]},
+        'actions/runs/31/artifacts?name=test-setup-root&per_page=100': artifacts(False),
+        'actions/runs/40/artifacts?name=test-setup-root&per_page=100': artifacts(True),
+        'actions/runs/41/artifacts?name=test-setup-root&per_page=100': artifacts(False)}
+    output, _ = selected(routes, GITHUB_EVENT_NAME='merge_group')
+    # The newest run per pull request names its head; the newest successful run at that head with a live bundle wins.
+    assert output == 'runs=31 41\n', output
+
+def a_push_to_the_default_branch_gets_the_bundle_of_its_merge_group_run():
+    routes = {'actions/runs/100': {'workflow_id': 55},
+              'actions/workflows/55/runs?event=merge_group&head_sha=merged&status=success&per_page=100': {'workflow_runs': [run(70, 'merged'), run(71, 'merged')]},
+              'actions/runs/70/artifacts?name=test-setup-root&per_page=100': artifacts(True),
+              'actions/runs/71/artifacts?name=test-setup-root&per_page=100': artifacts(False)}
+    output, _ = selected(routes, GITHUB_EVENT_NAME='push')
+    assert output == 'runs=71\n', output
+
+def other_events_get_no_candidates():
+    for extra in [{'GITHUB_EVENT_NAME': 'pull_request', 'GITHUB_REF': 'refs/pull/5/merge'},
+                  {'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/heads/feature'},
+                  {'GITHUB_EVENT_NAME': 'workflow_dispatch'}]:
+        output, asked = selected({}, **extra)
+        assert output == 'runs=\n' and asked == '', (extra, output, asked)
+
+for check in [a_merge_group_gets_the_bundles_of_its_pull_request_runs, a_push_to_the_default_branch_gets_the_bundle_of_its_merge_group_run,
+              other_events_get_no_candidates]:
+    check()
+    print('PASS ' + check.__name__, flush=True)
