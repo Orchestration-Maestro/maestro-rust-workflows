@@ -173,7 +173,7 @@ GitHub eviction can remove even the newest snapshot of a shape.
 
 ### Cargo git dependency cache
 
-Build test archive and every test shard restore Cargo's `git/db` and
+Build test archive, Prepare test setup and every test shard restore Cargo's `git/db` and
 `git/checkouts` directories before the first `cargo fetch`, so a cache hit
 fetches git dependencies without network access. The key hashes the caller's
 `Cargo.lock` and the `Cargo.lock` of every `additional_locked_manifests` entry;
