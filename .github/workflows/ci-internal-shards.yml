@@ -294,7 +294,8 @@ jobs:
               assert condition(steps['Test setup cache identity']) == declared
               assert condition(steps['Restore test setup cache']) == declared
               assert steps['Restore test setup cache']['with']['key'] == '$' + '{{ steps.setup-identity.outputs.key }}'
-              assert 'restore-keys' not in steps['Restore test setup cache']['with']
+              # A missed key restores the closest earlier bundle of the same identity; only the exact key is saved.
+              assert steps['Restore test setup cache']['with']['restore-keys'] == '$' + '{{ steps.setup-identity.outputs.prefix }}'
               assert steps['Prepare test setup']['if'] == "steps.setup-cache.outputs.cache-hit != 'true'"
               save = steps['Save test setup cache']
               assert condition(save) == "steps.cache-identity.outputs.writer == 'true' && steps.setup-cache.outputs.cache-hit != 'true' && " + declared
@@ -322,8 +323,9 @@ jobs:
                   (directory / 'other.txt').write_text('o1\n', encoding='utf-8')
                   result, values = key(directory)
                   assert result.returncode == 0, result.stderr
-                  first = values['key']
-                  assert first.startswith('maestro-test-setup-v1-'), values
+                  first, prefix = values['key'], values['prefix']
+                  assert first.startswith('maestro-test-setup-v2-'), values
+                  assert first.startswith(prefix) and prefix.endswith('-'), values
                   assert key(directory)[1]['key'] == first
                   # Pattern order and overlapping patterns do not change the key.
                   both = key(directory, ('inputs/a.txt', 'inputs/*.txt'))[1]['key']
@@ -333,8 +335,9 @@ jobs:
                   assert key(directory)[1]['key'] == first
                   # Content, a new match and a renamed match each change the key.
                   (directory / 'inputs/a.txt').write_text('a2\n', encoding='utf-8')
-                  changed = key(directory)[1]['key']
-                  assert changed != first
+                  changed = key(directory)[1]
+                  # An edited input changes the key and keeps the prefix, so the earlier bundle is its base.
+                  assert changed['key'] != first and changed['prefix'] == prefix, changed
                   (directory / 'inputs/a.txt').write_text('a1\n', encoding='utf-8')
                   assert key(directory)[1]['key'] == first
                   (directory / 'inputs/c.txt').write_text('c1\n', encoding='utf-8')
@@ -354,6 +357,7 @@ jobs:
                                       ('prefix', key(directory, extra={'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-def-'})),
                                       ('workspace', key(directory, extra={'GITHUB_WORKSPACE': '/other'}))]:
                       assert other[0].returncode == 0 and other[1]['key'] != first, name
+                      assert other[1]['prefix'] != prefix, name
                   for patterns, message in [(('inputs/*.missing',), "test_prepare_inputs pattern 'inputs/*.missing' matches no file"),
                                             (('inputs/*.txt', 'nowhere/**'), "test_prepare_inputs pattern 'nowhere/**' matches no file"),
                                             (('inputs',), "test_prepare_inputs pattern 'inputs' matches no file")]:
@@ -370,7 +374,9 @@ jobs:
               with tempfile.TemporaryDirectory() as temporary:
                   cache = pathlib.Path(temporary) / 'cache'
                   cache.mkdir()
-                  def run(name, printed, writer, command='echo once >> "$TEST_PREPARE_OUTPUT/count"'):
+                  saved_keys = []
+                  # The command copies the base it is given, when there is one, next to the file it writes.
+                  def run(name, printed, writer, command='if [ -n "${TEST_PREPARE_BASE-}" ]; then cp "$TEST_PREPARE_BASE/count" "$TEST_PREPARE_OUTPUT/base-count"; fi; echo once >> "$TEST_PREPARE_OUTPUT/count"'):
                       runner = pathlib.Path(temporary) / name
                       checkout = runner / 'caller'
                       checkout.mkdir(parents=True)
@@ -380,11 +386,14 @@ jobs:
                       with tempfile.NamedTemporaryFile() as output:
                           result = execute('Test setup cache identity', checkout, env | {'GITHUB_OUTPUT': output.name})
                           assert result.returncode == 0, result.stderr
-                          key = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding='utf-8').splitlines())['key']
-                      # The restore step: a hit copies the saved file into place.
+                          identity = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding='utf-8').splitlines())
+                      key = identity['key']
+                      # The restore step: a hit copies the saved file into place. A miss copies the newest bundle
+                      # under the same prefix, if any, and still reports no hit.
                       hit = (cache / key).is_file()
-                      if hit:
-                          shutil.copyfile(cache / key, runner / 'test-setup.tar')
+                      restored = key if hit else next((name for name in reversed(saved_keys) if name.startswith(identity['prefix'])), None)
+                      if restored:
+                          shutil.copyfile(cache / restored, runner / 'test-setup.tar')
                       context = {'steps.setup-cache.outputs.cache-hit': 'true' if hit else '',
                                  'steps.cache-identity.outputs.writer': 'true' if writer else 'false',
                                  'needs.declaration.outputs.test_prepare_inputs': json.dumps(['key.txt'])}
@@ -395,6 +404,7 @@ jobs:
                       saved = evaluate(steps['Save test setup cache']['if'], context)
                       if saved:
                           shutil.copyfile(runner / 'test-setup.tar', cache / key)
+                          saved_keys.append(key)
                       return hit, bool(prepared), bool(saved), runner / 'test-setup.tar'
                   # A pull request reads the cache and never writes it.
                   assert run('pull-request', 'inputs-1', False)[:3] == (False, True, False)
@@ -404,12 +414,15 @@ jobs:
                   hit, prepared, saved, tarball = run('push-2', 'inputs-1', True)
                   assert (hit, prepared, saved) == (True, False, False)
                   listing = subprocess.check_output(['tar', '-tf', str(tarball)], text=True)
-                  assert 'test-setup/count' in listing
+                  assert 'test-setup/count' in listing and 'test-setup/base-count' not in listing, listing
                   assert subprocess.check_output(['tar', '-xOf', str(tarball), 'test-setup/count'], text=True) == 'once\n'
                   # A pull request restores the same bundle without preparing.
                   assert run('pull-request-2', 'inputs-1', False)[:3] == (True, False, False)
-                  # Changed inputs miss and prepare again.
-                  assert run('push-3', 'inputs-2', True)[:3] == (False, True, True)
+                  # Changed inputs miss the exact key, prepare again and save under the new key.
+                  hit, prepared, saved, tarball = run('push-3', 'inputs-2', True)
+                  assert (hit, prepared, saved) == (False, True, True)
+                  # They start from push-2's bundle, restored by prefix and handed over as the base.
+                  assert subprocess.check_output(['tar', '-xOf', str(tarball), 'test-setup/base-count'], text=True) == 'once\n'
 
           second_run_with_unchanged_inputs_restores_and_skips()
           print('PASS second_run_with_unchanged_inputs_restores_and_skips')

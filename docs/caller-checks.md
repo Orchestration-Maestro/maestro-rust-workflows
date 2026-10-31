@@ -308,6 +308,16 @@ saved. Declare every input the command reads: an unlisted input does not change
 the key and can leave a stale directory in place. Without the list nothing is
 cached.
 
+When the exact key misses, `Prepare test setup` restores the closest earlier
+bundle saved under the same compile cache identity, checkout path and
+`test_prepare` command, which is the last push's bundle. It extracts the bundle
+to its own directory, separate from `TEST_PREPARE_OUTPUT`, and sets
+`TEST_PREPARE_BASE` to that directory before the command runs. The command may
+copy or reuse any file there whose own inputs are unchanged and must still write
+every file it needs to `TEST_PREPARE_OUTPUT`. When no earlier bundle exists, or it
+cannot be read, `TEST_PREPARE_BASE` is unset. An exact hit still skips the
+command.
+
 ```toml
 test_prepare = "sh .config/prepare-tests.sh"
 test_prepare_packages = ["wasm-host", "wasm-guest"]
