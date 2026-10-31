@@ -18,11 +18,13 @@ def snapshot_only_transfers_fail_open():
     for step in re.split(r'^      - name: ', workflow, flags=re.M)[1:]:
         if re.search(r'^        continue-on-error:', step, re.M):
             assert step.splitlines()[0] in ['Restore compile cache', 'Save compile cache', 'Restore test setup cache', 'Save test setup cache',
+                                           'Test setup candidates', 'Download test setup candidates',
                                            'Restore Cargo git cache', 'Save Cargo git cache']
-            assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M)
+            # The candidate steps are transfers of earlier runs' bundles; a failed lookup or download leaves the restored bundle as the only base.
+            assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M) or step.startswith(('Test setup candidates', 'Download test setup candidates'))
             assert '        continue-on-error: true\n' in step
             count += 1
-    assert count == 24
+    assert count == 26
     assert not re.search(r'^    continue-on-error:', workflow, re.M)
 
 snapshot_only_transfers_fail_open()
