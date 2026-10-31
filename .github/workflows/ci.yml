@@ -81,6 +81,7 @@ env:
     def read_reports(directory, names, source_layout, wanted):
         result = {}
         roots = {package: pathlib.Path(root) for package, root in source_layout.get('package_roots', {}).items()}
+        owners = {}  # one owner lookup per source path, not one per shard record
         for name in sorted(names):
             source = None
             include = False
@@ -89,13 +90,17 @@ env:
                     source = os.path.normpath(record[3:])
                     include = wanted is None
                     if wanted is not None:
-                        try:
-                            relative = pathlib.Path(source).relative_to(source_layout['checkout_root'])
-                        except ValueError:
+                        if source not in owners:
+                            try:
+                                relative = pathlib.Path(source).relative_to(source_layout['checkout_root'])
+                            except ValueError:
+                                owners[source] = None
+                            else:
+                                owners[source] = (package_owner(relative, roots), relative.as_posix())
+                        if owners[source] is None:
                             continue
-                        owner = package_owner(relative, roots)
+                        owner, source = owners[source]
                         include = owner in wanted
-                        source = relative.as_posix()
                 elif record.startswith('DA:'):
                     if source is None:
                         raise SystemExit(f'{name}: line without source file')
