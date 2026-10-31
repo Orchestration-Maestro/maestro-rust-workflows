@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.1...v0.19.2) (2026-10-31)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main f86f2e22 ([#274](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/274)) ([ac1f7f2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/ac1f7f24c697839800b91b7ce0d0c83861d00297))
+
+
+### Bug Fixes
+
+* **ci:** give test preparation the closest earlier bundle as its base ([#272](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/272)) ([af14c95](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/af14c951c2a005624027d6bb35e5ddc4e17cb626))
+
 ## [0.19.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.0...v0.19.1) (2026-10-31)
 
 
