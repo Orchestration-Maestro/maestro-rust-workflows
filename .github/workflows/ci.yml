@@ -1499,7 +1499,6 @@ jobs:
         id: candidates
         if: ${{ steps.setup-cache.outputs.cache-hit != 'true' && needs.declaration.outputs.test_prepare_inputs != '[]' }}
         continue-on-error: true
-        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
