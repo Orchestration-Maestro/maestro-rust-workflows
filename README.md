@@ -210,6 +210,10 @@ caller check fails the job.
 requirements, verified mise bootstrap and failure propagation. This
 repository's broken Rust fixtures stay under its separate self-test.
 
+Each seam step runs one script from `.github/ci-internal/`, so the workflow file
+stays under the size GitHub accepts. The self-test fails any workflow file over
+400,000 bytes.
+
 ## Self-test
 
 `ci-internal.yml` calls the shared workflow on `fixtures/sample`, which must
