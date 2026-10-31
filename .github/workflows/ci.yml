@@ -1494,23 +1494,208 @@ jobs:
           restore-keys: ${{ steps.setup-identity.outputs.prefix }}
           enableCrossOsArchive: false
           fail-on-cache-miss: false
+      # A merge group and the push that lands it have no cache a pull request run could write, but the runs that tested the same change uploaded its bundle as an artifact. Pull request runs list none, so every candidate was built by the code being merged from a bundle the default branch saved.
+      - name: Test setup candidates
+        id: candidates
+        if: ${{ steps.setup-cache.outputs.cache-hit != 'true' && needs.declaration.outputs.test_prepare_inputs != '[]' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
+          CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CACHE_WRITER: ${{ steps.cache-identity.outputs.writer }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import re
+          import subprocess
+          import urllib.parse
+          repository, event, sha = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_SHA']
+          pushed = os.environ['CACHE_WRITER'] == 'true'
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/{path}'], text=True))
+          def has_bundle(run):
+              listing = api(f"actions/runs/{run['id']}/artifacts?name={urllib.parse.quote(os.environ['ARTIFACT_NAME'])}&per_page=100")
+              return any(not item['expired'] for item in listing['artifacts'])
+          def newest_with_bundle(runs):
+              return next((run for run in runs if has_bundle(run)), None)
+          candidates = []
+          if event == 'merge_group' or pushed:
+              workflow = api('actions/runs/' + os.environ['GITHUB_RUN_ID'])['workflow_id']
+          if event == 'merge_group':
+              # The queue branch is cut from the previous group, so only the default branch lists every pull request still ahead of it.
+              subjects = [item['commit']['message'].split('\n', 1)[0] for item in api(f"compare/{os.environ['CACHE_DEFAULT_BRANCH']}...{sha}?per_page=100")['commits']]
+              for number in [int(match[1]) for match in map(re.compile(r'\(#(\d+)\)$').search, subjects) if match]:
+                  head = api(f'pulls/{number}')['head']['sha']
+                  runs = api(f'actions/workflows/{workflow}/runs?event=pull_request&head_sha={head}&status=success&per_page=100')['workflow_runs']
+                  # Fork runs are not this repository's code under review.
+                  candidates.append(newest_with_bundle(run for run in runs if run['head_repository']['full_name'] == repository))
+          elif pushed:
+              candidates.append(newest_with_bundle(api(f'actions/workflows/{workflow}/runs?event=merge_group&head_sha={sha}&status=success&per_page=100')['workflow_runs']))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('runs=' + ' '.join(str(run['id']) for run in candidates if run) + '\n')
+          PYTHON
+      - name: Download test setup candidates
+        if: ${{ steps.candidates.outputs.runs != '' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
+          ARTIFACT_PATH: ${{ runner.temp }}/test-setup-candidates
+          ARTIFACT_RUN_IDS: ${{ steps.candidates.outputs.runs }}
+        run: &download-artifact |
+          python3 - <<'PYTHON'
+          import hashlib
+          import http.client
+          import json
+          import os
+          import pathlib
+          import shutil
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import zipfile
+          from concurrent.futures import ThreadPoolExecutor
+
+          # The artifact is a zip in blob storage. One stream is slow in some regions, so fetch it in parallel ranges,
+          # check its size and digest, then extract. An unusable listing or any failed range hands the whole download
+          # over to the single-stream action.
+          STREAMS, MINIMUM_RANGE = 16, 1 << 20
+          TRANSPORT = (OSError, http.client.HTTPException)
+          name, destination = os.environ['ARTIFACT_NAME'], pathlib.Path(os.environ['ARTIFACT_PATH'])
+          api = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/actions"
+          partial = pathlib.Path(os.environ['RUNNER_TEMP']) / f'{name}.zip'
+
+          class KeepRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *arguments):
+                  return None
+
+          urllib.request.install_opener(urllib.request.build_opener(KeepRedirect))
+
+          def get(url, headers):
+              return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120)
+
+          def api_get(path):
+              return get(f'{api}/{path}', {'Authorization': f"Bearer {os.environ['GH_TOKEN']}", 'Accept': 'application/vnd.github+json'})
+
+          def storage_url(artifact):
+              # One call per download: the probe and every range reuse the signed URL, and the token never reaches storage.
+              try:
+                  api_get(f"artifacts/{artifact['id']}/zip").close()
+              except urllib.error.HTTPError as redirect:
+                  if redirect.code == 302:
+                      return redirect.headers['Location']
+                  raise
+              raise OSError('artifact download did not redirect to storage')
+
+          def fetch(url, start, end):
+              with get(url, {'Range': f'bytes={start}-{end}'}) as response, open(partial, 'r+b') as target:
+                  if response.status != 206:
+                      raise OSError('storage ignored the range')
+                  target.seek(start)
+                  shutil.copyfileobj(response, target, 1 << 20)
+                  if target.tell() != end + 1:
+                      raise OSError('short range')
+
+          def download(artifact):
+              size = artifact['size_in_bytes']
+              url = storage_url(artifact)
+              with get(url, {'Range': 'bytes=0-0'}) as probe, open(partial, 'wb') as target:
+                  if probe.status != 206:
+                      shutil.copyfileobj(probe, target, 1 << 20)
+                      return 1
+                  target.truncate(size)
+              streams = max(1, min(STREAMS, size // MINIMUM_RANGE))
+              step = -(-size // streams)
+              with ThreadPoolExecutor(streams) as pool:
+                  for future in [pool.submit(fetch, url, start, min(start + step, size) - 1) for start in range(0, size, step)]:
+                      future.result()
+              return streams
+
+          run_ids = os.environ.get('ARTIFACT_RUN_IDS', '').split()
+
+          def fall_back(reason, started):
+              print(f'::warning::{reason}' + ('' if run_ids else '; using the single-stream download'), file=sys.stderr)
+              print(f'artifact-download name={name} bytes=0 seconds={time.monotonic() - started:.2f} streams=0')
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+                  output.write('fallback=true\n')
+
+          def download_run(run_id, destination):
+              started = time.monotonic()
+              try:
+                  with api_get(f'runs/{run_id}/artifacts?' + urllib.parse.urlencode({'name': name, 'per_page': 100})) as listing:
+                      artifacts = [item for item in json.load(listing)['artifacts'] if item['name'] == name and not item['expired']]
+                  artifact = max(artifacts, key=lambda item: item['id'])
+                  expected = artifact.get('digest') or ''
+                  if not expected.startswith('sha256:'):
+                      raise OSError('artifact has no sha256 digest')
+                  started = time.monotonic()
+                  streams = download(artifact)
+                  seconds = time.monotonic() - started
+              except (*TRANSPORT, KeyError, ValueError) as error:
+                  partial.unlink(missing_ok=True)
+                  fall_back(f'{type(error).__name__}: {error}', started)
+                  return
+              try:
+                  size, hasher = partial.stat().st_size, hashlib.sha256()
+                  with open(partial, 'rb') as source:
+                      for block in iter(lambda: source.read(1 << 20), b''):
+                          hasher.update(block)
+                  if size != artifact['size_in_bytes']:
+                      raise SystemExit(f"{name}: size mismatch, expected {artifact['size_in_bytes']} bytes, got {size}")
+                  if 'sha256:' + hasher.hexdigest() != expected:
+                      raise SystemExit(f'{name}: digest mismatch, expected {expected}, got sha256:{hasher.hexdigest()}')
+                  with zipfile.ZipFile(partial) as bundle:
+                      bundle.extractall(destination)
+              finally:
+                  partial.unlink(missing_ok=True)
+              print(f"artifact-download name={name} bytes={size} seconds={seconds:.2f} streams={streams}")
+
+          # One run's artifact goes straight to the path; a list of runs puts each in a directory named for its run, and a run whose bundle is missing, fails its checks or cannot be read is skipped.
+          if not run_ids:
+              download_run(os.environ['GITHUB_RUN_ID'], destination)
+          for run_id in run_ids:
+              try:
+                  download_run(run_id, destination / run_id)
+              except (SystemExit, zipfile.BadZipFile) as error:
+                  print(f'::warning::{error}; leaving run {run_id} out', file=sys.stderr)
+                  shutil.rmtree(destination / run_id, ignore_errors=True)
+          PYTHON
       - name: Prepare test setup
         if: steps.setup-cache.outputs.cache-hit != 'true'
         timeout-minutes: 45
+        env:
+          TEST_SETUP_CANDIDATE_RUNS: ${{ steps.candidates.outputs.runs }}
         run: |
           export TEST_PREPARE_OUTPUT="$PWD/target/test-setup"
           export CARGO_TARGET_DIR="$RUNNER_TEMP/maestro-test-prepare-build"
           mkdir -p "$TEST_PREPARE_OUTPUT"
-          # A miss on the exact key may still restore the closest earlier bundle; it is the preparation's base, kept apart from the output.
+          # The preparation's bases, in order: a miss on the exact key may still restore the closest earlier bundle, and the candidates follow. Each is extracted to its own directory, apart from the output.
           unset TEST_PREPARE_BASE
-          if [ -f "$RUNNER_TEMP/test-setup.tar" ]; then
-            mkdir -p "$RUNNER_TEMP/test-setup-base"
-            if tar -C "$RUNNER_TEMP/test-setup-base" -xf "$RUNNER_TEMP/test-setup.tar"; then
-              export TEST_PREPARE_BASE="$RUNNER_TEMP/test-setup-base/test-setup"
+          bases=()
+          extract() {
+            mkdir -p "$2"
+            if tar -C "$2" -xf "$1"; then
+              bases+=("$2/test-setup")
             else
-              echo "::warning::The earlier test setup bundle is unreadable; preparing without a base."
-              rm -rf "$RUNNER_TEMP/test-setup-base"
+              echo "::warning::The earlier test setup bundle $1 is unreadable; preparing without it."
+              rm -rf "$2"
             fi
+          }
+          if [ -f "$RUNNER_TEMP/test-setup.tar" ]; then
+            extract "$RUNNER_TEMP/test-setup.tar" "$RUNNER_TEMP/test-setup-base"
+          fi
+          for run in ${TEST_SETUP_CANDIDATE_RUNS-}; do
+            if [ -f "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" ]; then
+              extract "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" "$RUNNER_TEMP/test-setup-candidate-$run"
+            fi
+          done
+          if [ "${#bases[@]}" -gt 0 ]; then
+            export TEST_PREPARE_BASE
+            TEST_PREPARE_BASE=$(IFS=:; echo "${bases[*]}")
           fi
           bash -e -o pipefail -c "$TEST_PREPARE"
           tar -C target -cf "$RUNNER_TEMP/test-setup.tar" test-setup
@@ -1632,113 +1817,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_NAME: test-archive-${{ inputs.concurrency-key || 'root' }}
           ARTIFACT_PATH: .
-        run: &download-artifact |
-          python3 - <<'PYTHON'
-          import hashlib
-          import http.client
-          import json
-          import os
-          import pathlib
-          import shutil
-          import sys
-          import time
-          import urllib.error
-          import urllib.parse
-          import urllib.request
-          import zipfile
-          from concurrent.futures import ThreadPoolExecutor
-
-          # The artifact is a zip in blob storage. One stream is slow in some regions, so fetch it in parallel ranges,
-          # check its size and digest, then extract. An unusable listing or any failed range hands the whole download
-          # over to the single-stream action.
-          STREAMS, MINIMUM_RANGE = 16, 1 << 20
-          TRANSPORT = (OSError, http.client.HTTPException)
-          name, destination = os.environ['ARTIFACT_NAME'], pathlib.Path(os.environ['ARTIFACT_PATH'])
-          api = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/actions"
-          partial = pathlib.Path(os.environ['RUNNER_TEMP']) / f'{name}.zip'
-
-          class KeepRedirect(urllib.request.HTTPRedirectHandler):
-              def redirect_request(self, *arguments):
-                  return None
-
-          urllib.request.install_opener(urllib.request.build_opener(KeepRedirect))
-
-          def get(url, headers):
-              return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120)
-
-          def api_get(path):
-              return get(f'{api}/{path}', {'Authorization': f"Bearer {os.environ['GH_TOKEN']}", 'Accept': 'application/vnd.github+json'})
-
-          def storage_url(artifact):
-              # One call per download: the probe and every range reuse the signed URL, and the token never reaches storage.
-              try:
-                  api_get(f"artifacts/{artifact['id']}/zip").close()
-              except urllib.error.HTTPError as redirect:
-                  if redirect.code == 302:
-                      return redirect.headers['Location']
-                  raise
-              raise OSError('artifact download did not redirect to storage')
-
-          def fetch(url, start, end):
-              with get(url, {'Range': f'bytes={start}-{end}'}) as response, open(partial, 'r+b') as target:
-                  if response.status != 206:
-                      raise OSError('storage ignored the range')
-                  target.seek(start)
-                  shutil.copyfileobj(response, target, 1 << 20)
-                  if target.tell() != end + 1:
-                      raise OSError('short range')
-
-          def download(artifact):
-              size = artifact['size_in_bytes']
-              url = storage_url(artifact)
-              with get(url, {'Range': 'bytes=0-0'}) as probe, open(partial, 'wb') as target:
-                  if probe.status != 206:
-                      shutil.copyfileobj(probe, target, 1 << 20)
-                      return 1
-                  target.truncate(size)
-              streams = max(1, min(STREAMS, size // MINIMUM_RANGE))
-              step = -(-size // streams)
-              with ThreadPoolExecutor(streams) as pool:
-                  for future in [pool.submit(fetch, url, start, min(start + step, size) - 1) for start in range(0, size, step)]:
-                      future.result()
-              return streams
-
-          def fall_back(reason, started):
-              print(f'::warning::{reason}; using the single-stream download', file=sys.stderr)
-              print(f'artifact-download name={name} bytes=0 seconds={time.monotonic() - started:.2f} streams=0')
-              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-                  output.write('fallback=true\n')
-
-          started = time.monotonic()
-          try:
-              with api_get(f"runs/{os.environ['GITHUB_RUN_ID']}/artifacts?" + urllib.parse.urlencode({'name': name, 'per_page': 100})) as listing:
-                  artifacts = [item for item in json.load(listing)['artifacts'] if item['name'] == name and not item['expired']]
-              artifact = max(artifacts, key=lambda item: item['id'])
-              expected = artifact.get('digest') or ''
-              if not expected.startswith('sha256:'):
-                  raise OSError('artifact has no sha256 digest')
-              started = time.monotonic()
-              streams = download(artifact)
-              seconds = time.monotonic() - started
-          except (*TRANSPORT, KeyError, ValueError) as error:
-              partial.unlink(missing_ok=True)
-              fall_back(f'{type(error).__name__}: {error}', started)
-              sys.exit(0)
-          try:
-              size, hasher = partial.stat().st_size, hashlib.sha256()
-              with open(partial, 'rb') as source:
-                  for block in iter(lambda: source.read(1 << 20), b''):
-                      hasher.update(block)
-              if size != artifact['size_in_bytes']:
-                  raise SystemExit(f"{name}: size mismatch, expected {artifact['size_in_bytes']} bytes, got {size}")
-              if 'sha256:' + hasher.hexdigest() != expected:
-                  raise SystemExit(f'{name}: digest mismatch, expected {expected}, got sha256:{hasher.hexdigest()}')
-              with zipfile.ZipFile(partial) as bundle:
-                  bundle.extractall(destination)
-          finally:
-              partial.unlink(missing_ok=True)
-          print(f"artifact-download name={name} bytes={size} seconds={seconds:.2f} streams={streams}")
-          PYTHON
+        run: *download-artifact
       - name: Download test archive in one stream
         if: ${{ steps.archive-download.outputs.fallback == 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
