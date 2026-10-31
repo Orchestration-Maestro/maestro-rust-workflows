@@ -3365,15 +3365,17 @@ jobs:
 
           def cargo_git_cache_restores_before_every_fetch():
               build = workflow.split('  test-build:\n', 1)[1].split('\n  test-prepare:', 1)[0]
+              prepare = workflow.split('  test-prepare:\n', 1)[1].split('\n  tests:', 1)[0]
               tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
               for job, fetching in [(build, ['Fetch additional locked manifests', 'Build test archive']),
+                                    (prepare, ['Fetch additional locked manifests', 'Prepare test setup']),
                                     (tests, ['Fetch additional locked manifests', 'Tests', 'Isolated tests'])]:
                   names = [step.splitlines()[0] for step in job.split('      - name: ')[1:]]
                   order = ['Cargo git cache identity', 'Restore Cargo git cache'] + fetching
                   assert [names.index(name) for name in order] == sorted(names.index(name) for name in order), names
                   restore = next(step for step in job.split('      - name: ')[1:] if step.startswith('Restore Cargo git cache\n'))
                   assert 'uses: actions/cache/restore@' in restore and 'continue-on-error: true' in restore
-                  if job is tests:
+                  if job is not build:
                       assert 'with: *git-cache-restore' in restore
                       continue
                   assert 'with: &git-cache-restore' in restore
@@ -3383,10 +3385,10 @@ jobs:
                   assert 'restore-keys: $' + '{{ steps.git-cache-identity.outputs.prefix }}' in restore
               save = next(step for step in build.split('      - name: ')[1:] if step.startswith('Save Cargo git cache\n'))
               assert 'uses: actions/cache/save@' in save and 'continue-on-error: true' in save
-              assert "if: steps.git-cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'" in save
+              assert "if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'" in save
               assert 'key: $' + '{{ steps.git-cache-identity.outputs.key }}' in save
               assert build.index('name: Build test archive') < build.index('name: Save Cargo git cache')
-              assert 'Save Cargo git cache' not in tests
+              assert 'Save Cargo git cache' not in tests and 'Save Cargo git cache' not in prepare
 
               def identity(directory, manifests='[]', **extra):
                   output = directory / 'github-output'
@@ -3413,8 +3415,7 @@ jobs:
                   (directory / 'Cargo.lock').write_text('version = 4\n# changed\n', encoding='utf-8')
                   assert identity(directory)['key'] != before['key']
                   assert identity(directory, CACHE_CALL='other')['prefix'] != before['prefix']
-                  assert [identity(directory, **event)['writer'] for event in [
-                      {}, {'GITHUB_EVENT_NAME': 'pull_request'}, {'GITHUB_REF': 'refs/heads/feature'}]] == ['true', 'false', 'false']
+                  assert 'writer' not in before
 
           cargo_git_cache_restores_before_every_fetch()
           print('PASS cargo_git_cache_restores_before_every_fetch')
