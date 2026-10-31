@@ -521,7 +521,7 @@ jobs:
                       return self.reply(200, json.dumps({'artifacts': artifacts}).encode())
                   if re.fullmatch(r'/repos/o/r/actions/artifacts/\d+/zip', path):
                       self.send_response(302)
-                      self.send_header('Location', f'http://127.0.0.1:{server.server_port}/blob')
+                      self.send_header('Location', f'http://127.0.0.1:{server.server_port}/blob?run={int(path.split("/")[-2]) - 2}')
                       self.send_header('Content-Length', '0')
                       return self.end_headers()
                   assert path == '/blob', path
@@ -529,7 +529,7 @@ jobs:
                   if requested and server.ranges:
                       start, end = map(int, re.fullmatch(r'bytes=(\d+)-(\d+)', requested).groups())
                       body = bytearray(server.blob[start:end + 1])
-                      if server.corrupt and start > 0:
+                      if (server.corrupt or int(re.search(r'run=(\d+)', self.path)[1]) in server.corrupt_runs) and start > 0:
                           body[0] ^= 0xff
                       if server.fault == 'fail' and start > 0:
                           return self.send_error(500)
@@ -548,12 +548,12 @@ jobs:
                   self.end_headers()
                   self.wfile.write(body)
 
-          def download(ranges=True, corrupt=False, digest=True, listing_fails=False, fault=None, run_ids='', without_artifact=()):
+          def download(ranges=True, corrupt=False, digest=True, listing_fails=False, fault=None, run_ids='', without_artifact=(), corrupt_runs=()):
               server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Storage)
               server.blob, server.requests = archive(), []
               server.handle_error = lambda *arguments: None  # a client that gave up on a range resets its connection
               server.ranges, server.corrupt, server.digest, server.listing_fails, server.fault = ranges, corrupt, digest, listing_fails, fault
-              server.without_artifact = without_artifact
+              server.without_artifact, server.corrupt_runs = without_artifact, corrupt_runs
               threading.Thread(target=server.serve_forever, daemon=True).start()
               try:
                   with tempfile.TemporaryDirectory() as temporary:
@@ -630,6 +630,12 @@ jobs:
               assert [streams != '0' for streams in re.findall(r'streams=(\d+)$', result.stdout, re.MULTILINE)] == [True, False, True], result.stdout
               assert [request[0] for request in server.requests if request[0].endswith('/artifacts')] == [f'/repos/o/r/actions/runs/{run}/artifacts' for run in (7, 8, 9)]
 
+          def a_run_with_a_corrupt_bundle_is_left_out_and_the_later_runs_still_download():
+              result, server, files, extracted, outputs, leftovers = download(run_ids='7 8 9', corrupt_runs=(8,))
+              assert result.returncode == 0, result.stderr
+              assert files == ['7/test-binaries.tar.zst', '9/test-binaries.tar.zst'] and leftovers == [], (files, leftovers)
+              assert 'digest mismatch' in result.stderr and '::warning::' in result.stderr and 'single-stream' not in result.stderr, result.stderr
+
           def both_downloads_share_one_script_and_keep_the_single_stream_action():
               pin = 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'
               names = list(steps)
@@ -651,6 +657,7 @@ jobs:
                         a_corrupted_range_fails_on_the_digest_and_never_extracts, an_unusable_listing_hands_over_to_the_single_stream_action,
                         a_failing_range_hands_the_whole_download_over_without_a_retry,
                         several_runs_land_in_a_directory_each_and_a_run_without_a_bundle_is_skipped,
+                        a_run_with_a_corrupt_bundle_is_left_out_and_the_later_runs_still_download,
                         both_downloads_share_one_script_and_keep_the_single_stream_action]:
               check()
               print('PASS', check.__name__)
