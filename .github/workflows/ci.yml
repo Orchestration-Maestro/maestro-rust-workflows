@@ -1463,7 +1463,7 @@ jobs:
           import hashlib
           import json
           import os
-          # The compile cache prefix names repository, directory, host and compiler; the command, checkout path and input file contents complete the identity.
+          # The compile cache prefix names repository, directory, host and compiler; the command and checkout path complete the prefix that finds an earlier bundle, and the input file contents complete the key.
           files = {}
           for pattern in json.loads(os.environ['TEST_PREPARE_INPUTS']):
               matches = [name for name in glob.glob(pattern, recursive=True, include_hidden=True) if os.path.isfile(name)]
@@ -1472,10 +1472,11 @@ jobs:
               for name in matches:
                   with open(name, 'rb') as source:
                       files[name] = hashlib.sha256(source.read()).hexdigest()
-          identity = [os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE'], sorted(files.items())]
-          digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+          def digest(value):
+              return hashlib.sha256(json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+          prefix = 'maestro-test-setup-v2-' + digest([os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE']]) + '-'
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'key=maestro-test-setup-v1-{digest}\n')
+              output.write(f'prefix={prefix}\nkey={prefix}{digest(sorted(files.items()))}\n')
           PYTHON
       - name: Restore test setup cache
         id: setup-cache
@@ -1485,6 +1486,7 @@ jobs:
         with:
           path: ${{ runner.temp }}/test-setup.tar
           key: ${{ steps.setup-identity.outputs.key }}
+          restore-keys: ${{ steps.setup-identity.outputs.prefix }}
           enableCrossOsArchive: false
           fail-on-cache-miss: false
       - name: Prepare test setup
@@ -1494,6 +1496,17 @@ jobs:
           export TEST_PREPARE_OUTPUT="$PWD/target/test-setup"
           export CARGO_TARGET_DIR="$RUNNER_TEMP/maestro-test-prepare-build"
           mkdir -p "$TEST_PREPARE_OUTPUT"
+          # A miss on the exact key may still restore the closest earlier bundle; it is the preparation's base, kept apart from the output.
+          unset TEST_PREPARE_BASE
+          if [ -f "$RUNNER_TEMP/test-setup.tar" ]; then
+            mkdir -p "$RUNNER_TEMP/test-setup-base"
+            if tar -C "$RUNNER_TEMP/test-setup-base" -xf "$RUNNER_TEMP/test-setup.tar"; then
+              export TEST_PREPARE_BASE="$RUNNER_TEMP/test-setup-base/test-setup"
+            else
+              echo "::warning::The earlier test setup bundle is unreadable; preparing without a base."
+              rm -rf "$RUNNER_TEMP/test-setup-base"
+            fi
+          fi
           bash -e -o pipefail -c "$TEST_PREPARE"
           tar -C target -cf "$RUNNER_TEMP/test-setup.tar" test-setup
       - name: Save test setup cache
