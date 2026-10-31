@@ -294,7 +294,6 @@ jobs:
               assert condition(steps['Test setup cache identity']) == declared
               assert condition(steps['Restore test setup cache']) == declared
               assert steps['Restore test setup cache']['with']['key'] == '$' + '{{ steps.setup-identity.outputs.key }}'
-              assert 'restore-keys' not in steps['Restore test setup cache']['with']
               assert steps['Prepare test setup']['if'] == "steps.setup-cache.outputs.cache-hit != 'true'"
               save = steps['Save test setup cache']
               assert condition(save) == "steps.cache-identity.outputs.writer == 'true' && steps.setup-cache.outputs.cache-hit != 'true' && " + declared
@@ -323,7 +322,7 @@ jobs:
                   result, values = key(directory)
                   assert result.returncode == 0, result.stderr
                   first = values['key']
-                  assert first.startswith('maestro-test-setup-v1-'), values
+                  assert first.startswith('maestro-test-setup-v2-'), values
                   assert key(directory)[1]['key'] == first
                   # Pattern order and overlapping patterns do not change the key.
                   both = key(directory, ('inputs/a.txt', 'inputs/*.txt'))[1]['key']
