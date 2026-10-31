@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.19.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.0...v0.19.1) (2026-10-31)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main 541abdce ([#270](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/270)) ([bf9d3e5](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/bf9d3e5a083f9755961cc30ea2f923d4d886c8d6))
+* run each workflow seam step from a script file ([#268](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/268)) ([37e6d6f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/37e6d6f35c13aa5fa96ffdc6ca77c8990008225a))
+
+
+### Bug Fixes
+
+* **ci:** cache Cargo git dependencies across archive and shards ([#265](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/265)) ([1d4f43f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/1d4f43f8b4cec7c263f4988ca00bd7eda4417602))
+
 ## [0.19.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.18.1...v0.19.0) (2026-10-30)
 
 
