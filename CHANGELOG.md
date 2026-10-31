@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.3](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.2...v0.19.3) (2026-10-31)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main 135f072b ([#279](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/279)) ([898a612](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/898a612cf448744af34b41a32df96ebcd1b807b4))
+
+
+### Bug Fixes
+
+* **ci:** look up each source path owner once in the coverage merge ([#277](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/277)) ([2f5ab9c](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/2f5ab9c4dd723d7f3c249e64a4a11c8ccac410a8))
+
 ## [0.19.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.1...v0.19.2) (2026-10-31)
 
 
