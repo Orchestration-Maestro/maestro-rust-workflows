@@ -84,6 +84,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Workflow file size
+        run: |
+          # GitHub runs none of a workflow's jobs once its file passes the size limit.
+          status=0
+          for file in .github/workflows/*.yml; do
+            size=$(wc -c < "$file")
+            if [ "$size" -gt 400000 ]; then
+              echo "::error file=$file::$file is $size bytes, over the 400000-byte limit"
+              status=1
+            fi
+          done
+          exit "$status"
       - name: Shared coverage policy
         run: python3 .github/extract-workflow-steps.py
       - name: Content checks at workflow seam
