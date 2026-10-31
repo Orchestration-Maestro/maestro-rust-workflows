@@ -550,6 +550,60 @@ def archived_shards_provision_child_build_dependencies():
     fetch = next(step for step in tests.split('      - name: ')[1:] if step.startswith('Fetch additional locked manifests\n'))
     assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
 
+def cargo_git_cache_restores_before_every_fetch():
+    build = workflow.split('  test-build:\n', 1)[1].split('\n  test-prepare:', 1)[0]
+    prepare = workflow.split('  test-prepare:\n', 1)[1].split('\n  tests:', 1)[0]
+    tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
+    for job, fetching in [(build, ['Fetch additional locked manifests', 'Build test archive']),
+                          (prepare, ['Fetch additional locked manifests', 'Prepare test setup']),
+                          (tests, ['Fetch additional locked manifests', 'Tests', 'Isolated tests'])]:
+        names = [step.splitlines()[0] for step in job.split('      - name: ')[1:]]
+        order = ['Cargo git cache identity', 'Restore Cargo git cache'] + fetching
+        assert [names.index(name) for name in order] == sorted(names.index(name) for name in order), names
+        restore = next(step for step in job.split('      - name: ')[1:] if step.startswith('Restore Cargo git cache\n'))
+        assert 'uses: actions/cache/restore@' in restore and 'continue-on-error: true' in restore
+        if job is not build:
+            assert 'with: *git-cache-restore' in restore
+            continue
+        assert 'with: &git-cache-restore' in restore
+        assert 'steps.git-cache-identity.outputs.home }}/git/db' in restore
+        assert 'steps.git-cache-identity.outputs.home }}/git/checkouts' in restore
+        assert 'key: $' + '{{ steps.git-cache-identity.outputs.key }}' in restore
+        assert 'restore-keys: $' + '{{ steps.git-cache-identity.outputs.prefix }}' in restore
+    save = next(step for step in build.split('      - name: ')[1:] if step.startswith('Save Cargo git cache\n'))
+    assert 'uses: actions/cache/save@' in save and 'continue-on-error: true' in save
+    assert "if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'" in save
+    assert 'key: $' + '{{ steps.git-cache-identity.outputs.key }}' in save
+    assert build.index('name: Build test archive') < build.index('name: Save Cargo git cache')
+    assert 'Save Cargo git cache' not in tests and 'Save Cargo git cache' not in prepare
+
+    def identity(directory, manifests='[]', **extra):
+        output = directory / 'github-output'
+        output.write_text('', encoding='utf-8')
+        env = {'GITHUB_OUTPUT': str(output), 'ADDITIONAL_LOCKED_MANIFESTS': manifests, 'GITHUB_EVENT_NAME': 'push',
+               'GITHUB_REF': 'refs/heads/main', 'CACHE_DEFAULT_BRANCH': 'main', 'CALLER_DIRECTORY': '.',
+               'CACHE_CALL': '', 'CALLER_REPOSITORY': 'owner/repo', 'HOME': '/home/runner', 'CARGO_HOME': None} | extra
+        result = execute('Cargo git cache identity', directory, env)
+        assert result.returncode == 0, result.stderr
+        return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        (directory / 'fixture').mkdir()
+        (directory / 'Cargo.lock').write_text('version = 4\n', encoding='utf-8')
+        (directory / 'fixture/Cargo.lock').write_text('version = 4\n', encoding='utf-8')
+        declared = '["fixture/Cargo.toml"]'
+        before, with_fixture = identity(directory), identity(directory, declared)
+        assert before == identity(directory) and before['key'].startswith(before['prefix'])
+        assert before['home'] == '/home/runner/.cargo' and identity(directory, CARGO_HOME='/cargo')['home'] == '/cargo'
+        assert with_fixture['key'] != before['key'] and with_fixture['prefix'] == before['prefix']
+        (directory / 'fixture/Cargo.lock').write_text('version = 4\n# changed\n', encoding='utf-8')
+        assert identity(directory) == before and identity(directory, declared)['key'] != with_fixture['key']
+        (directory / 'Cargo.lock').write_text('version = 4\n# changed\n', encoding='utf-8')
+        assert identity(directory)['key'] != before['key']
+        assert identity(directory, CACHE_CALL='other')['prefix'] != before['prefix']
+        assert 'writer' not in before
+
 def archive_signal_reaches_only_archived_shards():
     for shard, warm, coverage, archive, expected in [
         ('1', 'false', 'false', 'test-binaries.tar.zst', '1'),
@@ -823,6 +877,8 @@ undeclared_coverage_measures_the_full_workspace()
 print('PASS undeclared_coverage_measures_the_full_workspace')
 archived_shards_provision_child_build_dependencies()
 print('PASS archived_shards_provision_child_build_dependencies')
+cargo_git_cache_restores_before_every_fetch()
+print('PASS cargo_git_cache_restores_before_every_fetch')
 archive_signal_reaches_only_archived_shards()
 print('PASS archive_signal_reaches_only_archived_shards')
 

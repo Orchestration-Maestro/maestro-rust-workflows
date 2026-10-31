@@ -171,6 +171,18 @@ The 1 GiB native-payload bound applies to each save, not the repository's
 10 GB cache allowance. Compressed snapshot sizes are measured separately;
 GitHub eviction can remove even the newest snapshot of a shape.
 
+### Cargo git dependency cache
+
+Build test archive, Prepare test setup and every test shard restore Cargo's `git/db` and
+`git/checkouts` directories before the first `cargo fetch`, so a cache hit
+fetches git dependencies without network access. The key hashes the caller's
+`Cargo.lock` and the `Cargo.lock` of every `additional_locked_manifests` entry;
+a different lock file misses and falls back to the newest entry of the same
+caller and directory. Only a default-branch push that missed the exact key
+saves it, from Build test archive. It counts against the 10 GB repository
+allowance: Maestro's `wasmtime` git revision with its submodules compresses to
+about 0.6 GB per entry.
+
 ## Test shards
 
 Tests use checksum-pinned cargo-nextest 0.9.148 with automatic

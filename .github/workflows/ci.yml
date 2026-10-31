@@ -1244,6 +1244,45 @@ jobs:
           TOOLS
           echo "TOOLS=$bin" >> "$GITHUB_ENV"
           echo "$bin" >> "$GITHUB_PATH"
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: &git-cache-identity |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          root = pathlib.Path.cwd().resolve()
+          locks = {root / 'Cargo.lock'}
+          for manifest in json.loads(os.environ['ADDITIONAL_LOCKED_MANIFESTS']):
+              for directory in (root / manifest).resolve().parents:
+                  if (directory / 'Cargo.lock').is_file():
+                      locks.add(directory / 'Cargo.lock')
+                      break
+                  if directory == root:
+                      break
+          digest = hashlib.sha256()
+          for lock in sorted(path for path in locks if path.is_file()):
+              digest.update(f'{os.path.relpath(lock, root)}\0'.encode('utf-8') + lock.read_bytes() + b'\0')
+          scope = hashlib.sha256(json.dumps([os.environ[name] for name in ['CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'CACHE_CALL']]).encode('utf-8')).hexdigest()
+          prefix = f'maestro-cargo-git-v1-{scope}-'
+          home = os.environ.get('CARGO_HOME') or os.path.expanduser('~/.cargo')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'prefix={prefix}\nkey={prefix}{digest.hexdigest()}\nhome={home}\n')
+          PYTHON
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: &git-cache-restore
+          path: |
+            ${{ steps.git-cache-identity.outputs.home }}/git/db
+            ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
+          key: ${{ steps.git-cache-identity.outputs.key }}
+          restore-keys: ${{ steps.git-cache-identity.outputs.prefix }}
+          enableCrossOsArchive: false
+          fail-on-cache-miss: false
       - name: Fetch additional locked manifests
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
         run: &fetch-locked-manifests |
@@ -1304,6 +1343,15 @@ jobs:
             "$TOOLS/cargo-nextest" nextest archive --user-config-file none \
               --locked "${packages[@]}" --archive-file test-binaries.tar.zst
           fi
+      - name: Save Cargo git cache
+        if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ steps.git-cache-identity.outputs.home }}/git/db
+            ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
+          key: ${{ steps.git-cache-identity.outputs.key }}
       - name: Upload test archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1379,6 +1427,15 @@ jobs:
           CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         timeout-minutes: 10
         run: *sccache-install
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: *git-cache-identity
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-restore
       - name: Fetch additional locked manifests
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
         run: *fetch-locked-manifests
@@ -1538,6 +1595,15 @@ jobs:
       - name: Coverage tools
         timeout-minutes: 10
         run: *coverage-tools
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: *git-cache-identity
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-restore
       - name: Fetch additional locked manifests
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
         run: *fetch-locked-manifests
