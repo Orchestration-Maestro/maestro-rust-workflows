@@ -661,6 +661,7 @@ jobs:
           # The helpers (execute, body, select_packages, fixture_git) keep one owner: the caller checks step.
           workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
           root = pathlib.Path.cwd()
+          internal = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
           code = pathlib.Path('.github/ci-internal/caller-checks-at-workflow-seam.py').read_text(encoding='utf-8')
           tree = ast.parse(textwrap.dedent(code))
           globals_needed = {'workflow', 'root', 'credential_names', 'coverage_report_args'}

@@ -112,7 +112,7 @@ def collect(files):
                                 if 'Hdoc' in redirect and redirect.get('N', {}).get('Value', '0') == '0':
                                     python_sources.append(''.join(part['Value'] if part['Type'] == 'Lit' else spelling(part)
                                                                   for part in redirect['Hdoc'].get('Parts', [])))
-                        elif argv[0] == 'python3' and argv[1:2] and argv[1].startswith('.github/ci-internal/'):
+                        elif argv[:1] == ['python3'] and any(argument.startswith('.github/ci-internal/') for argument in argv[1:2]):
                             python_sources.append(pathlib.Path(argv[1]).read_text(encoding='utf-8'))
                         prefix = []
                         for word, argument in zip(words, argv):
