@@ -2518,6 +2518,11 @@ def coverage_baseline_download_requires_complete_manifest():
 coverage_baseline_download_requires_complete_manifest()
 print('PASS coverage_baseline_download_requires_complete_manifest')
 
+def coverage_records(root, selected_hits, other_hits):
+    return ''.join(f'SF:{root}/{path}/src/lib.rs\nDA:1,{hits}\nend_of_record\n'
+                   for path, hits in [('crates/a', selected_hits), ('crates/b', other_hits),
+                                      ('crates/a/nested', other_hits), ('external/dependency', 0)])
+
 def selected_coverage_merges_only_unchanged_baseline_packages():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
@@ -2528,12 +2533,8 @@ def selected_coverage_merges_only_unchanged_baseline_packages():
                   'shard_count': 1}
         baseline = layout | {'checkout_root': '/old/runner/caller'}
         (directory / 'baseline/manifest.json').write_text(json.dumps(baseline), encoding='utf-8')
-        def records(root, selected_hits, other_hits):
-            return ''.join(f'SF:{root}/{path}/src/lib.rs\nDA:1,{hits}\nend_of_record\n'
-                           for path, hits in [('crates/a', selected_hits), ('crates/b', other_hits),
-                                              ('crates/a/nested', other_hits), ('external/dependency', 0)])
-        (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 0, 0), encoding='utf-8')
-        (directory / 'baseline/shard-1.lcov').write_text(records('/old/runner/caller', 1, 1), encoding='utf-8')
+        (directory / 'coverage/shard-1.lcov').write_text(coverage_records('/current/caller', 0, 0), encoding='utf-8')
+        (directory / 'baseline/shard-1.lcov').write_text(coverage_records('/old/runner/caller', 1, 1), encoding='utf-8')
         env = {'TEST_SHARD_COUNT': '1', 'COVERAGE_REPORT_COUNT': '1',
                'COVERAGE_SCOPE': 'selected packages: selected', 'TEST_PACKAGES': '["selected"]',
                'COVERAGE_LAYOUT': json.dumps(layout), 'COVERAGE_CHECKOUT_ROOT': '/current/caller',
@@ -2543,17 +2544,17 @@ def selected_coverage_merges_only_unchanged_baseline_packages():
         assert 'Workspace line coverage (gate): 66.67% (2/3)' in result.stdout, result.stdout
         assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout, result.stdout
         (directory / 'baseline/shard-1.lcov').write_text(
-            records('/old/runner/caller', 1, 1) +
+            coverage_records('/old/runner/caller', 1, 1) +
             'SF:/old/runner/caller/crates/b/src/lib.rs\nDA:2,1\nDA:3,1\nend_of_record\n', encoding='utf-8')
         result = execute('Merge coverage', directory, env)
         assert result.returncode == 0 and '80.00% (4/5)' in result.stdout, result.stdout + result.stderr
         assert 'Selected-package line coverage: 0.00% (0/1)' in result.stdout
-        (directory / 'baseline/shard-1.lcov').write_text(records('/old/runner/caller', 1, 1), encoding='utf-8')
-        (directory / 'coverage/shard-1.lcov').write_text(records('/current/caller', 1, 0), encoding='utf-8')
+        (directory / 'baseline/shard-1.lcov').write_text(coverage_records('/old/runner/caller', 1, 1), encoding='utf-8')
+        (directory / 'coverage/shard-1.lcov').write_text(coverage_records('/current/caller', 1, 0), encoding='utf-8')
         result = execute('Merge coverage', directory, env)
         assert result.returncode == 0 and '100.00% (3/3)' in result.stdout, result.stdout + result.stderr
         assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
-        (directory / 'coverage/shard-1.lcov').write_text(records('/build/caller', 1, 0), encoding='utf-8')
+        (directory / 'coverage/shard-1.lcov').write_text(coverage_records('/build/caller', 1, 0), encoding='utf-8')
         result = execute('Merge coverage', directory, env | {'COVERAGE_CHECKOUT_ROOT': '/build/caller'})
         assert result.returncode == 0 and 'Workspace line coverage (gate): 100.00% (3/3)' in result.stdout, result.stdout + result.stderr
         assert 'Selected-package line coverage: 100.00% (1/1)' in result.stdout
@@ -2580,17 +2581,13 @@ def coverage_merge_looks_up_each_source_path_owner_once():
                   'shard_count': 2}
         (directory / 'baseline/manifest.json').write_text(
             json.dumps(layout | {'checkout_root': '/old/runner/caller'}), encoding='utf-8')
-        def records(root, selected_hits, other_hits):
-            return ''.join(f'SF:{root}/{path}/src/lib.rs\nDA:1,{hits}\nend_of_record\n'
-                           for path, hits in [('crates/a', selected_hits), ('crates/b', other_hits),
-                                              ('crates/a/nested', other_hits), ('external/dependency', 0)]
-                           ) + 'SF:/elsewhere/lib.rs\nDA:1,1\nend_of_record\n'
+        elsewhere = 'SF:/elsewhere/lib.rs\nDA:1,1\nend_of_record\n'
         # Only the second shard of each directory covers a line, so a repeated path must keep its later records.
         for shard, hits in [(1, 0), (2, 1)]:
             (directory / f'coverage/shard-{shard}.lcov').write_text(
-                records('/current/caller', hits, 0), encoding='utf-8')
+                coverage_records('/current/caller', hits, 0) + elsewhere, encoding='utf-8')
             (directory / f'baseline/shard-{shard}.lcov').write_text(
-                records('/old/runner/caller', hits, hits), encoding='utf-8')
+                coverage_records('/old/runner/caller', hits, hits) + elsewhere, encoding='utf-8')
         lookups = directory / 'owner-lookups'
         counted = (document['env']['PACKAGE_OWNER'] + '\n_owner = package_owner\n'
                    'def package_owner(path, roots):\n'
