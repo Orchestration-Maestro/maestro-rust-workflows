@@ -1503,43 +1503,38 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
           CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          CACHE_WRITER: ${{ steps.cache-identity.outputs.writer }}
         run: |
           python3 - <<'PYTHON'
-          import itertools
           import json
           import os
           import re
           import subprocess
           import urllib.parse
           repository, event, sha = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_SHA']
+          pushed = os.environ['CACHE_WRITER'] == 'true'
           def api(path):
               return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/{path}'], text=True))
-          def with_bundle(run):
+          def has_bundle(run):
               listing = api(f"actions/runs/{run['id']}/artifacts?name={urllib.parse.quote(os.environ['ARTIFACT_NAME'])}&per_page=100")
               return any(not item['expired'] for item in listing['artifacts'])
+          def newest_with_bundle(runs):
+              return next((run for run in runs if has_bundle(run)), None)
           candidates = []
-          if event == 'merge_group' or (event == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']):
+          if event == 'merge_group' or pushed:
               workflow = api('actions/runs/' + os.environ['GITHUB_RUN_ID'])['workflow_id']
           if event == 'merge_group':
-              subjects = [item['commit']['message'].split('\n', 1)[0] for item in api(f"compare/{os.environ['MERGE_GROUP_BASE_SHA']}...{sha}?per_page=100")['commits']]
-              numbers = [int(match[1]) for match in map(re.compile(r'\(#(\d+)\)$').search, subjects) if match]
-              runs = []
-              for page in range(1, 6):
-                  listing = api(f'actions/workflows/{workflow}/runs?event=pull_request&per_page=100&page={page}')['workflow_runs']
-                  runs += listing
-                  if len(listing) < 100:
-                      break
-              for number in numbers:
-                  # Fork runs list no pull request and are not this repository's code under review.
-                  ours = [run for run in runs if run['head_repository']['full_name'] == repository and number in [pull['number'] for pull in run['pull_requests']]]
-                  # The newest run names the head being merged; an earlier run at another head built other code.
-                  candidates += list(itertools.islice((run for run in ours if run['head_sha'] == ours[0]['head_sha'] and run['conclusion'] == 'success' and with_bundle(run)), 1))
-          elif event == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']:
-              runs = api(f'actions/workflows/{workflow}/runs?event=merge_group&head_sha={sha}&status=success&per_page=100')['workflow_runs']
-              candidates = list(itertools.islice((run for run in runs if with_bundle(run)), 1))
+              # The queue branch is cut from the previous group, so only the default branch lists every pull request still ahead of it.
+              subjects = [item['commit']['message'].split('\n', 1)[0] for item in api(f"compare/{os.environ['CACHE_DEFAULT_BRANCH']}...{sha}?per_page=100")['commits']]
+              for number in [int(match[1]) for match in map(re.compile(r'\(#(\d+)\)$').search, subjects) if match]:
+                  head = api(f'pulls/{number}')['head']['sha']
+                  runs = api(f'actions/workflows/{workflow}/runs?event=pull_request&head_sha={head}&status=success&per_page=100')['workflow_runs']
+                  # Fork runs are not this repository's code under review.
+                  candidates.append(newest_with_bundle(run for run in runs if run['head_repository']['full_name'] == repository))
+          elif pushed:
+              candidates.append(newest_with_bundle(api(f'actions/workflows/{workflow}/runs?event=merge_group&head_sha={sha}&status=success&per_page=100')['workflow_runs']))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write('runs=' + ' '.join(str(run['id']) for run in candidates) + '\n')
+              output.write('runs=' + ' '.join(str(run['id']) for run in candidates if run) + '\n')
           PYTHON
       - name: Download test setup candidates
         if: ${{ steps.candidates.outputs.runs != '' }}
@@ -1620,8 +1615,10 @@ jobs:
                       future.result()
               return streams
 
+          run_ids = os.environ.get('ARTIFACT_RUN_IDS', '').split()
+
           def fall_back(reason, started):
-              print(f'::warning::{reason}; using the single-stream download', file=sys.stderr)
+              print(f'::warning::{reason}' + ('' if run_ids else '; using the single-stream download'), file=sys.stderr)
               print(f'artifact-download name={name} bytes=0 seconds={time.monotonic() - started:.2f} streams=0')
               with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
                   output.write('fallback=true\n')
@@ -1657,12 +1654,15 @@ jobs:
                   partial.unlink(missing_ok=True)
               print(f"artifact-download name={name} bytes={size} seconds={seconds:.2f} streams={streams}")
 
-          # One run's artifact goes straight to the path; a list of runs puts each in a directory named for its run, and a run that fails to download is skipped.
-          run_ids = os.environ.get('ARTIFACT_RUN_IDS', '').split()
+          # One run's artifact goes straight to the path; a list of runs puts each in a directory named for its run, and a run whose bundle is missing, fails its checks or cannot be read is skipped.
           if not run_ids:
               download_run(os.environ['GITHUB_RUN_ID'], destination)
           for run_id in run_ids:
-              download_run(run_id, destination / run_id)
+              try:
+                  download_run(run_id, destination / run_id)
+              except (SystemExit, zipfile.BadZipFile) as error:
+                  print(f'::warning::{error}; leaving run {run_id} out', file=sys.stderr)
+                  shutil.rmtree(destination / run_id, ignore_errors=True)
           PYTHON
       - name: Prepare test setup
         if: steps.setup-cache.outputs.cache-hit != 'true'
