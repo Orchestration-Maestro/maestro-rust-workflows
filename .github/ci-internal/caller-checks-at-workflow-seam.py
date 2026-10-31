@@ -3697,7 +3697,7 @@ def workflow_failures_remain_required():
     assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
     assert 'needs: [sample, declared, test-tools]' in internal
     assert 'working-directory: fixtures/test-tools' in internal
-    assert 'needs: [seams, native, fuzz-issues, browser-qualification]' in internal
+    assert 'needs: [seams, native, fuzz-issues, browser-qualification, shard-seams]' in internal
     assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
     assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
     for name in ['targets', 'browser', 'tests']:
