@@ -2580,14 +2580,17 @@ def coverage_merge_looks_up_each_source_path_owner_once():
                   'shard_count': 2}
         (directory / 'baseline/manifest.json').write_text(
             json.dumps(layout | {'checkout_root': '/old/runner/caller'}), encoding='utf-8')
-        def records(root, selected_hits):
+        def records(root, selected_hits, other_hits):
             return ''.join(f'SF:{root}/{path}/src/lib.rs\nDA:1,{hits}\nend_of_record\n'
-                           for path, hits in [('crates/a', selected_hits), ('crates/b', 1),
-                                              ('crates/a/nested', 1 if root.startswith('/old') else 0),
-                                              ('external/dependency', 0)])
-        for shard, hits in [(1, 1), (2, 0)]:
-            (directory / f'coverage/shard-{shard}.lcov').write_text(records('/current/caller', hits), encoding='utf-8')
-            (directory / f'baseline/shard-{shard}.lcov').write_text(records('/old/runner/caller', 1), encoding='utf-8')
+                           for path, hits in [('crates/a', selected_hits), ('crates/b', other_hits),
+                                              ('crates/a/nested', other_hits), ('external/dependency', 0)]
+                           ) + 'SF:/elsewhere/lib.rs\nDA:1,1\nend_of_record\n'
+        # Only the second shard of each directory covers a line, so a repeated path must keep its later records.
+        for shard, hits in [(1, 0), (2, 1)]:
+            (directory / f'coverage/shard-{shard}.lcov').write_text(
+                records('/current/caller', hits, 0), encoding='utf-8')
+            (directory / f'baseline/shard-{shard}.lcov').write_text(
+                records('/old/runner/caller', hits, hits), encoding='utf-8')
         lookups = directory / 'owner-lookups'
         counted = (document['env']['PACKAGE_OWNER'] + '\n_owner = package_owner\n'
                    'def package_owner(path, roots):\n'
