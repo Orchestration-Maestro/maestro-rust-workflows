@@ -487,6 +487,20 @@ class SearchReleases(unittest.TestCase):
         source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        run: |\n' + textwrap.indent(command, '          ')
         self.assertEqual(collect({'example.yml': source}), [('example.yml', 'new', 'Example', 'python timeout', 1, '60')])
 
+    def test_script_file_uses_own_language(self):
+        source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        run: python3 .github/ci-internal/probe.py\n'
+        with tempfile.TemporaryDirectory() as directory:
+            probe = pathlib.Path(directory, '.github/ci-internal/probe.py')
+            probe.parent.mkdir(parents=True)
+            probe.write_text("import subprocess\nsubprocess.run(['true'], timeout=60)\n", encoding='utf-8')
+            previous = os.getcwd()
+            os.chdir(directory)
+            try:
+                rows = collect({'example.yml': source})
+            finally:
+                os.chdir(previous)
+        self.assertEqual(rows, [('example.yml', 'new', 'Example', 'python timeout', 1, '60')])
+
     def test_workflow_reader_fails_closed(self):
         for source, message in [('jobs: [', 'yq failed to parse'),
                                 ('jobs: {}\n---\njobs: {}\n', 'expected one workflow document')]:
