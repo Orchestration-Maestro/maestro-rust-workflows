@@ -1044,7 +1044,7 @@ def warm_push_seeds_non_test_shapes():
     def test_steps_run(job, warm, enabled):
         shard = 'warm' if job == 'tests' else document['jobs'][job]['strategy']['matrix']['shard'][0]
         values = {'inputs.warm-cache': warm, 'matrix.shard': shard,
-                  'needs.declaration.outputs.enabled': enabled, 'runner.environment': 'github-hosted'}
+                  'needs.declaration.outputs.enabled': enabled, 'runner.environment': 'github-hosted', 'runner.os': 'Linux'}
         values['env.WARM_CACHE'] = str(evaluate(document['jobs'][job]['env']['WARM_CACHE'], values)).lower()
         steps = {step['name']: step for step in document['jobs'][job]['steps']}
         return {name: evaluate(steps[name]['if'], values) for name in
@@ -1462,9 +1462,11 @@ def diagnostic_artifact_names_distinguish_invocations():
             result = execute('Print test diagnostics', directory, base | changes | {'GITHUB_OUTPUT': str(output)})
             assert result.returncode == 0, result.stderr
             value = output.read_text(encoding='utf-8').removeprefix('artifact_name=').strip()
-            assert re.fullmatch(r'test-diagnostics-123-[0-9a-f]{64}-shard-(?:[12]|doctests)-run-45[67]-attempt-[12]', value), value
+            assert re.fullmatch(r'test-diagnostics(?:-(?:macos|windows)-latest)?-123-[0-9a-f]{64}-shard-(?:[12]|doctests)-run-45[67]-attempt-[12]', value), value
             return value
         original = name({})
+        hosts = [name({'TEST_RUNNER': host}) for host in ['ubuntu-latest', 'macos-latest', 'windows-latest']]
+        assert hosts[0] == original and len(set(hosts)) == 3
         assert original == 'test-diagnostics-123-f6d6a7cff3ca148497eb84888c4fd22a9de927c2e9fda6aa267078943c10ea14-shard-1-run-456-attempt-1'
         for field, values in [('CALLER_REPOSITORY', ['other/repo']),
                               ('CALLER_DIRECTORY', ['fixtures/a b', 'fixtures/a/b']),
@@ -1888,7 +1890,7 @@ def locked_manifests_precede_all_test_routes():
     assert 'ADDITIONAL_LOCKED_MANIFESTS: $' + '{{ needs.declaration.outputs.additional_locked_manifests }}' in tests
     declaration_job = workflow.split('  declaration:\n', 1)[1].split('\n  quality:', 1)[0]
     assert 'additional_locked_manifests: $' + '{{ steps.config.outputs.additional_locked_manifests }}' in declaration_job
-    assert "fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.test_shards" in tests
+    assert 'needs.declaration.outputs.test_shards' in tests
     for name in ['Tests', 'Isolated tests']:
         assert 'cargo fetch --locked\n' in body(name)
     with tempfile.TemporaryDirectory() as temporary:

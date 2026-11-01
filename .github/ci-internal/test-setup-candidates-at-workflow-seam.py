@@ -82,3 +82,14 @@ for check in [a_merge_group_gets_the_bundles_of_its_pull_request_runs, a_push_to
               other_events_get_no_candidates]:
     check()
     print('PASS ' + check.__name__, flush=True)
+
+def setup_artifacts_are_host_qualified():
+    for job, names in [('test-prepare', ['Test setup candidates', 'Download test setup candidates', 'Upload test setup']),
+                       ('tests', ['Download test setup', 'Download test setup in one stream'])]:
+        for name in names:
+            entry = next(step for step in document['jobs'][job]['steps'] if step['name'] == name)
+            artifact = entry.get('env', {}).get('ARTIFACT_NAME') or entry['with']['name']
+            assert "format('-{0}', matrix.runner)" in artifact, (job, name)
+
+setup_artifacts_are_host_qualified()
+print('PASS setup_artifacts_are_host_qualified')

@@ -230,13 +230,13 @@ files = {str(path): path.read_text(encoding='utf-8')
 class SearchReleases(unittest.TestCase):
     def test_pinned_archives(self):
         self.assertNotIn('apt-get', workflow)
-        rows = re.findall(r'^https://github.com/\S+ (\w{64}) (rg|fd)$', body('Search tools'), re.MULTILINE)
-        self.assertEqual(len(rows), 2)
+        rows = re.findall(r'^https://github.com/\S+ (\w{64}) (rg|fd)(?:\.exe)?$', body('Search tools'), re.MULTILINE)
+        self.assertEqual(len(rows), 6)
         self.assertIn('/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz', body('Search tools'))
         self.assertIn('/v10.5.0/fd-v10.5.0-x86_64-unknown-linux-musl.tar.gz', body('Search tools'))
 
     def test_real_versions(self):
-        self.assertIn('sha256sum --check', body('Search tools'))
+        self.assertIn('hashlib.sha256(data).hexdigest() != digest', body('Search tools'))
         with tempfile.TemporaryDirectory() as temporary:
             env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path'}
             result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Search tools')],
@@ -585,8 +585,8 @@ class SearchReleases(unittest.TestCase):
 
     def test_corrupt_archives(self):
         command = body('Search tools')
-        rows = re.findall(r'^https://github.com/\S+ \w{64} (?:rg|fd)$', command, re.MULTILINE)
-        self.assertEqual(len(rows), 2)
+        rows = re.findall(r'^https://github.com/\S+ \w{64} (?:rg|fd)(?:\.exe)?$', command, re.MULTILINE)
+        self.assertEqual(len(rows), 6)
         for row in rows:
             with self.subTest(archive=row.split()[0]), tempfile.TemporaryDirectory() as temporary:
                 directory = pathlib.Path(temporary)
@@ -597,10 +597,18 @@ class SearchReleases(unittest.TestCase):
                 tar.write_text('#!/bin/sh\ntouch "$RUNNER_TEMP/extracted"\n', encoding='utf-8')
                 tar.chmod(0o755)
                 # Exercise each published digest as the first download.
-                other = next(value for value in rows if value != row)
+                command = body('Search tools')
+                others = [value for value in rows if value != row]
+                host = 'Darwin' if 'apple-darwin' in row else 'MINGW64_NT' if 'windows-msvc' in row else 'Linux'
+                machine = 'arm64' if host == 'Darwin' else 'x86_64'
+                uname = directory / 'uname'
+                uname.write_text(f'#!/bin/sh\nif [ "$1" = -s ]; then echo {host}; else echo {machine}; fi\n', encoding='utf-8')
+                uname.chmod(0o755)
+                for other in others:
+                    command = command.replace(other + '\n', '')
                 env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path',
                                     'PATH': temporary + ':' + os.environ['PATH']}
-                result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command.replace(other + '\n', '')],
+                result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
                                         env=env, capture_output=True, text=True, encoding='utf-8')
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse((directory / 'extracted').exists())

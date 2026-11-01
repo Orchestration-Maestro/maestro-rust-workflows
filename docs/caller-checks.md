@@ -109,13 +109,18 @@ same concurrency group with its called workflow; see GitHub's
 The `wasm_crates` and `check_targets` arrays are required, including when empty. `browser_build` and
 `test_tools` are optional booleans that default to `false`. The
 [schema](../.github/ci.schema.json) describes the parsed TOML shape; there is no
-version key or older-format reader.
+version key or older-format reader. `check_targets` also selects native test hosts:
+`aarch64-apple-darwin` adds `macos-latest`, and `x86_64-pc-windows-msvc` adds
+`windows-latest`. These test legs run on merge groups and main pushes only.
+Pull requests and warm calls keep Linux-only tests. The other supported targets
+remain compile-only.
 
 `reserved_ports` is an optional array of unique integers from 1 to 65535. When
 set, every Linux test job runs
 `sudo sysctl -w net.ipv4.ip_local_reserved_ports=<list>` before the tests, so
 tests that must bind a fixed local port are not displaced by an outbound
-connection that the kernel assigned that port. Without it nothing runs.
+connection that the kernel assigned that port. This setting does not reserve
+ports on macOS or Windows. Without it nothing runs.
 
 An absent file runs the standard checks without isolation, search tool
 installation or optional jobs. After declaration validation, pull requests
@@ -147,10 +152,11 @@ still instrument workspace builds and send their compiles through the cache.
 | Jobs | Host | Restore | Save |
 | --- | --- | --- | --- |
 | Format and lint, Docs, Tests, Doctests, Dependency/source/coverage checks, Wasm and browser build, Chromium browser tests | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
+| Native test archive builds, test preparation and doctests | arm64 macOS | Every full-suite call that runs the job | Default-branch pushes only |
 | Declared target checks | Linux, arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
-| Declared target checks | x86_64 Windows | Never | Never |
+| Declared target checks and native test jobs | x86_64 Windows | Never | Never |
 
-Windows checks run uncached because sccache expands response files beyond
+Windows compilation runs uncached because sccache expands response files beyond
 Windows' command-line limit; [Windows caching](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/166)
 tracks the upstream fix.
 
@@ -188,15 +194,18 @@ about 0.6 GB per entry.
 
 Tests use checksum-pinned cargo-nextest 0.9.148 with automatic
 `--partition count:N/COUNT` partitions, where `COUNT` is the declared
-`test_shard_count`. The caller's `.config/nextest.toml` supplies
+`test_shard_count` on Linux. Each claimed native test host uses
+`min(4, test_shard_count)` partitions. The caller's `.config/nextest.toml` supplies
 test-suite runner metadata such as resource groups for fixed-port tests. Shared
 CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
-with a clear diagnostic. Unit and integration tests run exactly once; doctests
+with a clear diagnostic. Unit and integration tests run exactly once per test host; doctests
 run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
 for pull requests, merge groups and main pushes, using the selected packages
 described below. Main pushes always select every workspace package.
-Pull requests skip test shards unless the [included-input rule](#pull-request-selection-and-retries) applies.
+Native shards are named `Test shard (<runner> k/n)`, with `Doctests (<runner>)`
+for their doctests. Linux names remain `Test shard (k/N)` and `Doctests`.
+Pull requests skip test shards unless the [included-input rule](#pull-request-selection-and-retries) applies; those reader shards remain Linux-only.
 
 `test_shard_count` sets the number of shards. It is an optional whole number
 from 1 to 60 and defaults to 16. Any other value, including a float, a string or
@@ -208,14 +217,16 @@ test_shard_count = 32
 
 More shards spread the tests over more runners, and each shard repeats its own
 setup. The shard matrix, the partitions, the job names and the coverage union
-all use the declared count, so the union expects exactly that many reports. A
+use each host's count. Only Linux uploads coverage, and its union expects
+exactly `test_shard_count` reports. A
 coverage baseline keeps the count stored in its manifest, so a baseline
 recorded with another count still merges.
 
-Declared callers run `cargo llvm-cov nextest` in the same isolated environment
-with their opted-in tools. Only the numeric shards upload LCOV, without
+Declared Linux callers run `cargo llvm-cov nextest` in the same isolated environment
+with their opted-in tools. Only the Linux numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
-including `Doctests`, to succeed on full runs. On pull requests it requires a
+including native shards and every `Doctests` leg, to succeed on full runs.
+Native legs run plain nextest without coverage instrumentation. On pull requests it requires a
 successful declaration, successful `Doctests`, and either event-skipped shards
 or successful included-input shards. On full runs it downloads all
 reports, counts each source line once (covered if any shard hits it), and
@@ -229,13 +240,18 @@ the coverage floor on the union of hits. PRs skip coverage for all callers.
 
 ### Build once, test many
 
-One `Build test archive` job compiles the selected unit and integration tests with
+One `Build test archive` job per host compiles the selected unit and integration tests with
 `cargo nextest archive` (or `cargo llvm-cov nextest-archive` for declared coverage).
 Numeric shards download that archive and run `--archive-file`, keeping the same
 partitions, retries and coverage reports. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
 runs doctests once on every pull request, merge group and main push, without
-waiting for the archive build.
+waiting for the archive build. Native archive and preparation jobs are named
+`Build test archive (<runner>)` and `Prepare test setup (<runner>)`. Their
+artifacts carry the same host suffix, so each shard reads only its host's
+binaries and prepared files. Linux coverage records only the Linux checkout
+root, regardless of which archive build finishes last. Shards wait for every
+host's archive and preparation; a failed host build fails the required result.
 Warm-cache runs keep their existing compile route and cache shape.
 
 Each shard fetches the archive and the test setup bundle in 16 parallel byte ranges from
@@ -254,7 +270,7 @@ check_targets = []
 test_prepare = "sh .config/prepare-tests.sh"
 ```
 
-`Prepare test setup` runs that command once, in parallel with host compilation,
+`Prepare test setup` runs that command once per test host, in parallel with host compilation,
 after the caller's declared tools and locked manifests are available. It starts
 from the caller's working directory. `TEST_PREPARE_OUTPUT` names the fixed
 `target/test-setup` output directory there; write only reusable runtime outputs
@@ -330,7 +346,7 @@ uploaded:
 `Prepare test setup` extracts each bundle to its own directory, separate from
 `TEST_PREPARE_OUTPUT`, and sets `TEST_PREPARE_BASE` to the list of those
 directories before the command runs: the restored bundle first, then the added
-ones, joined with `:`. A bundle that is missing, expired, fails its size or
+ones, joined with the host path separator (`:` on Linux and macOS, `;` on Windows). A bundle that is missing, expired, fails its size or
 digest check or cannot be read is left out, and the later ones are still tried.
 The command may copy or reuse any file in a listed directory whose own inputs
 are unchanged, and must still write every file it needs to
@@ -607,8 +623,9 @@ Changes to this input select all workspace test packages in the declaration's pu
 
 ## Isolated tests
 
-Opted-in Linux tests and coverage install ripgrep 15.2.0 and fd 10.5.0 from
-pinned Linux x86_64 musl release archives, verifying their published SHA-256
+Opted-in tests install ripgrep 15.2.0 and fd 10.5.0 from pinned release archives
+for their host: Linux x86_64 musl, macOS arm64 or Windows x86_64 MSVC.
+Installation verifies their published SHA-256
 digests before extraction. The dedicated binary directory exposes `rg` and
 `fd` directly on `PATH`. Every tool-installation step has a 10-minute timeout
 to fail stalled downloads or installs. Before tests start, a presence guard rejects exported provider API/OAuth
@@ -626,7 +643,14 @@ locations, plus `MAESTRO_NO_LOCAL_LLM=1` and the workflow-computed
 other locations are separate, initially empty directories beneath a unique
 runner-temp parent. Unrelated CI state, proxy settings and application/provider
 overrides are not inherited. The partition argv uses `cargo llvm-cov nextest`; doctests use
-`cargo test --workspace --locked --doc`.
+`cargo test --workspace --locked --doc`. Native numeric shards use plain
+nextest instead of the Linux coverage route.
+
+Windows keeps its system locations (`SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`,
+`COMSPEC`, `PATHEXT`, program and program-data directories), processor metadata
+and `OS`. `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` point into the fresh
+isolated home, config and data directories. Paths passed to native programs
+use Windows mixed separators.
 
 The test setup exports Rustup's active toolchain before compilation; both test
 routes pass it to child builds, including dependencies outside the checkout.
@@ -642,7 +666,7 @@ The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
 retain the runner's normal home and cache access.
 
-Before cleanup, the step kills every process still using the isolated
+On Linux, before cleanup, the step kills every process still using the isolated
 directories: as its working directory, executable or open file, or through the
 isolated environment it inherited. Processes running the compile cache
 executable are left running for the statistics and seal steps. The log lists
@@ -832,9 +856,8 @@ cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warning
 | `x86_64-apple-darwin` | `macos-latest` (requested target installed) |
 | `x86_64-pc-windows-msvc` | `windows-latest` |
 
-There is no Linux fallback for Apple/MSVC targets. These compile checks do not
-restore macOS/Windows runtime tests, which remain a before-first-release
-requirement. Merge groups and main pushes run every opted-in target check.
+There is no Linux fallback for Apple/MSVC targets. Runtime tests on claimed
+macOS arm64 and Windows hosts use the separate [test shard route](#test-shards). Merge groups and main pushes run every opted-in target check.
 Ordinary pull requests run only a declared `x86_64-pc-windows-msvc` check.
 Declaration errors fail CI even when dependent jobs skip.
 
@@ -1230,14 +1253,15 @@ land first, and a shared input that keeps widening runs belongs in `test_inputs`
 ### Shard balance
 
 When the slowest `Test shard` job takes more than `shard-balance-margin` times
-the median shard, the guard files "Test shards unbalanced: run N". The issue
+the median shard on the same host, the guard files "Test shards unbalanced: run N". The issue
 names the slow tests in that shard that are new, or reached a higher slow mark,
 since the last green run of the same event. Nextest prints only slow marks, so
 growth shows as a higher mark rather than exact seconds. The default is 1.5.
 Source: the slowest shard was 1.18 and 1.20 times the median in runs 40990557025
 and 40990555729, and 1.32 times in the 32-shard proof run 40974924871. To
 respond, fix or split the named tests, then check priorities in the nextest
-configuration.
+configuration. Test and archive-build rate baselines and ratchet levels are
+also separate for Linux, macOS and Windows.
 
 ### Test-time limit
 
@@ -1263,7 +1287,9 @@ For a full merge-group or main run, `ci-guards.yml` pins the jobs that must run:
 `Test shard` jobs, `Doctests`, `Tests (ubuntu-latest)` and `Dependency, source
 and coverage checks`. A pinned job that is missing or skipped files "Required
 checks missing from run N" naming it. A failed job is not a missing one; the run
-already reports it. The self-test checks every pinned name against `ci.yml`,
+already reports it. The pinned `Test shard (*` prefix includes native shard
+names, and `Tests (ubuntu-latest)` requires every native shard and doctest leg
+to succeed; a failure, cancellation or unexpected skip fails the aggregate. The self-test checks every pinned name against `ci.yml`,
 and checks that this repository's ruleset checks, `Required repository quality`
 and `Required consumer tests`, still exist, so renaming a job fails there first.
 When you rename a job on purpose, change the pin and the ruleset in one change.

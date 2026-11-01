@@ -111,7 +111,7 @@ jobs:
                           'TEST_SHARD_COUNT': shard_count_seen_by('declaration', 'Select test packages', declared)})
                       assert result.returncode == 0, result.stderr
                       selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-                      assert json.loads(selected['test_shards']) == list(range(1, expected + 1)), declared
+                      assert json.loads(selected['test_shards']) == [dict(runner='ubuntu-latest', shard=n, count=expected) for n in range(1, expected + 1)], declared
                       assert json.loads(selected['coverage_layout'])['shard_count'] == expected, declared
                       for job, step in [('tests', 'Tests'), ('tests', 'Isolated tests'), ('doctests', 'Tests'),
                                         ('tests-result', 'Merge coverage')]:
@@ -1561,6 +1561,28 @@ jobs:
 
           shard_balance_breach_names_the_tests_that_grew()
           print('PASS shard_balance_breach_names_the_tests_that_grew')
+
+          def native_work_is_judged_per_host():
+              for host in ['macos-latest', 'windows-latest']:
+                  kind = 'tests-' + host
+                  name = f'Test shard ({host} 1/4)'
+                  assert judging['kind_of'](name) == kind
+                  assert judging['kind_of'](f'Build test archive ({host})') == 'compiles-' + host
+                  assert judging['rated'](name + ' / Isolated tests')
+                  assert not judging['rated'](name + ' / Download test archive')
+                  native = job(name, 100, steps=[('Isolated tests', 30)])
+                  measured = judging['measures_of']([native], lambda item: [{'title': 'Work units', 'message': 'tests: 10'}])
+                  assert set(measured) == {kind}, measured
+                  assert judging['level_of'](run_of(1, 50), 'band', kind) != judging['level_of'](run_of(1, 50), 'band', 'tests')
+                  linux = [job(f'Test shard ({n}/16)', 20) for n in range(1, 17)]
+                  healthy = [job(f'Test shard ({host} {n}/4)', 100) for n in range(1, 5)]
+                  assert judging['shard_finding'](run_of(7, 50), linux + healthy, 1.5, []) is None
+                  slow = healthy[:3] + [job(f'Test shard ({host} 4/4)', 151)]
+                  finding = judging['shard_finding'](run_of(7, 50), linux + slow, 1.5, [])
+                  assert f'Test shard ({host} 4/4)' in finding['body'], finding
+
+          native_work_is_judged_per_host()
+          print('PASS native_work_is_judged_per_host')
 
           def grown_tests_are_new_or_past_a_higher_mark():
               current = {'same': 30.0, 'higher': 90.0, 'fresh': 30.0, 'gone': 30.0, 'faster': 30.0}
