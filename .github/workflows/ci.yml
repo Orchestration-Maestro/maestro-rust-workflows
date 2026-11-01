@@ -746,7 +746,7 @@ jobs:
                       return result
                   old, new = dependencies(before), dependencies(head)
                   selected.update(p for p in members if old.get(packages[p]['name']) != new[packages[p]['name']])
-              # Test shards keep only include readers; doctests also cover every changed crate.
+              # Pull-request shards keep only include readers; doctests also cover every changed crate.
               doctest_selected = selected | included_readers
               if included_readers:
                   if event == 'merge_group':

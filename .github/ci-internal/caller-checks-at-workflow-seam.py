@@ -3084,16 +3084,16 @@ def included_docs_run_only_readers_and_reverse_dependencies():
         git('add', '.')
         git('commit', '-qm', 'base')
         base = git('rev-parse', 'HEAD')
-        for changed, expected, runs in [('docs/policy.md', ['a', 'b'], 'true'),
-                                         ('docs/bytes.md', ['a', 'b'], 'true'),
-                                         ('docs/escaped.md', ['a', 'b'], 'true'),
-                                         ('docs/line\nbreak.md', ['a', 'b'], 'true'),
-                                         ('docs/commented.md', ['a', 'b'], 'true'),
-                                         ('docs/unrelated.md', [], 'false'),
-                                         ('crates/c/src/lib.rs', ['c'], 'false'),
-                                         (('crates/c/src/lib.rs', 'docs/policy.md'), ['a', 'b'], 'true')]:
-            paths = (changed,) if isinstance(changed, str) else changed
-            for path in paths:
+        for changed, expected, runs, expected_docs in [
+                (('docs/policy.md',), ['a', 'b'], 'true', ['a', 'b']),
+                (('docs/bytes.md',), ['a', 'b'], 'true', ['a', 'b']),
+                (('docs/escaped.md',), ['a', 'b'], 'true', ['a', 'b']),
+                (('docs/line\nbreak.md',), ['a', 'b'], 'true', ['a', 'b']),
+                (('docs/commented.md',), ['a', 'b'], 'true', ['a', 'b']),
+                (('docs/unrelated.md',), [], 'false', []),
+                (('crates/c/src/lib.rs',), ['c'], 'false', ['c']),
+                (('crates/c/src/lib.rs', 'docs/policy.md'), ['a', 'b'], 'true', ['a', 'b', 'c'])]:
+            for path in changed:
                 (directory / path).write_text('// changed\n', encoding='utf-8')
             git('add', '.')
             git('commit', '-qm', 'change')
@@ -3103,7 +3103,6 @@ def included_docs_run_only_readers_and_reverse_dependencies():
             assert result.returncode == 0, result.stdout + result.stderr
             values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
             assert json.loads(values['packages']) == expected, (changed, values)
-            expected_docs = ['a', 'b', 'c'] if isinstance(changed, tuple) else expected
             assert json.loads(values['doctest_packages']) == expected_docs, (changed, values)
             assert values.get('included_tests') == runs, (changed, values)
             assert values['coverage'] == 'false', values
