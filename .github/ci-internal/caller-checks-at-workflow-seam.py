@@ -2343,7 +2343,7 @@ def removed_shard_lists_fail_clearly():
         for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
             for status in ['success', 'failure', 'cancelled', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': status, 'COLLECT_COVERAGE': coverage,
+                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'success', 'COLLECT_COVERAGE': coverage,
                                                           'DECLARATION_RESULT': declaration_status},
                                         capture_output=True, text=True)
                 expected = declaration_status == 'success' and (
