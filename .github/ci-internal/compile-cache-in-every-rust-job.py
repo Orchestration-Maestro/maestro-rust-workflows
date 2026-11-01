@@ -20,7 +20,7 @@ def snapshot_jobs_share_one_owner():
         assert all(job.count('- name: ' + stage + '\n') == 1 for stage in stages), name
         save = job.split('- name: Save compile cache\n', 1)[1].split('      - name:', 1)[0]
         assert "steps.cache-identity.outputs.writer == 'true'" in save, (name, 'save must require the shared writer decision')
-        if name == 'targets':
+        if name in ('targets', 'test-build', 'test-prepare'):
             for stage in stages:
                 parsed = next(item for item in document['jobs'][name]['steps'] if item.get('name') == stage)
                 condition = parsed.get('if', '')
@@ -29,12 +29,15 @@ def snapshot_jobs_share_one_owner():
                     assert condition == 'always() && ' + host
                 elif stage == 'Save compile cache':
                     assert condition == host + " && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'"
+                elif stage == 'Compile cache identity' and name in ('test-build', 'test-prepare'):
+                    assert condition == '', 'identity also scopes Windows setup bundles'
                 else:
                     assert condition == host, stage
             upload = next(item for item in document['jobs'][name]['steps'] if item.get('name') == 'Upload compile cache errors')
             assert upload['if'] == "always() && (steps.cache-statistics.outputs.write_errors == 'true' || (inputs.concurrency-key == 'maestro-proof' && steps.cache-statistics.outcome == 'success'))"
-            check = next(item for item in document['jobs'][name]['steps'] if item.get('name') == 'Check target')
-            assert 'if' not in check
+            if name == 'targets':
+                check = next(item for item in document['jobs'][name]['steps'] if item.get('name') == 'Check target')
+                assert 'if' not in check
     for name in owners - {'quality'}:
         assert 'env: *sccache-identity-env' in jobs[name]
         for alias in ['sccache-identity', 'sccache-restore', 'sccache-install', 'sccache-stats', 'sccache-seal', 'sccache-save']:

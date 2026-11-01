@@ -154,6 +154,9 @@ def snapshot_key_matches_consuming_shape():
     assert snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-unknown-linux-gnu')['prefix'] != snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='x86_64-unknown-linux-gnu')['prefix']
 
     apple = snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-apple-darwin', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
+    native = snapshot_keys(CACHE_JOB='test-build', CACHE_COVERAGE='true', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
+    assert native == snapshot_keys(CACHE_JOB='test-build', CACHE_COVERAGE='false', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
+    assert native != coverage
     assert apple == snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-apple-darwin', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
     assert apple != snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-apple-darwin', HOST_OS='Linux', HOST_ARCH='ARM64')['prefix']
     assert apple != snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='x86_64-apple-darwin', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
@@ -169,6 +172,11 @@ def snapshot_key_preserves_caller_isolation():
     assert key.isascii() and len(key) < 512 and 'space' not in key
 
 def snapshot_only_default_branch_writers_save():
+    for host in ['macOS', 'Windows']:
+        archive = snapshot_keys(CACHE_JOB='test-build', HOST_OS=host)
+        docs = snapshot_keys(CACHE_JOB='doctests', HOST_OS=host, SHARD='doctests')
+        assert archive['prefix'] == docs['prefix'], (host, archive, docs)
+        assert archive['writer'] == 'true' and docs['writer'] == 'false', (host, archive, docs)
     plain_prefix = snapshot_keys(CACHE_COVERAGE='false')['prefix']
     jobs = ['quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests']
     for job in jobs:
@@ -374,7 +382,7 @@ def snapshot_restart_preserves_isolated_local_policy():
         directory = pathlib.Path(temporary)
         with daemon(directory) as env:
             isolated = body('Isolated tests')
-            setup = isolated[isolated.index('cargo_home='):isolated.index('cargo fetch --locked')]
+            setup = isolated[isolated.index('native() {'):isolated.index('cargo fetch --locked')]
             # Only the test daemon address is injected after isolation, never cache policy.
             command = setup + '\nrun_isolated env\nrun_isolated env SCCACHE_SERVER_UDS="$SCCACHE_SERVER_UDS" cargo build --locked --manifest-path "$SAMPLE_MANIFEST" --target-dir "$CARGO_TARGET_DIR"\n'
             isolated_env = env | {'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0],

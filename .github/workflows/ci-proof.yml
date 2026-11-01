@@ -1,61 +1,26 @@
-name: Maestro coverage proof
+name: Maestro macOS key-frame proof
 
 on:
   push:
     branches: [ci/228-merge-proof]
-    paths: [.github/workflows/ci.yml, .github/workflows/ci-proof.yml]
+    paths: [.github/workflows/ci-proof.yml]
 
 permissions:
   contents: read
 
 jobs:
-  warm:
-    name: Warm Maestro coverage cache
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/ci.yml
-    with:
-      working-directory: maestro
-      checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: d88e95580cf0e7c34b990fa3495c37a6257aedf2
-      concurrency-key: maestro-warm
-      warm-cache: true
-
   maestro:
-    needs: warm
-    if: always()
-    name: Maestro partitioned coverage
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/ci.yml
-    with:
-      working-directory: maestro
-      checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 4aff524f6a07779902ea49daa773b6dc76f9cd80
-      concurrency-key: maestro-proof
-      test-event: pull_request
-
-  selected:
-    name: Maestro selected-package tests
-    needs: warm
-    if: always()
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/ci.yml
-    with:
-      working-directory: maestro
-      checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 4aff524f6a07779902ea49daa773b6dc76f9cd80
-      checkout-base-ref: d88e95580cf0e7c34b990fa3495c37a6257aedf2
-      concurrency-key: maestro-selected
-      test-event: pull_request
-
-  comparison:
-    name: Maestro single coverage
-    runs-on: ubuntu-latest
+    name: Native macOS key frames
+    runs-on: macos-15
+    defaults:
+      run:
+        shell: bash
+        working-directory: maestro
+    env:
+      TEST_PACKAGES: '["maestro-chat", "maestro-tools"]'
+      COLLECT_COVERAGE: 'false'
+      SHARD: '1'
+      TEST_SHARD_COUNT: '1'
     steps:
       - name: Checkout workflow
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,32 +32,17 @@ jobs:
         with:
           persist-credentials: false
           repository: Orchestration-Maestro/maestro
-          ref: 4aff524f6a07779902ea49daa773b6dc76f9cd80
+          ref: 42b64df183003b390b04a7aa68eccad6712ef393
           path: maestro
       - name: Extract workflow steps
+        working-directory: .
         run: python3 workflow/.github/extract-workflow-steps.py
-      - name: Free instrumented build space
-        run: bash -e -o pipefail "$PROOF_STEPS/Free instrumented build space"
-      - name: Toolchain
-        working-directory: maestro
+      - name: Test toolchain
         run: bash -e -o pipefail "$PROOF_STEPS/Test toolchain"
-      - name: Coverage tools
-        timeout-minutes: 10
+      - name: Test runner
         run: bash -e -o pipefail "$PROOF_STEPS/Coverage tools"
-      - name: Caller tools
-        timeout-minutes: 10
-        working-directory: maestro
-        run: |
-          bash -e -o pipefail "$PROOF_STEPS/Search tools"
-          bash -e -o pipefail "$PROOF_STEPS/Mise bootstrap"
-          while read -r bin; do export PATH="$bin:$PATH"; done < "$GITHUB_PATH"
-          bash -e -o pipefail "$PROOF_STEPS/Test tools"
-      - name: Single-job coverage baseline
+      - name: Search tools
+        run: bash -e -o pipefail "$PROOF_STEPS/Search tools"
+      - name: Native tests
         timeout-minutes: 45
-        working-directory: maestro
-        env:
-          CARGO_COVERAGE_MIN_LINES: 80
-        run: |
-          start=$SECONDS
-          bash -e -o pipefail "$PROOF_STEPS/Isolated tests"
-          echo "Single-job coverage seconds: $((SECONDS - start))"
+        run: bash -e -o pipefail "$PROOF_STEPS/Isolated tests"

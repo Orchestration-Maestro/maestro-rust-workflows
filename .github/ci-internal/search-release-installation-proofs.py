@@ -230,13 +230,12 @@ files = {str(path): path.read_text(encoding='utf-8')
 class SearchReleases(unittest.TestCase):
     def test_pinned_archives(self):
         self.assertNotIn('apt-get', workflow)
-        rows = re.findall(r'^https://github.com/\S+ (\w{64}) (rg|fd)$', body('Search tools'), re.MULTILINE)
-        self.assertEqual(len(rows), 2)
+        rows = re.findall(r'^https://github.com/\S+ (\w{64}) (rg|fd)(?:\.exe)?$', body('Search tools'), re.MULTILINE)
+        self.assertEqual(len(rows), 6)
         self.assertIn('/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz', body('Search tools'))
         self.assertIn('/v10.5.0/fd-v10.5.0-x86_64-unknown-linux-musl.tar.gz', body('Search tools'))
 
     def test_real_versions(self):
-        self.assertIn('sha256sum --check', body('Search tools'))
         with tempfile.TemporaryDirectory() as temporary:
             env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path'}
             result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Search tools')],
@@ -584,29 +583,50 @@ class SearchReleases(unittest.TestCase):
                 require_recorded_controls(files, authority | {row: ''})
 
     def test_corrupt_archives(self):
-        command = body('Search tools')
-        rows = re.findall(r'^https://github.com/\S+ \w{64} (?:rg|fd)$', command, re.MULTILINE)
-        self.assertEqual(len(rows), 2)
-        for row in rows:
-            with self.subTest(archive=row.split()[0]), tempfile.TemporaryDirectory() as temporary:
-                directory = pathlib.Path(temporary)
-                curl = directory / 'curl'
-                curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\nprintf corrupt > "$2"\n', encoding='utf-8')
-                curl.chmod(0o755)
-                tar = directory / 'tar'
-                tar.write_text('#!/bin/sh\ntouch "$RUNNER_TEMP/extracted"\n', encoding='utf-8')
-                tar.chmod(0o755)
-                # Exercise each published digest as the first download.
-                other = next(value for value in rows if value != row)
-                env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path',
-                                    'PATH': temporary + ':' + os.environ['PATH']}
-                result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command.replace(other + '\n', '')],
-                                        env=env, capture_output=True, text=True, encoding='utf-8')
-                self.assertNotEqual(result.returncode, 0)
-                self.assertFalse((directory / 'extracted').exists())
-                self.assertFalse((directory / 'path').exists())
-                self.assertFalse(list(directory.glob('maestro-search-bin.*/rg')))
-                self.assertFalse(list(directory.glob('maestro-search-bin.*/fd')))
+        import gzip
+        import io
+        import tarfile
+        import zipfile
+        for name, count in [('Search tools', 6), ('Coverage tools', 4)]:
+            rows = re.findall(r'^https://github.com/\S+ \w{64} \S+$', body(name), re.MULTILINE)
+            self.assertEqual(len(rows), count)
+            for row in rows:
+                with self.subTest(step=name, archive=row.split()[0]), tempfile.TemporaryDirectory() as temporary:
+                    directory = pathlib.Path(temporary)
+                    archive = directory / 'untrusted-archive'
+                    binary = row.split()[-1]
+                    payload = b'\0untrusted release payload\n'
+                    if binary.endswith('.exe'):
+                        with zipfile.ZipFile(archive, 'w') as bundle:
+                            bundle.writestr(zipfile.ZipInfo(binary), payload)
+                    else:
+                        stream = io.BytesIO()
+                        with tarfile.TarFile(fileobj=stream, mode='w') as bundle:
+                            member = tarfile.TarInfo(binary)
+                            member.size = len(payload)
+                            bundle.addfile(member, io.BytesIO(payload))
+                        archive.write_bytes(gzip.compress(stream.getvalue(), mtime=0))
+                    curl = directory / 'curl'
+                    curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\ncp '
+                                    + shlex.quote(str(archive)) + ' "$2"\n', encoding='utf-8')
+                    curl.chmod(0o755)
+                    command = body(name)
+                    host = 'Darwin' if 'apple-darwin' in row else 'MINGW64_NT' if 'windows-msvc' in row else 'Linux'
+                    machine = 'arm64' if host == 'Darwin' else 'x86_64'
+                    uname = directory / 'uname'
+                    uname.write_text(f'#!/bin/sh\nif [ "$1" = -s ]; then echo {host}; else echo {machine}; fi\n', encoding='utf-8')
+                    uname.chmod(0o755)
+                    for other in rows:
+                        if other != row:
+                            command = command.replace(other + '\n', '')
+                    env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path',
+                                        'GITHUB_ENV': temporary + '/environment', 'PATH': temporary + ':' + os.environ['PATH']}
+                    result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
+                                            env=env, capture_output=True, text=True, encoding='utf-8')
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse((directory / 'path').exists())
+                    self.assertFalse((directory / 'environment').exists())
+                    self.assertFalse(list(directory.glob('maestro-*/*')))
 
 suite = unittest.defaultTestLoader.loadTestsFromTestCase(SearchReleases)
 try:

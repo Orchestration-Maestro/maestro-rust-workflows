@@ -166,6 +166,8 @@ def execute(name, cwd, extra=None):
            if k not in credential_names and not k.endswith('_API_KEY')}
     env['TEST_SHARD_COUNT'] = '16'
     env.update(extra or {})
+    if name == 'Select test packages':
+        env.setdefault('TEST_HOSTS', json.dumps({'ubuntu-latest': int(env['TEST_SHARD_COUNT'])}))
     if name in ['Tests', 'Isolated tests']:
         env.update(toolchain_environment(cwd, env))
     env = {key: value for key, value in env.items() if value is not None}
@@ -181,12 +183,17 @@ def execute(name, cwd, extra=None):
         # Git Bash prepends its own utilities during startup; restore the caller's order.
         env['MAESTRO_SEAM_PATH'] = env['PATH']
         command = 'export PATH="$(cygpath -u -p "$MAESTRO_SEAM_PATH")"\n' + command
-    argv = [bash, '-e', '-o', 'pipefail', '-c', command]
     if os.environ.get('MAESTRO_LOCAL_CAPPED'):
-        command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
-        argv = [os.path.expanduser('~/.local/bin/capped'), 'bash', '-e', '-o', 'pipefail', '-c', command]
+        command = command.replace('env -i ', 'env -i CARGO_BUILD_JOBS=3 ')
         env['CARGO_BUILD_JOBS'] = '3'
-    return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
+    # A script file preserves long UTF-8 bodies across the Windows process boundary.
+    with tempfile.TemporaryDirectory() as temporary:
+        script = pathlib.Path(temporary) / 'workflow-step.sh'
+        script.write_text(command, encoding='utf-8', newline='\n')
+        argv = [bash, '-e', '-o', 'pipefail', script.as_posix()]
+        if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+            argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
+        return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
 
 def select_packages(cwd, extra):
     # Merge-group selection reads a baseline manifest from RUNNER_TEMP; give it one that matches the fixture.
@@ -519,7 +526,7 @@ def archived_shards_reuse_build_and_prepared_outputs():
     assert 'needs: [declaration, test-build, test-prepare]' in jobs['tests']
     assert 'name: Download test archive' in jobs['tests']
     assert 'name: Upload test archive' in jobs['test-build']
-    assert 'matrix:' not in jobs['test-build']
+    assert 'test_runners' in jobs['test-build']
     assert 'TEST_PREPARE:' not in jobs['tests']
     assert 'TEST_PREPARE:' not in jobs['test-build']
     assert 'needs: declaration' in jobs['test-prepare']
@@ -642,8 +649,11 @@ def doctests_run_independently_and_remain_required():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     jobs = document['jobs']
     assert jobs['doctests']['needs'] == 'declaration'
-    assert jobs['doctests']['name'] == '$' + "{{ matrix.shard == 'doctests' && 'Doctests' }}"
+    assert evaluate(jobs['doctests']['name'], {'matrix.runner': 'ubuntu-latest', "format('Doctests ({0})', 'ubuntu-latest')": 'unused'}) == 'Doctests'
+    assert 'test_runners' in jobs['doctests']['strategy']['matrix']['runner']
     assert jobs['doctests']['strategy']['matrix']['shard'] == ['doctests']
+    assert jobs['doctests']['strategy']['matrix']['count'] == [0]
+    assert set(jobs['doctests']['strategy']['matrix']) == {'runner', 'shard', 'count'}, 'one doctest leg per runner'
     for key in ['steps', 'defaults', 'env']:
         assert jobs['doctests'][key] == jobs['tests'][key], key
     assert set(jobs['tests-result']['needs']) == {'tests', 'doctests', 'declaration', 'test-build'}
@@ -668,6 +678,14 @@ def preparation_runs_beside_host_compilation():
     assert 'TEST_PREPARE_OUTPUT' in body('Prepare test setup')
     assert 'target/test-setup' in body('Prepare test setup')
     assert 'tar -C target' in body('Restore test setup')
+    for name in ['test-prepare', 'test-build', 'doctests']:
+        assert 'test_runners' in jobs[name]['strategy']['matrix']['runner'], name
+        assert 'matrix.runner' in jobs[name]['runs-on'], name
+    archive_root = next(step for step in jobs['test-build']['steps'] if step.get('id') == 'archive-root')
+    assert archive_root['if'] == "matrix.runner == 'ubuntu-latest'"
+    for job in ['test-prepare', 'test-build', 'tests']:
+        free = next(step for step in jobs[job]['steps'] if step['name'] == 'Free instrumented build space')
+        assert "runner.os == 'Linux'" in free['if']
     assert jobs['doctests']['needs'] == 'declaration'
 
 preparation_runs_beside_host_compilation()
@@ -676,7 +694,7 @@ print('PASS preparation_runs_beside_host_compilation')
 def absent_keeps_base_checks():
     result, values = declaration(root / 'fixtures/sample')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert values == {'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
+    assert values == {'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}', 'test_runners': '["ubuntu-latest"]'}
     assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
     assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
     assert "inputs.working-directory != '.'" in workflow
@@ -1001,7 +1019,9 @@ def warm_filter_failures_keep_job_red():
             print(f'PASS warm filter {value!r}: exit {result.returncode}\n{output}', flush=True)
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     save = next(step for step in document['jobs']['tests']['steps'] if step.get('name') == 'Save compile cache')
-    assert save['if'] == "steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'"
+    for host in ['Linux', 'macOS', 'Windows']:
+        assert bool(evaluate(save['if'], {'runner.os': host, 'steps.cache-identity.outputs.writer': 'true',
+                                        'steps.cache-seal.outputs.eligible': 'true'})) == (host != 'Windows')
 
 warm_filter_failures_keep_job_red()
 print('PASS warm_filter_failures_keep_job_red')
@@ -1035,7 +1055,7 @@ def warm_push_seeds_non_test_shapes():
     def test_steps_run(job, warm, enabled):
         shard = 'warm' if job == 'tests' else document['jobs'][job]['strategy']['matrix']['shard'][0]
         values = {'inputs.warm-cache': warm, 'matrix.shard': shard,
-                  'needs.declaration.outputs.enabled': enabled, 'runner.environment': 'github-hosted'}
+                  'needs.declaration.outputs.enabled': enabled, 'runner.environment': 'github-hosted', 'runner.os': 'Linux'}
         values['env.WARM_CACHE'] = str(evaluate(document['jobs'][job]['env']['WARM_CACHE'], values)).lower()
         steps = {step['name']: step for step in document['jobs'][job]['steps']}
         return {name: evaluate(steps[name]['if'], values) for name in
@@ -1089,7 +1109,9 @@ def warm_cache_keeps_one_writer():
                                     (not warm or event == 'push')), (warm, event, advisory, fuzz, targets)
     tests = jobs['tests']
     assert 'WARM_CACHE: $' + "{{ inputs.warm-cache && matrix.shard != 'doctests' }}" in tests
-    assert "inputs.warm-cache && '[\"warm\"]'" in tests
+    warm = re.search(r"inputs\.warm-cache && '([^']+)'", document['jobs']['tests']['strategy']['matrix']['include'])
+    assert warm is not None
+    assert json.loads(warm[1]) == [{'runner': 'ubuntu-latest', 'shard': 'warm'}]
     assert "if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'" in tests
     proof = (root / '.github/workflows/ci-proof.yml').read_text(encoding='utf-8')
     assert '  maestro:\n    needs: warm\n' in proof
@@ -1182,11 +1204,14 @@ def fixture_git(directory, *args):
 
 def coverage_matrix_splits_doctests_from_partitions():
     tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
-    matrix = re.search(r'        shard: (.*)', tests)[1]
+    matrix_match = re.search(r'        include: (.*)', tests)
+    assert matrix_match is not None, 'the test matrix must include the selected host legs'
+    matrix = matrix_match[1]
     assert 'test_shard_count: $' + '{{ steps.config.outputs.test_shard_count }}' in workflow
     assert 'test_shards: $' + '{{ steps.selection.outputs.test_shards }}' in workflow
-    assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.test_shards) }}"
-    assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}" in tests
+    assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[{\"runner\":\"ubuntu-latest\",\"shard\":\"warm\"}]' || needs.declaration.outputs.test_shards) }}"
+    assert "format('Test shard ({0}/{1})', matrix.shard, matrix.count)" in tests
+    assert "format('Test shard ({0} {1}/{2})', matrix.runner, matrix.shard, matrix.count)" in tests
     assert '    needs: [declaration, test-build, test-prepare]\n' in tests and '      fail-fast: false\n' in tests
     assert 'advisory-scan' in tests and "inputs.working-directory != '.'" in tests
     with tempfile.TemporaryDirectory() as temporary:
@@ -1208,7 +1233,7 @@ def coverage_matrix_splits_doctests_from_partitions():
                 assert result.returncode == 0, result.stderr
                 selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                 legs = json.loads(selected['test_shards'])
-                assert legs == list(range(1, 17))
+                assert legs == [{'runner': 'ubuntu-latest', 'shard': shard, 'count': 16} for shard in range(1, 17)]
 
 coverage_matrix_splits_doctests_from_partitions()
 print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -1452,9 +1477,11 @@ def diagnostic_artifact_names_distinguish_invocations():
             result = execute('Print test diagnostics', directory, base | changes | {'GITHUB_OUTPUT': str(output)})
             assert result.returncode == 0, result.stderr
             value = output.read_text(encoding='utf-8').removeprefix('artifact_name=').strip()
-            assert re.fullmatch(r'test-diagnostics-123-[0-9a-f]{64}-shard-(?:[12]|doctests)-run-45[67]-attempt-[12]', value), value
+            assert re.fullmatch(r'test-diagnostics(?:-(?:macos|windows)-latest)?-123-[0-9a-f]{64}-shard-(?:[12]|doctests)-run-45[67]-attempt-[12]', value), value
             return value
         original = name({})
+        hosts = [name({'TEST_RUNNER': host}) for host in ['ubuntu-latest', 'macos-latest', 'windows-latest']]
+        assert hosts[0] == original and len(set(hosts)) == 3
         assert original == 'test-diagnostics-123-f6d6a7cff3ca148497eb84888c4fd22a9de927c2e9fda6aa267078943c10ea14-shard-1-run-456-attempt-1'
         for field, values in [('CALLER_REPOSITORY', ['other/repo']),
                               ('CALLER_DIRECTORY', ['fixtures/a b', 'fixtures/a/b']),
@@ -1508,7 +1535,7 @@ print('PASS shard_runner_status_survives_log_capture')
 
 def failed_shard_and_missing_coverage_stay_distinct():
     step = next(s for s in workflow.split('      - name: ')[1:] if s.startswith('Upload shard coverage\n')).split('\n  tests-result:', 1)[0]
-    assert "if: $" + "{{ !inputs.warm-cache && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}\n" in step
+    assert "if: $" + "{{ !inputs.warm-cache && matrix.runner == 'ubuntu-latest' && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}\n" in step
     assert 'always()' not in step and 'if-no-files-found: error\n' in step
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
@@ -1878,7 +1905,7 @@ def locked_manifests_precede_all_test_routes():
     assert 'ADDITIONAL_LOCKED_MANIFESTS: $' + '{{ needs.declaration.outputs.additional_locked_manifests }}' in tests
     declaration_job = workflow.split('  declaration:\n', 1)[1].split('\n  quality:', 1)[0]
     assert 'additional_locked_manifests: $' + '{{ steps.config.outputs.additional_locked_manifests }}' in declaration_job
-    assert "fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.test_shards" in tests
+    assert 'needs.declaration.outputs.test_shards' in tests
     for name in ['Tests', 'Isolated tests']:
         assert 'cargo fetch --locked\n' in body(name)
     with tempfile.TemporaryDirectory() as temporary:
@@ -2171,7 +2198,15 @@ def reserved_ports_are_validated_and_applied_only_when_set():
             assert result.returncode != 0 and 'reserved_ports' in result.stderr, bad + result.stderr
     tests = workflow.split('  tests:\n', 1)[1].split('  targets:', 1)[0]
     step = next(s for s in tests.split('      - name: ')[1:] if s.splitlines()[0] == 'Reserved ports')
-    assert "if: runner.environment == 'github-hosted' && needs.declaration.outputs.reserved_ports != ''" in step
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    condition = next(item for item in document['jobs']['tests']['steps'] if item['name'] == 'Reserved ports')['if']
+    for host, environment, ports, expected in [('Linux', 'github-hosted', '1455', True),
+                                               ('Linux', 'self-hosted', '1455', False),
+                                               ('macOS', 'github-hosted', '1455', False),
+                                               ('Windows', 'github-hosted', '1455', False),
+                                               ('Linux', 'github-hosted', '', False)]:
+        assert bool(evaluate(condition, {'runner.os': host, 'runner.environment': environment,
+                                        'needs.declaration.outputs.reserved_ports': ports})) == expected
     assert 'sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"' in step
     assert tests.index('- name: Reserved ports') < tests.index('- name: Isolated tests')
 
@@ -2343,7 +2378,7 @@ def removed_shard_lists_fail_clearly():
         for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
             for status in ['success', 'failure', 'cancelled', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': status, 'COLLECT_COVERAGE': coverage,
+                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'success', 'COLLECT_COVERAGE': coverage,
                                                           'DECLARATION_RESULT': declaration_status},
                                         capture_output=True, text=True)
                 expected = declaration_status == 'success' and (
@@ -3084,16 +3119,16 @@ def included_docs_run_only_readers_and_reverse_dependencies():
         git('add', '.')
         git('commit', '-qm', 'base')
         base = git('rev-parse', 'HEAD')
-        for changed, expected, runs in [('docs/policy.md', ['a', 'b'], 'true'),
-                                         ('docs/bytes.md', ['a', 'b'], 'true'),
-                                         ('docs/escaped.md', ['a', 'b'], 'true'),
-                                         ('docs/line\nbreak.md', ['a', 'b'], 'true'),
-                                         ('docs/commented.md', ['a', 'b'], 'true'),
-                                         ('docs/unrelated.md', [], 'false'),
-                                         ('crates/c/src/lib.rs', ['c'], 'false'),
-                                         (('crates/c/src/lib.rs', 'docs/policy.md'), ['a', 'b'], 'true')]:
-            paths = (changed,) if isinstance(changed, str) else changed
-            for path in paths:
+        for changed, expected, runs, expected_docs in [
+                (('docs/policy.md',), ['a', 'b'], 'true', ['a', 'b']),
+                (('docs/bytes.md',), ['a', 'b'], 'true', ['a', 'b']),
+                (('docs/escaped.md',), ['a', 'b'], 'true', ['a', 'b']),
+                (('docs/line\nbreak.md',), ['a', 'b'], 'true', ['a', 'b']),
+                (('docs/commented.md',), ['a', 'b'], 'true', ['a', 'b']),
+                (('docs/unrelated.md',), [], 'false', []),
+                (('crates/c/src/lib.rs',), ['c'], 'false', ['c']),
+                (('crates/c/src/lib.rs', 'docs/policy.md'), ['a', 'b'], 'true', ['a', 'b', 'c'])]:
+            for path in changed:
                 (directory / path).write_text('// changed\n', encoding='utf-8')
             git('add', '.')
             git('commit', '-qm', 'change')
@@ -3103,7 +3138,6 @@ def included_docs_run_only_readers_and_reverse_dependencies():
             assert result.returncode == 0, result.stdout + result.stderr
             values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
             assert json.loads(values['packages']) == expected, (changed, values)
-            expected_docs = ['a', 'b', 'c'] if isinstance(changed, tuple) else expected
             assert json.loads(values['doctest_packages']) == expected_docs, (changed, values)
             assert values.get('included_tests') == runs, (changed, values)
             assert values['coverage'] == 'false', values
@@ -3166,7 +3200,7 @@ def included_test_failures_remain_required():
     for included in ['false', 'true']:
         for status in ['success', 'failure', 'cancelled', 'skipped']:
             result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                    env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': status, 'COLLECT_COVERAGE': 'false',
+                                    env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'success', 'COLLECT_COVERAGE': 'false',
                                                       'INCLUDED_TESTS': included, 'DECLARATION_RESULT': 'success'},
                                     capture_output=True, text=True)
             expected = status == ('success' if included == 'true' else 'skipped')
@@ -3516,6 +3550,54 @@ def real_search_tools_are_exercised():
 real_search_tools_are_exercised()
 print('PASS real_search_tools_are_exercised')
 
+def native_test_hosts_follow_claims_and_full_suite_events():
+    import shutil
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    jobs = document['jobs']
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        (directory / '.github').mkdir()
+        fixture_git(directory, 'init', '--quiet')
+        fixture_git(directory, 'add', '.')
+        fixture_git(directory, 'commit', '-qm', 'host fixture')
+        for targets, native in [(['aarch64-apple-darwin', 'x86_64-pc-windows-msvc'], ['macos-latest', 'windows-latest']),
+                                (['x86_64-apple-darwin', 'aarch64-unknown-linux-gnu'], [])]:
+            for count in [2, 16]:
+                (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=' + json.dumps(targets) + f'\ntest_shard_count={count}\n', encoding='utf-8')
+                for event, warm in [('pull_request', 'false'), ('merge_group', 'false'), ('push', 'false'), ('push', 'true')]:
+                    output = directory / 'config-output'
+                    output.write_text('', encoding='utf-8')
+                    result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output), 'TEST_EVENT': event, 'WARM': warm})
+                    assert result.returncode == 0, result.stderr
+                    values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                    runners = ['ubuntu-latest'] + (native if event != 'pull_request' and warm == 'false' else [])
+                    assert json.loads(values['test_runners']) == runners, (targets, event, warm, values)
+                    result = select_packages(directory, {'GITHUB_OUTPUT': str(directory / 'selection-output'), 'TEST_EVENT': event,
+                                             'BASE_REF': '', 'TEST_SHARD_COUNT': str(count), 'TEST_HOSTS': values['test_hosts']})
+                    assert result.returncode == 0, result.stderr
+                    selected = dict(line.split('=', 1) for line in (directory / 'selection-output').read_text(encoding='utf-8').splitlines())
+                    legs = json.loads(selected['test_shards'])
+                    for runner in runners:
+                        expected = count if runner == 'ubuntu-latest' else min(4, count)
+                        assert [leg for leg in legs if leg['runner'] == runner] == [
+                            {'runner': runner, 'shard': shard, 'count': expected} for shard in range(1, expected + 1)]
+                    assert len(legs) == count + (len(runners) - 1) * min(4, count)
+                    assert json.loads(selected['coverage_layout'])['shard_count'] == count
+    for name in ['test-prepare', 'test-build', 'doctests']:
+        assert 'test_runners' in jobs[name]['strategy']['matrix']['runner']
+    assert 'test_shards' in jobs['tests']['strategy']['matrix']['include']
+    for job, names in [('test-build', ['Upload test archive']), ('test-prepare', ['Upload test setup', 'Test setup candidates', 'Download test setup candidates']),
+                       ('tests', ['Download test archive', 'Download test archive in one stream', 'Download test setup', 'Download test setup in one stream'])]:
+        for name in names:
+            step = next(step for step in jobs[job]['steps'] if step['name'] == name)
+            artifact = step.get('with', {}).get('name') or step['env']['ARTIFACT_NAME']
+            assert "format('-{0}', matrix.runner)" in artifact, (job, name)
+    assert 'matrix.runner' in next(step for step in jobs['tests']['steps'] if step['name'] == 'Print test diagnostics')['env']['TEST_RUNNER']
+
+native_test_hosts_follow_claims_and_full_suite_events()
+print('PASS native_test_hosts_follow_claims_and_full_suite_events')
+
 def supported_targets_use_native_runners():
     targets_job = workflow.split('  targets:\n', 1)[1].split('\n  browser:', 1)[0]
     assert 'defaults:\n      run:\n        shell: bash\n' in targets_job, \
@@ -3595,6 +3677,51 @@ def foreign_target_failures_are_detected():
 
 foreign_target_failures_are_detected()
 print('PASS foreign_target_failures_are_detected')
+
+def isolation_creates_a_missing_cargo_home():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        tools, log = install_recording_runner(directory)
+        home = directory / 'new-cargo-home'
+        env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+               'RUNNER_TEMP': temporary, 'CARGO_HOME': str(home), 'SHARD': '2',
+               'TEST_PACKAGES': '["sample"]', 'COLLECT_COVERAGE': 'false'}
+        result = execute('Isolated tests', directory, env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+        assert home.is_dir() and commands[-1]['cargo_home'] == str(home), commands
+        assert 'No such file or directory' not in result.stderr, result.stderr
+        invalid = directory / 'cargo-home-file'
+        invalid.write_text('not a directory', encoding='utf-8')
+        before = log.read_bytes()
+        result = execute('Isolated tests', directory, env | {'CARGO_HOME': str(invalid)})
+        assert result.returncode != 0 and log.read_bytes() == before, result.stdout + result.stderr
+
+isolation_creates_a_missing_cargo_home()
+print('PASS isolation_creates_a_missing_cargo_home')
+
+def native_test_failures_are_detected():
+    import shutil
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/host-test-rejected', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        result = execute('Lint', directory)
+        assert result.returncode == 0, result.stdout + result.stderr
+        env = {'RUNNER_TEMP': temporary, 'GITHUB_ENV': str(directory / 'environment'), 'GITHUB_PATH': str(directory / 'path')}
+        result = execute('Coverage tools', directory, env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        tools = dict(line.split('=', 1) for line in (directory / 'environment').read_text(encoding='utf-8').splitlines())['TOOLS']
+        result = execute('Isolated tests', directory, env | {'TOOLS': tools, 'COLLECT_COVERAGE': 'false',
+                         'TEST_PACKAGES': '["host-test-rejected"]', 'SHARD': '1', 'TEST_SHARD_COUNT': '1', 'CARGO_COVERAGE_MIN_LINES': ''})
+        output = result.stdout + result.stderr
+        if os.name == 'nt' or __import__('sys').platform == 'darwin':
+            assert result.returncode != 0 and 'fixture rejects native test host' in output, output
+        else:
+            assert result.returncode == 0 and 'PASS' in output, output
+        print(output, flush=True)
+
+native_test_failures_are_detected()
+print('PASS native_test_failures_are_detected')
 
 def browser_recipe_runs_after_wasm():
     import shutil
@@ -3811,7 +3938,7 @@ def workflow_failures_remain_required():
         section = workflow.split(f'  {name}:\n')[1]
         assert ('needs: [declaration, test-build, test-prepare]' if name == 'tests' else 'needs: declaration') in section
     assert 'pull_request:' in workflow and 'merge_group:' in workflow
-    assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
+    assert "if: $" + "{{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
     # Each scan mode runs only the declaration and its own job.
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
