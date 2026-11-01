@@ -14,10 +14,10 @@ parent as its PR base. The warmer is non-required, and consumers still run if it
 fails. See [Compile cache](../README.md#compile-cache) for snapshot shapes,
 fail-open transfers and storage limits.
 Advance all proof checkout references together after checking locked dependencies.
-The proof uses `4aff524f6a07779902ea49daa773b6dc76f9cd80`, the Maestro main
+The proof uses `061008d12ca79d17b168014b3159d5a8d80603ec`, the Maestro main
 revision that qualifies the current release, and it still includes the native
 residency-helper compilation repair. Its first parent,
-`d88e95580cf0e7c34b990fa3495c37a6257aedf2`, supplies the warm build and
+`ee60f16cd95d74c6a6c0e9b5663d88c558705b1e`, supplies the warm build and
 selected-package base.
 The coverage proof runs only on pushes to `ci/228-merge-proof`, not on pull requests.
 Check its results before landing.
@@ -119,10 +119,11 @@ connection that the kernel assigned that port. Without it nothing runs.
 
 An absent file runs the standard checks without isolation, search tool
 installation or optional jobs. After declaration validation, pull requests
-run formatting, Clippy, docs, dependency/source checks and declared Windows
-target checks in parallel. Merge groups and main pushes also run tests, coverage and
-all declared foreign-target checks. Other foreign-target checks (including
-macOS), wasm/browser builds and Chromium tests run only on those full events.
+run formatting, Clippy, docs, dependency/source checks, declared Windows
+target checks, wasm/browser builds and doctests in parallel. Merge groups and
+main pushes also run test shards, coverage and all declared foreign-target
+checks. Other foreign-target checks (including macOS) and Chromium tests run
+only on those full events.
 An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
 member or non-boolean tool/build flag fails declaration validation. An empty
@@ -193,9 +194,9 @@ CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
 run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
-for merge groups and main pushes, using the selected packages described below.
-Main pushes always select every workspace package.
-Pull requests skip tests unless the [included-input rule](#pull-request-selection-and-retries) applies.
+for pull requests, merge groups and main pushes, using the selected packages
+described below. Main pushes always select every workspace package.
+Pull requests skip test shards unless the [included-input rule](#pull-request-selection-and-retries) applies.
 
 `test_shard_count` sets the number of shards. It is an optional whole number
 from 1 to 60 and defaults to 16. Any other value, including a float, a string or
@@ -215,7 +216,8 @@ Declared callers run `cargo llvm-cov nextest` in the same isolated environment
 with their opted-in tools. Only the numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including `Doctests`, to succeed on full runs. On pull requests it requires a
-successful declaration and either event-skipped shards or successful included-input shards. On full runs it downloads all
+successful declaration, successful `Doctests`, and either event-skipped shards
+or successful included-input shards. On full runs it downloads all
 reports, counts each source line once (covered if any shard hits it), and
 enforces `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
@@ -232,7 +234,8 @@ One `Build test archive` job compiles the selected unit and integration tests wi
 Numeric shards download that archive and run `--archive-file`, keeping the same
 partitions, retries and coverage reports. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
-runs doctests once in parallel with the build, including on included-input PR runs.
+runs doctests once on every pull request, merge group and main push, without
+waiting for the archive build.
 Warm-cache runs keep their existing compile route and cache shape.
 
 Each shard fetches the archive and the test setup bundle in 16 parallel byte ranges from
@@ -385,10 +388,12 @@ grep -RFn -- 'phase: waiting-for-child-exit' "$download/target/browser-author-di
 
 ### Pull-request selection and retries
 
-Pull requests run fast checks only, except that changes to literal `include_str!` or `include_bytes!` inputs also run test shards for the reading crates and their reverse dependencies, without coverage.
-The declaration still computes changed workspace crates and their reverse
-dependencies for the self-test event mode. A crate manifest selects its
-crate; lockfile changes compare the resolved transitive dependency identities
+Pull requests run test shards only for changes to literal `include_str!` or
+`include_bytes!` inputs. These shards cover the reading crates and their reverse
+dependencies, without coverage. Pull-request doctests cover changed workspace
+crates, included-input readers and their reverse dependencies. An empty doctest selection succeeds
+without running `cargo test`; an unavailable diff selects every package.
+A crate manifest selects its crate; lockfile changes compare the resolved transitive dependency identities
 and features at base and head, selecting affected crates. Root manifest,
 toolchain or CI workflow/schema changes select everything. Non-test declaration
 keys (such as spelling, wasm and foreign-target lists) select no extra tests;
@@ -630,7 +635,8 @@ runner fails its test step, so coverage uploads run only after success; a missin
 report after success fails the upload separately. On full runs the required aggregate accepts
 only successful matrix legs, including `Doctests`, and requires one report per
 numeric shard when merging coverage. On pull requests the aggregate requires a successful
-declaration and either skipped shards or successful included-input shards.
+declaration, successful `Doctests`, and either skipped shards or successful
+included-input shards.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
@@ -673,7 +679,8 @@ Windows paths are published in native format for later steps.
 
 ## Wasm and browser builds
 
-For each listed package, Linux runs:
+On pull requests, merge groups and main pushes, Linux runs this command for
+each listed package:
 
 ```bash
 cargo build --locked --target wasm32-unknown-unknown -p "$CRATE"
@@ -684,9 +691,11 @@ packages. Either `test_tools = true` or `browser_build = true` installs caller
 tools once before wasm compilation. The browser flag is independent: it does
 not enable tools in other jobs. With `browser_build = true`, the workflow runs
 `mise exec -- just browser-build` after successful wasm builds, including when
-the wasm array is empty. A failed wasm build prevents the recipe. False or
-omitted `browser_build` skips the recipe and its `just`-pin validation, even
-when tools are enabled for wasm compilation.
+the wasm array is empty. Both wasm builds and the browser recipe run on every
+pull request, merge group and main push. Advisory scans, fuzz scans and warm
+calls outside a default-branch push skip them. A failed wasm build prevents
+the recipe. False or omitted `browser_build` skips the recipe and its
+`just`-pin validation, even when tools are enabled for wasm compilation.
 
 Provide a `mise.toml` pinning the recipe's tools, including `just`, and a
 `justfile` with `browser-build`. A missing tool configuration, installation
