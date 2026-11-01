@@ -183,12 +183,17 @@ def execute(name, cwd, extra=None):
         # Git Bash prepends its own utilities during startup; restore the caller's order.
         env['MAESTRO_SEAM_PATH'] = env['PATH']
         command = 'export PATH="$(cygpath -u -p "$MAESTRO_SEAM_PATH")"\n' + command
-    argv = [bash, '-e', '-o', 'pipefail', '-c', command]
     if os.environ.get('MAESTRO_LOCAL_CAPPED'):
-        command = command.replace('env -i PATH=', 'env -i CARGO_BUILD_JOBS=3 PATH=')
-        argv = [os.path.expanduser('~/.local/bin/capped'), 'bash', '-e', '-o', 'pipefail', '-c', command]
+        command = command.replace('env -i ', 'env -i CARGO_BUILD_JOBS=3 ')
         env['CARGO_BUILD_JOBS'] = '3'
-    return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
+    # A script file preserves long UTF-8 bodies across the Windows process boundary.
+    with tempfile.TemporaryDirectory() as temporary:
+        script = pathlib.Path(temporary) / 'workflow-step.sh'
+        script.write_text(command, encoding='utf-8', newline='\n')
+        argv = [bash, '-e', '-o', 'pipefail', script.as_posix()]
+        if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+            argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
+        return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
 
 def select_packages(cwd, extra):
     # Merge-group selection reads a baseline manifest from RUNNER_TEMP; give it one that matches the fixture.

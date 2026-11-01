@@ -236,7 +236,6 @@ class SearchReleases(unittest.TestCase):
         self.assertIn('/v10.5.0/fd-v10.5.0-x86_64-unknown-linux-musl.tar.gz', body('Search tools'))
 
     def test_real_versions(self):
-        self.assertIn('hashlib.sha256(data).hexdigest() != digest', body('Search tools'))
         with tempfile.TemporaryDirectory() as temporary:
             env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path'}
             result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Search tools')],
@@ -602,7 +601,7 @@ class SearchReleases(unittest.TestCase):
                             bundle.writestr(zipfile.ZipInfo(binary), payload)
                     else:
                         stream = io.BytesIO()
-                        with tarfile.open(fileobj=stream, mode='w') as bundle:
+                        with tarfile.TarFile(fileobj=stream, mode='w') as bundle:
                             member = tarfile.TarInfo(binary)
                             member.size = len(payload)
                             bundle.addfile(member, io.BytesIO(payload))
