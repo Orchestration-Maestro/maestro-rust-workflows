@@ -519,7 +519,7 @@ def archived_shards_reuse_build_and_prepared_outputs():
     assert 'needs: [declaration, test-build, test-prepare]' in jobs['tests']
     assert 'name: Download test archive' in jobs['tests']
     assert 'name: Upload test archive' in jobs['test-build']
-    assert 'matrix:' not in jobs['test-build']
+    assert 'test_runners' in jobs['test-build']
     assert 'TEST_PREPARE:' not in jobs['tests']
     assert 'TEST_PREPARE:' not in jobs['test-build']
     assert 'needs: declaration' in jobs['test-prepare']
@@ -642,7 +642,8 @@ def doctests_run_independently_and_remain_required():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     jobs = document['jobs']
     assert jobs['doctests']['needs'] == 'declaration'
-    assert jobs['doctests']['name'] == '$' + "{{ matrix.shard == 'doctests' && 'Doctests' }}"
+    assert evaluate(jobs['doctests']['name'], {'matrix.runner': 'ubuntu-latest', "format('Doctests ({0})', 'ubuntu-latest')": 'unused'}) == 'Doctests'
+    assert 'test_runners' in jobs['doctests']['strategy']['matrix']['runner']
     assert jobs['doctests']['strategy']['matrix']['shard'] == ['doctests']
     for key in ['steps', 'defaults', 'env']:
         assert jobs['doctests'][key] == jobs['tests'][key], key
@@ -668,6 +669,14 @@ def preparation_runs_beside_host_compilation():
     assert 'TEST_PREPARE_OUTPUT' in body('Prepare test setup')
     assert 'target/test-setup' in body('Prepare test setup')
     assert 'tar -C target' in body('Restore test setup')
+    for name in ['test-prepare', 'test-build', 'doctests']:
+        assert 'test_runners' in jobs[name]['strategy']['matrix']['runner'], name
+        assert 'matrix.runner' in jobs[name]['runs-on'], name
+    archive_root = next(step for step in jobs['test-build']['steps'] if step.get('id') == 'archive-root')
+    assert archive_root['if'] == "matrix.runner == 'ubuntu-latest'"
+    for job in ['test-prepare', 'test-build', 'tests']:
+        free = next(step for step in jobs[job]['steps'] if step['name'] == 'Free instrumented build space')
+        assert "runner.os == 'Linux'" in free['if']
     assert jobs['doctests']['needs'] == 'declaration'
 
 preparation_runs_beside_host_compilation()
@@ -676,7 +685,7 @@ print('PASS preparation_runs_beside_host_compilation')
 def absent_keeps_base_checks():
     result, values = declaration(root / 'fixtures/sample')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert values == {'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
+    assert values == {'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}', 'test_runners': '["ubuntu-latest"]'}
     assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
     assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
     assert "inputs.working-directory != '.'" in workflow
@@ -1182,11 +1191,12 @@ def fixture_git(directory, *args):
 
 def coverage_matrix_splits_doctests_from_partitions():
     tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
-    matrix = re.search(r'        shard: (.*)', tests)[1]
+    matrix = re.search(r'        include: (.*)', tests)[1]
     assert 'test_shard_count: $' + '{{ steps.config.outputs.test_shard_count }}' in workflow
     assert 'test_shards: $' + '{{ steps.selection.outputs.test_shards }}' in workflow
-    assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[\"warm\"]' || needs.declaration.outputs.test_shards) }}"
-    assert "name: $" + "{{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}" in tests
+    assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[{\"runner\":\"ubuntu-latest\",\"shard\":\"warm\"}]' || needs.declaration.outputs.test_shards) }}"
+    assert "format('Test shard ({0}/{1})', matrix.shard, matrix.count)" in tests
+    assert "format('Test shard ({0} {1}/{2})', matrix.runner, matrix.shard, matrix.count)" in tests
     assert '    needs: [declaration, test-build, test-prepare]\n' in tests and '      fail-fast: false\n' in tests
     assert 'advisory-scan' in tests and "inputs.working-directory != '.'" in tests
     with tempfile.TemporaryDirectory() as temporary:
@@ -1208,7 +1218,7 @@ def coverage_matrix_splits_doctests_from_partitions():
                 assert result.returncode == 0, result.stderr
                 selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                 legs = json.loads(selected['test_shards'])
-                assert legs == list(range(1, 17))
+                assert legs == [{'runner': 'ubuntu-latest', 'shard': shard, 'count': 16} for shard in range(1, 17)]
 
 coverage_matrix_splits_doctests_from_partitions()
 print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -1508,7 +1518,7 @@ print('PASS shard_runner_status_survives_log_capture')
 
 def failed_shard_and_missing_coverage_stay_distinct():
     step = next(s for s in workflow.split('      - name: ')[1:] if s.startswith('Upload shard coverage\n')).split('\n  tests-result:', 1)[0]
-    assert "if: $" + "{{ !inputs.warm-cache && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}\n" in step
+    assert "if: $" + "{{ !inputs.warm-cache && matrix.runner == 'ubuntu-latest' && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}\n" in step
     assert 'always()' not in step and 'if-no-files-found: error\n' in step
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
@@ -3515,6 +3525,54 @@ def real_search_tools_are_exercised():
 real_search_tools_are_exercised()
 print('PASS real_search_tools_are_exercised')
 
+def native_test_hosts_follow_claims_and_full_suite_events():
+    import shutil
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    jobs = document['jobs']
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        (directory / '.github').mkdir()
+        fixture_git(directory, 'init', '--quiet')
+        fixture_git(directory, 'add', '.')
+        fixture_git(directory, 'commit', '-qm', 'host fixture')
+        for targets, native in [(['aarch64-apple-darwin', 'x86_64-pc-windows-msvc'], ['macos-latest', 'windows-latest']),
+                                (['x86_64-apple-darwin', 'aarch64-unknown-linux-gnu'], [])]:
+            for count in [2, 16]:
+                (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=' + json.dumps(targets) + f'\ntest_shard_count={count}\n', encoding='utf-8')
+                for event, warm in [('pull_request', 'false'), ('merge_group', 'false'), ('push', 'false'), ('push', 'true')]:
+                    output = directory / 'config-output'
+                    output.write_text('', encoding='utf-8')
+                    result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output), 'TEST_EVENT': event, 'WARM': warm})
+                    assert result.returncode == 0, result.stderr
+                    values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                    runners = ['ubuntu-latest'] + (native if event != 'pull_request' and warm == 'false' else [])
+                    assert json.loads(values['test_runners']) == runners, (targets, event, warm, values)
+                    result = select_packages(directory, {'GITHUB_OUTPUT': str(directory / 'selection-output'), 'TEST_EVENT': event,
+                                             'BASE_REF': '', 'TEST_SHARD_COUNT': str(count), 'TEST_HOSTS': values['test_hosts']})
+                    assert result.returncode == 0, result.stderr
+                    selected = dict(line.split('=', 1) for line in (directory / 'selection-output').read_text(encoding='utf-8').splitlines())
+                    legs = json.loads(selected['test_shards'])
+                    for runner in runners:
+                        expected = count if runner == 'ubuntu-latest' else min(4, count)
+                        assert [leg for leg in legs if leg['runner'] == runner] == [
+                            {'runner': runner, 'shard': shard, 'count': expected} for shard in range(1, expected + 1)]
+                    assert len(legs) == count + (len(runners) - 1) * min(4, count)
+                    assert json.loads(selected['coverage_layout'])['shard_count'] == count
+    for name in ['test-prepare', 'test-build', 'doctests']:
+        assert 'test_runners' in jobs[name]['strategy']['matrix']['runner']
+    assert 'test_shards' in jobs['tests']['strategy']['matrix']['include']
+    for job, names in [('test-build', ['Upload test archive']), ('test-prepare', ['Upload test setup', 'Test setup candidates', 'Download test setup candidates']),
+                       ('tests', ['Download test archive', 'Download test archive in one stream', 'Download test setup', 'Download test setup in one stream'])]:
+        for name in names:
+            step = next(step for step in jobs[job]['steps'] if step['name'] == name)
+            artifact = step.get('with', {}).get('name') or step['env']['ARTIFACT_NAME']
+            assert "format('-{0}', matrix.runner)" in artifact, (job, name)
+    assert 'matrix.runner' in next(step for step in jobs['tests']['steps'] if step['name'] == 'Print test diagnostics')['env']['TEST_RUNNER']
+
+native_test_hosts_follow_claims_and_full_suite_events()
+print('PASS native_test_hosts_follow_claims_and_full_suite_events')
+
 def supported_targets_use_native_runners():
     targets_job = workflow.split('  targets:\n', 1)[1].split('\n  browser:', 1)[0]
     assert 'defaults:\n      run:\n        shell: bash\n' in targets_job, \
@@ -3594,6 +3652,27 @@ def foreign_target_failures_are_detected():
 
 foreign_target_failures_are_detected()
 print('PASS foreign_target_failures_are_detected')
+
+def native_test_failures_are_detected():
+    import shutil
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/host-test-rejected', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        env = {'RUNNER_TEMP': temporary, 'GITHUB_ENV': str(directory / 'environment'), 'GITHUB_PATH': str(directory / 'path')}
+        result = execute('Coverage tools', directory, env)
+        assert result.returncode == 0, result.stdout + result.stderr
+        tools = dict(line.split('=', 1) for line in (directory / 'environment').read_text(encoding='utf-8').splitlines())['TOOLS']
+        result = execute('Isolated tests', directory, env | {'TOOLS': tools, 'COLLECT_COVERAGE': 'false',
+                         'TEST_PACKAGES': '["host-test-rejected"]', 'SHARD': '1', 'TEST_SHARD_COUNT': '1', 'CARGO_COVERAGE_MIN_LINES': ''})
+        output = result.stdout + result.stderr
+        if os.name == 'nt' or __import__('sys').platform == 'darwin':
+            assert result.returncode != 0 and 'fixture rejects native test host' in output, output
+        else:
+            assert result.returncode == 0 and 'PASS' in output, output
+        print(output, flush=True)
+
+native_test_failures_are_detected()
+print('PASS native_test_failures_are_detected')
 
 def browser_recipe_runs_after_wasm():
     import shutil

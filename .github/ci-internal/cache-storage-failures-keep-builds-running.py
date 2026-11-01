@@ -154,6 +154,9 @@ def snapshot_key_matches_consuming_shape():
     assert snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-unknown-linux-gnu')['prefix'] != snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='x86_64-unknown-linux-gnu')['prefix']
 
     apple = snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-apple-darwin', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
+    native = snapshot_keys(CACHE_JOB='test-build', CACHE_COVERAGE='true', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
+    assert native == snapshot_keys(CACHE_JOB='test-build', CACHE_COVERAGE='false', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
+    assert native != coverage
     assert apple == snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-apple-darwin', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
     assert apple != snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-apple-darwin', HOST_OS='Linux', HOST_ARCH='ARM64')['prefix']
     assert apple != snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='x86_64-apple-darwin', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
