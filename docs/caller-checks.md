@@ -216,8 +216,7 @@ test_shard_count = 32
 ```
 
 More shards spread the tests over more runners, and each shard repeats its own
-setup. The shard matrix, the partitions, the job names and the coverage union
-use each host's count. Only Linux uploads coverage, and its union expects
+setup. The shard matrix, partitions and job names use each host's count. Only Linux uploads coverage, and its union expects
 exactly `test_shard_count` reports. A
 coverage baseline keeps the count stored in its manifest, so a baseline
 recorded with another count still merges.

@@ -2004,8 +2004,11 @@ jobs:
           PYTHON
           # Windows programs need mixed-separator paths rather than MSYS paths.
           native() { if [ "${OS:-}" = Windows_NT ]; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
-          cargo_home=$(native "$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd)")
-          rustup_home=$(native "$(cd "${RUSTUP_HOME:-$HOME/.rustup}" && pwd)")
+          mkdir -p "${CARGO_HOME:-$HOME/.cargo}"
+          cargo_home=$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd)
+          rustup_home=$(cd "${RUSTUP_HOME:-$HOME/.rustup}" && pwd)
+          cargo_home=$(native "$cargo_home")
+          rustup_home=$(native "$rustup_home")
           diagnostics="$PWD/target/browser-author-diagnostics"
           mkdir -p "$diagnostics"
           diagnostics=$(native "$diagnostics")
@@ -2255,6 +2258,8 @@ jobs:
       matrix:
         runner: ${{ fromJSON(needs.declaration.outputs.test_runners) }}
         shard: [doctests]
+        # Zero uses the declared shard count in the shared test environment.
+        count: [0]
     env: *test-env
     defaults: *test-defaults
     steps: *test-steps

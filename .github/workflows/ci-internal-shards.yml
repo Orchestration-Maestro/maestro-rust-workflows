@@ -61,15 +61,14 @@ jobs:
                       assert result.returncode != 0 and not values, (declared, result.stdout)
                       assert result.stderr.strip() == message, (declared, result.stderr)
               schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
-              assert schema['properties']['test_shard_count'] == {
-                  'description': 'Number of parallel test shards; every shard collects coverage.',
+              assert {key: value for key, value in schema['properties']['test_shard_count'].items() if key != 'description'} == {
                   'type': 'integer', 'minimum': 1, 'maximum': 60, 'default': 16}
               assert 'test_shard_count' not in schema['required']
 
           shard_count_declaration_is_validated()
           print('PASS shard_count_declaration_is_validated')
 
-          def shard_count_seen_by(job, step, declared):
+          def shard_count_seen_by(job, step, declared, matrix_count=0):
               # Layers workflow, job and step env as GitHub does, resolving declaration outputs from a real declaration run.
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               with tempfile.TemporaryDirectory() as temporary:
@@ -82,6 +81,8 @@ jobs:
                   result, outputs = declaration(directory)
                   assert result.returncode == 0, result.stderr
               def resolve(value):
+                  if str(value).startswith('$' + '{{ matrix.count || '):
+                      return str(evaluate(value, {'matrix.count': matrix_count, 'needs.declaration.outputs.test_shard_count': outputs['test_shard_count']}))
                   match = re.fullmatch(r'\$\{\{ (steps\.config|needs\.declaration)\.outputs\.(\w+) \}\}', str(value))
                   if not match:
                       return str(value)
@@ -116,6 +117,8 @@ jobs:
                       for job, step in [('tests', 'Tests'), ('tests', 'Isolated tests'), ('doctests', 'Tests'),
                                         ('tests-result', 'Merge coverage')]:
                           assert shard_count_seen_by(job, step, declared) == str(expected), (job, step, declared)
+                      for count in [1, 4]:
+                          assert shard_count_seen_by('tests', 'Isolated tests', declared, count) == str(count)
 
           declared_shard_count_reaches_every_reader()
           print('PASS declared_shard_count_reaches_every_reader')

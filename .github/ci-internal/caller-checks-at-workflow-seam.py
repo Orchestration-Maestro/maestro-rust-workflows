@@ -645,6 +645,8 @@ def doctests_run_independently_and_remain_required():
     assert evaluate(jobs['doctests']['name'], {'matrix.runner': 'ubuntu-latest', "format('Doctests ({0})', 'ubuntu-latest')": 'unused'}) == 'Doctests'
     assert 'test_runners' in jobs['doctests']['strategy']['matrix']['runner']
     assert jobs['doctests']['strategy']['matrix']['shard'] == ['doctests']
+    assert jobs['doctests']['strategy']['matrix']['count'] == [0]
+    assert set(jobs['doctests']['strategy']['matrix']) == {'runner', 'shard', 'count'}, 'one doctest leg per runner'
     for key in ['steps', 'defaults', 'env']:
         assert jobs['doctests'][key] == jobs['tests'][key], key
     assert set(jobs['tests-result']['needs']) == {'tests', 'doctests', 'declaration', 'test-build'}
@@ -1191,7 +1193,9 @@ def fixture_git(directory, *args):
 
 def coverage_matrix_splits_doctests_from_partitions():
     tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
-    matrix = re.search(r'        include: (.*)', tests)[1]
+    matrix_match = re.search(r'        include: (.*)', tests)
+    assert matrix_match is not None, 'the test matrix must include the selected host legs'
+    matrix = matrix_match[1]
     assert 'test_shard_count: $' + '{{ steps.config.outputs.test_shard_count }}' in workflow
     assert 'test_shards: $' + '{{ steps.selection.outputs.test_shards }}' in workflow
     assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[{\"runner\":\"ubuntu-latest\",\"shard\":\"warm\"}]' || needs.declaration.outputs.test_shards) }}"
@@ -3655,11 +3659,29 @@ def foreign_target_failures_are_detected():
 foreign_target_failures_are_detected()
 print('PASS foreign_target_failures_are_detected')
 
+def isolation_creates_a_missing_cargo_home():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        tools, log = install_recording_runner(directory)
+        home = directory / 'new-cargo-home'
+        result = execute('Isolated tests', directory, {'PATH': str(tools) + os.pathsep + os.environ['PATH'],
+                         'TOOLS': str(tools), 'RUNNER_TEMP': temporary, 'CARGO_HOME': str(home),
+                         'SHARD': '2', 'TEST_PACKAGES': '["sample"]', 'COLLECT_COVERAGE': 'false'})
+        assert result.returncode == 0, result.stdout + result.stderr
+        commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+        assert home.is_dir() and commands[-1]['cargo_home'] == str(home), commands
+        assert 'No such file or directory' not in result.stderr, result.stderr
+
+isolation_creates_a_missing_cargo_home()
+print('PASS isolation_creates_a_missing_cargo_home')
+
 def native_test_failures_are_detected():
     import shutil
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         shutil.copytree(root / 'fixtures/host-test-rejected', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        result = execute('Lint', directory)
+        assert result.returncode == 0, result.stdout + result.stderr
         env = {'RUNNER_TEMP': temporary, 'GITHUB_ENV': str(directory / 'environment'), 'GITHUB_PATH': str(directory / 'path')}
         result = execute('Coverage tools', directory, env)
         assert result.returncode == 0, result.stdout + result.stderr
