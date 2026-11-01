@@ -161,6 +161,7 @@ jobs:
       test_prepare_inputs: ${{ steps.config.outputs.test_prepare_inputs }}
       warm_test_filter: ${{ steps.config.outputs.warm_test_filter }}
       packages: ${{ steps.selection.outputs.packages }}
+      doctest_packages: ${{ steps.selection.outputs.doctest_packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
       coverage_scope: ${{ steps.selection.outputs.coverage_scope }}
@@ -745,16 +746,19 @@ jobs:
                       return result
                   old, new = dependencies(before), dependencies(head)
                   selected.update(p for p in members if old.get(packages[p]['name']) != new[packages[p]['name']])
+              # Test shards keep only include readers; doctests also cover every changed crate.
+              doctest_selected = selected | included_readers
               if included_readers:
                   if event == 'merge_group':
                       selected.update(included_readers)
                   else:
                       selected = set(included_readers)
-              while True:
-                  reverse = {n['id'] for n in head['resolve']['nodes'] if n['id'] in members and set(n['dependencies']) & selected}
-                  if reverse <= selected:
-                      break
-                  selected.update(reverse)
+              for chosen in (selected, doctest_selected):
+                  while True:
+                      reverse = {n['id'] for n in head['resolve']['nodes'] if n['id'] in members and set(n['dependencies']) & chosen}
+                      if reverse <= chosen:
+                          break
+                      chosen.update(reverse)
           if event == 'merge_group' and not selected:
               fallback = 'no workspace test packages selected'
           if event == 'merge_group' and fallback:
@@ -792,6 +796,8 @@ jobs:
               prepare = json.dumps(config.get('test_prepare', '') if consumers is None or set(consumers) & set(names) else '')
               output.write('test_prepare=' + prepare + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
+              doctest_names = sorted(packages[p]['name'] for p in doctest_selected) if event == 'pull_request' and changed is not None else names
+              output.write('doctest_packages=' + json.dumps(doctest_names) + '\n')
               layout = {'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
                         'package_roots': {packages[p]['name']: roots[p].as_posix() for p in sorted(members)},
                         'shard_count': int(os.environ['TEST_SHARD_COUNT']),
@@ -1751,7 +1757,7 @@ jobs:
       WARM_CACHE: ${{ inputs.warm-cache && matrix.shard != 'doctests' }}
       WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
       SHARD: ${{ matrix.shard }}
-      TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
+      TEST_PACKAGES: ${{ matrix.shard == 'doctests' && needs.declaration.outputs.doctest_packages || needs.declaration.outputs.packages }}
       TEST_ARCHIVE: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && format('{0}/{1}/test-binaries.tar.zst', github.workspace, inputs.working-directory || '.') || '' }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
       COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
@@ -2125,7 +2131,7 @@ jobs:
       actions: read
     name: ${{ matrix.shard == 'doctests' && 'Doctests' }}
     needs: declaration
-    if: ${{ (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     strategy:
       fail-fast: false
@@ -2160,7 +2166,7 @@ jobs:
           assert os.environ['COLLECT_COVERAGE'] in expected
           required = 'success' if os.environ.get('INCLUDED_TESTS') == 'true' else expected[os.environ['COLLECT_COVERAGE']]
           assert os.environ['RESULT'] == required
-          assert os.environ['DOCTEST_RESULT'] == required
+          assert os.environ['DOCTEST_RESULT'] == 'success'
       - name: Download shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -2757,7 +2763,7 @@ jobs:
       actions: read
     name: Wasm and browser build
     needs: declaration
-    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
