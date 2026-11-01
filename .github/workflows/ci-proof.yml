@@ -1,4 +1,4 @@
-name: Locked provisioning and coverage regression timings
+name: Maestro coverage proof
 
 on:
   push:
@@ -7,61 +7,92 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
-  selected:
-    if: false
-    name: Maestro selected-package tests
+  warm:
+    name: Warm Maestro coverage cache
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 0c107308ca9b826c43e9ce2d14b83f387990b786
-      checkout-base-ref: 371abcbfa3c3420d2cc89b92eb8409453982cf45
-      concurrency-key: maestro-selected-228-graph
+      checkout-ref: d88e95580cf0e7c34b990fa3495c37a6257aedf2
+      concurrency-key: maestro-warm
+      warm-cache: true
+
+  maestro:
+    needs: warm
+    if: always()
+    name: Maestro partitioned coverage
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: 4aff524f6a07779902ea49daa773b6dc76f9cd80
+      concurrency-key: maestro-proof
       test-event: merge_group
 
+  selected:
+    name: Maestro selected-package tests
+    needs: warm
+    if: always()
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: 4aff524f6a07779902ea49daa773b6dc76f9cd80
+      checkout-base-ref: d88e95580cf0e7c34b990fa3495c37a6257aedf2
+      concurrency-key: maestro-selected
+      test-event: merge_group
 
-  selection-seams:
-    name: Selection regression timings
+  comparison:
+    name: Maestro single coverage
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout workflow
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Time selection regressions
-        shell: python
+          path: workflow
+      - name: Checkout Maestro
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: Orchestration-Maestro/maestro
+          ref: 4aff524f6a07779902ea49daa773b6dc76f9cd80
+          path: maestro
+      - name: Extract workflow steps
+        run: python3 workflow/.github/extract-workflow-steps.py
+      - name: Free instrumented build space
+        run: bash -e -o pipefail "$PROOF_STEPS/Free instrumented build space"
+      - name: Toolchain
+        working-directory: maestro
+        run: bash -e -o pipefail "$PROOF_STEPS/Test toolchain"
+      - name: Coverage tools
+        timeout-minutes: 10
+        run: bash -e -o pipefail "$PROOF_STEPS/Coverage tools"
+      - name: Caller tools
+        timeout-minutes: 10
+        working-directory: maestro
         run: |
-          import ast
-          import os
-          import pathlib
-          import re
-          import textwrap
-          import time
-          source = pathlib.Path('.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
-          source = source.split('      - name: Caller checks at workflow seam\n', 1)[1]
-          source = source.split('        run: |\n', 1)[1].split('\n  native:', 1)[0]
-          tree = ast.parse(textwrap.dedent(source))
-          tree.body = [node for node in tree.body if isinstance(node, (
-              ast.Import, ast.ImportFrom, ast.FunctionDef, ast.Assign))]
-          namespace = {}
-          exec(compile(tree, 'selection seam definitions', 'exec'), namespace)
-          workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
-          os.environ['COVERAGE_MERGE'] = textwrap.dedent(re.search(
-              r'^  COVERAGE_MERGE: \|\n((?:    .*\n|\n)+)', workflow, re.MULTILINE)[1])
-          os.environ['COVERAGE_IGNORE_FILENAME_REGEX'] = re.search(
-              r"^  COVERAGE_IGNORE_FILENAME_REGEX: '([^'\n]+)'$", workflow, re.MULTILINE)[1]
-          names = ['merge_groups_select_graph_and_fail_closed', 'merge_group_nested_members_have_one_owner',
-                   'selected_coverage_limits_tests_and_report_scope', 'selected_archive_build_compiles_only_selected_packages',
-                   'archived_coverage_excludes_unselected_report_packages', 'changed_packages_include_reverse_dependencies',
-                   'declared_test_inputs_select_their_readers', 'coverage_baseline_download_requires_complete_manifest',
-                   'selected_coverage_merges_only_unchanged_baseline_packages', 'baseline_selection_includes_changes_before_group_base', 'coverage_baseline_transfer_requires_coverage', 'archive_checkout_root_is_the_coverage_source_root', 'doctests_run_independently_and_remain_required',
-                   'removed_shard_lists_fail_clearly', 'coverage_matrix_splits_doctests_from_partitions', 'local_callers_grant_baseline_artifact_reads', 'locked_manifests_precede_all_test_routes']
-          for name in names:
-              started = time.monotonic()
-              namespace[name]()
-              elapsed = time.monotonic() - started
-              print(f'PASS {name}: {elapsed:.2f}s', flush=True)
-              assert elapsed < 30, f'{name} took {elapsed:.2f}s'
+          bash -e -o pipefail "$PROOF_STEPS/Search tools"
+          bash -e -o pipefail "$PROOF_STEPS/Mise bootstrap"
+          while read -r bin; do export PATH="$bin:$PATH"; done < "$GITHUB_PATH"
+          bash -e -o pipefail "$PROOF_STEPS/Test tools"
+      - name: Single-job coverage baseline
+        timeout-minutes: 45
+        working-directory: maestro
+        env:
+          CARGO_COVERAGE_MIN_LINES: 80
+        run: |
+          start=$SECONDS
+          bash -e -o pipefail "$PROOF_STEPS/Isolated tests"
+          echo "Single-job coverage seconds: $((SECONDS - start))"

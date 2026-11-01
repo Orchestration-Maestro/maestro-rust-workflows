@@ -14,9 +14,10 @@ parent as its PR base. The warmer is non-required, and consumers still run if it
 fails. See [Compile cache](../README.md#compile-cache) for snapshot shapes,
 fail-open transfers and storage limits.
 Advance all proof checkout references together after checking locked dependencies.
-The proof uses `12614d3236fba10d81afd2191a32ade98700f5e2`, which includes the
-native residency-helper compilation repair. Its parent,
-`cb438128e64e27be85dcafbdf3275dfa058e2781`, supplies the warm build and
+The proof uses `4aff524f6a07779902ea49daa773b6dc76f9cd80`, the Maestro main
+revision that qualifies the current release, and it still includes the native
+residency-helper compilation repair. Its first parent,
+`d88e95580cf0e7c34b990fa3495c37a6257aedf2`, supplies the warm build and
 selected-package base.
 The coverage proof runs only on pushes to `ci/228-merge-proof`, not on pull requests.
 Check its results before landing.
@@ -32,7 +33,7 @@ test_tools = false
 ## Coverage baseline and caller permissions
 
 When updating the shared workflow release pin, callers grant `actions: read`
-to the reusable-workflow call. The shared test-selection job needs it to read
+to the reusable-workflow call. The shared Caller declaration job needs it to read
 coverage artifacts from earlier runs; all other jobs retain their existing
 permissions. A missing caller grant can prevent a reusable workflow from
 starting, so add the grant in the same PR as the release-pin update.
@@ -50,8 +51,8 @@ run.
 A successful full aggregate publishes `coverage-<key>-full`, containing the
 source head, archive compiler checkout root, package roots and shard count. The
 aggregate uses the compiler job's root, even when its own runner has a different
-workspace path. The selector accepts
-only this manifest together with all of its run's LCOV shard artifacts. Missing
+workspace path. The baseline lookup
+accepts only this manifest together with all of its run's LCOV shard artifacts. Missing
 or expired artifacts, unavailable API access and an unrelated baseline cause a
 logged full-suite fallback. Historical runs without a manifest are not used;
 the first full run after rollout supplies the initial baseline. Main pushes and
@@ -90,8 +91,11 @@ when that save succeeds and later jobs restore the compatible snapshot.
 
 ## Reusable-call concurrency
 
-The optional workflow input `concurrency-key` defaults to an empty string,
-keeping the existing per-ref concurrency group. If a workflow calls this
+Every run except a push is grouped by ref. A push run is grouped by
+the calling workflow's name and the pushed commit, so two caller workflows on
+one commit run at the same time and later landings never wait for each
+other. The optional workflow input `concurrency-key` defaults to an empty
+string, which adds nothing to the group. If a workflow calls this
 reusable workflow more than once, give each calling job a distinct, stable
 key (case-insensitive), such as `concurrency-key: quality`. Reuse that key on
 later pushes so a new pull-request run cancels the older invocation of the
@@ -115,10 +119,11 @@ connection that the kernel assigned that port. Without it nothing runs.
 
 An absent file runs the standard checks without isolation, search tool
 installation or optional jobs. After declaration validation, pull requests
-run formatting, Clippy, docs, dependency/source checks and declared Windows
-target checks in parallel. Merge groups and main pushes also run tests, coverage and
-all declared foreign-target checks. Other foreign-target checks (including
-macOS), wasm/browser builds and Chromium tests run only on those full events.
+run formatting, Clippy, docs, dependency/source checks, declared Windows
+target checks, wasm/browser builds and doctests in parallel. Merge groups and
+main pushes also run test shards, coverage and all declared foreign-target
+checks. Other foreign-target checks (including macOS) and Chromium tests run
+only on those full events.
 An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
 member or non-boolean tool/build flag fails declaration validation. An empty
@@ -154,34 +159,71 @@ declared target checks; warm calls for other events skip them. Only
 default-branch pushes save those snapshots. Host-specific, checksum-pinned assets
 are listed in [Compile cache](../README.md#compile-cache).
 
+Only a default-branch push warm call also runs Format and lint, Docs,
+Doctests, Wasm and browser build, and declared Chromium browser tests.
+They run their existing checks, not substitute builds: the paths and compiler
+output modes match subsequent readers. Doctests use the plain test shape,
+not the instrumented coverage shape. Browser tests and doctests execute during
+these warm calls; the coverage warm build still uses its optional test filter.
+Other warm calls skip these additional jobs. No extra cache writer is enabled
+for pull requests, merge groups, feature branches or manual runs.
+
 The 1 GiB native-payload bound applies to each save, not the repository's
 10 GB cache allowance. Compressed snapshot sizes are measured separately;
 GitHub eviction can remove even the newest snapshot of a shape.
 
+### Cargo git dependency cache
+
+Build test archive, Prepare test setup and every test shard restore Cargo's `git/db` and
+`git/checkouts` directories before the first `cargo fetch`, so a cache hit
+fetches git dependencies without network access. The key hashes the caller's
+`Cargo.lock` and the `Cargo.lock` of every `additional_locked_manifests` entry;
+a different lock file misses and falls back to the newest entry of the same
+caller and directory. Only a default-branch push that missed the exact key
+saves it, from Build test archive. It counts against the 10 GB repository
+allowance: Maestro's `wasmtime` git revision with its submodules compresses to
+about 0.6 GB per entry.
+
 ## Test shards
 
-Tests use checksum-pinned cargo-nextest 0.9.148 with sixteen automatic
-`--partition count:N/16` partitions. The caller's `.config/nextest.toml` supplies
+Tests use checksum-pinned cargo-nextest 0.9.148 with automatic
+`--partition count:N/COUNT` partitions, where `COUNT` is the declared
+`test_shard_count`. The caller's `.config/nextest.toml` supplies
 test-suite runner metadata such as resource groups for fixed-port tests. Shared
 CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
 run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
-for merge groups and main pushes, using the selected packages described below.
-Main pushes always select every workspace package.
-Pull requests skip tests unless the [included-input rule](#pull-request-selection-and-retries) applies.
+for pull requests, merge groups and main pushes, using the selected packages
+described below. Main pushes always select every workspace package.
+Pull requests skip test shards unless the [included-input rule](#pull-request-selection-and-retries) applies.
+
+`test_shard_count` sets the number of shards. It is an optional whole number
+from 1 to 60 and defaults to 16. Any other value, including a float, a string or
+a boolean, fails the declaration job with `test_shard_count must be a whole number from 1 to 60`.
+
+```toml
+test_shard_count = 32
+```
+
+More shards spread the tests over more runners, and each shard repeats its own
+setup. The shard matrix, the partitions, the job names and the coverage union
+all use the declared count, so the union expects exactly that many reports. A
+coverage baseline keeps the count stored in its manifest, so a baseline
+recorded with another count still merges.
 
 Declared callers run `cargo llvm-cov nextest` in the same isolated environment
-with their opted-in tools. Only the sixteen numeric shards upload LCOV, without
+with their opted-in tools. Only the numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including `Doctests`, to succeed on full runs. On pull requests it requires a
-successful declaration and either event-skipped shards or successful included-input shards. On full runs it downloads all
-sixteen reports, counts each source line once (covered if any shard hits it), and
+successful declaration, successful `Doctests`, and either event-skipped shards
+or successful included-input shards. On full runs it downloads all
+reports, counts each source line once (covered if any shard hits it), and
 enforces `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. Both coverage modes run tests through nextest,
 so caller setup scripts run in either mode (reusing prepared outputs in shards). Single-job coverage uses one partition
-(`count:1/1`); declared callers combine sixteen reports. Both modes use the same
+(`count:1/1`); declared callers combine one report per shard. Both modes use the same
 line-counting policy: normalize source paths, count each line once, and enforce
 the coverage floor on the union of hits. PRs skip coverage for all callers.
 
@@ -192,8 +234,17 @@ One `Build test archive` job compiles the selected unit and integration tests wi
 Numeric shards download that archive and run `--archive-file`, keeping the same
 partitions, retries and coverage reports. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
-runs doctests once in parallel with the build, including on included-input PR runs.
+runs doctests once on every pull request, merge group and main push, without
+waiting for the archive build.
 Warm-cache runs keep their existing compile route and cache shape.
+
+Each shard fetches the archive and the test setup bundle in 16 parallel byte ranges from
+artifact storage, checks the size and SHA-256 digest the Actions API reports, then extracts.
+A digest or size mismatch fails the step before anything is extracted. If the listing has no
+digest or the transfer fails, the step hands over to the single-stream `download-artifact`
+action. Each download prints one line, `artifact-download name=<artifact> bytes=<n>
+seconds=<s> streams=<n>`, so the time guard can read transfer rate apart from test time;
+`streams=0` marks a handover.
 
 A caller that needs prepared files can declare one standalone shell command:
 
@@ -216,15 +267,81 @@ and restores it at `target/test-setup` in each numeric shard. Archived isolated
 shards receive `TEST_PREPARE_OUTPUT` as the absolute path to that restored
 directory, replacing any inherited value. Callers may rely on it to locate
 prepared files during archived execution when `test_prepare` is declared. Warm-cache
-runs also receive this path, but do not run preparation or restore prepared files.
+runs also receive this path, but run preparation and restore prepared files only
+when `test_prepare_inputs` is declared.
 Archived runs without `test_prepare` likewise have no prepared files restored.
-The variable alone does not guarantee files exist; callers must check for the
+
+Archived isolated numeric shards receive `TEST_ARCHIVE=1` on both plain and
+coverage routes. Warm-cache runs, direct non-archived runs, doctests and coverage
+runs that do not extract an archive leave it unset in the isolated environment.
+Callers may use `TEST_ARCHIVE=1` to require their declared prepared files and fail
+if any are missing, rather than silently rebuilding them in each shard.
+It identifies archived execution, not the presence of prepared files.
+
+`TEST_PREPARE_OUTPUT` alone does not guarantee files exist; callers must check for the
 files they need before reusing them. No nextest archive include is needed.
 Nextest setup scripts can export paths into that directory;
 they must reuse those files instead of preparing them again. The caller owns the
 preparation logic and exported environment. Shared CI does not interpret its
 setup-script definitions. The existing `concurrency-key` distinguishes both
 artifacts when a workflow makes several calls.
+
+`test_prepare_packages` names the workspace packages that read the prepared files.
+When it is set and a run selects none of them, the declaration drops the command:
+`Prepare test setup` does not start, and the shards skip the download and restore.
+A run that selects a listed package keeps the command, and so does a full-suite
+run, such as a main push or a merge group that falls back to the whole workspace.
+A change to this list, to `test_prepare` or to `test_prepare_inputs` selects the
+whole workspace. Names must be workspace packages; anything else fails the
+declaration. Without the list every run that tests prepares.
+
+`test_prepare_inputs` lists the files the `test_prepare` command reads, as
+repository-relative path globs from the caller's working directory, such as
+`.config/prepare-tests.sh` or `tools/**/*.toml`. `**` matches any depth, hidden
+files included. The prepared directory is cached under a key built from the
+contents of every matching file, the `test_prepare` command, the compile cache
+identity (repository, directory, host and compiler), and the checkout path. A
+glob that matches no file fails the job. `Prepare test setup` restores the
+bundle on a hit and skips the `test_prepare` command. A warm build restores it
+in the same way, so it uses the bundle in place of building the files again;
+without the list a warm build does not prepare. Every numeric shard then
+downloads the restored directory as before. Only pushes to the default branch
+write the cache, so a pull request or a merge group reads what the last push
+saved. Declare every input the command reads: an unlisted input does not change
+the key and can leave a stale directory in place. Without the list nothing is
+cached.
+
+When the exact key misses, `Prepare test setup` restores the closest earlier
+bundle saved under the same compile cache identity, checkout path and
+`test_prepare` command, which is the last push's bundle. A merge group and the
+push that lands it add bundles that earlier runs of the same workflow
+uploaded:
+
+- A merge group adds, for each pull request that is not on the default branch
+  yet, whether in this group or queued ahead of it (found from the `(#N)` that
+  ends its commit subject), the bundle of that pull request's newest successful
+  run at its head.
+- A push to the default branch adds the bundle of the successful merge group run
+  of the pushed commit.
+- A pull request run adds nothing, so every added bundle was built by the code
+  being merged, starting from a bundle the default branch saved. Runs from forks
+  are never added.
+
+`Prepare test setup` extracts each bundle to its own directory, separate from
+`TEST_PREPARE_OUTPUT`, and sets `TEST_PREPARE_BASE` to the list of those
+directories before the command runs: the restored bundle first, then the added
+ones, joined with `:`. A bundle that is missing, expired, fails its size or
+digest check or cannot be read is left out, and the later ones are still tried.
+The command may copy or reuse any file in a listed directory whose own inputs
+are unchanged, and must still write every file it needs to
+`TEST_PREPARE_OUTPUT`. When no bundle is available, `TEST_PREPARE_BASE` is
+unset. An exact hit still skips the command.
+
+```toml
+test_prepare = "sh .config/prepare-tests.sh"
+test_prepare_packages = ["wasm-host", "wasm-guest"]
+test_prepare_inputs = [".config/prepare-tests.sh", "tools/**/*.toml"]
+```
 
 ### Test diagnostics
 
@@ -250,9 +367,10 @@ from running.
 
 Artifact names are
 `test-diagnostics-<repository-id>-<caller-digest>-shard-<shard>-run-<run-id>-attempt-<run-attempt>`.
-The shard field is `1` through `16`, or `doctests` for the parallel doctest leg
-(`shard-doctests`). That leg normally has no `nextest.log`; the same missing-file
-tolerance applies. The caller digest is the full lowercase SHA-256 of the UTF-8 compact JSON array
+The shard field is `1` through the declared `test_shard_count`, or `doctests`
+for the parallel doctest leg (`shard-doctests`). That leg normally has no
+`nextest.log`; the same missing-file tolerance applies. The caller digest is the
+full lowercase SHA-256 of the UTF-8 compact JSON array
 `[checkout-repository-or-github.repository, working-directory-or-".", concurrency-key-or-""]`,
 with Unicode unescaped. It distinguishes repositories, caller directories and
 reusable call keys without exposing path characters in artifact names.
@@ -270,10 +388,12 @@ grep -RFn -- 'phase: waiting-for-child-exit' "$download/target/browser-author-di
 
 ### Pull-request selection and retries
 
-Pull requests run fast checks only, except that changes to literal `include_str!` or `include_bytes!` inputs also run test shards for the reading crates and their reverse dependencies, without coverage.
-The declaration still computes changed workspace crates and their reverse
-dependencies for the self-test event mode. A crate manifest selects its
-crate; lockfile changes compare the resolved transitive dependency identities
+Pull requests run test shards only for changes to literal `include_str!` or
+`include_bytes!` inputs. These shards cover the reading crates and their reverse
+dependencies, without coverage. Pull-request doctests cover changed workspace
+crates, included-input readers and their reverse dependencies. An empty doctest selection succeeds
+without running `cargo test`; an unavailable diff selects every package.
+A crate manifest selects its crate; lockfile changes compare the resolved transitive dependency identities
 and features at base and head, selecting affected crates. Root manifest,
 toolchain or CI workflow/schema changes select everything. Non-test declaration
 keys (such as spelling, wasm and foreign-target lists) select no extra tests;
@@ -513,13 +633,23 @@ routes pass it to child builds, including dependencies outside the checkout.
 Explicit Bash run defaults preserve runner failures through log capture. A failed
 runner fails its test step, so coverage uploads run only after success; a missing
 report after success fails the upload separately. On full runs the required aggregate accepts
-only successful matrix legs, including `Doctests`, and requires the sixteen numeric
-reports when merging coverage. On pull requests the aggregate requires a successful
-declaration and either skipped shards or successful included-input shards.
+only successful matrix legs, including `Doctests`, and requires one report per
+numeric shard when merging coverage. On pull requests the aggregate requires a successful
+declaration, successful `Doctests`, and either skipped shards or successful
+included-input shards.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
 retain the runner's normal home and cache access.
+
+Before cleanup, the step kills every process still using the isolated
+directories: as its working directory, executable or open file, or through the
+isolated environment it inherited. Processes running the compile cache
+executable are left running for the statistics and seal steps. The log lists
+each stopped process as `Stopped test process <pid>: <command>`, so the test
+that leaked it can be found. If the directories still cannot be removed, the
+step logs `Could not remove <directory>`. Cleanup never changes the exit status
+of the test command, whether it passed or failed.
 
 ## Caller-pinned build and test tools
 
@@ -549,7 +679,8 @@ Windows paths are published in native format for later steps.
 
 ## Wasm and browser builds
 
-For each listed package, Linux runs:
+On pull requests, merge groups and main pushes, Linux runs this command for
+each listed package:
 
 ```bash
 cargo build --locked --target wasm32-unknown-unknown -p "$CRATE"
@@ -560,9 +691,11 @@ packages. Either `test_tools = true` or `browser_build = true` installs caller
 tools once before wasm compilation. The browser flag is independent: it does
 not enable tools in other jobs. With `browser_build = true`, the workflow runs
 `mise exec -- just browser-build` after successful wasm builds, including when
-the wasm array is empty. A failed wasm build prevents the recipe. False or
-omitted `browser_build` skips the recipe and its `just`-pin validation, even
-when tools are enabled for wasm compilation.
+the wasm array is empty. Both wasm builds and the browser recipe run on every
+pull request, merge group and main push. Advisory scans, fuzz scans and warm
+calls outside a default-branch push skip them. A failed wasm build prevents
+the recipe. False or omitted `browser_build` skips the recipe and its
+`just`-pin validation, even when tools are enabled for wasm compilation.
 
 Provide a `mise.toml` pinning the recipe's tools, including `just`, and a
 `justfile` with `browser-build`. A missing tool configuration, installation
@@ -583,13 +716,21 @@ invocations. An absent declaration, omitted key or empty array schedules no
 browser runtime job. Wrong types and unknown names fail declaration validation.
 The existing `wasm_crates` and `check_targets` arrays remain required.
 
-One Linux `browser-tests` job invokes `just browser-test` on merge groups and
-main pushes, which select the full requested suite. Ordinary pull requests skip
-it, and advisory-only runs never start Chromium. The pull-request selection rule
-is self-test behavior only: a requested package in the
-changed-package/reverse-dependency selection, or a change to a nonempty browser
-request, selects the job without widening native package selection, and
-removing the request skips it.
+One Linux `browser-tests` job invokes `just browser-test`. In merge groups it
+runs when the shared workspace graph selects a requested package, whether that
+package changed directly or depends on a changed crate. Changes confined to
+unrelated crates skip the job. The job reuses native package selection; it does
+not compute a separate browser graph or narrow the caller's recipe.
+
+Shared-input changes (`Cargo.lock`, `.config/`, toolchain, CI or root files) and
+unresolved graph/diff selection fall back to the full suite and run declared
+browser tests. Main pushes always run declared browser tests, even after an
+unrelated landing. An intentional browser skip does not block required checks;
+a browser recipe failure still fails CI.
+
+Ordinary pull requests, advisory-only and fuzz-only runs skip the job; warm-cache
+runs start it only on default-branch pushes. A change to a nonempty browser
+request also selects the job; removing the request skips it.
 `browser_build` and `test_tools` remain independent opt-ins. Native coverage
 selection and its floor do not change.
 
@@ -802,3 +943,360 @@ initial target; admission can delay replacements. Repository secrets are not
 passed to these jobs, and external contributors require approval before running.
 Availability is checked before scheduling; a host lost afterward fails or leaves
 an already-selected job queued, not silently rerun on another host.
+
+## Full suite after landing
+
+A caller can run `ci.yml` on every push to `main`, without `warm-cache` or scan
+inputs. Checkout uses the push's exact commit. This runs every test shard,
+doctests and declared browser tests, regardless of merge-group selection.
+Push runs have separate concurrency groups by calling workflow and commit: later
+landings cannot cancel a run or replace a queued landing.
+
+Maestro's `Full suite after landing` workflow owns that call. Its
+`Failed landing reports` workflow listens for completed main-push runs with
+`workflow_run` and calls `post-landing.yml` with the completed `run-id`.
+Keep both shared-workflow references pinned to reviewed commits. There is no
+new `.github/ci.toml` setting for test selection or commands; list the caller's
+reporting workflow in `privileged_trigger_workflows` for the existing trigger
+audit. GitHub activates `workflow_run` listeners only after they reach the
+default branch.
+
+The reporter needs `contents: read` and `actions: read` on the job token to
+read the exact run attempt and failed job logs. It uses the existing
+`RELEASE_APP_CLIENT_ID` organization variable and `RELEASE_APP_PRIVATE_KEY`
+secret to mint a repository-scoped App token with contents, workflows, issues and pull
+requests write access. Workflow write access lets it revert a landing that
+changed CI files. The App must be installed in the caller repository and
+its secret must be available there. Do not substitute the automatic job token
+for these writes: it does not trigger required checks on the new revert PR.
+No credential is passed to the full-suite test jobs.
+
+A failed suite creates one issue per landing commit, naming the exact merged
+PR (or every PR in a batched push), commit, failed-test log lines and original run. The reporter paginates jobs
+and reads only the current run attempt. It opens `ci/revert-<full-commit>` against
+`main`, reverting only that landing (first parent for a merge commit), from the
+current main tip. The PR links the original PR and failure issue. It uses the
+normal required checks and merge queue; the reporter never pushes to `main`
+or merges the revert. Existing issues and open or closed revert PRs are reused
+on repeated failure handling. If a push succeeded before PR creation failed,
+the next attempt reuses the landing's existing revert branch.
+
+A merge queue can squash several PRs in one push, and only the push's last
+commit gets a suite run. The reporter walks back from that commit to the
+previous commit with its own main-push run of the same workflow (within 50
+commits; it fails with the run link if none is found). When it finds more than
+one PR, the issue names all of them, newest first, and the reporter fails with
+the run link without a revert, because the failing PR is unknown. Revert the
+culprit in a normal reviewed PR.
+
+A passing suite creates neither artifact. Unknown or ambiguous PR attribution,
+unreadable logs, missing permissions and revert conflicts fail with the original
+run link. A conflict can leave the failure issue without a revert PR: resolve
+the conflict in a normal reviewed PR, not by force-pushing main. Non-suite job
+failures are reported as safeguard failures rather than blamed on another PR.
+
+## CI speed guards
+
+Six guards keep the merge queue from slowing down again. Each one fails a check
+or files an issue on its own; none waits for someone to notice. The numbers
+below are the first values measured on Maestro, the largest caller, and each has
+its source next to it. Tighten them with `with:` inputs once the 32-shard and
+build-once changes have run on that caller.
+
+`ci-guards.yml` holds the guards that judge a finished run, plus the exception
+check. A caller gives it the completed run to judge from a `workflow_run`
+listener, and runs it without a run id on pull requests for the exception check:
+
+```yaml
+on:
+  workflow_run:
+    workflows: [Rust CI]
+    types: [completed]
+jobs:
+  guards:
+    if: >-
+      github.event.workflow_run.event == 'merge_group' ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == github.event.repository.default_branch)
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci-guards.yml@<reviewed commit>
+    with:
+      run-id: ${{ github.event.workflow_run.id }}
+```
+
+The listener passes default-branch pushes as well as merge groups, because those
+runs save the compile snapshots every other run restores, and it passes a
+cancelled one too: a cancelled seeding run is a finding, not silence.
+
+Pin the reference to a reviewed commit and list the listener workflow in
+`privileged_trigger_workflows`, as for the post-landing reporter. Issues are
+filed with the automatic job token. An open issue with the same title is never
+filed twice, so a breach that persists leaves one issue, and a job that cannot
+read the run fails instead of passing.
+
+| Input | Default | Used by |
+| --- | --- | --- |
+| `selection-window` | 10 | Selection check |
+| `selection-share-ceiling-percent` | 25 | Selection check |
+| `shard-balance-margin` | 1.5 | Shard balance |
+| `slow-test-seconds` | 30 | Test-time limit |
+| `hang-limit-seconds` | 120 | Test-time limit |
+
+### Time per unit of work
+
+The guard holds time per unit of work, not raw wall time. A run that does twice
+the work and takes twice as long is natural growth: it is accepted without
+anyone acting and files nothing. Two kinds of work are measured:
+
+- Test jobs, in seconds per test run. Each test shard ends with a `Work units`
+  notice, `tests: N`, read from the nextest summary; the rate is the seconds of
+  the step that ran the tests (`Tests` or `Isolated tests`) over the shards'
+  test runs, within a runner band. Downloads and setup are never test work, and
+  shards that run side by side each add their own seconds.
+- Build jobs, in seconds per compile unit. The `Build test archive` cache step
+  prints `compiles: N; hit-rate: P`, the executed compile requests and the hit
+  rate of the sccache statistics.
+
+The seconds are work time, never wall time: a gap with no job executing counts
+for nothing, and skipped and cancelled jobs are not work. The union of the jobs'
+start-to-end intervals is the run's work time, which only the runner wait below
+subtracts. A run is compared only
+with earlier runs that executed the same jobs (the same job names), so a run
+that added or lost a job has no like-for-like baseline until three runs have the
+new set. The stored ratchet level of a band, kind and workflow is shared across
+job sets.
+
+A run whose rate for either kind is more than 10% over its baseline, and
+whose gap is more than 2 s per executed job in total (the rate gap times the
+run's units of that kind, against two seconds for each job that did them), is a
+regression and files "CI run slower than its baseline: run N" at once. The
+bound is the measurement's own error (supervisor ruling S7759): GitHub stamps
+job and step times to the second, 1 s at each boundary, so a work-time
+difference is measurable only above 2 s per executed job. A difference within
+it is neither a regression nor an escalation, for a rate below its spread as well;
+anything above it at +10% fires, and anything above it outside the band's
+spread escalates. The
+issue names the run and the band, gives each regressed rate against its baseline
+and links the latest baseline runs. Fix it at its cause; nothing accepts it.
+
+Hosted Linux runners come in two speed bands: the same work, cache and image
+ran 1.45 to 1.6 times slower on some runners (maestro-rust-workflows runs
+40990998136 and 40931459907). Every Linux job therefore starts with a `Runner
+hardware` step that prints the CPU model and core count, adds a notice
+annotation and appends the line to the job summary, with a stable label:
+
+```text
+Runner hardware: AMD EPYC 7763 64-Core Processor, 4 cores (runner-band: amd-epyc-7763-64-core-4c)
+```
+
+A run's runner band is the label of its slowest labelled job, which sets the
+run's pace. The guard reads it from the annotation (`runner-band: <label>`); a
+run with no label is in the band `unknown`. Of the last `selection-window`
+earlier successful runs of the same workflow and event (10 by default), only
+those in the same band count, and a run newer than the judged one never does.
+
+The recent baseline of a kind is the median of its rates in the previous five
+successful runs in the band. The guard also keeps the lowest such median it has
+seen for each level, a workflow, event, band and kind, in one open issue titled
+"CI time ratchet". The baseline is the lower of the two, so a staircase of small
+regressions cannot raise the line, and the limit is the baseline plus 10%.
+Fewer than three earlier rates in the band means no baseline and no issue.
+Merge groups, pull requests and pushes to `main` are judged; CodeQL and every
+other run are not, because they gate nothing. Keep the ratchet issue open: the
+guard rebuilds a missing one from the next runs, and a lasting slowdown it has
+not seen is then taken as the new level.
+
+A stored level has one writer: only the guard lowers it, when the recent median
+is lower, and nothing raises it; no input does. A lasting slowdown keeps firing
+until its cause is fixed. A deliberate new cost that is not natural growth needs
+its own owner decision first.
+
+The runner wait is its own measure: the run's wall time minus its work time,
+which is the time spent pending for a concurrency group or a runner, before the
+first job or between jobs. A run ends at its last job's end, never at its
+`updated_at`, which keeps moving after the last job when a check is re-requested
+or the pull request changes: run 41098096027 ended its last job at 17:38:57,
+`updated_at` read 17:56:00, and no job waited over 10 s. It is never CI slowness. It is out of pattern only
+when it is over the median wait of the like-for-like baseline runs by more than
+10% and by more than 2 minutes, and then the guard files "Escalation: runner
+wait over its median" (a capacity issue, never a regression). Source: Maestro
+run 41006271785 waited 36.8 min before its first job and worked 17.0 min, and
+the advisory run 41059668738 of this repository waited 16 s and 28 s longer for
+runners than before while its work time matched.
+
+Source: no rate is fixed in advance; the first baseline of a band is its first
+three runs. Maestro merge-group runs 40990557025 and 40990555729 took 39.3 and
+39.8 minutes with 16 shards, and the baseline moves down by itself as the
+32-shard change makes runs shorter. A judged run
+reads the jobs of at most `selection-window` earlier runs, the annotations of
+the test shards and the archive build of the judged run and of at most five
+baseline runs, and shard logs only on a merge group or main push, or when the
+shards are unbalanced. With 32 shards and the default window that is at most
+about 285 calls for the time guards and about 315 when the shards are
+unbalanced, against the job token's 1,000 calls an hour for the whole
+repository. The cache reads add two calls (cache usage and the storage limit),
+up to six pages of the cache list (the largest entries past 90%, and the
+snapshots of a default-branch run), and the floor annotations of the other
+jobs that ran a floor step, about 15, so about 310 and 340. To respond, open the run
+link and fix the cause of the kind that regressed.
+
+### Compile-cache hit-rate floor
+
+Every job that saves a compile snapshot warns when its compile-cache hit rate is
+under 90%: Format and lint, Docs, Build test archive, Prepare test setup, the
+test shards and Doctests, Dependency, source and coverage checks, each Linux and
+macOS target check (the Windows target checks skip the statistics step, so they
+are never judged) and the Wasm and Chromium browser builds. A default-branch push
+seeds every one of these shapes (`tests-coverage`, `tests-plain`, `quality`,
+`docs`, `checks`, `targets-clippy-<target>`, `browser`, `browser-tests` and
+`test-prepare`), so each is judged on merge groups, pull requests and
+default-branch runs alike; only a run in which no cacheable compilation ran is
+not judged. It never fails the build: a change can invalidate the cache itself,
+such as a toolchain bump, and only a push to the default branch saves a
+snapshot again, so a failing floor would block the merge group on every retry.
+The floor is fixed in `ci.yml`. Source: the archive build of merge-group runs
+40990557025, 40990555729, 40968689273 and 40946549381 hit 100.00%, 100.00%,
+100.00% and 99.67%. Before the check covered every shape, Format and lint, Docs,
+Doctests and the browser builds of Maestro merge groups 40322701820, 40620121647,
+40870001533 and 40993559130 compiled cold, about 4,040 misses per group, because
+the warm-up stayed on a release without their writer, and the first group after a
+default-branch push (40996420703) restored all five at 100%. The warning is an
+annotation that names the shape and one cause. The guards read it from a
+merge-group or main-push run, and from a pull-request run when a caller passes
+one, and file "Compile cache below its hit-rate floor", or add a comment to the
+open issue listing each job and its warning, so repeated cold builds on
+default-branch pushes, which are the regression, show as a growing list of
+comments:
+
+- **Cold snapshot:** a snapshot was restored but lacks this build's objects.
+  Run the warm build on the default branch to seed it again.
+- **Key change:** no snapshot matches the job shape, though others of the same
+  job exist. The compiler, runner or caller directory changed; the next warm
+  build on the default branch seeds the new key.
+- **No writer:** the repository cache holds snapshots of other jobs but none of
+  this shape, so no default-branch push saves it. Check that the caller's warm-up
+  runs a release of this workflow that has the writer.
+- **Eviction:** the repository cache holds no compile snapshot at all. Check the
+  cache size and the seven-day expiry, then run the warm build.
+
+### Compile snapshots and cache usage
+
+A push to the default branch is the only run that saves compile snapshots, so
+the guards judge those runs themselves, cancelled ones included, and the
+repository cache they fill.
+
+- "Escalation: default-branch run did not seed its compile snapshots" is filed
+  when the run's jobs reported more saved snapshots than the repository cache
+  holds for the run (the save step never fails the build, so a lost save shows
+  only here), when jobs measured their compile cache and none saved, or when the
+  run was cancelled with jobs unfinished. The cache list is read for the run's
+  default branch and matched by the run id in the snapshot key. Source: on
+  2026-10-26 between 16:13 and 21:00 UTC other caches filled the 10 GiB limit and
+  every default-branch snapshot was evicted, and eight merge groups
+  (40369902252 to 40395312817) compiled the test shape cold at 0% to 28.8%, their
+  test shards taking a median 17.4 min against 13.2 min afterwards.
+- "Repository cache above 90% of its limit" is filed when the cache in use
+  (`actions/cache/usage`) is over 90% of the repository's storage limit
+  (`actions/cache/storage-limit`, 10 GiB on Maestro), with the five largest
+  entries by ref. It fires at 90% of the storage limit the API reports, not at
+  a size fixed in the workflow, because over the limit GitHub evicts the oldest
+  snapshots, which is how the 2026-10-26 cold groups happened, and the margin
+  gives the guard time to file before that. It is read for every judged run.
+  Source: Maestro held 10,928,201,953 bytes (10.18 GiB) in 22 entries on
+  2026-10-30 against its 10 GiB limit. The guide and the finding use GiB. To respond, delete the pull-request entries the issue lists, or
+  shrink what the snapshots hold.
+
+Both titles are standing: a repeat adds a comment to the open issue.
+
+### Selection check
+
+The selection step logs and summarizes `Selection share: N% (a/b test
+packages)`. When a change widens the run to the full suite it also logs
+`Full-suite fallback: <trigger>`, with the file when one caused it. The guard
+reads this from the last `selection-window` completed runs of the same event
+and files "Test selection share above its range" when their median share is
+above `selection-share-ceiling-percent`. The issue lists each run's share and
+trigger. Source: of 14 Maestro pull-request runs from 21:00 UTC on 29 October
+2026, 11 selected 1 to 3 of 51 packages (median 2%) and 3 ran all 51. All five
+merge groups inspected (40990557025, 40990555729, 40968689273, 40946549381 and
+40993559130) ran 51 of 51 because the coverage baseline was missing or not an
+ancestor, so no narrowed merge group has been measured yet. To respond, read the
+triggers in the issue: a missing or stale baseline needs a full-workspace run to
+land first, and a shared input that keeps widening runs belongs in `test_inputs`.
+
+### Shard balance
+
+When the slowest `Test shard` job takes more than `shard-balance-margin` times
+the median shard, the guard files "Test shards unbalanced: run N". The issue
+names the slow tests in that shard that are new, or reached a higher slow mark,
+since the last green run of the same event. Nextest prints only slow marks, so
+growth shows as a higher mark rather than exact seconds. The default is 1.5.
+Source: the slowest shard was 1.18 and 1.20 times the median in runs 40990557025
+and 40990555729, and 1.32 times in the 32-shard proof run 40974924871. To
+respond, fix or split the named tests, then check priorities in the nextest
+configuration.
+
+### Test-time limit
+
+Nextest flags a test slow after `slow-test-seconds` (30), and the caller's
+`slow-timeout` period should match. A merge-group or main run files one issue
+for every test it flagged, "Test over 30 seconds: <test>", with no cap on how many one
+run files; an open issue for the test is never filed twice. Fix the test at its
+cause; do not raise a timeout.
+
+The kill is one hang limit, `hang-limit-seconds` (120). A nextest override may
+exceed it only for a test that needs more, and the comment directly above its
+`slow-timeout` must name the issue that removes it. The `Test-time exceptions` job
+fails for an override that names no issue or only closed ones, and names the
+filter. Close the issue only after removing the override. Source: 30 and 120
+seconds are the limits Maestro chose after a single 30-second kill failed 79 of
+99 shard jobs in one day; its one exception, `browser_author_bootstraps_from_empty_build_state`,
+needs 208 seconds.
+
+### Required checks
+
+For a full merge-group or main run, `ci-guards.yml` pins the jobs that must run:
+`Caller declaration`, `Format and lint`, `Docs`, `Build test archive`, the
+`Test shard` jobs, `Doctests`, `Tests (ubuntu-latest)` and `Dependency, source
+and coverage checks`. A pinned job that is missing or skipped files "Required
+checks missing from run N" naming it. A failed job is not a missing one; the run
+already reports it. The self-test checks every pinned name against `ci.yml`,
+and checks that this repository's ruleset checks, `Required repository quality`
+and `Required consumer tests`, still exist, so renaming a job fails there first.
+When you rename a job on purpose, change the pin and the ruleset in one change.
+### Escalations
+
+Anything that stands out of the pattern is escalated explicitly: the guard files
+an issue with the label `escalation`, or adds a comment to the open one with the
+same title, naming the run, its baseline runs and what departed from them.
+Nothing outside the pattern is absorbed silently. The normal spread of a rate is
+the range of the band's earlier rates widened by 10% of their median; for a hit
+rate or a share it is the range of the earlier values widened by 10 points.
+Three earlier values are needed for a spread. Each title is standing, so a
+departure that repeats shows as comments on one issue:
+
+- "Escalation: time per test run outside its normal spread" and "Escalation:
+  time per compile unit outside its normal spread": a rate below the band's
+  spread, which means work that did not run. A rate above the spread is the
+  regression above, filed once with the same label.
+- "Escalation: jobs or steps changed without matching work": a job or step
+  that appears, disappears or grows (past the earlier range plus 10% and 30
+  seconds) in a successful run. The seconds a rate judges (the archive build,
+  each shard job and the `Tests` or `Isolated tests` step of a shard) are only
+  checked for appearing and disappearing. Every other shard step, such as setup,
+  tools, coverage or a download, is judged for growth like any step: a slow
+  download is a transfer finding, never a regression of the tests rate.
+- "Escalation: compile cache hit rate outside its usual range": the hit rate of
+  the archive build, read from its `Work units` notice, outside the earlier
+  hit rates widened by 10 points.
+- "Escalation: test selection share outside its usual range": the run's share
+  of workspace test packages selected, outside the earlier runs' shares
+  widened by 10 points.
+
+To respond, open the run link, find what departed and either fix its cause or,
+if the change is deliberate, take it to the owner; the guard stays quiet again
+once the earlier runs show the new pattern.
+

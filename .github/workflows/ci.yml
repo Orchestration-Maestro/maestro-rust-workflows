@@ -49,34 +49,39 @@ on:
         value: ${{ jobs.advisories.outputs.findings }}
 
 concurrency:
-  group: rust-ci-${{ github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
+  group: rust-ci-${{ github.event_name == 'push' && format('{0}-{1}', github.workflow, github.sha) || github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 env:
-  TEST_SHARD_COUNT: 16
   COVERAGE_IGNORE_FILENAME_REGEX: '(^|/)(tests|benches)/([^.]|\.[^./]|\.\.[^/])|(^|/)(target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$'
+  PACKAGE_OWNER: |
+    # The deepest root wins, so a nested package owns its own files.
+    def package_owner(path, roots):
+        return max((package for package, root in roots.items() if path.is_relative_to(root)),
+                   key=lambda package: len(roots[package].parts), default=None)
   COVERAGE_MERGE: |
     import json
     import os
     import pathlib
+    exec(os.environ['PACKAGE_OWNER'])
     lines = {}
     reports = pathlib.Path(os.environ.get('COVERAGE_REPORT_DIR', 'coverage'))
     expected = {f'shard-{shard}.lcov' for shard in range(1, int(os.environ.get('COVERAGE_REPORT_COUNT') or os.environ['TEST_SHARD_COUNT']) + 1)}
     if {path.name for path in reports.glob('*.lcov')} != expected:
         raise SystemExit('Missing or unexpected shard coverage reports')
     layout = json.loads(os.environ.get('COVERAGE_LAYOUT') or '{}')
-    if layout and os.environ.get('COVERAGE_CHECKOUT_ROOT'):
+    if layout:
         layout['checkout_root'] = os.environ['COVERAGE_CHECKOUT_ROOT']
     narrowed = os.environ.get('COVERAGE_SCOPE', 'full workspace') != 'full workspace'
     selected = set(json.loads(os.environ.get('TEST_PACKAGES') or '[]'))
     selected_lines = {}
     def read_reports(directory, names, source_layout, wanted):
         result = {}
-        roots = sorted(((pathlib.Path(root), package) for package, root in source_layout.get('package_roots', {}).items()),
-                       key=lambda item: len(item[0].parts), reverse=True)
+        roots = {package: pathlib.Path(root) for package, root in source_layout.get('package_roots', {}).items()}
+        owners = {}  # one owner lookup per source path, not one per shard record
         for name in sorted(names):
             source = None
             include = False
@@ -85,13 +90,17 @@ env:
                     source = os.path.normpath(record[3:])
                     include = wanted is None
                     if wanted is not None:
-                        try:
-                            relative = pathlib.Path(source).relative_to(source_layout['checkout_root'])
-                        except ValueError:
+                        if source not in owners:
+                            try:
+                                relative = pathlib.Path(source).relative_to(source_layout['checkout_root'])
+                            except ValueError:
+                                owners[source] = None
+                            else:
+                                owners[source] = (package_owner(relative, roots), relative.as_posix())
+                        if owners[source] is None:
                             continue
-                        owner = next((package for root, package in roots if relative.is_relative_to(root)), None)
+                        owner, source = owners[source]
                         include = owner in wanted
-                        source = relative.as_posix()
                 elif record.startswith('DA:'):
                     if source is None:
                         raise SystemExit(f'{name}: line without source file')
@@ -105,8 +114,6 @@ env:
     if narrowed:
         baseline_dir = pathlib.Path(os.environ.get('COVERAGE_BASELINE_DIR', 'baseline'))
         baseline = json.loads((baseline_dir / 'manifest.json').read_text(encoding='utf-8'))
-        if not selected or not selected <= layout['package_roots'].keys() or layout['package_roots'] != baseline['package_roots']:
-            raise SystemExit('Coverage baseline package layout does not match')
         baseline_names = {f'shard-{shard}.lcov' for shard in range(1, baseline['shard_count'] + 1)}
         if {path.name for path in baseline_dir.glob('*.lcov')} != baseline_names:
             raise SystemExit('Missing or unexpected baseline coverage reports')
@@ -150,16 +157,18 @@ jobs:
     outputs:
       linux_runner: ${{ steps.runner.outputs.labels }}
       enabled: ${{ steps.config.outputs.enabled }}
-      test_prepare: ${{ steps.config.outputs.test_prepare }}
+      test_prepare: ${{ steps.selection.outputs.test_prepare }}
+      test_prepare_inputs: ${{ steps.config.outputs.test_prepare_inputs }}
       warm_test_filter: ${{ steps.config.outputs.warm_test_filter }}
       packages: ${{ steps.selection.outputs.packages }}
+      doctest_packages: ${{ steps.selection.outputs.doctest_packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
       coverage_scope: ${{ steps.selection.outputs.coverage_scope }}
       coverage_exclude: ${{ steps.selection.outputs.coverage_exclude }}
       coverage_layout: ${{ steps.selection.outputs.coverage_layout }}
       included_tests: ${{ steps.selection.outputs.included_tests }}
-      test_shard_count: ${{ env.TEST_SHARD_COUNT }}
+      test_shard_count: ${{ steps.config.outputs.test_shard_count }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       targets: ${{ steps.config.outputs.targets }}
@@ -173,6 +182,31 @@ jobs:
       fuzz_manifest: ${{ steps.config.outputs.fuzz_manifest }}
       fuzz_targets: ${{ steps.config.outputs.fuzz_targets }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: &runner-hardware |
+          python3 - <<'PYTHON'
+          import os
+          import platform
+          import re
+          model = ''
+          with open(os.environ.get('CPUINFO_FILE', '/proc/cpuinfo'), encoding='utf-8') as cpuinfo:
+              for line in cpuinfo:
+                  if line.startswith('model name'):
+                      model = line.split(':', 1)[1].strip()
+                      break
+          model = model or platform.machine()
+          cores = os.environ.get('CPU_CORES') or str(len(os.sched_getaffinity(0)))
+          words = re.sub(r'\((?:r|tm)\)|@.*$|\b(?:cpu|processor)\b', '', model.lower())
+          label = re.sub(r'[^a-z0-9]+', '-', words).strip('-') + f'-{cores}c'
+          line = f'Runner hardware: {model}, {cores} cores (runner-band: {label})'
+          print(line)
+          print(f'::notice title=Runner hardware::runner-band: {label}')
+          if os.environ.get('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+                  summary.write(line + '\n')
+          PYTHON
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -264,11 +298,11 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(test_prepare=json.dumps(''), warm_test_filter=json.dumps('none()'), additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'warm_test_filter', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
               for key in ('wasm_crates', 'check_targets'):
@@ -289,20 +323,24 @@ jobs:
                   raise SystemExit(f'{path}: warm_test_filter must be a string')
               if type(config.get('test_prepare', '')) is not str:
                   raise SystemExit(f'{path}: test_prepare must be a string')
-              values['test_prepare'] = json.dumps(config.get('test_prepare', ''))
+              count = config.get('test_shard_count', 16)
+              if type(count) is not int or not 1 <= count <= 60:
+                  raise SystemExit(f'{path}: test_shard_count must be a whole number from 1 to 60')
+              values['test_shard_count'] = str(count)
+              values['test_prepare_inputs'] = json.dumps(config.get('test_prepare_inputs', []))
               values['warm_test_filter'] = json.dumps(config.get('warm_test_filter', 'none()'))
               values['reserved_ports'] = ','.join(map(str, ports))
               values['additional_locked_manifests'] = json.dumps(config.get('additional_locked_manifests', []))
               threshold = config.get('coverage_min_lines', 80)
               if type(threshold) not in (int, float) or not 80 <= threshold <= 100:
                   raise SystemExit(f'{path}: coverage_min_lines must be a number from 80 to 100')
-              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_packages', 'test_prepare_inputs'):
                   if not isinstance(config.get(key, []), list) or any(type(item) is not str or not item for item in config.get(key, [])):
                       raise SystemExit(f'{path}: {key} must be an array of nonempty strings')
               def validate_toml_string(key, value):
                   if any(ord(char) < 32 or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
                       raise SystemExit(f'{path}: {key} cannot contain control characters or surrogates')
-              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_packages', 'test_prepare_inputs'):
                   for value in config.get(key, []):
                       validate_toml_string(key, value)
               def contained_manifest(value):
@@ -414,12 +452,20 @@ jobs:
                   if crate not in packages:
                       raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
               values.update(browser_test_crates=json.dumps(sorted(set(browser_tests))))
+              for name in config.get('test_prepare_packages', []):
+                  if name not in packages:
+                      raise SystemExit(f'{path}: test_prepare_packages contains unknown package {name!r}')
+              def repository_relative(key):
+                  return bool(pathlib.PurePosixPath(key).parts) and not key.startswith('/') and '\\' not in key and '..' not in pathlib.PurePosixPath(key).parts
+              for pattern in config.get('test_prepare_inputs', []):
+                  if not repository_relative(pattern):
+                      raise SystemExit(f'{path}: test_prepare_inputs entries must be repository-relative paths')
               inputs = config.get('test_inputs', {})
               if not isinstance(inputs, dict) or any(not isinstance(names, list) or any(type(name) is not str for name in names) for names in inputs.values()):
                   raise SystemExit(f'{path}: test_inputs must map repository paths to arrays of package names')
               for key, names in inputs.items():
                   validate_toml_string('test_inputs', key)
-                  if not pathlib.PurePosixPath(key).parts or key.startswith('/') or '\\' in key or '..' in pathlib.PurePosixPath(key).parts:
+                  if not repository_relative(key):
                       raise SystemExit(f'{path}: test_inputs keys must be repository-relative paths')
                   for name in names:
                       if name not in packages:
@@ -525,6 +571,7 @@ jobs:
           TEST_EVENT: ${{ inputs.warm-cache && 'push' || github.repository_id == '1404598722' && inputs.test-event || github.event_name }}
           BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           COVERAGE_KEY: ${{ inputs.concurrency-key || 'root' }}
+          TEST_SHARD_COUNT: ${{ steps.config.outputs.test_shard_count }}
         run: |
           python3 - <<'PYTHON'
           import ast
@@ -535,6 +582,7 @@ jobs:
           import subprocess
           import tempfile
           import tomllib
+          exec(os.environ['PACKAGE_OWNER'])
           def metadata(directory):
               return json.loads(subprocess.check_output(
                   ['cargo', 'metadata', '--format-version', '1', '--locked'], cwd=directory, text=True))
@@ -553,6 +601,7 @@ jobs:
           members = set(head['workspace_members'])
           roots = {p: pathlib.Path(packages[p]['manifest_path']).parent.relative_to(pathlib.Path.cwd()) for p in members}
           selected = set(members)
+          trigger = None
           browser_changed = False
           included_readers = set()
           base = os.environ.get('BASE_REF')
@@ -577,9 +626,8 @@ jobs:
                   fallback = fallback or (reason.read_text(encoding='utf-8') if reason.is_file() else 'no baseline manifest yet')
               else:
                   baseline = json.loads(manifest.read_text(encoding='utf-8'))
-                  if not base or subprocess.run(['git', 'merge-base', '--is-ancestor', baseline['head'], base], capture_output=True).returncode:
-                      fallback = fallback or 'baseline head is not an ancestor'
-                  elif baseline.get('package_roots') != {packages[p]['name']: roots[p].as_posix() for p in members}:
+                  # The lookup already proved the baseline head is an ancestor of the base.
+                  if baseline.get('package_roots') != {packages[p]['name']: roots[p].as_posix() for p in members}:
                       fallback = fallback or 'baseline package layout changed'
                   else:
                       base = baseline['head']
@@ -646,32 +694,33 @@ jobs:
                                            match[1], flags=re.DOTALL)
                           path = ast.literal_eval(literal.replace('\n', r'\n').replace('\r', r'\r'))
                       if (source.parent / path).resolve() in changed_paths:
-                          owner = max((p for p, root in roots.items() if source.is_relative_to(root)),
-                                      key=lambda p: len(roots[p].parts))
-                          included_readers.add(owner)
+                          included_readers.add(package_owner(source, roots))
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)
                   if filename in ('Cargo.toml', 'rust-toolchain', 'rust-toolchain.toml', '.github/ci.schema.json') or filename.startswith('.github/workflows/'):
                       selected = set(members)
+                      trigger = f'shared input: {filename}'
                       break
                   if filename in ('Cargo.lock', '.github/ci.toml'):
                       continue
                   owners = {p for p, root in roots.items() if path.is_relative_to(root)}
                   if event == 'merge_group' and owners:
-                      owners = {max(owners, key=lambda p: len(roots[p].parts))}
+                      owners = {package_owner(path, roots)}
                   routes = [readers for key, readers in inputs.items() if path.is_relative_to(key)]
                   selected.update(owners, *routes)
                   if not owners and not routes and (event == 'merge_group' or (path.suffix not in ('.md',) and not filename.startswith('docs/'))):
                       selected = set(members)
+                      trigger = f'unknown path: {filename}'
                       if event == 'merge_group':
-                          fallback = f'unknown path: {filename}'
+                          fallback = trigger
                       break
               if '.github/ci.toml' in changed:
                   before, after = declarations()
                   browser_changed = before.get('browser_test_crates', []) != after.get('browser_test_crates', [])
-                  if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
+                  if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
                       selected = set(members)
+                      trigger = 'shared input: .github/ci.toml'
               if 'Cargo.lock' in changed and selected != members:
                   # Resolve both revisions, comparing transitive dependency identities and features.
                   with tempfile.TemporaryDirectory() as temporary:
@@ -697,27 +746,37 @@ jobs:
                       return result
                   old, new = dependencies(before), dependencies(head)
                   selected.update(p for p in members if old.get(packages[p]['name']) != new[packages[p]['name']])
+              # Test shards keep only include readers; doctests also cover every changed crate.
+              doctest_selected = selected | included_readers
               if included_readers:
                   if event == 'merge_group':
                       selected.update(included_readers)
                   else:
                       selected = set(included_readers)
-              while True:
-                  reverse = {n['id'] for n in head['resolve']['nodes'] if n['id'] in members and set(n['dependencies']) & selected}
-                  if reverse <= selected:
-                      break
-                  selected.update(reverse)
+              for chosen in (selected, doctest_selected):
+                  while True:
+                      reverse = {n['id'] for n in head['resolve']['nodes'] if n['id'] in members and set(n['dependencies']) & chosen}
+                      if reverse <= chosen:
+                          break
+                      chosen.update(reverse)
           if event == 'merge_group' and not selected:
               fallback = 'no workspace test packages selected'
           if event == 'merge_group' and fallback:
               selected = set(members)
-              print(f'Full-suite fallback: {fallback}')
+              trigger = fallback
+          if trigger:
+              print(f'Full-suite fallback: {trigger}')
           names = sorted(packages[p]['name'] for p in selected)
           print('Coverage scope: ' + ('full workspace' if selected == members else 'selected packages'))
           requested = set(config.get('browser_test_crates', []))
           browser_tests = bool(requested and (browser_changed or requested.intersection(names)))
           print(f'Selected test packages ({event}): {names}')
           print(f'Selected package count: {len(selected)}/{len(members)}')
+          share = f'Selection share: {len(selected) * 100 / len(members):.0f}% ({len(selected)}/{len(members)} test packages)'
+          print(share)
+          if os.environ.get('GITHUB_STEP_SUMMARY'):
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+                  summary.write(share + '\n' + (f'Full-suite fallback: {trigger}\n' if trigger else ''))
           # A change can introduce an advisory only through the lockfile or the declared exceptions.
           check_advisories = event not in ('pull_request', 'merge_group') or not base
           if not check_advisories:
@@ -732,9 +791,14 @@ jobs:
           print(f'Advisory check ({event}): {"required" if check_advisories else "skipped, no change to Cargo.lock or the declared exceptions"}')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
+              # The preparation job runs only when a selected package reads its output.
+              consumers = config.get('test_prepare_packages')
+              prepare = json.dumps(config.get('test_prepare', '') if consumers is None or set(consumers) & set(names) else '')
+              output.write('test_prepare=' + prepare + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
+              doctest_names = sorted(packages[p]['name'] for p in doctest_selected) if event == 'pull_request' and changed is not None else names
+              output.write('doctest_packages=' + json.dumps(doctest_names) + '\n')
               layout = {'head': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-                        'checkout_root': str(pathlib.Path.cwd()),
                         'package_roots': {packages[p]['name']: roots[p].as_posix() for p in sorted(members)},
                         'shard_count': int(os.environ['TEST_SHARD_COUNT']),
                         'artifact_prefix': 'coverage-' + os.environ.get('COVERAGE_KEY', 'root') + '-'}
@@ -756,16 +820,23 @@ jobs:
           if-no-files-found: error
 
   quality:
+    permissions:
+      contents: read
+      actions: read
     needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -796,6 +867,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           import subprocess
           shape = os.environ['CACHE_JOB']
           if shape in ('tests', 'test-build', 'doctests'):
@@ -806,15 +878,17 @@ jobs:
           compiler = subprocess.check_output(['rustc', '-vV'], text=True)
           identity = [os.environ[name] for name in ['CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'HOST_OS', 'HOST_ARCH']] + [compiler, shape]
           digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
-          prefix = f'maestro-compile-v1-{digest}-'
+          namespace = 'maestro-compile-v1-'
+          prefix = f'{namespace}{digest}-'
+          seeder = r'-\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\d+-'
           call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
           suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX']) + '-' + call
           writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
-          if os.environ['CACHE_JOB'] in ('tests', 'doctests'):
+          if os.environ['CACHE_JOB'] in ('tests', 'doctests') and not (os.environ['CACHE_JOB'] == 'doctests' and os.environ['CACHE_WARM'] == 'true'):
               shard = os.environ.get('SHARD', '')
               writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\n')
+              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\nshape={shape}\nnamespace={namespace}\nseeder={seeder}\n')
           PYTHON
       - name: Restore compile cache
         id: cache-restore
@@ -976,18 +1050,80 @@ jobs:
         with: &sccache-save
           path: ${{ runner.temp }}/maestro-sccache
           key: ${{ steps.cache-identity.outputs.key }}
+      - name: Compile cache hit-rate floor
+        if: &sccache-floor-condition job.status == 'success' && steps.cache-statistics.outcome == 'success'
+        env: &sccache-floor-env
+          CACHE_SHAPE: ${{ steps.cache-identity.outputs.shape }}
+          CACHE_MATCHED_KEY: ${{ steps.cache-restore.outputs.cache-matched-key }}
+          CACHE_PREFIX: ${{ steps.cache-identity.outputs.prefix }}
+          CACHE_NAMESPACE: ${{ steps.cache-identity.outputs.namespace }}
+          CACHE_SEEDER: ${{ steps.cache-identity.outputs.seeder }}
+          GH_TOKEN: ${{ github.token }}
+        run: &sccache-floor |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import sys
+          def finish(message, status=0):
+              print(message)
+              sys.exit(status)
+          floor = 90
+          shape = os.environ['CACHE_SHAPE']
+          stats = (pathlib.Path(os.environ['RUNNER_TEMP']) / 'sccache-stats').read_text(encoding='utf-8')
+          executed = re.search(r'(?m)^Compile requests executed +(\d+)', stats)
+          rate = re.search(r'(?m)^Cache hits rate +([0-9.]+) %', stats)
+          if not executed or not int(executed[1]) or not rate:
+              finish('Compile cache hit rate not judged: no cacheable compilation ran')
+          rate = float(rate[1])
+          # The guards read the compile units and the hit rate of every build from this notice.
+          print(f'::notice title=Work units::compiles: {executed[1]}; hit-rate: {rate:.2f}')
+          if rate >= floor:
+              finish(f'Compile cache hit rate {rate:.2f}% (floor {floor}%)')
+          matched, prefix = os.environ['CACHE_MATCHED_KEY'], os.environ['CACHE_PREFIX']
+          if matched:
+              cause = f"cold snapshot: the restored snapshot {matched} holds too few of this build's objects; seed it again from the default branch"
+          else:
+              listing = subprocess.run(['gh', 'api', f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/caches?key={os.environ['CACHE_NAMESPACE']}&per_page=100"],
+                                       capture_output=True, text=True)
+              if listing.returncode:
+                  cause = 'no snapshot restored (key change, no writer or eviction; the cache list is unavailable)'
+              else:
+                  others = [cache['key'] for cache in json.loads(listing.stdout)['actions_caches'] if not cache['key'].startswith(prefix)]
+                  own = [key for key in others if re.search(os.environ['CACHE_SEEDER'], key)]
+                  if own:
+                      cause = (f'key change: no snapshot matches {prefix} but {len(own)} snapshots of this job exist under other keys; '
+                               'the job shape (compiler, runner or caller directory) changed')
+                  elif others:
+                      cause = (f'no writer: the repository cache holds {len(others)} snapshots of other jobs but none of this shape; '
+                               'no default-branch push saves it')
+                  else:
+                      cause = 'eviction: the repository cache holds no compile snapshot; they were evicted or never saved'
+          # A warning, never a failure: a change can invalidate the cache itself, and only a default-branch push seeds it again.
+          # The guards read this annotation and file the issue.
+          finish(f'::warning title=Compile cache floor::Compile cache hit rate {rate:.2f}% is below the {floor}% floor in shape {shape}: {cause}')
+          PYTHON
 
   docs:
+    permissions:
+      contents: read
+      actions: read
     needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1040,9 +1176,16 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   test-build:
     needs: declaration
+    permissions:
+      contents: read
+      actions: read
     outputs:
       coverage_checkout_root: ${{ steps.archive-root.outputs.path }}
     name: Build test archive
@@ -1058,6 +1201,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1108,6 +1255,45 @@ jobs:
           TOOLS
           echo "TOOLS=$bin" >> "$GITHUB_ENV"
           echo "$bin" >> "$GITHUB_PATH"
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: &git-cache-identity |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          root = pathlib.Path.cwd().resolve()
+          locks = {root / 'Cargo.lock'}
+          for manifest in json.loads(os.environ['ADDITIONAL_LOCKED_MANIFESTS']):
+              for directory in (root / manifest).resolve().parents:
+                  if (directory / 'Cargo.lock').is_file():
+                      locks.add(directory / 'Cargo.lock')
+                      break
+                  if directory == root:
+                      break
+          digest = hashlib.sha256()
+          for lock in sorted(path for path in locks if path.is_file()):
+              digest.update(f'{os.path.relpath(lock, root)}\0'.encode('utf-8') + lock.read_bytes() + b'\0')
+          scope = hashlib.sha256(json.dumps([os.environ[name] for name in ['CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'CACHE_CALL']]).encode('utf-8')).hexdigest()
+          prefix = f'maestro-cargo-git-v1-{scope}-'
+          home = os.environ.get('CARGO_HOME') or os.path.expanduser('~/.cargo')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'prefix={prefix}\nkey={prefix}{digest.hexdigest()}\nhome={home}\n')
+          PYTHON
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: &git-cache-restore
+          path: |
+            ${{ steps.git-cache-identity.outputs.home }}/git/db
+            ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
+          key: ${{ steps.git-cache-identity.outputs.key }}
+          restore-keys: ${{ steps.git-cache-identity.outputs.prefix }}
+          enableCrossOsArchive: false
+          fail-on-cache-miss: false
       - name: Fetch additional locked manifests
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
         run: &fetch-locked-manifests |
@@ -1168,6 +1354,15 @@ jobs:
             "$TOOLS/cargo-nextest" nextest archive --user-config-file none \
               --locked "${packages[@]}" --archive-file test-binaries.tar.zst
           fi
+      - name: Save Cargo git cache
+        if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            ${{ steps.git-cache-identity.outputs.home }}/git/db
+            ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
+          key: ${{ steps.git-cache-identity.outputs.key }}
       - name: Upload test archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1191,11 +1386,18 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   test-prepare:
+    permissions:
+      contents: read
+      actions: read
     needs: declaration
     name: Prepare test setup
-    if: ${{ needs.declaration.outputs.test_prepare != '""' && !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -1205,6 +1407,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1232,6 +1438,15 @@ jobs:
           CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         timeout-minutes: 10
         run: *sccache-install
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: *git-cache-identity
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-restore
       - name: Fetch additional locked manifests
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
         run: *fetch-locked-manifests
@@ -1247,14 +1462,256 @@ jobs:
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: *caller-tools
+      - name: Test setup cache identity
+        id: setup-identity
+        if: ${{ needs.declaration.outputs.test_prepare_inputs != '[]' }}
+        env:
+          COMPILE_CACHE_PREFIX: ${{ steps.cache-identity.outputs.prefix }}
+          TEST_PREPARE_INPUTS: ${{ needs.declaration.outputs.test_prepare_inputs }}
+        run: |
+          python3 - <<'PYTHON'
+          import glob
+          import hashlib
+          import json
+          import os
+          # The compile cache prefix names repository, directory, host and compiler; the command and checkout path complete the prefix that finds an earlier bundle, and the input file contents complete the key.
+          files = {}
+          for pattern in json.loads(os.environ['TEST_PREPARE_INPUTS']):
+              matches = [name for name in glob.glob(pattern, recursive=True, include_hidden=True) if os.path.isfile(name)]
+              if not matches:
+                  raise SystemExit(f'test_prepare_inputs pattern {pattern!r} matches no file')
+              for name in matches:
+                  with open(name, 'rb') as source:
+                      files[name] = hashlib.sha256(source.read()).hexdigest()
+          def digest(value):
+              return hashlib.sha256(json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+          prefix = 'maestro-test-setup-v2-' + digest([os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE']]) + '-'
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'prefix={prefix}\nkey={prefix}{digest(sorted(files.items()))}\n')
+          PYTHON
+      - name: Restore test setup cache
+        id: setup-cache
+        if: ${{ needs.declaration.outputs.test_prepare_inputs != '[]' }}
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/test-setup.tar
+          key: ${{ steps.setup-identity.outputs.key }}
+          restore-keys: ${{ steps.setup-identity.outputs.prefix }}
+          enableCrossOsArchive: false
+          fail-on-cache-miss: false
+      # A merge group and the push that lands it have no cache a pull request run could write, but the runs that tested the same change uploaded its bundle as an artifact. Pull request runs list none, so every candidate was built by the code being merged from a bundle the default branch saved.
+      - name: Test setup candidates
+        id: candidates
+        if: ${{ steps.setup-cache.outputs.cache-hit != 'true' && needs.declaration.outputs.test_prepare_inputs != '[]' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
+          CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CACHE_WRITER: ${{ steps.cache-identity.outputs.writer }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import re
+          import subprocess
+          import urllib.parse
+          repository, event, sha = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_SHA']
+          pushed = os.environ['CACHE_WRITER'] == 'true'
+          def api(path):
+              return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/{path}'], text=True))
+          def has_bundle(run):
+              listing = api(f"actions/runs/{run['id']}/artifacts?name={urllib.parse.quote(os.environ['ARTIFACT_NAME'])}&per_page=100")
+              return any(not item['expired'] for item in listing['artifacts'])
+          def newest_with_bundle(runs):
+              return next((run for run in runs if has_bundle(run)), None)
+          candidates = []
+          if event == 'merge_group' or pushed:
+              workflow = api('actions/runs/' + os.environ['GITHUB_RUN_ID'])['workflow_id']
+          if event == 'merge_group':
+              # The queue branch is cut from the previous group, so only the default branch lists every pull request still ahead of it.
+              subjects = [item['commit']['message'].split('\n', 1)[0] for item in api(f"compare/{os.environ['CACHE_DEFAULT_BRANCH']}...{sha}?per_page=100")['commits']]
+              for number in [int(match[1]) for match in map(re.compile(r'\(#(\d+)\)$').search, subjects) if match]:
+                  head = api(f'pulls/{number}')['head']['sha']
+                  runs = api(f'actions/workflows/{workflow}/runs?event=pull_request&head_sha={head}&status=success&per_page=100')['workflow_runs']
+                  # Fork runs are not this repository's code under review.
+                  candidates.append(newest_with_bundle(run for run in runs if run['head_repository']['full_name'] == repository))
+          elif pushed:
+              candidates.append(newest_with_bundle(api(f'actions/workflows/{workflow}/runs?event=merge_group&head_sha={sha}&status=success&per_page=100')['workflow_runs']))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('runs=' + ' '.join(str(run['id']) for run in candidates if run) + '\n')
+          PYTHON
+      - name: Download test setup candidates
+        if: ${{ steps.candidates.outputs.runs != '' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
+          ARTIFACT_PATH: ${{ runner.temp }}/test-setup-candidates
+          ARTIFACT_RUN_IDS: ${{ steps.candidates.outputs.runs }}
+        run: &download-artifact |
+          python3 - <<'PYTHON'
+          import hashlib
+          import http.client
+          import json
+          import os
+          import pathlib
+          import shutil
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          import zipfile
+          from concurrent.futures import ThreadPoolExecutor
+
+          # The artifact is a zip in blob storage. One stream is slow in some regions, so fetch it in parallel ranges,
+          # check its size and digest, then extract. An unusable listing or any failed range hands the whole download
+          # over to the single-stream action.
+          STREAMS, MINIMUM_RANGE = 16, 1 << 20
+          TRANSPORT = (OSError, http.client.HTTPException)
+          name, destination = os.environ['ARTIFACT_NAME'], pathlib.Path(os.environ['ARTIFACT_PATH'])
+          api = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/actions"
+          partial = pathlib.Path(os.environ['RUNNER_TEMP']) / f'{name}.zip'
+
+          class KeepRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *arguments):
+                  return None
+
+          urllib.request.install_opener(urllib.request.build_opener(KeepRedirect))
+
+          def get(url, headers):
+              return urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120)
+
+          def api_get(path):
+              return get(f'{api}/{path}', {'Authorization': f"Bearer {os.environ['GH_TOKEN']}", 'Accept': 'application/vnd.github+json'})
+
+          def storage_url(artifact):
+              # One call per download: the probe and every range reuse the signed URL, and the token never reaches storage.
+              try:
+                  api_get(f"artifacts/{artifact['id']}/zip").close()
+              except urllib.error.HTTPError as redirect:
+                  if redirect.code == 302:
+                      return redirect.headers['Location']
+                  raise
+              raise OSError('artifact download did not redirect to storage')
+
+          def fetch(url, start, end):
+              with get(url, {'Range': f'bytes={start}-{end}'}) as response, open(partial, 'r+b') as target:
+                  if response.status != 206:
+                      raise OSError('storage ignored the range')
+                  target.seek(start)
+                  shutil.copyfileobj(response, target, 1 << 20)
+                  if target.tell() != end + 1:
+                      raise OSError('short range')
+
+          def download(artifact):
+              size = artifact['size_in_bytes']
+              url = storage_url(artifact)
+              with get(url, {'Range': 'bytes=0-0'}) as probe, open(partial, 'wb') as target:
+                  if probe.status != 206:
+                      shutil.copyfileobj(probe, target, 1 << 20)
+                      return 1
+                  target.truncate(size)
+              streams = max(1, min(STREAMS, size // MINIMUM_RANGE))
+              step = -(-size // streams)
+              with ThreadPoolExecutor(streams) as pool:
+                  for future in [pool.submit(fetch, url, start, min(start + step, size) - 1) for start in range(0, size, step)]:
+                      future.result()
+              return streams
+
+          run_ids = os.environ.get('ARTIFACT_RUN_IDS', '').split()
+
+          def fall_back(reason, started):
+              print(f'::warning::{reason}' + ('' if run_ids else '; using the single-stream download'), file=sys.stderr)
+              print(f'artifact-download name={name} bytes=0 seconds={time.monotonic() - started:.2f} streams=0')
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+                  output.write('fallback=true\n')
+
+          def download_run(run_id, destination):
+              started = time.monotonic()
+              try:
+                  with api_get(f'runs/{run_id}/artifacts?' + urllib.parse.urlencode({'name': name, 'per_page': 100})) as listing:
+                      artifacts = [item for item in json.load(listing)['artifacts'] if item['name'] == name and not item['expired']]
+                  artifact = max(artifacts, key=lambda item: item['id'])
+                  expected = artifact.get('digest') or ''
+                  if not expected.startswith('sha256:'):
+                      raise OSError('artifact has no sha256 digest')
+                  started = time.monotonic()
+                  streams = download(artifact)
+                  seconds = time.monotonic() - started
+              except (*TRANSPORT, KeyError, ValueError) as error:
+                  partial.unlink(missing_ok=True)
+                  fall_back(f'{type(error).__name__}: {error}', started)
+                  return
+              try:
+                  size, hasher = partial.stat().st_size, hashlib.sha256()
+                  with open(partial, 'rb') as source:
+                      for block in iter(lambda: source.read(1 << 20), b''):
+                          hasher.update(block)
+                  if size != artifact['size_in_bytes']:
+                      raise SystemExit(f"{name}: size mismatch, expected {artifact['size_in_bytes']} bytes, got {size}")
+                  if 'sha256:' + hasher.hexdigest() != expected:
+                      raise SystemExit(f'{name}: digest mismatch, expected {expected}, got sha256:{hasher.hexdigest()}')
+                  with zipfile.ZipFile(partial) as bundle:
+                      bundle.extractall(destination)
+              finally:
+                  partial.unlink(missing_ok=True)
+              print(f"artifact-download name={name} bytes={size} seconds={seconds:.2f} streams={streams}")
+
+          # One run's artifact goes straight to the path; a list of runs puts each in a directory named for its run, and a run whose bundle is missing, fails its checks or cannot be read is skipped.
+          if not run_ids:
+              download_run(os.environ['GITHUB_RUN_ID'], destination)
+          for run_id in run_ids:
+              try:
+                  download_run(run_id, destination / run_id)
+              except (SystemExit, zipfile.BadZipFile) as error:
+                  print(f'::warning::{error}; leaving run {run_id} out', file=sys.stderr)
+                  shutil.rmtree(destination / run_id, ignore_errors=True)
+          PYTHON
       - name: Prepare test setup
+        if: steps.setup-cache.outputs.cache-hit != 'true'
         timeout-minutes: 45
+        env:
+          TEST_SETUP_CANDIDATE_RUNS: ${{ steps.candidates.outputs.runs }}
         run: |
           export TEST_PREPARE_OUTPUT="$PWD/target/test-setup"
           export CARGO_TARGET_DIR="$RUNNER_TEMP/maestro-test-prepare-build"
           mkdir -p "$TEST_PREPARE_OUTPUT"
+          # The preparation's bases, in order: a miss on the exact key may still restore the closest earlier bundle, and the candidates follow. Each is extracted to its own directory, apart from the output.
+          unset TEST_PREPARE_BASE
+          bases=()
+          extract() {
+            mkdir -p "$2"
+            if tar -C "$2" -xf "$1"; then
+              bases+=("$2/test-setup")
+            else
+              echo "::warning::The earlier test setup bundle $1 is unreadable; preparing without it."
+              rm -rf "$2"
+            fi
+          }
+          if [ -f "$RUNNER_TEMP/test-setup.tar" ]; then
+            extract "$RUNNER_TEMP/test-setup.tar" "$RUNNER_TEMP/test-setup-base"
+          fi
+          for run in ${TEST_SETUP_CANDIDATE_RUNS-}; do
+            if [ -f "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" ]; then
+              extract "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" "$RUNNER_TEMP/test-setup-candidate-$run"
+            fi
+          done
+          if [ "${#bases[@]}" -gt 0 ]; then
+            export TEST_PREPARE_BASE
+            TEST_PREPARE_BASE=$(IFS=:; echo "${bases[*]}")
+          fi
           bash -e -o pipefail -c "$TEST_PREPARE"
           tar -C target -cf "$RUNNER_TEMP/test-setup.tar" test-setup
+      - name: Save test setup cache
+        if: ${{ steps.cache-identity.outputs.writer == 'true' && steps.setup-cache.outputs.cache-hit != 'true' && needs.declaration.outputs.test_prepare_inputs != '[]' }}
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/test-setup.tar
+          key: ${{ steps.setup-identity.outputs.key }}
       - name: Upload test setup
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1277,22 +1734,30 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   tests:
     needs: [declaration, test-build, test-prepare]
+    permissions:
+      contents: read
+      actions: read
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
-    if: ${{ !cancelled() && (inputs.warm-cache || (needs.test-build.result == 'success' && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped'))) && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.test_shards) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env: &test-env
+      TEST_SHARD_COUNT: ${{ needs.declaration.outputs.test_shard_count }}
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
-      WARM_CACHE: ${{ inputs.warm-cache }}
+      WARM_CACHE: ${{ inputs.warm-cache && matrix.shard != 'doctests' }}
       WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
       SHARD: ${{ matrix.shard }}
-      TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
+      TEST_PACKAGES: ${{ matrix.shard == 'doctests' && needs.declaration.outputs.doctest_packages || needs.declaration.outputs.packages }}
       TEST_ARCHIVE: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && format('{0}/{1}/test-binaries.tar.zst', github.workspace, inputs.working-directory || '.') || '' }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
       COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
@@ -1302,6 +1767,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps: &test-steps
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1310,7 +1779,7 @@ jobs:
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
-        if: runner.environment == 'github-hosted' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
+        if: runner.environment == 'github-hosted' && (env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true')
         run: *free-build-space
       - name: Test toolchain
         run: *test-toolchain
@@ -1335,29 +1804,54 @@ jobs:
       - name: Coverage tools
         timeout-minutes: 10
         run: *coverage-tools
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: *git-cache-identity
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-restore
       - name: Fetch additional locked manifests
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
         run: *fetch-locked-manifests
       - name: Download test archive
+        id: archive-download
         if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: test-archive-${{ inputs.concurrency-key || 'root' }}
+          ARTIFACT_PATH: .
+        run: *download-artifact
+      - name: Download test archive in one stream
+        if: ${{ steps.archive-download.outputs.fallback == 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: test-archive-${{ inputs.concurrency-key || 'root' }}
           path: ${{ inputs.working-directory || '.' }}
       - name: Download test setup
-        if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' }}
+        id: setup-download
+        if: ${{ matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
+          ARTIFACT_PATH: ${{ runner.temp }}/maestro-test-setup
+        run: *download-artifact
+      - name: Download test setup in one stream
+        if: ${{ steps.setup-download.outputs.fallback == 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: test-setup-${{ inputs.concurrency-key || 'root' }}
           path: ${{ runner.temp }}/maestro-test-setup
       - name: Restore test setup
-        if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' }}
+        if: ${{ matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') }}
         run: |
           mkdir -p target
           tar -C target -xf "$RUNNER_TEMP/maestro-test-setup/test-setup.tar"
       - name: Tests
         timeout-minutes: 45
-        if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled != 'true' }}
+        if: ${{ env.WARM_CACHE != 'true' && needs.declaration.outputs.enabled != 'true' }}
         run: |
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
@@ -1375,7 +1869,7 @@ jobs:
           fi
       - name: Search tools
         timeout-minutes: 10
-        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
+        if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'
         run: *search-tools
       - name: Mise bootstrap
         timeout-minutes: 10
@@ -1392,7 +1886,7 @@ jobs:
         run: sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"
       - name: Isolated tests
         timeout-minutes: 45
-        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
+        if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'
         env:
           CARGO_COVERAGE_MIN_LINES: ''
         run: |
@@ -1416,7 +1910,67 @@ jobs:
           diagnostics="$PWD/target/browser-author-diagnostics"
           mkdir -p "$diagnostics"
           isolation=$(mktemp -d "$RUNNER_TEMP/maestro-tests.XXXXXX")
-          trap 'rm -rf "$isolation"' EXIT
+          # Tests can leave processes that keep writing here: stop and name them, and keep the test status.
+          cleanup_isolation() {
+            status=$?
+            set +e
+            python3 - "$isolation" <<'PYTHON'
+          import json
+          import os
+          import signal
+          import sys
+          import time
+          roots = tuple(path + '/' for path in {sys.argv[1], os.path.realpath(sys.argv[1])})
+          def link(path):
+              try:
+                  return os.readlink(path)
+              except OSError:
+                  return ''
+          def users():
+              found = {}
+              for entry in os.listdir('/proc'):
+                  if not entry.isdigit() or int(entry) == os.getpid():
+                      continue
+                  base = '/proc/' + entry
+                  try:
+                      descriptors = os.listdir(base + '/fd')
+                  except OSError:
+                      descriptors = []
+                  paths = [link(base + '/cwd'), link(base + '/exe')] + [link(base + '/fd/' + fd) for fd in descriptors]
+                  if os.path.basename(paths[1]) == 'sccache':
+                      # The compile cache server outlives the tests; its own steps report on it and stop it.
+                      continue
+                  try:
+                      with open(base + '/environ', 'rb') as file:
+                          environment = file.read()
+                  except OSError:
+                      environment = b''
+                  if any(path.startswith(roots) for path in paths) or any(root.encode() in environment for root in roots):
+                      try:
+                          with open(base + '/cmdline', 'rb') as file:
+                              found[int(entry)] = json.dumps(file.read().decode('utf-8', 'replace').split('\0')[:-1])
+                      except OSError:
+                          pass
+              return found
+          announced = set()
+          for _ in range(50):
+              found = users()
+              if not found:
+                  break
+              for pid, command in found.items():
+                  if pid not in announced:
+                      announced.add(pid)
+                      print(f'Stopped test process {pid}: {command}', flush=True)
+                  try:
+                      os.kill(pid, signal.SIGKILL)
+                  except OSError:
+                      pass
+              time.sleep(0.1)
+          PYTHON
+            rm -rf "$isolation" || echo "Could not remove $isolation" >&2
+            exit "$status"
+          }
+          trap cleanup_isolation EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
           run_isolated() {
           env -i PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
@@ -1425,7 +1979,7 @@ jobs:
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
             XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 MAESTRO_TEST_DIAGNOSTICS_DIR="$diagnostics" \
-            TEST_PREPARE_OUTPUT="$PWD/target/test-setup" \
+            TEST_PREPARE_OUTPUT="$PWD/target/test-setup" ${TEST_ARCHIVE:+TEST_ARCHIVE=1} \
             CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
             SCCACHE_DIR="${SCCACHE_DIR-}" SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE-}" \
             SCCACHE_LOCAL_RW_MODE="${SCCACHE_LOCAL_RW_MODE-}" SCCACHE_GHA_ENABLED="${SCCACHE_GHA_ENABLED-}" \
@@ -1530,6 +2084,18 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
               output.write('### Flaky tests (passed on retry)\n' + ('\n'.join('- ' + name for name in flaky) if flaky else 'None') + '\n')
           PYTHON
+      - name: Test work units
+        if: always()
+        run: |
+          python3 - <<'PYTHON'
+          import pathlib
+          import re
+          path = pathlib.Path('nextest.log')
+          text = re.sub(r'\x1b\[[0-9;]*m', '', path.read_text(encoding='utf-8')) if path.exists() else ''
+          summary = re.search(r'(?m)^\s*Summary \[\s*[0-9.]+s\] (\d+) tests? run', text)
+          if summary:
+              print(f'::notice title=Work units::tests: {summary[1]}')
+          PYTHON
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && (inputs.warm-cache || matrix.shard == 'doctests')
@@ -1547,6 +2113,10 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
       - name: Upload shard coverage
         if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -1556,9 +2126,12 @@ jobs:
           if-no-files-found: error
 
   doctests:
+    permissions:
+      contents: read
+      actions: read
     name: ${{ matrix.shard == 'doctests' && 'Doctests' }}
     needs: declaration
-    if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     strategy:
       fail-fast: false
@@ -1574,6 +2147,10 @@ jobs:
     if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: All test shards passed
         env:
           RESULT: ${{ needs.tests.result }}
@@ -1589,7 +2166,7 @@ jobs:
           assert os.environ['COLLECT_COVERAGE'] in expected
           required = 'success' if os.environ.get('INCLUDED_TESTS') == 'true' else expected[os.environ['COLLECT_COVERAGE']]
           assert os.environ['RESULT'] == required
-          assert os.environ['DOCTEST_RESULT'] == required
+          assert os.environ['DOCTEST_RESULT'] == 'success'
       - name: Download shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -1611,6 +2188,7 @@ jobs:
           COVERAGE_LAYOUT: ${{ needs.declaration.outputs.coverage_layout }}
           COVERAGE_CHECKOUT_ROOT: ${{ needs.test-build.outputs.coverage_checkout_root }}
           TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
+          TEST_SHARD_COUNT: ${{ needs.declaration.outputs.test_shard_count }}
         run: python3 -c "$COVERAGE_MERGE"
       - name: Upload full coverage manifest
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && needs.declaration.outputs.coverage_scope == 'full workspace'
@@ -1621,6 +2199,9 @@ jobs:
           if-no-files-found: error
 
   checks:
+    permissions:
+      contents: read
+      actions: read
     name: Dependency, source and coverage checks
     needs: declaration
     if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
@@ -1633,6 +2214,10 @@ jobs:
       QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
       CHECK_ADVISORIES: ${{ needs.declaration.outputs.check_advisories }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1874,21 +2459,14 @@ jobs:
       - name: Coverage
         timeout-minutes: 45
         if: needs.declaration.outputs.enabled != 'true' && needs.declaration.outputs.coverage == 'true'
-        env:
-          TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
-          COVERAGE_EXCLUDE: ${{ needs.declaration.outputs.coverage_exclude }}
-          COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
         run: |
           unset LLVM_COV LLVM_PROFDATA CARGO_LLVM_COV_FLAGS CARGO_LLVM_PROFDATA_FLAGS
           for name in ${!LLVM_@}; do
             if [[ "$name" == LLVM_*_FLAGS ]]; then unset "$name"; fi
           done
           mkdir -p target/single-coverage
-          mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
-          mapfile -d '' -t report_packages < <(python3 -c 'import json, os; print("".join("--exclude-from-report\0" + name + "\0" for name in json.loads(os.environ.get("COVERAGE_EXCLUDE") or "[]")), end="")')
           PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-            --retries 2 --flaky-result pass --final-status-level flaky --partition count:1/1 --no-tests pass "${packages[@]}" "${report_packages[@]}" --locked \
+            --retries 2 --flaky-result pass --final-status-level flaky --partition count:1/1 --no-tests pass --workspace --locked \
             --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
             --lcov --output-path "$PWD/target/single-coverage/shard-1.lcov" 2>&1 | tee nextest.log
           COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
@@ -1912,6 +2490,10 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   fuzz:
     name: Fuzz ${{ matrix.name }}
@@ -1931,6 +2513,10 @@ jobs:
       QUALITY_CONFIG: ${{ needs.declaration.outputs.quality_config }}
       FUZZ_MANIFEST: ${{ needs.declaration.outputs.fuzz_manifest }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2035,6 +2621,10 @@ jobs:
     outputs:
       findings: ${{ steps.scan.outputs.findings }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2081,6 +2671,9 @@ jobs:
           PYTHON
 
   targets:
+    permissions:
+      contents: read
+      actions: read
     name: Check (${{ matrix.target }})
     needs: declaration
     if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
@@ -2096,6 +2689,10 @@ jobs:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2155,17 +2752,28 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   browser:
+    permissions:
+      contents: read
+      actions: read
     name: Wasm and browser build
     needs: declaration
-    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2243,17 +2851,28 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor
 
   browser-tests:
+    permissions:
+      contents: read
+      actions: read
     name: Chromium browser tests
     needs: declaration
-    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && needs.declaration.outputs.browser_tests == 'true' }}
+    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
         shell: bash
         working-directory: ${{ inputs.working-directory || '.' }}
     steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2351,3 +2970,7 @@ jobs:
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
+      - name: Compile cache hit-rate floor
+        if: *sccache-floor-condition
+        env: *sccache-floor-env
+        run: *sccache-floor

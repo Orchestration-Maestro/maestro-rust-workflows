@@ -19,9 +19,11 @@ use shared verified runtime pins, not caller-selected browser versions. Its spec
   resource groups), not shared-CI settings. Shared-CI partitioning and coverage
   policy stay in the workflow; default test filters are ignored and CI allows
   two retries, naming flaky passes in the summary. PRs run fast checks and
-  declared Windows target checks in parallel; merge groups/main pushes also
-  run tests, coverage, all foreign-target checks and browser jobs.
-- Test changes at the workflow seam in `.github/workflows/ci-internal.yml`.
+  declared Windows target checks, wasm/browser builds and doctests in parallel;
+  merge groups/main pushes also run test shards, coverage, all foreign-target
+  checks and Chromium browser tests.
+- Test changes at the workflow seam in `.github/workflows/ci-internal.yml`; its
+  seam steps run the scripts in `.github/ci-internal/`.
   Keep the broken fixtures broken, and outside any root workspace.
 - Pin actions by full commit SHA. Do not add a gate program or checks beyond the specification.
 - Release with release-please; organization rules own consumer version pins.

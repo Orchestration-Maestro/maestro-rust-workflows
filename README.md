@@ -15,17 +15,26 @@ for now; macOS and Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
 
 After declaration validation, pull requests run formatting, Clippy, docs,
-dependency and source checks, and declared Windows target checks in parallel.
-Test shards, coverage, other foreign-target checks (including macOS),
-wasm/browser builds and Chromium tests run on merge groups and main pushes,
+dependency and source checks, declared Windows target checks, wasm/browser
+builds and doctests in parallel. Test shards, coverage, other foreign-target
+checks (including macOS) and Chromium tests run on merge groups and main pushes,
 not on ordinary pull-request heads; [included-input changes](docs/caller-checks.md#pull-request-selection-and-retries) also run reader tests on pull requests without coverage.
 Those full events also keep the Windows check.
 
-Tests run with checksum-pinned cargo-nextest 0.9.148 on four Linux runners,
-using automatic count partitions rather than package lists. Doctests run in a
-parallel `Doctests` matrix leg. The aggregate `Tests (ubuntu-latest)` requires
-all five legs to succeed on full runs and accepts event-skipped shards on
-pull requests unless the included-input rule requires them to succeed.
+In merge groups, Chromium tests run only when the shared workspace graph selects
+at least one declared `browser_test_crates` package, including a package affected
+through a changed dependency. Unrelated crate changes skip Chromium. Shared-input
+or unresolved-selection fallbacks run it. Main pushes always run declared
+Chromium tests, regardless of changed paths. See [browser selection](docs/caller-checks.md#chromium-browser-tests).
+
+Tests run with checksum-pinned cargo-nextest 0.9.148 on 16 Linux runners by
+default, using automatic count partitions rather than package lists. A caller
+can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
+[test shards](docs/caller-checks.md#test-shards). Doctests run in a
+parallel `Doctests` matrix leg on pull requests, merge groups and main pushes.
+The aggregate `Tests (ubuntu-latest)` always requires `Doctests` to succeed.
+It requires every shard to succeed on full runs and accepts event-skipped shards
+on pull requests unless the included-input rule requires them to succeed.
 Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-diagnostics)
 and the reporter log after isolated tests fail or time out.
 
@@ -40,7 +49,7 @@ selected-package coverage is informational. See [test selection and retries](doc
 for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov
-nextest`. Only the sixteen numeric shards upload LCOV; the aggregate counts a
+nextest`. Only the numeric shards upload LCOV; the aggregate counts a
 source line as covered if any shard covers it and enforces the workspace union's
 80% floor (or caller's higher threshold), including unchanged baseline packages
 on narrowed runs. Missing shard reports fail. Undeclared callers
@@ -63,7 +72,9 @@ changing their pins or integrity checks.
 Numeric test shards download one nextest archive instead of compiling the workspace.
 An optional caller `test_prepare` command runs beside the host build and writes
 reusable outputs to `TEST_PREPARE_OUTPUT` (`target/test-setup`). Shards download
-those files separately and setup scripts reuse them. Doctests compile and run in
+those files separately and setup scripts reuse them. `test_prepare_packages`
+limits the command to runs that select a package reading its output, and
+`test_prepare_inputs` caches the output across runs. Doctests compile and run in
 parallel in their own leg. See [test shards](docs/caller-checks.md#test-shards).
 
 ## Compile cache
@@ -93,11 +104,15 @@ and reusable calls without splitting the shared restore prefix. GitHub's
 branch/default-branch visibility and newest-compatible-prefix lookup apply.
 Only pushes to the caller's default branch save snapshots. Pull-request and
 merge-group jobs restore but never save. Each test shape has one writer per
-call: the warm build, or the archive build plus the separate plain doctest leg
-when the numeric shards use coverage. Other cached compiling jobs each write their own shape.
-A default-branch push warm call also runs the declared target checks to seed
-the Linux and macOS shapes. Warm pull-request calls skip targets because they
-cannot save.
+call: the warm build or the archive build, plus the separate plain doctest leg
+when the numeric shards use coverage or a default-branch push warms. Other
+cached compiling jobs each write their own shape.
+A default-branch push warm call also runs Format and lint, Docs, Doctests,
+Wasm and browser build, and Chromium browser tests when declared. These jobs
+use their normal commands, paths and compiler output modes, including running
+the doctests and browser tests, to seed exactly the shapes their readers need.
+Other warm calls skip these jobs because they cannot save. Declared Linux and
+macOS target checks also seed their shapes on default-branch push warm calls.
 
 Missing snapshots build cold. Failed restores discard partial data before
 startup, including warning-only failures with no matched-cache output. Only
@@ -128,8 +143,12 @@ checks, [additional locked manifests](docs/caller-checks.md#additional-locked-ma
 for independent workspace dependencies, a caller-pinned browser build recipe,
 optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
 with shared verified runtime pins, and a [nightly fuzz job](docs/caller-checks.md#nightly-fuzz-job)
-that files one issue per distinct finding. A repository's `rust-toolchain.toml`
-selects its toolchain through rustup.
+that files one issue per distinct finding. Callers can also run the
+[full suite after landing](docs/caller-checks.md#full-suite-after-landing), which files a
+failure issue and a revert proposal for a failed landing, and the
+[CI speed guards](docs/caller-checks.md#ci-speed-guards), which fail a check or file an
+issue when a merge run, the compile cache, test selection, shard balance, slow tests or the
+required jobs drift. A repository's `rust-toolchain.toml` selects its toolchain through rustup.
 
 Every caller also gets the dependency and source checks: cargo-deny
 (licenses, bans, sources and advisories; pull requests and merge groups check
@@ -191,6 +210,10 @@ caller check fails the job.
 `ci-internal.yml` tests the workflow's events and stable job, caller-file
 requirements, verified mise bootstrap and failure propagation. This
 repository's broken Rust fixtures stay under its separate self-test.
+
+Each seam step runs one script from `.github/ci-internal/`, so the workflow file
+stays under the size GitHub accepts. The self-test fails any workflow file over
+400,000 bytes.
 
 ## Self-test
 

@@ -1,11 +1,110 @@
 # Changelog
 
-## Unreleased
+## [0.19.4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.3...v0.19.4) (2026-11-01)
 
-* Callers updating the shared workflow release pin must grant `actions: read`
-  to the reusable-workflow call for the test-selection job. Narrowed merge-group
-  coverage uses a verified full-run baseline for unchanged packages and keeps
-  the workspace coverage floor; selected-package coverage is informational.
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main 4aff524f ([#284](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/284)) ([c739eb2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/c739eb274889bae427c5fa61f726f871d75247ff))
+
+
+### Bug Fixes
+
+* **ci:** offer earlier runs' test setup bundles as preparation bases ([#282](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/282)) ([81dfeac](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/81dfeace04806f339199e3117970d33ff925af3e))
+
+## [0.19.3](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.2...v0.19.3) (2026-10-31)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main 135f072b ([#279](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/279)) ([898a612](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/898a612cf448744af34b41a32df96ebcd1b807b4))
+
+
+### Bug Fixes
+
+* **ci:** look up each source path owner once in the coverage merge ([#277](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/277)) ([2f5ab9c](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/2f5ab9c4dd723d7f3c249e64a4a11c8ccac410a8))
+
+## [0.19.2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.1...v0.19.2) (2026-10-31)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main f86f2e22 ([#274](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/274)) ([ac1f7f2](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/ac1f7f24c697839800b91b7ce0d0c83861d00297))
+
+
+### Bug Fixes
+
+* **ci:** give test preparation the closest earlier bundle as its base ([#272](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/272)) ([af14c95](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/af14c951c2a005624027d6bb35e5ddc4e17cb626))
+
+## [0.19.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.0...v0.19.1) (2026-10-31)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main 541abdce ([#270](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/270)) ([bf9d3e5](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/bf9d3e5a083f9755961cc30ea2f923d4d886c8d6))
+* run each workflow seam step from a script file ([#268](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/268)) ([37e6d6f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/37e6d6f35c13aa5fa96ffdc6ca77c8990008225a))
+
+
+### Bug Fixes
+
+* **ci:** cache Cargo git dependencies across archive and shards ([#265](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/265)) ([1d4f43f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/1d4f43f8b4cec7c263f4988ca00bd7eda4417602))
+
+## [0.19.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.18.1...v0.19.0) (2026-10-30)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main 7ee2cb06 ([#261](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/261)) ([633ee07](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/633ee07464cf19a3129c294b0256e752aeb93359))
+
+
+### Features
+
+* **ci:** guard CI speed so it cannot drift back ([#246](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/246)) ([9d49c0f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/9d49c0faafc931a0d5241aff4c6b462f3446715d))
+
+
+### Bug Fixes
+
+* **ci:** download shard artifacts in parallel ranges ([#258](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/258)) ([df92e06](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/df92e06d47b5b39f5cd735adc70bbe13f43f5dab))
+* **ci:** end a run at its last job in the CI guards ([#260](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/260)) ([e9ac000](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/e9ac000a1d038906738077994b8c2f3ae6c4b0af))
+* **ci:** name the calling workflow in the push concurrency group ([#255](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/255)) ([2613544](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/2613544f20276283a089f61cec81ae907a0cecd4))
+
+## [0.18.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.18.0...v0.18.1) (2026-10-30)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main 8836dda3 ([#250](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/250)) ([bfc691d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/bfc691de91a593fcab217ebf444d57a698be5dc6))
+* prepare tests only for consumers and reuse unchanged output ([#245](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/245)) ([f72e3d8](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/f72e3d8389ba1651ccc079c8ea13467ba8ee1903))
+
+## [0.18.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.17.0...v0.18.0) (2026-10-30)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main f1995334 ([#247](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/247)) ([f23bf93](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/f23bf936ebafb8fdb03290bf48588a3947ca283f))
+
+
+### Features
+
+* **ci:** let each caller declare its test shard count ([#241](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/241)) ([fdeb9ba](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/fdeb9ba6282902e0c07a72ca738ae9f4acc25991))
+
+## [0.17.0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.16.1...v0.17.0) (2026-10-29)
+
+
+### Features
+
+* **ci:** safeguard every full-suite landing ([#236](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/236)) ([c16b88d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/c16b88d69de3b2f2eb945bd272fe8232a0188c35))
+* **ci:** select merge-group tests from the workspace graph ([#231](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/231)) ([6599b21](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/6599b2154a42f5f551e1b281696146030f8cbf11))
+
+
+### Bug Fixes
+
+* **ci:** keep a passing test shard green when isolation cleanup races ([#238](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/238)) ([96c9034](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/96c9034321fb3a3c1e6596346210964b81bf232f))
+* **ci:** qualify the repaired Maestro browser driver ([#216](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/216)) ([340a371](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/340a371e9479bcae72ebaa6d31833d4a68aa117b))
+* **ci:** run single coverage through nextest ([#217](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/217)) ([82d331d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/82d331dd1c073be4aa3e3669a94a47bce34b5419))
+* **ci:** seed non-test shapes on trusted warm pushes ([#233](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/233)) ([3631d5a](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/3631d5a6d5b4e4e087a34c569e2ca1915c1d8b81)), closes [#152](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/152)
+* **ci:** tell isolated test shards when they run from an archive ([#235](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/235)) ([84d670f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/84d670fc65eb3b1b1587b521d0744c73db8401ca))
+* **ci:** test crates when their included inputs change ([#214](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/214)) ([697f812](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/697f812dcf7f9709913e2061ae03335cf71068f3))
 
 ## [0.16.1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.16.0...v0.16.1) (2026-10-27)
 
