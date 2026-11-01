@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.5](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.4...v0.19.5) (2026-11-01)
+
+
+### Continuous Integration
+
+* advance the Maestro proof snapshot to main 061008d1 ([#291](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/291)) ([95a6a9d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/95a6a9da4269270e1fbb94de421d541eb1678699))
+
+
+### Bug Fixes
+
+* **ci:** run wasm builds and doctests on pull requests ([#287](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/287)) ([c5f9b3b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/c5f9b3b5b99f262a366eae66bef201b3f515dd1c))
+
 ## [0.19.4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.3...v0.19.4) (2026-11-01)
 
 
