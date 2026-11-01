@@ -185,18 +185,23 @@ jobs:
           WORK = {'tests': ('Test shard (', 'Test jobs', 'test run'),
                   'compiles': ('Build test archive', 'Build jobs', 'compile unit')}
 
+          WORK = WORK | {f'{kind}-{host}': (f'{prefix}{host} ' if kind == 'tests' else f'{prefix} ({host})', f'{label} ({host})', unit)
+                   for host in ('macos-latest', 'windows-latest') for kind, (prefix, label, unit) in list(WORK.items())}
+
           # The steps of a test shard that run the tests: the only seconds of a shard that count as test work.
           TEST_STEPS = ('Tests', 'Isolated tests')
 
           def kind_of(name):
               """The kind of work a job name measures, None for any other job."""
-              return next((kind for kind, (measuring, _, _) in WORK.items() if name.startswith(measuring)), None)
+              kind = next((kind for kind, (measuring, _, _) in WORK.items() if name.startswith(measuring)), None)
+              host = next((host for host in ('macos-latest', 'windows-latest') if host in name), None)
+              return f'{kind}-{host}' if host and kind in ('tests', 'compiles') else kind
 
           def rated(name):
               """Whether the rate finding already judges the seconds of a timing: the archive build, a shard job and the step of a shard that runs its tests.
               Any other step of a shard is judged for growth like a step of any job; a download there is transfer, never test work."""
               job, _, step = name.partition(' / ')
-              return kind_of(job) == 'compiles' or (kind_of(job) == 'tests' and (not step or step in TEST_STEPS))
+              return (kind_of(job) or '').startswith('compiles') or ((kind_of(job) or '').startswith('tests') and (not step or step in TEST_STEPS))
 
           RATCHET_TITLE = 'CI time ratchet'
 
@@ -423,14 +428,14 @@ jobs:
                   kind = kind_of(job['name'])
                   if kind is None:
                       continue
-                  took = sum(seconds(step) or 0 for step in job.get('steps', []) if step['name'] in TEST_STEPS) if kind == 'tests' else seconds(job)
+                  took = sum(seconds(step) or 0 for step in job.get('steps', []) if step['name'] in TEST_STEPS) if kind.startswith('tests') else seconds(job)
                   for note in annotations_of(job):
                       if note.get('title') != 'Work units':
                           continue
                       for name, value in re.findall(r'(tests|compiles|hit-rate): ([0-9.]+)', note['message']):
                           if name == 'hit-rate':
                               found[name] = float(value)
-                          elif name == kind and float(value) > 0:
+                          elif name == kind.split('-', 1)[0] and float(value) > 0:
                               spent[kind] = spent.get(kind, 0) + took
                               units[kind] = units.get(kind, 0) + float(value)
                               ran[kind] = ran.get(kind, 0) + 1
@@ -504,14 +509,19 @@ jobs:
 
           def shard_finding(run, jobs, margin, grown):
               """The slowest test shard is beyond the margin over the median; names the tests that grew."""
-              took = sorted((seconds(job), job['name']) for job in jobs
-                            if kind_of(job['name']) == 'tests' and seconds(job) is not None)
-              if len(took) < 2:
+              breaches = []
+              for kind in (kind for kind in WORK if kind.startswith('tests')):
+                  took = sorted((seconds(job), job['name']) for job in jobs
+                                if kind_of(job['name']) == kind and seconds(job) is not None)
+                  if len(took) < 2:
+                      continue
+                  median = statistics.median(value for value, _ in took)
+                  slowest, name = took[-1]
+                  if slowest > margin * median:
+                      breaches.append((slowest / median, slowest, name, median))
+              if not breaches:
                   return None
-              median = statistics.median(value for value, _ in took)
-              slowest, name = took[-1]
-              if slowest <= margin * median:
-                  return None
+              _, slowest, name, median = max(breaches)
               lines = '\n'.join(f"- `{test}`: over {now:g} s now, " + (f'over {before:g} s before' if before else 'not slow before')
                                 for test, now, before in grown) or '- no test crossed a higher slow mark'
               return {'title': f"Test shards unbalanced: run {run['id']}",
@@ -583,7 +593,7 @@ jobs:
               def shard_slow(jobs):
                   found = {}
                   for job in jobs:
-                      if kind_of(job['name']) == 'tests':
+                      if (kind_of(job['name']) or '').startswith('tests'):
                           for test, mark in slow_tests(log_of(job)).items():
                               found[test] = max(found.get(test, 0), mark)
                   return found

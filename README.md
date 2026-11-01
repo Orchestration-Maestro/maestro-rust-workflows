@@ -7,11 +7,12 @@ One shared Rust CI. The original checks remain required:
 | Format | `cargo fmt --all --check` | Linux |
 | Lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Linux |
 | Docs | `cargo doc --workspace --no-deps --locked` | Linux |
-| Tests | `cargo nextest run` partitions and `cargo test --doc` | Linux |
+| Tests | `cargo nextest run` partitions and `cargo test --doc` | Linux, declared macOS and Windows |
 
 Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
-be documented, and documentation warnings fail the check. Tests run on Linux
-for now; macOS and Windows return before the first release.
+be documented, and documentation warnings fail the check. Callers claiming
+`aarch64-apple-darwin` or `x86_64-pc-windows-msvc` in `check_targets` also run
+tests on those native hosts on merge groups and main pushes.
 A new push to a pull request cancels that pull request's older run.
 
 After declaration validation, pull requests run formatting, Clippy, docs,
@@ -19,7 +20,8 @@ dependency and source checks, declared Windows target checks, wasm/browser
 builds and doctests in parallel. Test shards, coverage, other foreign-target
 checks (including macOS) and Chromium tests run on merge groups and main pushes,
 not on ordinary pull-request heads; [included-input changes](docs/caller-checks.md#pull-request-selection-and-retries) also run reader tests on pull requests without coverage.
-Those full events also keep the Windows check.
+Those full events also keep the Windows check and run native test legs for
+claimed macOS and Windows hosts. Pull requests and warm calls keep Linux-only tests.
 
 In merge groups, Chromium tests run only when the shared workspace graph selects
 at least one declared `browser_test_crates` package, including a package affected
@@ -32,6 +34,9 @@ default, using automatic count partitions rather than package lists. A caller
 can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
 [test shards](docs/caller-checks.md#test-shards). Doctests run in a
 parallel `Doctests` matrix leg on pull requests, merge groups and main pushes.
+Each claimed native host gets up to four shards, capped at `test_shard_count`,
+and its own `Doctests (<runner>)` leg on full events. Native shards are named
+`Test shard (<runner> k/n)`; Linux job names stay unchanged.
 The aggregate `Tests (ubuntu-latest)` always requires `Doctests` to succeed.
 It requires every shard to succeed on full runs and accepts event-skipped shards
 on pull requests unless the included-input rule requires them to succeed.
@@ -49,7 +54,7 @@ selected-package coverage is informational. See [test selection and retries](doc
 for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov
-nextest`. Only the numeric shards upload LCOV; the aggregate counts a
+nextest`. Only the Linux numeric shards upload LCOV; the aggregate counts a
 source line as covered if any shard covers it and enforces the workspace union's
 80% floor (or caller's higher threshold), including unchanged baseline packages
 on narrowed runs. Missing shard reports fail. Undeclared callers
@@ -69,7 +74,7 @@ than being repaired. Adoption needs a workflows release and organization re-pin.
 Pinned tool downloads use curl's `--retry 3` for transient failures without
 changing their pins or integrity checks.
 
-Numeric test shards download one nextest archive instead of compiling the workspace.
+Numeric test shards download one nextest archive per host instead of compiling the workspace.
 An optional caller `test_prepare` command runs beside the host build and writes
 reusable outputs to `TEST_PREPARE_OUTPUT` (`target/test-setup`). Shards download
 those files separately and setup scripts reuse them. `test_prepare_packages`
@@ -255,7 +260,8 @@ browser failures and pinned tooling. The required consumer result also includes
 using extracted shared setup and recipe bodies. A developer-tool fixture proves build-script
 tool availability across compiling jobs. Isolated tests spawn caller-pinned
 `just` and `prek` only when opted in. Native
-runner proofs detect deliberate Windows/macOS-only failures. The `fixtures/fuzz`
+runner proofs detect deliberate Windows/macOS-only compilation and test failures.
+Intel macOS remains compile-only. The `fixtures/fuzz`
 caller runs the fuzz job on hosted runners: its planted crash, stall and large
 allocation each give one finding, its clean target gives none, and the report
 code files them through a fake `gh`, so the self-test never opens a real issue.
