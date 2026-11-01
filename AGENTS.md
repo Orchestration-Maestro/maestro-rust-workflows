@@ -1,14 +1,8 @@
 # maestro-rust-workflows
 
-The shared CI always checks formatting, Clippy warnings, documentation and
-tests. One additional required job checks licenses, dependency use, spelling,
-secrets, workflows and at least 80% line coverage, with embedded defaults and
-checksum-verified tool releases. Only the caller declaration may extend those
-defaults or raise coverage. The optional caller declaration adds isolated tests, real search tools,
-caller-pinned build and test tools, additional locked manifest provisioning, wasm builds, native foreign-target checks, the
-fixed browser build recipe hook, a warm test filter for compile-starting tests, and a [nightly fuzz job](docs/caller-checks.md#nightly-fuzz-job) for declared targets. Optional [Chromium browser tests](docs/caller-checks.md#chromium-browser-tests)
-use shared verified runtime pins, not caller-selected browser versions. Its spec is
-[One shared Rust CI](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md).
+The shared engineering rules are in [Maestro's AGENTS.md](https://github.com/Orchestration-Maestro/maestro/blob/main/AGENTS.md).
+This file holds only instructions specific to the shared CI. Where the two
+disagree, Maestro's file wins.
 
 - Accept only the optional `.github/ci.toml` declaration documented in
   `docs/caller-checks.md`, including its single standalone `test_prepare` command;
@@ -18,14 +12,13 @@ use shared verified runtime pins, not caller-selected browser versions. Its spec
   The caller's `.config/nextest.toml` is test-suite runner metadata (such as
   resource groups), not shared-CI settings. Shared-CI partitioning and coverage
   policy stay in the workflow; default test filters are ignored and CI allows
-  two retries, naming flaky passes in the summary. PRs run fast checks and
-  declared Windows target checks in parallel; merge groups/main pushes also
-  run tests, coverage, all foreign-target checks and browser jobs.
+  two retries, naming flaky passes in the summary.
 - Test changes at the workflow seam in `.github/workflows/ci-internal.yml`; its
   seam steps run the scripts in `.github/ci-internal/`.
   Keep the broken fixtures broken, and outside any root workspace.
-- Pin actions by full commit SHA. Do not add a gate program or checks beyond the specification.
-- Release with release-please; organization rules own consumer version pins.
+- Pin actions by full commit SHA. Do not add a gate program or checks beyond
+  [the shared CI specification](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md).
+- Release with release-please; organization rules own callers' release pins.
 
 ## Agent skills
 
