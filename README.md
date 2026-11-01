@@ -15,9 +15,9 @@ for now; macOS and Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
 
 After declaration validation, pull requests run formatting, Clippy, docs,
-dependency and source checks, and declared Windows target checks in parallel.
-Test shards, coverage, other foreign-target checks (including macOS),
-wasm/browser builds and Chromium tests run on merge groups and main pushes,
+dependency and source checks, declared Windows target checks, wasm/browser
+builds and doctests in parallel. Test shards, coverage, other foreign-target
+checks (including macOS) and Chromium tests run on merge groups and main pushes,
 not on ordinary pull-request heads; [included-input changes](docs/caller-checks.md#pull-request-selection-and-retries) also run reader tests on pull requests without coverage.
 Those full events also keep the Windows check.
 
@@ -31,9 +31,10 @@ Tests run with checksum-pinned cargo-nextest 0.9.148 on 16 Linux runners by
 default, using automatic count partitions rather than package lists. A caller
 can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
 [test shards](docs/caller-checks.md#test-shards). Doctests run in a
-parallel `Doctests` matrix leg. The aggregate `Tests (ubuntu-latest)` requires
-every shard and `Doctests` to succeed on full runs and accepts event-skipped shards on
-pull requests unless the included-input rule requires them to succeed.
+parallel `Doctests` matrix leg on pull requests, merge groups and main pushes.
+The aggregate `Tests (ubuntu-latest)` always requires `Doctests` to succeed.
+It requires every shard to succeed on full runs and accepts event-skipped shards
+on pull requests unless the included-input rule requires them to succeed.
 Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-diagnostics)
 and the reporter log after isolated tests fail or time out.
 
