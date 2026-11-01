@@ -166,6 +166,8 @@ def execute(name, cwd, extra=None):
            if k not in credential_names and not k.endswith('_API_KEY')}
     env['TEST_SHARD_COUNT'] = '16'
     env.update(extra or {})
+    if name == 'Select test packages':
+        env.setdefault('TEST_HOSTS', json.dumps({'ubuntu-latest': int(env['TEST_SHARD_COUNT'])}))
     if name in ['Tests', 'Isolated tests']:
         env.update(toolchain_environment(cwd, env))
     env = {key: value for key, value in env.items() if value is not None}
@@ -1012,7 +1014,9 @@ def warm_filter_failures_keep_job_red():
             print(f'PASS warm filter {value!r}: exit {result.returncode}\n{output}', flush=True)
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     save = next(step for step in document['jobs']['tests']['steps'] if step.get('name') == 'Save compile cache')
-    assert save['if'] == "steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'"
+    for host in ['Linux', 'macOS', 'Windows']:
+        assert bool(evaluate(save['if'], {'runner.os': host, 'steps.cache-identity.outputs.writer': 'true',
+                                        'steps.cache-seal.outputs.eligible': 'true'})) == (host != 'Windows')
 
 warm_filter_failures_keep_job_red()
 print('PASS warm_filter_failures_keep_job_red')
@@ -1100,7 +1104,9 @@ def warm_cache_keeps_one_writer():
                                     (not warm or event == 'push')), (warm, event, advisory, fuzz, targets)
     tests = jobs['tests']
     assert 'WARM_CACHE: $' + "{{ inputs.warm-cache && matrix.shard != 'doctests' }}" in tests
-    assert "inputs.warm-cache && '[\"warm\"]'" in tests
+    warm = re.search(r"inputs\.warm-cache && '([^']+)'", document['jobs']['tests']['strategy']['matrix']['include'])
+    assert warm is not None
+    assert json.loads(warm[1]) == [{'runner': 'ubuntu-latest', 'shard': 'warm'}]
     assert "if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'" in tests
     proof = (root / '.github/workflows/ci-proof.yml').read_text(encoding='utf-8')
     assert '  maestro:\n    needs: warm\n' in proof
@@ -2187,7 +2193,15 @@ def reserved_ports_are_validated_and_applied_only_when_set():
             assert result.returncode != 0 and 'reserved_ports' in result.stderr, bad + result.stderr
     tests = workflow.split('  tests:\n', 1)[1].split('  targets:', 1)[0]
     step = next(s for s in tests.split('      - name: ')[1:] if s.splitlines()[0] == 'Reserved ports')
-    assert "if: runner.environment == 'github-hosted' && needs.declaration.outputs.reserved_ports != ''" in step
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    condition = next(item for item in document['jobs']['tests']['steps'] if item['name'] == 'Reserved ports')['if']
+    for host, environment, ports, expected in [('Linux', 'github-hosted', '1455', True),
+                                               ('Linux', 'self-hosted', '1455', False),
+                                               ('macOS', 'github-hosted', '1455', False),
+                                               ('Windows', 'github-hosted', '1455', False),
+                                               ('Linux', 'github-hosted', '', False)]:
+        assert bool(evaluate(condition, {'runner.os': host, 'runner.environment': environment,
+                                        'needs.declaration.outputs.reserved_ports': ports})) == expected
     assert 'sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"' in step
     assert tests.index('- name: Reserved ports') < tests.index('- name: Isolated tests')
 
@@ -3664,13 +3678,19 @@ def isolation_creates_a_missing_cargo_home():
         directory = pathlib.Path(temporary)
         tools, log = install_recording_runner(directory)
         home = directory / 'new-cargo-home'
-        result = execute('Isolated tests', directory, {'PATH': str(tools) + os.pathsep + os.environ['PATH'],
-                         'TOOLS': str(tools), 'RUNNER_TEMP': temporary, 'CARGO_HOME': str(home),
-                         'SHARD': '2', 'TEST_PACKAGES': '["sample"]', 'COLLECT_COVERAGE': 'false'})
+        env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+               'RUNNER_TEMP': temporary, 'CARGO_HOME': str(home), 'SHARD': '2',
+               'TEST_PACKAGES': '["sample"]', 'COLLECT_COVERAGE': 'false'}
+        result = execute('Isolated tests', directory, env)
         assert result.returncode == 0, result.stdout + result.stderr
         commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
         assert home.is_dir() and commands[-1]['cargo_home'] == str(home), commands
         assert 'No such file or directory' not in result.stderr, result.stderr
+        invalid = directory / 'cargo-home-file'
+        invalid.write_text('not a directory', encoding='utf-8')
+        before = log.read_bytes()
+        result = execute('Isolated tests', directory, env | {'CARGO_HOME': str(invalid)})
+        assert result.returncode != 0 and log.read_bytes() == before, result.stdout + result.stderr
 
 isolation_creates_a_missing_cargo_home()
 print('PASS isolation_creates_a_missing_cargo_home')
