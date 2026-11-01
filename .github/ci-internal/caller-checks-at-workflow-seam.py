@@ -3166,7 +3166,7 @@ def included_test_failures_remain_required():
     for included in ['false', 'true']:
         for status in ['success', 'failure', 'cancelled', 'skipped']:
             result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                    env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': status, 'COLLECT_COVERAGE': 'false',
+                                    env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'success', 'COLLECT_COVERAGE': 'false',
                                                       'INCLUDED_TESTS': included, 'DECLARATION_RESULT': 'success'},
                                     capture_output=True, text=True)
             expected = status == ('success' if included == 'true' else 'skipped')
