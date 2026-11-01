@@ -35,7 +35,7 @@ jobs:
       checkout-repository: Orchestration-Maestro/maestro
       checkout-ref: 4aff524f6a07779902ea49daa773b6dc76f9cd80
       concurrency-key: maestro-proof
-      test-event: merge_group
+      test-event: pull_request
 
   selected:
     name: Maestro selected-package tests
@@ -51,7 +51,7 @@ jobs:
       checkout-ref: 4aff524f6a07779902ea49daa773b6dc76f9cd80
       checkout-base-ref: d88e95580cf0e7c34b990fa3495c37a6257aedf2
       concurrency-key: maestro-selected
-      test-event: merge_group
+      test-event: pull_request
 
   comparison:
     name: Maestro single coverage
