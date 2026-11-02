@@ -279,9 +279,7 @@ Candidate changes are tested by the self-test fixtures and workflow seams.
 
 During the same release run that updates Maestro's caller pin, update the
 `scan` job's workflow SHA in `.github/workflows/advisories.yml` and
-`.github/workflows/fuzz.yml` to that release. Keep `pin-pending` active until
-the caller pin and any required declaration changes have landed, both scan pins
-match the release, and the required checks have been re-triggered.
+`.github/workflows/fuzz.yml` to that release.
 
 ### Verify a release
 

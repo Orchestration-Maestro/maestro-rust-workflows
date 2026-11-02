@@ -558,8 +558,8 @@ never become tools. Existing installation deadlines still apply.
   declaration and the advisory check run, with the declared exceptions. Each undeclared
   advisory or yanked crate opens one issue in that repository, titled `Priority: <identifier> on main`
   and its crates, unless an open issue title already starts with `Priority: <identifier> on main`; the
-  run fails while any remains. Pull requests that change the workflow run the scan without
-  opening issues.
+  run fails while any remains. Pull requests that change `advisories.yml` run the pinned
+  scan without opening issues.
 - The cargo-deny license allowlist is MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
   Apache-2.0 WITH LLVM-exception, Unicode-DFS-2016, Unicode-3.0, CC0-1.0,
   CDLA-Permissive-2.0, MPL-2.0, MIT-0 and BSL-1.0. BSL-1.0 is the Boost Software
@@ -965,8 +965,9 @@ the workflow's fuzz-scan mode runs the fuzz job, next to the declaration, and
 the organization's required workflow never sets that mode. This repository's
 own pull requests also run the `fixtures/fuzz` planted targets to test the
 workflow code; callers' pull requests do not.
-`.github/workflows/fuzz.yml` calls the workflow in that mode for Maestro's
-`main` every night at 04:41 UTC and on manual dispatch. Each target job installs
+`.github/workflows/fuzz.yml` calls the [released workflow](../README.md#versions),
+pinned by full commit SHA, in that mode for Maestro's `main` every night at
+04:41 UTC and on manual dispatch. Each target job installs
 cargo-fuzz 0.13.2, a checksum-verified release that only this job downloads,
 and the `nightly-2026-09-15` toolchain, which replaces the caller's
 `rust-toolchain.toml` for that job only. It fuzzes on Linux x86_64

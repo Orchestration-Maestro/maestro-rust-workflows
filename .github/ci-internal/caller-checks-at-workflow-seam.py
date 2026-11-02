@@ -1847,6 +1847,10 @@ def scheduled_scans_follow_released_workflow():
     for filename, mode in [('advisories.yml', 'advisory-scan'), ('fuzz.yml', 'fuzz-scan')]:
         document = json.loads(subprocess.check_output(
             ['yq', '-o=json', str(root / '.github/workflows' / filename)], text=True))
+        if filename == 'advisories.yml':
+            assert document['on']['pull_request']['paths'] == ['.github/workflows/advisories.yml'], document['on']
+        else:
+            assert 'pull_request' not in document['on'], document['on']
         scan = document['jobs']['scan']
         reference = scan['uses']
         assert re.fullmatch(r'Orchestration-Maestro/maestro-rust-workflows/\.github/workflows/ci\.yml@[0-9a-f]{40}', reference), reference

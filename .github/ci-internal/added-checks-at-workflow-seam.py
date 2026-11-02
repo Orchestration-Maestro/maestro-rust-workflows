@@ -609,9 +609,7 @@ with tempfile.TemporaryDirectory() as temporary:
     root_config = pathlib.Path(temporary) / 'root-zizmor.yml'
     root_config.write_text('rules:\n  self-repository:\n    ignore:\n'
                            '      - ci-internal.yml\n'
-                           '      - ci-proof.yml\n'
-                           '      - advisories.yml\n'
-                           '      - fuzz.yml\n', encoding="utf-8")
+                           '      - ci-proof.yml\n', encoding="utf-8")
     # Moving lines inside a root workflow must not revive a self-repository finding.
     shifted = pathlib.Path(temporary) / 'shifted'
     shutil.copytree(root / '.github/workflows', shifted / '.github/workflows')

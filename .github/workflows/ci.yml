@@ -419,6 +419,72 @@ jobs:
                   if not isinstance(scripts, list) or any(not isinstance(rule, dict) for rule in scripts):
                       raise SystemExit(f'{nextest}: profile.default.scripts must be an array of tables')
                   consumers = set()
+                  def skip_whitespace():
+                      nonlocal position
+                      position += len(text[position:]) - len(text[position:].lstrip())
+                  def token():
+                      return re.match(r'([a-z_]+)\s*\(\s*(/(?:\\.|[^/\\])*/|(?:\\.|[^()\\])*)\s*\)', text[position:])
+                  def expression(minimum=0):
+                      nonlocal position
+                      skip_whitespace()
+                      atom = token()
+                      start = position
+                      if atom:
+                          position += atom.end()
+                          name, value = atom[1], atom[2].strip()
+                          if name in ('deps', 'rdeps'):
+                              refuse('filter selects packages by dependency: ' + atom[0])
+                          if name == 'package':
+                              value = value.removeprefix('=')
+                              for prefix, kind in [('/', 'a regular expression'), ('~', 'a substring')]:
+                                  if value.startswith(prefix):
+                                      refuse(f'filter matches packages by {kind}: ' + atom[0])
+                              if any(char in value for char in '*?[]#'):
+                                  refuse('filter matches packages by a glob: ' + atom[0])
+                          elif name not in ('all', 'none', 'test', 'binary', 'binary_id', 'kind', 'platform'):
+                              refuse('filter has unsupported atom: ' + atom[0])
+                          node = (name, value, atom[0])
+                      elif text[position:position + 1] == '(':
+                          position += 1
+                          node = expression()
+                          skip_whitespace()
+                          if text[position:position + 1] != ')':
+                              refuse(f'filter cannot be read at offset {position}')
+                          position += 1
+                      else:
+                          negation = re.match(r'!|not\b', text[position:])
+                          if not negation:
+                              refuse(f'filter cannot be read at offset {position}')
+                          position += negation.end()
+                          node = ('not', expression(3), text[start:position])
+                      while True:
+                          skip_whitespace()
+                          operator = re.match(r'\||\+|or\b|&|and\b|-', text[position:])
+                          if not operator:
+                              return node
+                          op = 'or' if operator[0] in ('|', '+', 'or') else 'and'
+                          precedence = 1 if op == 'or' else 2
+                          if precedence < minimum:
+                              return node
+                          position += operator.end()
+                          right = expression(precedence + 1)
+                          if operator[0] == '-':
+                              right = ('not', right, right[2])
+                          node = (op, (node, right), text[start:position])
+                  def package_atoms(node, negated=False):
+                      if node[0] == 'package':
+                          if negated:
+                              refuse('filter negates package(' + node[1] + ')')
+                          return [node[1]]
+                      if node[0] == 'not':
+                          return package_atoms(node[1], True)
+                      if node[0] in ('and', 'or'):
+                          return [name for child in node[1] for name in package_atoms(child, negated)]
+                      return []
+                  def terms(node, operator):
+                      if node[0] == operator:
+                          return [term for child in node[1] for term in terms(child, operator)]
+                      return [node]
                   for setup in setups:
                       def refuse(reason):
                           raise SystemExit(f'{nextest}: setup {setup!r} {reason}')
@@ -433,73 +499,9 @@ jobs:
                           if not isinstance(text, str):
                               refuse('filter must be a string')
                           position = 0
-                          def token():
-                              nonlocal position
-                              position += len(text[position:]) - len(text[position:].lstrip())
-                              return re.match(r'([a-z_]+)\s*\(\s*(/(?:\\.|[^/\\])*/|(?:\\.|[^()\\])*)\s*\)', text[position:])
-                          def expression(minimum=0):
-                              nonlocal position
-                              atom = token()
-                              start = position
-                              if atom:
-                                  position += atom.end()
-                                  name, value = atom[1], atom[2].strip()
-                                  if name in ('deps', 'rdeps'):
-                                      refuse('filter selects packages by dependency: ' + atom[0])
-                                  if name == 'package':
-                                      value = value.removeprefix('=')
-                                      for prefix, kind in [('/', 'a regular expression'), ('~', 'a substring')]:
-                                          if value.startswith(prefix):
-                                              refuse(f'filter matches packages by {kind}: ' + atom[0])
-                                      if any(char in value for char in '*?[]#'):
-                                          refuse('filter matches packages by a glob: ' + atom[0])
-                                  elif name not in ('all', 'none', 'test', 'binary', 'binary_id', 'kind', 'platform'):
-                                      refuse('filter has unsupported atom: ' + atom[0])
-                                  node = (name, value, atom[0])
-                              elif text[position:position + 1] == '(':
-                                  position += 1
-                                  node = expression()
-                                  token()
-                                  if text[position:position + 1] != ')':
-                                      refuse(f'filter cannot be read at offset {position}')
-                                  position += 1
-                              else:
-                                  negation = re.match(r'!|not\b', text[position:])
-                                  if not negation:
-                                      refuse(f'filter cannot be read at offset {position}')
-                                  position += negation.end()
-                                  node = ('not', expression(3), text[start:position])
-                              while True:
-                                  token()
-                                  operator = re.match(r'\||\+|or\b|&|and\b|-', text[position:])
-                                  if not operator:
-                                      return node
-                                  op = 'or' if operator[0] in ('|', '+', 'or') else 'and'
-                                  precedence = 1 if op == 'or' else 2
-                                  if precedence < minimum:
-                                      return node
-                                  position += operator.end()
-                                  right = expression(precedence + 1)
-                                  if operator[0] == '-':
-                                      right = ('not', right, right[2])
-                                  node = (op, (node, right), text[start:position])
-                          def package_atoms(node, negated=False):
-                              if node[0] == 'package':
-                                  if negated:
-                                      refuse('filter negates package(' + node[1] + ')')
-                                  return [node[1]]
-                              if node[0] == 'not':
-                                  return package_atoms(node[1], True)
-                              if node[0] in ('and', 'or'):
-                                  return [name for child in node[1] for name in package_atoms(child, negated)]
-                              return []
-                          def terms(node, operator):
-                              if node[0] == operator:
-                                  return [term for child in node[1] for term in terms(child, operator)]
-                              return [node]
                           try:
                               tree = expression()
-                              token()
+                              skip_whitespace()
                               if position != len(text):
                                   refuse(f'filter cannot be read at offset {position}')
                               package_atoms(tree)

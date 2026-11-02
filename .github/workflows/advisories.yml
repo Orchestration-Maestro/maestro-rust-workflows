@@ -5,7 +5,7 @@ on:
     - cron: '17 * * * *'
   workflow_dispatch:
   pull_request:
-    paths: [.github/workflows/ci.yml, .github/workflows/advisories.yml]
+    paths: [.github/workflows/advisories.yml]
 
 permissions:
   contents: read
