@@ -47,7 +47,7 @@ jobs:
       - name: Mise bootstrap
         run: |
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-content-mise.XXXXXX")
-          curl --fail --retry 3 --location https://github.com/jdx/mise/releases/download/v2026.10.2/mise-v2026.10.2-linux-x64 --output "$bin/mise"
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location https://github.com/jdx/mise/releases/download/v2026.10.2/mise-v2026.10.2-linux-x64 --output "$bin/mise"
           printf '%s  %s\n' 8f5f6660336f572830e33cd9b378d3131e529a0d4c4f0c553776be90a1ba302a "$bin/mise" | sha256sum --check --status
           chmod +x "$bin/mise"
           echo "$bin" >> "$GITHUB_PATH"
