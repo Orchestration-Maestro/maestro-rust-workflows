@@ -2850,6 +2850,62 @@ def included_docs_run_only_readers_and_reverse_dependencies():
 included_docs_run_only_readers_and_reverse_dependencies()
 print('PASS included_docs_run_only_readers_and_reverse_dependencies')
 
+def included_package_inputs_keep_owners_and_reverse_dependencies():
+    from functools import partial
+    for root_package in [False, True]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            members = ['b', 'c', 'unrelated'] + ([] if root_package else ['a'])
+            workspace = '[workspace]\nresolver="3"\nmembers=' + json.dumps(members) + '\n'
+            (directory / 'Cargo.toml').write_text(workspace, encoding='utf-8')
+            owner = pathlib.Path('.') if root_package else pathlib.Path('a')
+            for name in ['a', 'b', 'c', 'unrelated']:
+                crate = directory / (owner if name == 'a' else name)
+                (crate / 'src').mkdir(parents=True)
+                manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n'
+                if name == 'c':
+                    manifest += f'[dependencies]\na={{path="../{owner.as_posix()}"}}\n'
+                (crate / 'Cargo.toml').write_text(
+                    (workspace if name == 'a' and root_package else '') + manifest, encoding='utf-8')
+                (crate / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+            (directory / owner / 'build.rs').write_text('fn main() {}\n', encoding='utf-8')
+            (directory / owner / 'src/data.txt').write_text('base\n', encoding='utf-8')
+            (directory / 'docs').mkdir()
+            (directory / 'docs/policy.md').write_text('base\n', encoding='utf-8')
+            owned = [owner / path for path in ['src/lib.rs', 'src/data.txt', 'build.rs', 'Cargo.toml']]
+            (directory / 'b/src/lib.rs').write_text(''.join(
+                f'const _: &str = include_str!("../../{path.as_posix()}");\n'
+                for path in [*owned, pathlib.Path('docs/policy.md')]), encoding='utf-8')
+            command = ['cargo', 'generate-lockfile']
+            if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+                command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+            subprocess.run(command, cwd=directory, check=True)
+            git = partial(fixture_git, directory)
+            git('init', '--quiet')
+            git('add', '.')
+            git('commit', '-qm', 'base')
+            base = git('rev-parse', 'HEAD')
+            for path, expected in [*((path, ['a', 'b', 'c']) for path in owned),
+                                   (pathlib.Path('docs/policy.md'), ['b'])]:
+                if root_package and path == pathlib.Path('Cargo.toml'):
+                    expected = ['a', 'b', 'c', 'unrelated']
+                changed = directory / path
+                changed.write_text(changed.read_text(encoding='utf-8') + '\n', encoding='utf-8')
+                git('add', '.')
+                git('commit', '-qm', 'changed include input')
+                output = directory / '.git/selection'
+                output.write_text('', encoding='utf-8')
+                result = select_packages(directory, {
+                    'TEST_EVENT': 'pull_request', 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+                assert result.returncode == 0, result.stdout + result.stderr
+                values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                assert json.loads(values['packages']) == expected, (root_package, path, values)
+                assert values['selected_tests'] == 'true' and values['coverage'] == 'false', values
+                git('reset', '--hard', base)
+
+included_package_inputs_keep_owners_and_reverse_dependencies()
+print('PASS included_package_inputs_keep_owners_and_reverse_dependencies')
+
 def included_readers_follow_member_roots():
     from functools import partial
     for nested in [False, True]:

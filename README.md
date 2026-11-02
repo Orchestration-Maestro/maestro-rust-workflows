@@ -18,8 +18,12 @@ After declaration validation, pull requests run formatting, Clippy, docs,
 dependency and source checks, declared Windows target checks, wasm/browser
 builds and doctests in parallel. Tests, host Clippy and the Windows check use
 one shared selection: changed crates, included-input readers and their workspace
-dependents. PR tests use one non-coverage leg. Merge groups and main pushes run
-the full shard matrix, coverage and every declared foreign-target check.
+dependents. Including package source, build or manifest inputs keeps their owning
+crate selected too. Included external docs and fixtures route only to readers.
+See [package ownership](docs/caller-checks.md#pull-request-selection-and-retries)
+for root-package boundaries. PR tests use one non-coverage leg. Merge groups and
+main pushes run the full shard matrix, coverage and every declared foreign-target
+check.
 
 Merge groups and main pushes always run declared Chromium tests, regardless of
 changed paths. Ordinary pull requests skip Chromium runtime tests. See

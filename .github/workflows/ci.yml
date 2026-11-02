@@ -473,6 +473,11 @@ jobs:
           packages = {p['id']: p for p in head['packages']}
           members = set(head['workspace_members'])
           roots = {p: pathlib.Path(packages[p]['manifest_path']).parent.relative_to(pathlib.Path.cwd()) for p in members}
+          root_targets = [target for p in members if roots[p] == pathlib.Path('.') for target in packages[p]['targets']]
+          root_source_dirs = {pathlib.Path(target['src_path']).resolve().parent
+                              for target in root_targets if 'custom-build' not in target['kind']}
+          root_build_scripts = {pathlib.Path(target['src_path']).resolve()
+                                for target in root_targets if 'custom-build' in target['kind']}
           selected = set(members)
           trigger = None
           browser_changed = False
@@ -548,9 +553,13 @@ jobs:
                       break
                   if filename in ('Cargo.lock', '.github/ci.toml'):
                       continue
-                  included = path.resolve() in included_paths
+                  resolved = path.resolve()
+                  included = resolved in included_paths
                   owner = package_owner(path, roots)
-                  owners = {owner} if owner is not None and not included else set()
+                  # Root-package include inputs outside Cargo targets belong only to their readers.
+                  owned = owner is not None and (roots[owner] != pathlib.Path('.') or path == pathlib.Path('Cargo.toml')
+                          or resolved in root_build_scripts or any(resolved.is_relative_to(root) for root in root_source_dirs))
+                  owners = {owner} if owner is not None and (not included or owned) else set()
                   routes = [readers for key, readers in inputs.items() if path.is_relative_to(key)]
                   selected.update(owners, *routes)
                   if not owners and not routes and not included and path.suffix != '.md' and not filename.startswith('docs/'):

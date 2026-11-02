@@ -389,9 +389,12 @@ Pull requests run changed workspace crates, literal `include_str!` or
 `include_bytes!` input readers and declared test-input readers, plus their
 direct or transitive workspace dependents. Normal, build, development and
 target-specific dependency edges count. The deepest package root owns a
-changed source file; an included input selects its readers and explicit
-test-input routes rather than an enclosing root package. Mixed source and
-included-input changes select both sets of packages.
+changed source file. Including a package input adds its readers without dropping
+its owner or the owner's dependents. Non-root packages own their whole directory.
+A root package owns `Cargo.toml`, its Cargo target source directories recursively,
+and its build script itself. Other root paths, such as external docs or fixtures,
+select only their include readers and explicit test-input routes when included.
+Root manifest and lockfile changes still follow the rules below.
 
 The selected tests run without coverage in one archived `count:1/1` leg.
 Doctests cover the same packages in the parallel `Doctests` job. Host Clippy
