@@ -1,18 +1,27 @@
+import ast
 import os
 import pathlib
 import re
-import shlex
 import subprocess
+import time
+from typing import Callable, cast
 
 workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding="utf-8")
 commands = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + ['cargo test --workspace --locked']
 expected = [
     'cargo fmt --all --check',
-    'cargo clippy --workspace --all-targets --locked -- -D warnings',
     'cargo doc --workspace --no-deps --locked',
     'cargo test --workspace --locked',
 ]
 assert commands == expected, f'Unexpected check commands: {commands}'
+code = pathlib.Path('.github/ci-internal/caller-checks-at-workflow-seam.py').read_text(encoding='utf-8')
+tree = ast.parse(code)
+tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
+resolver: dict[str, object] = {'workflow': workflow}
+exec(compile(tree, 'workflow body resolver', 'exec'), resolver)
+body = cast(Callable[[str], str], resolver['body'])
+commands.insert(1, body('Lint'))
+
 def snapshot_only_transfers_fail_open():
     count = 0
     for step in re.split(r'^      - name: ', workflow, flags=re.M)[1:]:
@@ -62,14 +71,16 @@ for fixture, broken in [('unformatted', 0), ('clippy-warning', 1),
         env = os.environ.copy()
         if check == 2:
             env['RUSTDOCFLAGS'] = flags.group(1)
-        argv = shlex.split(command)
+        argv = ['bash', '-e', '-o', 'pipefail', '-c', command]
         if os.environ.get('MAESTRO_LOCAL_CAPPED'):
             argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
             env['CARGO_BUILD_JOBS'] = '3'
+        started = time.perf_counter()
         result = subprocess.run(argv, cwd=f'fixtures/{fixture}', env=env)
+        elapsed = time.perf_counter() - started
         expected_failure = check == broken
         print(f'{fixture}: {command}: exit {result.returncode}; '
-              f'expected {"failure" if expected_failure else "success"}', flush=True)
+              f'expected {"failure" if expected_failure else "success"}; elapsed {elapsed:.2f} s', flush=True)
         if (result.returncode != 0) != expected_failure:
             failures.append(f'{fixture}: {command}: exit {result.returncode}')
 assert not failures, '\n'.join(failures)
