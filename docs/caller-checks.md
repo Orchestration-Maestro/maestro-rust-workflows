@@ -199,6 +199,12 @@ shard restore Cargo's `git/db` and `git/checkouts` before resolving dependencies
 Doctests share the test-shard route. A hit containing the locked revision avoids
 fetching that git source; Cargo still downloads missing registry packages.
 
+All Cargo jobs use Git's CLI transport through
+`CARGO_NET_GIT_FETCH_WITH_CLI=true`. Isolated test children keep this setting.
+Cargo retries failed Git fetches, including submodule fetches, with its default
+three-retry budget. TLS verification stays enabled. An exhausted retry budget
+fails the check; there is no workflow retry loop.
+
 The key hashes the caller's `Cargo.lock` and the `Cargo.lock` of every
 `additional_locked_manifests` entry. Entries stay separate by caller repository,
 directory, workflow concurrency key and runner operating system. A changed lock

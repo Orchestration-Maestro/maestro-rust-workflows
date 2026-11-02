@@ -550,6 +550,31 @@ def archived_shards_provision_child_build_dependencies():
     fetch = next(step for step in tests.split('      - name: ')[1:] if step.startswith('Fetch additional locked manifests\n'))
     assert "if: needs.declaration.outputs.additional_locked_manifests != '[]'" in fetch
 
+def cargo_git_transport_reaches_every_job_and_isolated_child():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    setting = 'CARGO_NET_GIT_FETCH_WITH_CLI'
+    assert document['env'].get(setting) == 'true', 'Cargo Git fetches must use its retryable CLI transport'
+    for name, job in document['jobs'].items():
+        job_env = document['env'] | job.get('env', {})
+        assert job_env[setting] == 'true', name
+        for step in job.get('steps', []):
+            assert (job_env | step.get('env', {}))[setting] == 'true', (name, step.get('name'))
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        tools, log = install_recording_runner(directory)
+        result = execute('Isolated tests', directory, {
+            setting: document['env'][setting], 'PATH': str(tools) + os.pathsep + os.environ['PATH'],
+            'TOOLS': str(tools), 'RUNNER_TEMP': temporary, 'TEST_PACKAGES': '["sample"]',
+            'SHARD': '1', 'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+            'COLLECT_COVERAGE': 'false', 'CARGO_COVERAGE_MIN_LINES': '',
+            'UNRELATED_AMBIENT_CANARY': 'must-not-leak'})
+        assert result.returncode == 0, result.stdout + result.stderr
+        commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+        assert len(commands) == 2, commands
+        assert all(command['git_fetch_with_cli'] == 'true' for command in commands), commands
+        assert commands[-1]['ambient'] is None, commands
+
+
 def cargo_git_cache_restores_before_every_fetch():
     build = workflow.split('  test-build:\n', 1)[1].split('\n  test-prepare:', 1)[0]
     prepare = workflow.split('  test-prepare:\n', 1)[1].split('\n  tests:', 1)[0]
@@ -654,7 +679,9 @@ def cargo_git_cache_reuses_exact_locked_sources():
             + 'source-fixture = { git = ' + json.dumps(origin.as_uri()) + ', rev = "' + revision + '" }\n', encoding='utf-8')
         writer = directory / 'writer cargo'
         env = {name: value for name, value in os.environ.items() if not name.startswith(('CARGO_', 'RUSTC_'))}
-        env.update(CARGO_HOME=str(writer), CARGO_NET_RETRY='0')
+        transport = re.search(r"^  CARGO_NET_GIT_FETCH_WITH_CLI: '([^']+)'$", workflow, re.MULTILINE)
+        assert transport, 'Missing workflow Cargo Git transport'
+        env.update(CARGO_HOME=str(writer), CARGO_NET_RETRY='0', CARGO_NET_GIT_FETCH_WITH_CLI=transport[1])
         command = ['cargo', 'metadata', '--format-version', '1']
         if os.environ.get('MAESTRO_LOCAL_CAPPED'):
             command.insert(0, os.path.expanduser('~/.local/bin/capped'))
@@ -872,6 +899,7 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
         with open({str(log)!r}, 'a', encoding='utf-8') as output:
             output.write(json.dumps(dict(tool=pathlib.Path(sys.argv[0]).name, args=args,
                                          home=os.environ.get('HOME'), cargo_home=os.environ.get('CARGO_HOME'),
+                                         git_fetch_with_cli=os.environ.get('CARGO_NET_GIT_FETCH_WITH_CLI'),
                                          ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
                                          test_prepare_output=os.environ.get('TEST_PREPARE_OUTPUT'),
                                          test_archive=os.environ.get('TEST_ARCHIVE'),
@@ -997,6 +1025,8 @@ undeclared_coverage_measures_the_full_workspace()
 print('PASS undeclared_coverage_measures_the_full_workspace')
 archived_shards_provision_child_build_dependencies()
 print('PASS archived_shards_provision_child_build_dependencies')
+cargo_git_transport_reaches_every_job_and_isolated_child()
+print('PASS cargo_git_transport_reaches_every_job_and_isolated_child')
 cargo_git_cache_restores_before_every_fetch()
 print('PASS cargo_git_cache_restores_before_every_fetch')
 archive_signal_reaches_only_archived_shards()

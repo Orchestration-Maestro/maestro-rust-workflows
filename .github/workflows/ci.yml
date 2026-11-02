@@ -56,6 +56,7 @@ permissions:
   contents: read
 
 env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
   COVERAGE_IGNORE_FILENAME_REGEX: '(^|/)(tests|benches)/([^.]|\.[^./]|\.\.[^/])|(^|/)(target|vendor|registry|toolchains)/|(^|/)git/checkouts/|(^|/)rustc/([0-9a-f]+|[0-9]+\.[0-9]+\.[0-9]+)/|(^|/)(tests\.rs|[0-9a-zA-Z_-]+[_-]tests\.rs)$'
   PACKAGE_OWNER: |
     # The deepest root wins, so a nested package owns its own files.
@@ -2017,6 +2018,7 @@ jobs:
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 MAESTRO_TEST_DIAGNOSTICS_DIR="$diagnostics" \
             TEST_PREPARE_OUTPUT="$PWD/target/test-setup" ${TEST_ARCHIVE:+TEST_ARCHIVE=1} \
             CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
+            ${CARGO_NET_GIT_FETCH_WITH_CLI+CARGO_NET_GIT_FETCH_WITH_CLI="$CARGO_NET_GIT_FETCH_WITH_CLI"} \
             ${HOST_CC+HOST_CC="$HOST_CC"} ${CC+CC="$CC"} \
             SCCACHE_DIR="${SCCACHE_DIR-}" SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE-}" \
             SCCACHE_LOCAL_RW_MODE="${SCCACHE_LOCAL_RW_MODE-}" SCCACHE_GHA_ENABLED="${SCCACHE_GHA_ENABLED-}" \
