@@ -40,7 +40,7 @@ Each nextest test can retry twice; flaky passes are named in job summaries,
 while permanent failures still fail. Pull requests select direct and transitive
 workspace dependents, including build, development and target-specific
 dependencies. Merge groups and main pushes always test the full workspace.
-See [test selection and retries](docs/caller-checks.md#pull-request-selection-and-retries)
+See [PR selection](docs/caller-checks.md#pull-request-selection-and-retries)
 for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov

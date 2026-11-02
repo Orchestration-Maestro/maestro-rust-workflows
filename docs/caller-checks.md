@@ -208,9 +208,9 @@ Declared callers run `cargo llvm-cov nextest` in the same isolated environment
 with their opted-in tools. Only the numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including `Doctests`, to succeed on full runs. On pull requests it requires a
-successful declaration, successful `Doctests`, and either an empty-selection skip
-or a successful selected-package test leg. On full runs it downloads all
-reports, counts each source line once (covered if any shard hits it), and
+successful declaration, successful `Doctests`, and either a skip for an empty
+selection or a successful selected-package test leg. On full runs it downloads
+all reports, counts each source line once (covered if any shard hits it), and
 enforces `coverage_min_lines` on the union. Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. Both coverage modes run tests through nextest,
@@ -386,12 +386,12 @@ grep -RFn -- 'phase: waiting-for-child-exit' "$download/target/browser-author-di
 ### Pull-request selection and retries
 
 Pull requests run changed workspace crates, literal `include_str!` or
-`include_bytes!` input readers, declared test-input readers, and all their direct
-or transitive workspace dependents. Normal, build, development and target-specific
-dependency edges count. The deepest package root owns a changed source file;
-an included input selects its readers and explicit test-input routes rather
-than an enclosing root package. Mixed source and included-input changes select
-both sets of packages.
+`include_bytes!` input readers and declared test-input readers, plus their
+direct or transitive workspace dependents. Normal, build, development and
+target-specific dependency edges count. The deepest package root owns a
+changed source file; an included input selects its readers and explicit
+test-input routes rather than an enclosing root package. Mixed source and
+included-input changes select both sets of packages.
 
 The selected tests run without coverage in one archived `count:1/1` leg.
 Doctests cover the same packages in the parallel `Doctests` job. Host Clippy
@@ -631,8 +631,8 @@ runner fails its test step, so coverage uploads run only after success; a missin
 report after success fails the upload separately. On full runs the required aggregate accepts
 only successful matrix legs, including `Doctests`, and requires one report per
 numeric shard when merging coverage. On pull requests the aggregate requires a
-successful declaration, successful `Doctests`, and either an empty-selection skip
-or a successful selected-package test leg.
+successful declaration, successful `Doctests`, and either a skip for an empty
+selection or a successful selected-package test leg.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
@@ -1205,9 +1205,9 @@ Both titles are standing: a repeat adds a comment to the open issue.
 
 The selection step logs and summarizes `Selection share: N% (a/b test
 packages)`. When a change selects every package it also logs
-`Full-suite fallback: <trigger>`, with the file when one caused it. The selection
-guard judges pull requests only: merge groups and main pushes intentionally run
-100% of the workspace.
+`Full-suite fallback: <trigger>`, with the file when one caused it. The
+selection guard judges pull requests only. Merge groups and main pushes
+intentionally run 100% of the workspace.
 
 The guard reads the last `selection-window` completed PR runs of the same
 workflow and files "Test selection share above its range" when their median
