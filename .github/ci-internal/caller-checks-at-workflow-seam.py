@@ -2435,18 +2435,18 @@ def removed_shard_lists_fail_clearly():
         assert result.returncode != 0 and not values and 'test_shards was removed' in result.stderr, result.stdout + result.stderr
     aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
     assert 'name: Tests (ubuntu-latest)' in aggregate
-    assert 'needs: [tests, doctests, declaration, test-build]' in aggregate and 'if: $' + '{{ always()' in aggregate
-    for coverage in ['false', 'true', '']:
+    assert 'needs: [tests, doctests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
+    for coverage, selected, required in [('false', 'false', 'skipped'), ('false', 'true', 'success'),
+                                         ('true', 'false', 'success'), ('true', 'true', 'success'),
+                                         ('', 'false', None), ('', 'true', None)]:
         for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
             for status in ['success', 'failure', 'cancelled', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
                                         env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'success', 'COLLECT_COVERAGE': coverage,
-                                                          'DECLARATION_RESULT': declaration_status},
+                                                          'SELECTED_TESTS': selected, 'DECLARATION_RESULT': declaration_status},
                                         capture_output=True, text=True)
-                expected = declaration_status == 'success' and (
-                    (coverage == 'false' and status == 'skipped') or
-                    (coverage == 'true' and status == 'success'))
-                assert (result.returncode == 0) == expected, f'{coverage} {declaration_status} {status}\n' + result.stdout + result.stderr
+                expected = declaration_status == 'success' and required is not None and status == required
+                assert (result.returncode == 0) == expected, f'{coverage} {selected} {declaration_status} {status}\n' + result.stdout + result.stderr
 
 removed_shard_lists_fail_clearly()
 print('PASS removed_shard_lists_fail_clearly')

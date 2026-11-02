@@ -38,6 +38,10 @@ package selection; formatting still checks the whole workspace. Merge groups
 and main pushes run every workspace test with the full shard matrix. No caller
 setting changes this policy.
 
+`Tests (ubuntu-latest)` requires a successful declaration and doctests.
+Selected-package PR tests and full-suite tests must succeed. Only an empty
+non-coverage test selection may be skipped.
+
 Callers grant `actions: read` to the reusable-workflow call so the shared
 workflow can reuse prepared test bundles from earlier runs. Other jobs retain
 their existing permissions. Add this grant with the release-pin update; a
