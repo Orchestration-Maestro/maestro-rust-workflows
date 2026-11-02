@@ -858,6 +858,7 @@ jobs:
           CACHE_JOB: ${{ github.job }}
           CACHE_INDEX: ${{ strategy.job-index || 0 }}
           CACHE_CALL: ${{ inputs.concurrency-key }}
+          ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
           CACHE_COVERAGE: ${{ needs.declaration.outputs.coverage }}
           CACHE_ENABLED: ${{ needs.declaration.outputs.enabled }}
           CACHE_WARM: ${{ inputs.warm-cache }}
@@ -981,6 +982,45 @@ jobs:
             if [ "${OS:-}" = Windows_NT ]; then bin=$(cygpath -w "$bin"); fi
             echo "$bin" >> "$GITHUB_PATH"
           done
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: &git-cache-identity |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          root = pathlib.Path.cwd().resolve()
+          locks = {root / 'Cargo.lock'}
+          for manifest in json.loads(os.environ['ADDITIONAL_LOCKED_MANIFESTS']):
+              for directory in (root / manifest).resolve().parents:
+                  if (directory / 'Cargo.lock').is_file():
+                      locks.add(directory / 'Cargo.lock')
+                      break
+                  if directory == root:
+                      break
+          digest = hashlib.sha256()
+          for lock in sorted(path for path in locks if path.is_file()):
+              digest.update(f'{os.path.relpath(lock, root)}\0'.encode('utf-8') + lock.read_bytes() + b'\0')
+          scope = hashlib.sha256(json.dumps([os.environ[name] for name in ['CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'CACHE_CALL', 'HOST_OS']]).encode('utf-8')).hexdigest()
+          prefix = f'maestro-cargo-git-v1-{scope}-'
+          home = os.environ.get('CARGO_HOME') or os.path.expanduser('~/.cargo')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'prefix={prefix}\nkey={prefix}{digest.hexdigest()}\nhome={home}\n')
+          PYTHON
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: &git-cache-restore
+          path: |
+            ${{ steps.git-cache-identity.outputs.home }}/git/db
+            ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
+          key: ${{ steps.git-cache-identity.outputs.key }}
+          restore-keys: ${{ steps.git-cache-identity.outputs.prefix }}
+          enableCrossOsArchive: false
+          fail-on-cache-miss: false
       - name: Format
         run: cargo fmt --all --check
       - name: Lint
@@ -1156,6 +1196,15 @@ jobs:
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: *caller-tools
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: *git-cache-identity
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-restore
       - name: Docs
         env:
           RUSTDOCFLAGS: -D warnings -D missing_docs
@@ -1258,42 +1307,12 @@ jobs:
       - name: Cargo git cache identity
         id: git-cache-identity
         env: *sccache-identity-env
-        run: &git-cache-identity |
-          python3 - <<'PYTHON'
-          import hashlib
-          import json
-          import os
-          import pathlib
-          root = pathlib.Path.cwd().resolve()
-          locks = {root / 'Cargo.lock'}
-          for manifest in json.loads(os.environ['ADDITIONAL_LOCKED_MANIFESTS']):
-              for directory in (root / manifest).resolve().parents:
-                  if (directory / 'Cargo.lock').is_file():
-                      locks.add(directory / 'Cargo.lock')
-                      break
-                  if directory == root:
-                      break
-          digest = hashlib.sha256()
-          for lock in sorted(path for path in locks if path.is_file()):
-              digest.update(f'{os.path.relpath(lock, root)}\0'.encode('utf-8') + lock.read_bytes() + b'\0')
-          scope = hashlib.sha256(json.dumps([os.environ[name] for name in ['CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'CACHE_CALL']]).encode('utf-8')).hexdigest()
-          prefix = f'maestro-cargo-git-v1-{scope}-'
-          home = os.environ.get('CARGO_HOME') or os.path.expanduser('~/.cargo')
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'prefix={prefix}\nkey={prefix}{digest.hexdigest()}\nhome={home}\n')
-          PYTHON
+        run: *git-cache-identity
       - name: Restore Cargo git cache
         id: git-cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with: &git-cache-restore
-          path: |
-            ${{ steps.git-cache-identity.outputs.home }}/git/db
-            ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
-          key: ${{ steps.git-cache-identity.outputs.key }}
-          restore-keys: ${{ steps.git-cache-identity.outputs.prefix }}
-          enableCrossOsArchive: false
-          fail-on-cache-miss: false
+        with: *git-cache-restore
       - name: Fetch additional locked manifests
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
         run: &fetch-locked-manifests |
@@ -1358,7 +1377,7 @@ jobs:
         if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
+        with: &git-cache-save
           path: |
             ${{ steps.git-cache-identity.outputs.home }}/git/db
             ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
@@ -2268,6 +2287,15 @@ jobs:
           https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64 76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf shfmt
           TOOLS
           echo "TOOLS=$bin" >> "$GITHUB_ENV"
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: *git-cache-identity
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-restore
       - name: Embedded check defaults
         run: &check-defaults |
           python3 - <<'PYTHON'
@@ -2705,12 +2733,11 @@ jobs:
       - name: Toolchain
         run: rustup show
       - name: Compile cache identity
-        if: &sccache-target-host runner.os != 'Windows'
         id: cache-identity
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
-        if: *sccache-target-host
+        if: &sccache-target-host runner.os != 'Windows'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -2722,6 +2749,15 @@ jobs:
           CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         timeout-minutes: 10
         run: *sccache-install
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: *git-cache-identity
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-restore
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
@@ -2737,6 +2773,11 @@ jobs:
           rustup target add "$TARGET"
           rustup component add clippy
           cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings
+      - name: Save Cargo git cache
+        if: runner.os != 'Linux' && steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-save
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && runner.os != 'Windows'
