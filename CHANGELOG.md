@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.9](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.8...v0.19.9) (2026-11-02)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#318](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/318)) ([bdf52cd](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/bdf52cd17ddd895871877ff13fc9ad1202d241e9))
+* derive prepared consumers from nextest setups ([#316](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/316)) ([497ec63](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/497ec63ae38cf62afa538ecadc9812c6d0e8ca33))
+
 ## [0.19.8](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.7...v0.19.8) (2026-11-02)
 
 
