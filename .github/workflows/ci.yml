@@ -1526,19 +1526,21 @@ jobs:
               return any(not item['expired'] for item in listing['artifacts'])
           def newest_with_bundle(runs):
               return next((run for run in runs if has_bundle(run)), None)
+          def runs_at(event, head):
+              # The repository's own runs of that event at that commit, whichever workflow ran them: a workflow an organization ruleset requires has no route under actions/workflows, and a push runs another workflow than its merge group. Fork runs are not this repository's code under review.
+              runs = api(f'actions/runs?event={event}&head_sha={head}&status=success&per_page=100')['workflow_runs']
+              return [run for run in runs if (run['head_repository'] or {}).get('full_name') == repository]
           candidates = []
-          if event == 'merge_group' or pushed:
-              workflow = api('actions/runs/' + os.environ['GITHUB_RUN_ID'])['workflow_id']
-          if event == 'merge_group':
-              # The queue branch is cut from the previous group, so only the default branch lists every pull request still ahead of it.
-              subjects = [item['commit']['message'].split('\n', 1)[0] for item in api(f"compare/{os.environ['CACHE_DEFAULT_BRANCH']}...{sha}?per_page=100")['commits']]
-              for number in [int(match[1]) for match in map(re.compile(r'\(#(\d+)\)$').search, subjects) if match]:
-                  head = api(f'pulls/{number}')['head']['sha']
-                  runs = api(f'actions/workflows/{workflow}/runs?event=pull_request&head_sha={head}&status=success&per_page=100')['workflow_runs']
-                  # Fork runs are not this repository's code under review.
-                  candidates.append(newest_with_bundle(run for run in runs if run['head_repository']['full_name'] == repository))
-          elif pushed:
-              candidates.append(newest_with_bundle(api(f'actions/workflows/{workflow}/runs?event=merge_group&head_sha={sha}&status=success&per_page=100')['workflow_runs']))
+          try:
+              if event == 'merge_group':
+                  # The queue branch is cut from the previous group, so only the default branch lists every pull request still ahead of it.
+                  subjects = [item['commit']['message'].split('\n', 1)[0] for item in api(f"compare/{os.environ['CACHE_DEFAULT_BRANCH']}...{sha}?per_page=100")['commits']]
+                  for number in [int(match[1]) for match in map(re.compile(r'\(#(\d+)\)$').search, subjects) if match]:
+                      candidates.append(newest_with_bundle(runs_at('pull_request', api(f'pulls/{number}')['head']['sha'])))
+              elif pushed:
+                  candidates.append(newest_with_bundle(runs_at('merge_group', sha)))
+          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError) as error:
+              print(f'::warning::The test setup candidates could not be listed ({error}); preparing from the bases found so far.', flush=True)
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('runs=' + ' '.join(str(run['id']) for run in candidates if run) + '\n')
           PYTHON
