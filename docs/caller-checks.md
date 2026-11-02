@@ -58,6 +58,25 @@ logged full-suite fallback. Historical runs without a manifest are not used;
 the first full run after rollout supplies the initial baseline. Main pushes and
 full fallbacks retain full-workspace coverage.
 
+## Native C compilation
+
+Linux and macOS compilation jobs use the existing compiler cache for native C
+builds, including coverage builds. When neither `HOST_CC` nor `CC` is set, the
+workflow exports `HOST_CC="sccache cc"`. Native C objects use the same local
+cache and compiled-cache snapshot as the job's Rust objects; no separate cache
+is created.
+
+An explicit `HOST_CC` or `CC` in the environment stays unchanged, including an
+empty value. If the caller's `.cargo/config.toml` declares either key in `[env]`,
+the workflow leaves compiler selection to Cargo and logs that decision. Other
+`[env]` keys do not disable the default. A caller-selected compiler is not
+wrapped automatically.
+
+The `cc` build library uses `HOST_CC` only when the build host matches the target.
+Foreign-target compiler discovery and target-specific compiler settings stay
+unchanged. Isolated test children retain the configured `HOST_CC` and `CC` values.
+This setting does not change Rust's coverage wrapper or instrument C sources.
+
 ## Warm test filter
 
 `warm_test_filter` is an optional nextest filterset string used only by
