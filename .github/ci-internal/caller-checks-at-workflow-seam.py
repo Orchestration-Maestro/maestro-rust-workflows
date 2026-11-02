@@ -883,6 +883,40 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
         subprocess.run(['install', '-m', '0700', str(source), str(tools / name)], check=True)
     return tools, log
 
+def clippy_selection_works_without_mapfile():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        tools, log = install_recording_runner(directory)
+        (tools / 'rustup').symlink_to(tools / 'cargo')
+        for target in ['', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc']:
+            for packages, scope in [('[]', ''), ('["first", "second"]', 'selected packages: first, second'),
+                                    ('["first", "second"]', 'full workspace'), (None, '')]:
+                env = {key: value for key, value in os.environ.items()
+                       if key not in ['TEST_PACKAGES', 'COVERAGE_SCOPE', 'TARGET']}
+                env.update(PATH=str(tools) + os.pathsep + env['PATH'], COVERAGE_SCOPE=scope, TARGET=target)
+                if packages is not None:
+                    env['TEST_PACKAGES'] = packages
+                name = 'Check target' if target else 'Lint'
+                # macOS Bash has no mapfile builtin.
+                command = 'enable -n mapfile 2>/dev/null || :\n' + body(name)
+                result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
+                                        cwd=directory, env=env, capture_output=True, text=True)
+                assert result.returncode == 0, result.stdout + result.stderr
+                if packages == '[]':
+                    assert not log.exists()
+                    continue
+                commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+                args = next(item['args'] for item in commands if item['tool'] == 'cargo')
+                selection = ['--workspace'] if scope == 'full workspace' or packages is None else ['-p', 'first', '-p', 'second']
+                assert args == ['clippy'] + selection + ['--all-targets', '--locked'] + (
+                    ['--target', target] if target else []) + ['--', '-D', 'warnings'], args
+                assert [item['args'] for item in commands if item['tool'] == 'rustup'] == (
+                    [['target', 'add', target], ['component', 'add', 'clippy']] if target else [])
+                log.unlink()
+
+clippy_selection_works_without_mapfile()
+print('PASS clippy_selection_works_without_mapfile')
+
 def selected_archive_build_compiles_only_selected_packages():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)

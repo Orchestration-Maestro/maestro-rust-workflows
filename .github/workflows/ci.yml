@@ -858,7 +858,8 @@ jobs:
           TARGET: ''
         run: &clippy |
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
-          mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          packages=()
+          while IFS= read -r -d '' argument; do packages+=("$argument"); done < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           target=()
           if [ -n "${TARGET:-}" ]; then

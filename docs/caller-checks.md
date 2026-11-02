@@ -129,6 +129,9 @@ file/key diagnostic before optional work is emitted. Metadata or compiler
 inspection failures also fail validation. Wasm and target array order and repetitions are
 retained; declaration text is never executed as shell syntax.
 
+macOS target checks use the runner's built-in Bash. Callers do not need to
+install a newer shell.
+
 ## Compile cache
 
 Cached compiling jobs export `CARGO_BUILD_RUSTC_WRAPPER=sccache`, so callers do not
