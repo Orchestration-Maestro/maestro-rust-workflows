@@ -71,8 +71,9 @@ Numeric test shards download one nextest archive instead of compiling the worksp
 An optional caller `test_prepare` command runs beside the host build and writes
 reusable outputs to `TEST_PREPARE_OUTPUT` (`target/test-setup`). Shards download
 those files separately and setup scripts reuse them. `test_prepare_setups` names
-these nextest setups; shared CI reads their consumer packages from the caller's
-`.config/nextest.toml` filters and prepares only when one is selected. Without
+the nextest setup scripts that read those files; shared CI reads their consumer
+packages from the caller's `.config/nextest.toml` filters and prepares only when
+one is selected. Without
 the key every run that tests prepares. Changes to the nextest configuration or
 the setup list select the full workspace. `test_prepare_inputs` caches the output
 across runs. Doctests compile and run in
