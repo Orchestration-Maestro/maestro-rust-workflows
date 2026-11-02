@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.19.8](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.7...v0.19.8) (2026-11-02)
+
+
+### Continuous Integration
+
+* advance release proof source snapshot ([#312](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/312)) ([9b675ba](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/9b675ba1c930fa949e599586b7f2c2182b696de7))
+* keep PR checks selected and run full suite in queue ([#305](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/305)) ([74befb6](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/74befb650974b4c2a7dd30d2f04dea6dd7214800))
+
+
+### Bug Fixes
+
+* **ci:** cache native C builds during coverage ([#306](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/306)) ([ef6e12f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/ef6e12f97789b9ff224deacf3e327e6ef5da80e8))
+* **ci:** retry Cargo Git fetches through the CLI ([#311](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/311)) ([ab4af84](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/ab4af841beec30220b337fae66f8c80baa4ed833))
+
 ## [0.19.7](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.6...v0.19.7) (2026-11-02)
 
 

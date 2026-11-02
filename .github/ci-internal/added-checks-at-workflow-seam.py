@@ -2,7 +2,6 @@ import json
 import os
 import pathlib
 import re
-import shlex
 import shutil
 import subprocess
 import tempfile
@@ -573,7 +572,7 @@ def privileged_trigger_workflows_ignore_only_declared_audit(env, temporary):
     assert not failures, '\n'.join(failures)
 
 checks = ['Licenses and dependencies', 'Unused dependencies', 'Spelling', 'Secrets', 'Workflows', 'Coverage']
-base = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + ['cargo test --workspace --locked']
+base = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + [body('Lint'), 'cargo test --workspace --locked']
 assert len(base) == 4
 with tempfile.TemporaryDirectory() as temporary:
     env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/paths',
@@ -718,13 +717,13 @@ with tempfile.TemporaryDirectory() as temporary:
             if (result.returncode != 0) != (index == broken):
                 failures.append(f'{fixture}: {name}: {result.stdout}{result.stderr}')
         for command in base:
-            argv = shlex.split(command)
+            argv = ['bash', '-e', '-o', 'pipefail', '-c', command]
             child = env | {'RUSTDOCFLAGS': '-D warnings -D missing_docs'}
             if os.environ.get('MAESTRO_LOCAL_CAPPED'):
                 argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
                 child['CARGO_BUILD_JOBS'] = '3'
             result = subprocess.run(argv, cwd=directory, env=child, capture_output=True, text=True)
-            print(f'{fixture}: {command}: exit {result.returncode}', flush=True)
+            print(f'{fixture}: {command.splitlines()[0]}: exit {result.returncode}', flush=True)
             if result.returncode:
                 failures.append(f'{fixture}: {command}: {result.stdout}{result.stderr}')
     assert not failures, '\n'.join(failures)

@@ -658,15 +658,16 @@ jobs:
               findings.append(unbalanced)
               if on_main:
                   findings.extend(slow_findings(slow, settings['slow'], run))
-              rows = []
-              for other in ([run] + [other for other in runs_like(run, 'completed') if other['conclusion'] in ('success', 'failure')])[:window]:
-                  declaration = next((job for job in jobs_of(other['id']) if job['name'] == 'Caller declaration'), None)
-                  chosen = selection_of(log_of(declaration)) if declaration else None
-                  if chosen:
-                      rows.append((other['id'], *chosen))
-              findings.append(selection_finding(rows, settings['ceiling'], window))
-              if watched(run) and rows and rows[0][0] == run['id']:
-                  findings.append(selection_departure(run, rows))
+              if run['event'] == 'pull_request':
+                  rows = []
+                  for other in ([run] + [other for other in runs_like(run, 'completed') if other['conclusion'] in ('success', 'failure')])[:window]:
+                      declaration = next((job for job in jobs_of(other['id']) if job['name'] == 'Caller declaration'), None)
+                      chosen = selection_of(log_of(declaration)) if declaration else None
+                      if chosen:
+                          rows.append((other['id'], *chosen))
+                  findings.append(selection_finding(rows, settings['ceiling'], window))
+                  if watched(run) and rows and rows[0][0] == run['id']:
+                      findings.append(selection_departure(run, rows))
               return [finding for finding in findings if finding]
 
           def main():
