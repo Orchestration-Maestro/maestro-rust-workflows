@@ -24,7 +24,7 @@ def snapshot_only_transfers_fail_open():
             assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M) or step.startswith(('Test setup candidates', 'Download test setup candidates'))
             assert '        continue-on-error: true\n' in step
             count += 1
-    assert count == 26
+    assert count == 31
     assert not re.search(r'^    continue-on-error:', workflow, re.M)
 
 snapshot_only_transfers_fail_open()

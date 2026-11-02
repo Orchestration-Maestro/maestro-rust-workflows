@@ -18,7 +18,7 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 7689dbbebe2f11d52fa599936f0149491c3bb9d4
+      checkout-ref: 90fdd4a9a4c042c211e715a1e118922768c8f0fb
       concurrency-key: maestro-proof
       test-event: merge_group
 
@@ -31,7 +31,7 @@ jobs:
     with:
       working-directory: packages
       checkout-repository: Orchestration-Maestro/maestro-packages
-      checkout-ref: 1177fc157c2091354ef352395a3e3e9356102dd9
+      checkout-ref: 4ada7a48d714e39cb5b1b56d0963b22fe2161d23
       concurrency-key: packages-proof
       test-event: merge_group
 
