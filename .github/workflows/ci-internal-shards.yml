@@ -576,9 +576,24 @@ jobs:
                   server.shutdown()
 
           def line(result):
-              found = re.findall(r'^artifact-download name=(\S+) bytes=(\d+) seconds=(\d+\.\d\d) streams=(\d+)$', result.stdout, re.MULTILINE)
+              found = re.findall(r'^artifact-download name=(\S+) bytes=(\d+) seconds=(\d+\.\d\d) mb_per_second=\d+\.\d\d streams=(\d+)$', result.stdout, re.MULTILINE)
               assert len(found) == 1, result.stdout
               return found[0]
+
+          def transfer_rate_matches_bytes_and_transfer_seconds():
+              for options in [{}, {'ranges': False}, {'listing_fails': True}]:
+                  result, server, files, extracted, outputs, leftovers = download(**options)
+                  assert result.returncode == 0, result.stderr
+                  _, size, seconds, streams = line(result)
+                  rate = float(re.search(r'mb_per_second=(\d+\.\d\d)', result.stdout)[1])
+                  if streams == '0':
+                      assert rate == 0 and outputs == ['fallback=true'], result.stdout
+                  else:
+                      assert rate > 0 and extracted == payload, result.stdout
+                      # The printed time and rate each round independently to two decimal places.
+                      lower = max(0, float(seconds) - 0.005) * max(0, rate - 0.005)
+                      upper = (float(seconds) + 0.005) * (rate + 0.005)
+                      assert lower <= int(size) / 1e6 <= upper, result.stdout
 
           def parallel_ranges_extract_and_report_the_transfer():
               result, server, files, extracted, outputs, leftovers = download()
@@ -622,6 +637,8 @@ jobs:
                   assert files == [] and 'fallback=true' in outputs and leftovers == [], (fault, files, outputs, leftovers)
                   assert line(result)[1:4:2] == ('0', '0'), (fault, result.stdout)
                   assert len([request for request in server.requests if request[0].endswith('/zip')]) == 1, (fault, server.requests)
+                  if fault == 'fail':
+                      assert len([request for request in server.requests if request[0] == '/blob']) <= 6, server.requests
 
           def several_runs_land_in_a_directory_each_and_a_run_without_a_bundle_is_skipped():
               result, server, files, extracted, outputs, leftovers = download(run_ids='7 8 9', without_artifact=(8,))
@@ -653,7 +670,8 @@ jobs:
               candidates = {step['name']: step for step in document['jobs']['test-prepare']['steps']}['Download test setup candidates']
               assert candidates['run'] == steps['Download test archive']['run'] and 'uses' not in candidates
 
-          for check in [parallel_ranges_extract_and_report_the_transfer, a_server_without_ranges_gets_one_stream,
+          for check in [transfer_rate_matches_bytes_and_transfer_seconds,
+                        parallel_ranges_extract_and_report_the_transfer, a_server_without_ranges_gets_one_stream,
                         a_corrupted_range_fails_on_the_digest_and_never_extracts, an_unusable_listing_hands_over_to_the_single_stream_action,
                         a_failing_range_hands_the_whole_download_over_without_a_retry,
                         several_runs_land_in_a_directory_each_and_a_run_without_a_bundle_is_skipped,

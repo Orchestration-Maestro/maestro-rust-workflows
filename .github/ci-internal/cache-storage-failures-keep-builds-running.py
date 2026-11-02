@@ -557,7 +557,7 @@ def cache_install_selects_pinned_host_asset():
                     assert result.returncode == 0, (host, result.stderr)
                     name = f'sccache-v0.18.0-{platform}'
                     assert (directory / 'download').read_text(encoding='utf-8').splitlines() == [
-                        '--fail', '--retry', '3', '--location', f'https://github.com/mozilla/sccache/releases/download/v0.18.0/{name}.tar.gz',
+                        '--fail', '--retry', '3', '--retry-all-errors', '--retry-delay', '30', '--location', f'https://github.com/mozilla/sccache/releases/download/v0.18.0/{name}.tar.gz',
                         '--output', (directory / 'extract').read_text(encoding='utf-8').splitlines()[1]]
                     extraction = (directory / 'extract').read_text(encoding='utf-8').splitlines()
                     assert extraction[0] == '-xzf' and extraction[2] == '-C'

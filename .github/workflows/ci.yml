@@ -916,7 +916,7 @@ jobs:
           name=sccache-v$version-$platform
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-sccache.XXXXXX")
           archive=$(mktemp)
-          curl --fail --retry 3 --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
           python3 - "$digest" "$archive" <<'PYTHON'
           import hashlib
           import sys
@@ -955,7 +955,7 @@ jobs:
           installed=$(mise --version 2>/dev/null | cut -d ' ' -f 1) || installed=
           if [ "$installed" != "$version" ]; then
             bin=$(mktemp -d "$RUNNER_TEMP/maestro-mise.XXXXXX")
-            curl --fail --retry 3 --location "$url" --output "$bin/$executable"
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$bin/$executable"
             python3 - "$digest" "$bin/$executable" <<'PYTHON'
           import hashlib
           import sys
@@ -1244,7 +1244,7 @@ jobs:
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-coverage-tools.XXXXXX")
           while read -r url digest binary; do
             archive=$(mktemp)
-            curl --fail --retry 3 --location "$url" --output "$archive"
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
             tar -xzf "$archive" -C "$bin" "$binary"
             test -x "$bin/$binary"
@@ -1316,7 +1316,7 @@ jobs:
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-search-bin.XXXXXX")
           while read -r url digest binary; do
             archive=$(mktemp)
-            curl --fail --retry 3 --location "$url" --output "$archive"
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
             unpack=$(mktemp -d)
             tar -xzf "$archive" -C "$unpack"
@@ -1618,6 +1618,7 @@ jobs:
                   target.truncate(size)
               streams = max(1, min(STREAMS, size // MINIMUM_RANGE))
               step = -(-size // streams)
+              # All ranges start together, within the signed URL's roughly one-minute lifetime.
               with ThreadPoolExecutor(streams) as pool:
                   for future in [pool.submit(fetch, url, start, min(start + step, size) - 1) for start in range(0, size, step)]:
                       future.result()
@@ -1627,7 +1628,7 @@ jobs:
 
           def fall_back(reason, started):
               print(f'::warning::{reason}' + ('' if run_ids else '; using the single-stream download'), file=sys.stderr)
-              print(f'artifact-download name={name} bytes=0 seconds={time.monotonic() - started:.2f} streams=0')
+              print(f'artifact-download name={name} bytes=0 seconds={time.monotonic() - started:.2f} mb_per_second=0.00 streams=0')
               with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
                   output.write('fallback=true\n')
 
@@ -1660,7 +1661,7 @@ jobs:
                       bundle.extractall(destination)
               finally:
                   partial.unlink(missing_ok=True)
-              print(f"artifact-download name={name} bytes={size} seconds={seconds:.2f} streams={streams}")
+              print(f"artifact-download name={name} bytes={size} seconds={seconds:.2f} mb_per_second={size / 1e6 / seconds:.2f} streams={streams}")
 
           # One run's artifact goes straight to the path; a list of runs puts each in a directory named for its run, and a run whose bundle is missing, fails its checks or cannot be read is skipped.
           if not run_ids:
@@ -2242,7 +2243,7 @@ jobs:
             # Only the fuzz job needs cargo-fuzz; the required checks never download it.
             if [ "$binary" = cargo-fuzz ] && [ "${FUZZ_SCAN:-}" != true ]; then continue; fi
             archive=$(mktemp)
-            curl --fail --retry 3 --location "$url" --output "$archive"
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
             if [ "$binary" = shfmt ]; then
               install -m 0755 "$archive" "$bin/$binary"
@@ -2909,14 +2910,14 @@ jobs:
         run: |
           tools=$(mktemp -d "$RUNNER_TEMP/browser-runtime.XXXXXX")
           cd "$tools"
-          curl --fail --retry 3 --silent --show-error --location https://cdn.playwright.dev/builds/cft/156.0.8078.4/linux64/chrome-linux64.zip -o chromium.zip
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://cdn.playwright.dev/builds/cft/156.0.8078.4/linux64/chrome-linux64.zip -o chromium.zip
           echo '43fd31766c7533a02dda2ded5ad50c2f861cd5400be7509c0abad71129f79d79  chromium.zip' | sha256sum --check --status
           unzip -q chromium.zip
-          curl --fail --retry 3 --silent --show-error --location https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz -o bindgen.tar.gz
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz -o bindgen.tar.gz
           echo '82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e  bindgen.tar.gz' | sha256sum --check --status
           tar -xzf bindgen.tar.gz
-          curl --fail --retry 3 --silent --show-error --location https://registry.npmjs.org/playwright/-/playwright-1.64.1.tgz -o playwright.tgz
-          curl --fail --retry 3 --silent --show-error --location https://registry.npmjs.org/playwright-core/-/playwright-core-1.64.1.tgz -o playwright-core.tgz
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://registry.npmjs.org/playwright/-/playwright-1.64.1.tgz -o playwright.tgz
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://registry.npmjs.org/playwright-core/-/playwright-core-1.64.1.tgz -o playwright-core.tgz
           python3 - <<'PYTHON'
           import base64
           import hashlib

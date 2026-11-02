@@ -1,24 +1,25 @@
+import ast
 import json
-import shutil
 import os
 import pathlib
 import re
+import shlex
+import shutil
 import subprocess
 import tempfile
 import textwrap
 import unittest
+from collections import Counter
+from typing import Any
 
 workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
-import ast
 code = pathlib.Path('.github/ci-internal/caller-checks-at-workflow-seam.py').read_text(encoding='utf-8')
 tree = ast.parse(textwrap.dedent(code))
 tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
 exec(compile(tree, 'workflow body resolver', 'exec'))
+body = globals()['body']
 
-from collections import Counter
-import shlex
-
-yq = shutil.which('yq')
+yq = shutil.which('yq') or ''
 assert yq, 'Mike Farah yq is required to parse workflow controls'
 subprocess.run([yq, '--version'], check=True)
 
@@ -46,7 +47,7 @@ def syntax_nodes(value):
             yield from syntax_nodes(child)
 
 control_consumers = {
-    ('curl',): ('--retry', '--max-time'),
+    ('curl',): ('--retry', '--retry-all-errors', '--retry-delay', '--max-time'),
     ('cargo-nextest', 'nextest', 'run'): ('--retries',),
     ('cargo-llvm-cov', 'llvm-cov', 'nextest'): ('--retries',),
     ('timeout',): ('timeout',),
@@ -99,7 +100,7 @@ def collect(files):
                                             text=True, capture_output=True)
                     assert result.returncode == 0, f'shfmt failed to parse {path}/{job}/{step}: {result.stderr}'
                     raw = body.encode('utf-8')
-                    def spelling(word):
+                    def spelling(word, raw=raw):
                         return raw[word['Pos']['Offset']:word['End']['Offset']].decode('utf-8')
                     for node in syntax_nodes(json.loads(result.stdout)):
                         command = node.get('Cmd', {})
@@ -115,7 +116,7 @@ def collect(files):
                         elif argv[:1] == ['python3'] and any(argument.startswith('.github/ci-internal/') for argument in argv[1:2]):
                             python_sources.append(pathlib.Path(argv[1]).read_text(encoding='utf-8'))
                         prefix = []
-                        for word, argument in zip(words, argv):
+                        for word, argument in zip(words, argv, strict=True):
                             if argument.startswith('--'):
                                 break
                             prefix.append(spelling(word))
@@ -132,7 +133,9 @@ def collect(files):
                                     f'{path}/{job}/{step}: dynamic control consumer {spelling(words[offset])}')
                             for index, argument in enumerate(arguments):
                                 kind, equal, value = argument.partition('=')
-                                if kind in options and kind.startswith('--'):
+                                if kind == '--retry-all-errors' and kind in options:
+                                    value = 'true'
+                                elif kind in options and kind.startswith('--'):
                                     value = value if equal else arguments[index + 1] if index + 1 < len(arguments) else ''
                                 elif index == 0 and name in options:
                                     kind, value = name, arguments[1] if len(arguments) > 1 else ''
@@ -158,7 +161,7 @@ def permit(path, job, step, kind, value, occurrence=1):
     reason = ('Approved release-report polling' if kind == 'sleep' else
               'Caller-declared fuzz limits; no shared deadline' if kind == 'caller fuzz timeout' else
               'Approved nextest retry policy' if kind == '--retries' else
-              'Approved transient download retry' if kind == '--retry' else
+              'Approved transient download retry' if kind in ('--retry', '--retry-all-errors', '--retry-delay') else
               'Approved test/coverage bound' if value == '45' else
               'Approved installation bound; compiled-cache tool' if step == 'Compile cache' else
               'Approved installation bound; fuzz tools' if job == 'fuzz' else
@@ -176,7 +179,8 @@ for job, names in {
  'browser': ['Compile cache', 'Browser mise bootstrap', 'Browser tools'],
  'browser-tests': ['Compile cache'],
 }.items():
-    for name in names: permit('ci', job, name, 'timeout-minutes', '10')
+    for name in names:
+        permit('ci', job, name, 'timeout-minutes', '10')
 for job, names in {
  'quality': ['Compile cache', 'Mise bootstrap'],
  'docs': ['Compile cache', 'Mise bootstrap'],
@@ -189,7 +193,8 @@ for job, names in {
  'browser': ['Compile cache', 'Browser mise bootstrap'],
  'browser-tests': ['Compile cache', 'Browser test mise bootstrap'],
 }.items():
-    for name in names: permit('ci', job, name, '--retry', '3')
+    for name in names:
+        permit('ci', job, name, '--retry', '3')
 for occurrence in range(1, 5):
     permit('ci', 'browser-tests', 'Browser runtime tools', '--retry', '3', occurrence)
 for name in ['Tests', 'Isolated tests']:
@@ -210,6 +215,11 @@ permit('ci', 'checks', 'Coverage / "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '-
 permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
 permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
 permit('content', 'content', 'Mise bootstrap', '--retry', '3')
+
+for path, job, step, kind, occurrence, _value in list(authority):
+    if kind == '--retry':
+        permit(path.removeprefix('.github/workflows/').removesuffix('.yml'), job, step, '--retry-all-errors', 'true', occurrence)
+        permit(path.removeprefix('.github/workflows/').removesuffix('.yml'), job, step, '--retry-delay', '30', occurrence)
 
 # Doctests reuse the test route's step definitions and bounds.
 for (path, job, step, kind, occurrence, value), reason in list(authority.items()):
@@ -250,7 +260,16 @@ class SearchReleases(unittest.TestCase):
                 self.assertIn('"$bin/' + binary + '" --version', body('Search tools'))
                 self.assertTrue((pathlib.Path(bin_dir) / binary).is_file())
 
-    def test_transient_download_retry_outcomes(self):
+    def test_reset_and_gateway_bursts_preserve_verified_downloads(self):
+        self.check_download_outcomes([
+            ('receive_reset', ['reset', 200], 0, 2, False, {}),
+            *[('gateway_burst_' + str(code), [code, code, 200], 0, 3, False, {})
+              for code in [502, 503, 504]],
+            ('reset_exhaustion', ['reset'], 56, 4, False, {}),
+            ('reset_then_corrupt_bytes', ['reset', 200], 1, 2, True, {}),
+        ])
+
+    def check_download_outcomes(self, cases):
         import contextlib
         import hashlib
         import http.server
@@ -259,8 +278,28 @@ class SearchReleases(unittest.TestCase):
         tree = ast.parse(peer)
         tree.body = [node for node in tree.body
                      if isinstance(node, (ast.ClassDef, ast.FunctionDef)) and node.name in ('Storage', 'storage')]
-        namespace = dict(contextlib=contextlib, http=http, threading=threading)
+        namespace: dict[str, Any] = {'contextlib': contextlib, 'http': http, 'threading': threading}
         exec(compile(tree, 'existing HTTP peer lifecycle', 'exec'), namespace)
+
+        class ResetStorage(namespace['Storage']):
+            def do_GET(self):
+                import socket
+                import struct
+                index = min(len(self.server.requests), len(self.server.responses) - 1)
+                if self.server.responses[index][0] != 'reset':
+                    return super().do_GET()
+                self.server.requests.append(self.path)
+                self.send_response(200)
+                self.send_header('Content-Length', '1000000')
+                self.end_headers()
+                self.wfile.write(b'partial tool bytes')
+                self.wfile.flush()
+                self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+                self.close_connection = True
+                self.rfile.close()
+                self.connection.close()
+
+        namespace['Storage'] = ResetStorage
         command = body('Compile cache')
         parsed = subprocess.check_output([shfmt, '-ln', 'bash', '--to-json'], input=command, text=True)
         raw = command.encode('utf-8')
@@ -271,16 +310,10 @@ class SearchReleases(unittest.TestCase):
         argv = [shlex.split(raw[word['Pos']['Offset']:word['End']['Offset']].decode())[0]
                 for word in calls[0]]
         executable = shutil.which('curl')
-        self.assertIsNotNone(executable)
-        cases = [('initial_success', [200], 0, 1, False, {}),
-                 *[('transient_' + str(status), [status, 200], 0, 2, False, {})
-                   for status in [408, 429, 500, 502, 503, 504]],
-                 ('last_retry_succeeds', [500, 500, 500, 200], 0, 4, False, {}),
-                 ('exhaustion_stays_fatal', [500], 22, 4, False, {}),
-                 ('permanent_404_not_retried', [404], 22, 1, False, {}),
-                 ('nontransient_501_not_retried', [501], 22, 1, False, {}),
-                 ('retry_after_header_accepted', [503, 200], 0, 2, False, {'Retry-After': '0'}),
-                 ('retried_corrupt_payload_rejected', [500, 200], 1, 2, True, {})]
+        assert executable is not None
+        # Keep native curl's policy; scale only its delay so loopback proofs finish under 30 seconds.
+        if '--retry-delay' in argv:
+            argv[argv.index('--retry-delay') + 1] = '1'
         payload = b'verified tool payload\n'
         digest = hashlib.sha256(payload).hexdigest()
         for name, statuses, status, attempts, corrupt, headers in cases:
@@ -299,9 +332,32 @@ class SearchReleases(unittest.TestCase):
                 self.assertEqual(server.requests, ['/pinned-tool'] * attempts)
                 self.assertEqual(result.stdout, 'INSTALLED\n' if status == 0 else '')
 
+    def test_transient_download_retry_outcomes(self):
+        self.check_download_outcomes([
+            ('initial_success', [200], 0, 1, False, {}),
+            *[('transient_' + str(status), [status, 200], 0, 2, False, {})
+              for status in [408, 429, 500, 502, 503, 504]],
+            ('last_retry_succeeds', [500, 500, 500, 200], 0, 4, False, {}),
+            ('exhaustion_stays_fatal', [500], 22, 4, False, {}),
+            ('permanent_404_stays_fatal', [404], 22, 4, False, {}),
+            ('nontransient_501_stays_fatal', [501], 22, 4, False, {}),
+            ('retry_after_header_accepted', [503, 200], 0, 2, False, {'Retry-After': '0'}),
+            ('retried_corrupt_payload_rejected', [500, 200], 1, 2, True, {}),
+        ])
+
+    def test_every_pinned_tool_download_retains_the_transport_retry_policy(self):
+        for path in ['.github/workflows/ci.yml', '.github/workflows/content.yml']:
+            commands = [shlex.split(line) for line in files[path].splitlines() if line.strip().startswith('curl ')]
+            self.assertEqual(len(commands), 9 if path.endswith('/ci.yml') else 1)
+            for argv in commands:
+                with self.subTest(path=path, argv=argv):
+                    self.assertIn('--retry-all-errors', argv)
+                    self.assertEqual(argv[argv.index('--retry') + 1], '3')
+                    self.assertEqual(argv[argv.index('--retry-delay') + 1], '30')
+
     def test_workflow_controls_match_authority(self):
         report = require_recorded_controls(files)
-        self.assertEqual(len(report.splitlines()), 93)
+        self.assertEqual(len(report.splitlines()), 161)
         print(report)
 
     def assert_policy(self, sources, admitted):
@@ -442,12 +498,14 @@ class SearchReleases(unittest.TestCase):
 
     def test_controls_belong_to_their_consuming_command(self):
         for executable in ['echo', 'printf', 'grep']:
-            for option in ['--retry', '--retries', '--max-time']:
+            for option in ['--retry', '--retry-all-errors', '--retry-delay', '--retries', '--max-time']:
                 with self.subTest(executable=executable, option=option):
                     command = f"{executable} 'curl' '{option}' '8'"
                     source = 'jobs: {new: {steps: [{run: ' + json.dumps(command) + '}]}}'
                     self.assertEqual(collect({'example.yml': source}), [])
         for command, kind, value in [("curl '--retry' '3'", '--retry', '3'),
+                                     ('curl --retry-all-errors example', '--retry-all-errors', 'true'),
+                                     ('curl --retry-delay=30 example', '--retry-delay', '30'),
                                      ('curl --max-time=15 example', '--max-time', '15'),
                                      ('timeout 3 curl --retry 2 example', 'timeout', '3')]:
             with self.subTest(command=command):
@@ -577,9 +635,10 @@ class SearchReleases(unittest.TestCase):
 
     def test_inventory_requires_a_reason_for_each_occurrence(self):
         report = require_recorded_controls(files, authority)
-        self.assertEqual(len(report.splitlines()), 93)
+        self.assertEqual(len(report.splitlines()), 161)
         for row in authority:
             self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
+        for row in [next(iter(authority)), next(reversed(authority))]:
             with self.assertRaises(AssertionError):
                 require_recorded_controls(files, authority | {row: ''})
 

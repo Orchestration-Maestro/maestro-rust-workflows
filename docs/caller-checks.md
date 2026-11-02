@@ -238,13 +238,17 @@ runs doctests once on every pull request, merge group and main push, without
 waiting for the archive build.
 Warm-cache runs keep their existing compile route and cache shape.
 
-Each shard fetches the archive and the test setup bundle in 16 parallel byte ranges from
-artifact storage, checks the size and SHA-256 digest the Actions API reports, then extracts.
-A digest or size mismatch fails the step before anything is extracted. If the listing has no
-digest or the transfer fails, the step hands over to the single-stream `download-artifact`
-action. Each download prints one line, `artifact-download name=<artifact> bytes=<n>
-seconds=<s> streams=<n>`, so the time guard can read transfer rate apart from test time;
-`streams=0` marks a handover.
+Each shard fetches the archive and the test setup bundle in up to 16 parallel byte ranges
+from artifact storage, checks the size and SHA-256 digest the Actions API reports, then
+extracts. Storage without range support supplies one stream. A digest or size mismatch
+fails the step before anything is extracted. If the listing has no digest or the transfer
+fails, the step hands over to the single-stream `download-artifact` action without retrying
+individual ranges.
+
+Each download prints one line, `artifact-download name=<artifact> bytes=<n> seconds=<s>
+mb_per_second=<rate> streams=<n>`. The rate uses decimal MB (1,000,000 bytes) and measures
+transfer time only, excluding verification, extraction and test work. `streams=0` and
+`mb_per_second=0.00` mark a handover, not a measured single-stream transfer.
 
 A caller that needs prepared files can declare one standalone shell command:
 
@@ -453,6 +457,14 @@ cargo-machete 0.9.2, cargo-hakari 0.9.39, typos 1.51.1, gitleaks 8.30.1, zizmor 
 actionlint 1.7.12 and cargo-llvm-cov 0.9.1. Checksums and download URLs are
 pinned together in the workflow. LLVM tools come from the caller's rustup
 component distribution, not a caller-provided executable.
+
+Pinned tool downloads use curl's `--retry 3 --retry-all-errors --retry-delay 30`.
+After an error, curl uses a 30-second retry interval, up to three times. A server's
+`Retry-After` can extend the wait. This covers receive resets and gateway errors lasting
+60 seconds without increasing the retry count.
+Permanent failures still fail after the last attempt, including a missing release asset.
+Downloaded bytes pass the same pinned checksum check before installation; corrupt bytes
+never become tools. Existing installation deadlines still apply.
 
 - cargo-deny checks licenses, bans, sources and advisories across the workspace
   with all features. Advisories and yanked crates without declared exceptions fail. Registries
