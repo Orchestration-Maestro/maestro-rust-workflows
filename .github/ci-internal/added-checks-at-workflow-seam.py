@@ -723,7 +723,7 @@ with tempfile.TemporaryDirectory() as temporary:
                 argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
                 child['CARGO_BUILD_JOBS'] = '3'
             result = subprocess.run(argv, cwd=directory, env=child, capture_output=True, text=True)
-            print(f'{fixture}: {command}: exit {result.returncode}', flush=True)
+            print(f'{fixture}: {command.splitlines()[0]}: exit {result.returncode}', flush=True)
             if result.returncode:
                 failures.append(f'{fixture}: {command}: {result.stdout}{result.stderr}')
     assert not failures, '\n'.join(failures)
