@@ -188,6 +188,9 @@ jobs:
                   assert result.returncode == 0 and values['test_prepare_consumers'] == '[]', result.stderr
                   setup = ".config/nextest.toml: setup 'prepared' "
                   for refused, message in [
+                      ('package(sample) & default()', 'filter has unsupported atom: default()'),
+                      (1, 'filter must be a string'),
+                      ('(' * 2000 + 'package(sample)' + ')' * 2000, 'filter nesting is too deep'),
                       ('test(x)', "filter term 'test(x)' names no package"),
                       ('package(sample) | all()', "filter term 'all()' names no package"),
                       ('package(sample) & !package(other)', 'filter negates package(other)'),
@@ -211,6 +214,10 @@ jobs:
                   result, values = setup_filter('', rule='platform="cfg(unix)"')
                   assert result.returncode != 0 and not values, result.stdout
                   assert result.stderr.strip() == setup + 'rule has no filter, so it runs before every test', result.stderr
+                  nextest.write_text('[profile.default]\nscripts=[1]\n', encoding='utf-8')
+                  result, values = declaration(directory)
+                  assert result.returncode != 0 and not values, result.stdout
+                  assert result.stderr.strip() == '.config/nextest.toml: profile.default.scripts must be an array of tables', result.stderr
                   nextest.write_text('[[profile.default.scripts]\n', encoding='utf-8')
                   result, values = declaration(directory)
                   assert result.returncode != 0 and not values, result.stdout

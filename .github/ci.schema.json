@@ -258,7 +258,7 @@
       "default": ""
     },
     "test_prepare_setups": {
-      "description": "Nextest setup-script names whose tests read prepared files. Consumer packages are read from matching profile.default.scripts filters in .config/nextest.toml. Each union term must conjoin exactly one package(NAME) or package(=NAME) atom with package-free expressions; negated packages, glob, regex, substring and dependency matchers are refused. When set, preparation runs only if a consumer is selected. Without this key every run that tests prepares. Changes to this key or the nextest configuration select the full workspace.",
+      "description": "Nextest setup-script names whose tests read prepared files. Consumer packages are read from matching profile.default.scripts filters in .config/nextest.toml. Each union term must conjoin exactly one package(NAME) or package(=NAME) atom with package-free expressions; negated packages, glob, regex, substring and dependency matchers are refused. Unsupported atoms are refused; unreadable filters fail with the offset where parsing stopped. When set, preparation runs only if a consumer is selected. Without this key every run that tests prepares. Changes to this key or the nextest configuration select the full workspace.",
       "type": "array",
       "items": {
         "type": "string"

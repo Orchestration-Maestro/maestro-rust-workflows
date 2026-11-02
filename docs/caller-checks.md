@@ -352,8 +352,10 @@ The declaration refuses a listed setup with no default-profile script entry, a
 rule without a filter, a term without a package, or a term with more than one
 package conjunct. It also refuses package atoms under `!`, `not` or the right
 side of `-`, package glob, regex and `~` substring matchers, and `deps()` or
-`rdeps()`. Errors name the nextest file, the setup and the reason. Every named
-package must belong to the workspace.
+`rdeps()`. Unsupported atoms such as `default()` or `group()` are refused, and
+unreadable filters fail with the offset where parsing stopped. Errors name the
+nextest file, the setup and the reason. Every named package must belong to the
+workspace.
 
 When none of these packages is selected, `Prepare test setup` does not start,
 and the shards skip the download and restore. Selecting any of them keeps the
