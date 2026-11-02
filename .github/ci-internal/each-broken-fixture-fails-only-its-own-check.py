@@ -3,6 +3,7 @@ import os
 import pathlib
 import re
 import subprocess
+import time
 from typing import Callable, cast
 
 workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding="utf-8")
@@ -74,10 +75,12 @@ for fixture, broken in [('unformatted', 0), ('clippy-warning', 1),
         if os.environ.get('MAESTRO_LOCAL_CAPPED'):
             argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
             env['CARGO_BUILD_JOBS'] = '3'
+        started = time.perf_counter()
         result = subprocess.run(argv, cwd=f'fixtures/{fixture}', env=env)
+        elapsed = time.perf_counter() - started
         expected_failure = check == broken
         print(f'{fixture}: {command}: exit {result.returncode}; '
-              f'expected {"failure" if expected_failure else "success"}', flush=True)
+              f'expected {"failure" if expected_failure else "success"}; elapsed {elapsed:.2f} s', flush=True)
         if (result.returncode != 0) != expected_failure:
             failures.append(f'{fixture}: {command}: exit {result.returncode}')
 assert not failures, '\n'.join(failures)

@@ -2870,9 +2870,12 @@ def included_package_inputs_keep_owners_and_reverse_dependencies():
                 (crate / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
             (directory / owner / 'build.rs').write_text('fn main() {}\n', encoding='utf-8')
             (directory / owner / 'src/data.txt').write_text('base\n', encoding='utf-8')
+            (directory / owner / 'shared.rs').write_text('pub fn shared() {}\n', encoding='utf-8')
+            (directory / owner / 'src/lib.rs').write_text(
+                '#[path = "../shared.rs"] pub mod shared;\n', encoding='utf-8')
             (directory / 'docs').mkdir()
             (directory / 'docs/policy.md').write_text('base\n', encoding='utf-8')
-            owned = [owner / path for path in ['src/lib.rs', 'src/data.txt', 'build.rs', 'Cargo.toml']]
+            owned = [owner / path for path in ['shared.rs', 'src/lib.rs', 'src/data.txt', 'build.rs', 'Cargo.toml']]
             (directory / 'b/src/lib.rs').write_text(''.join(
                 f'const _: &str = include_str!("../../{path.as_posix()}");\n'
                 for path in [*owned, pathlib.Path('docs/policy.md')]), encoding='utf-8')

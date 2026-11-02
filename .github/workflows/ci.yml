@@ -500,9 +500,9 @@ jobs:
           if event == 'pull_request' and base:
               changed = subprocess.check_output(['git', 'diff', '--relative', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
           if changed is not None:
-              # Literal include paths are relative to the Rust source, not the package root.
+              # Literal compile-input paths are relative to the Rust source, not the package root.
               changed_paths = {(pathlib.Path.cwd() / name).resolve() for name in changed}
-              # shortcut: static matching may overselect commented macros; use a Rust parser if that becomes costly.
+              # shortcut: static matching may overselect commented inputs; use a Rust parser if that becomes costly.
               literal_include = re.compile(r'("(?:[^"\\]|\\.)*")|r(#{0,255})"(.*?)"\2', re.DOTALL)
               def skip_trivia(text, position):
                   while position < len(text):
@@ -524,14 +524,16 @@ jobs:
                   root != parent and root.is_relative_to(parent) for parent in roots.values())}
               for source in sorted(source for root in scan_roots for source in root.rglob('*.rs')):
                   text = source.read_text(encoding='utf-8')
-                  for macro in re.finditer(r'\binclude_(?:str|bytes)\b', text):
-                      position = skip_trivia(text, macro.end())
-                      if text[position:position + 1] != '!':
-                          continue
-                      position = skip_trivia(text, position + 1)
-                      if text[position:position + 1] not in ('(', '[', '{'):
-                          continue
-                      match = literal_include.match(text, skip_trivia(text, position + 1))
+                  for compile_input in re.finditer(r'\binclude_(?:str|bytes)\b|#\s*\[\s*path\s*=', text):
+                      position = skip_trivia(text, compile_input.end())
+                      if not compile_input[0].startswith('#'):
+                          if text[position:position + 1] != '!':
+                              continue
+                          position = skip_trivia(text, position + 1)
+                          if text[position:position + 1] not in ('(', '[', '{'):
+                              continue
+                          position = skip_trivia(text, position + 1)
+                      match = literal_include.match(text, position)
                       if not match:
                           continue
                       path = match[3]
@@ -556,7 +558,7 @@ jobs:
                   resolved = path.resolve()
                   included = resolved in included_paths
                   owner = package_owner(path, roots)
-                  # Root-package include inputs outside Cargo targets belong only to their readers.
+                  # Compile-input readers also retain modules outside root-package Cargo targets.
                   owned = owner is not None and (roots[owner] != pathlib.Path('.') or path == pathlib.Path('Cargo.toml')
                           or resolved in root_build_scripts or any(resolved.is_relative_to(root) for root in root_source_dirs))
                   owners = {owner} if owner is not None and (not included or owned) else set()

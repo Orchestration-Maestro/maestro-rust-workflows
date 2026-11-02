@@ -385,15 +385,18 @@ grep -RFn -- 'phase: waiting-for-child-exit' "$download/target/browser-author-di
 
 ### Pull-request selection and retries
 
-Pull requests run changed workspace crates, literal `include_str!` or
-`include_bytes!` input readers and declared test-input readers, plus their
-direct or transitive workspace dependents. Normal, build, development and
-target-specific dependency edges count. The deepest package root owns a
-changed source file. Including a package input adds its readers without dropping
-its owner or the owner's dependents. Non-root packages own their whole directory.
-A root package owns `Cargo.toml`, its Cargo target source directories recursively,
-and its build script itself. Other root paths, such as external docs or fixtures,
-select only their include readers and explicit test-input routes when included.
+Pull requests run changed workspace crates, literal `include_str!`,
+`include_bytes!` or `#[path = "..."]` input readers and declared test-input
+readers, plus their direct or transitive workspace dependents. Normal, build,
+development and target-specific dependency edges count. The deepest package root
+owns a changed source file. Including a package input adds its readers without
+dropping its owner or the owner's dependents. Non-root packages own their whole
+directory. A root package owns `Cargo.toml`, its Cargo target source directories
+recursively, and its build script itself. Literal `#[path = "..."]` module targets
+also select their declaring packages and those packages' dependents, even outside
+target source directories. Other root paths, such as external docs or fixtures,
+select only their compile-input readers and explicit test-input routes when
+included.
 Root manifest and lockfile changes still follow the rules below.
 
 The selected tests run without coverage in one archived `count:1/1` leg.
