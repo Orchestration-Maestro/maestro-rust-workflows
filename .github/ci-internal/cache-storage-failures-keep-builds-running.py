@@ -479,17 +479,18 @@ def native_c_compiler_defaults_preserve_explicit_compilers():
                 assert not any(key.startswith(('CC_', 'TARGET_')) for key in exported)
 
 def cargo_configured_c_compilers_keep_their_precedence():
-    for setting in ['CC = "clang"', 'HOST_CC = "clang"',
-                    'CC = { value = "clang -m64", force = true }', 'UNRELATED = "value"']:
-        with tempfile.TemporaryDirectory() as temporary:
-            directory = pathlib.Path(temporary)
-            (directory / '.cargo').mkdir()
-            (directory / '.cargo/config.toml').write_text('[env]\n' + setting + '\n', encoding='utf-8')
-            with daemon(directory) as env:
-                explicit = not setting.startswith('UNRELATED')
-                assert ('HOST_CC' not in env) == explicit, setting
-                message = (directory / 'restore-message').read_text(encoding='utf-8')
-                assert ('Native C cache keeps caller compiler configuration' in message) == explicit, message
+    for filename in ['config.toml', 'config']:
+        for setting in ['CC = "clang"', 'HOST_CC = "clang"',
+                        'CC = { value = "clang -m64", force = true }', 'UNRELATED = "value"']:
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = pathlib.Path(temporary)
+                (directory / '.cargo').mkdir()
+                (directory / '.cargo' / filename).write_text('[env]\n' + setting + '\n', encoding='utf-8')
+                with daemon(directory) as env:
+                    explicit = not setting.startswith('UNRELATED')
+                    assert ('HOST_CC' not in env) == explicit, (filename, setting)
+                    message = (directory / 'restore-message').read_text(encoding='utf-8')
+                    assert ('Native C cache keeps caller compiler configuration' in message) == explicit, message
 
 def native_c_compiler_configuration_reaches_isolated_children():
     isolated = re.search(r'^run_isolated\(\) \{\n.*?^\}', body('Isolated tests'), re.MULTILINE | re.DOTALL)

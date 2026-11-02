@@ -940,9 +940,9 @@ jobs:
           import os
           import pathlib
           import tomllib
-          config = pathlib.Path('.cargo/config.toml')
-          values = tomllib.loads(config.read_text(encoding='utf-8')).get('env', {}) if config.is_file() else {}
-          if 'CC' in values or 'HOST_CC' in values:
+          configs = [pathlib.Path('.cargo/config'), pathlib.Path('.cargo/config.toml')]
+          values = [tomllib.loads(config.read_text(encoding='utf-8')).get('env', {}) for config in configs if config.is_file()]
+          if any('CC' in env or 'HOST_CC' in env for env in values):
               print('Native C cache keeps caller compiler configuration')
           else:
               with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
