@@ -14,10 +14,10 @@ parent as its PR base. The warmer is non-required, and consumers still run if it
 fails. See [Compile cache](../README.md#compile-cache) for snapshot shapes,
 fail-open transfers and storage limits.
 Advance all proof checkout references together after checking locked dependencies.
-The proof uses `c564853c4a052319ad47c108ee1330b6ce4e5def`, the Maestro main
+The proof uses `d061935d57ffe56468ab1500905ba2a0b0c1138c`, the Maestro main
 revision that qualifies the current release, and it still includes the native
 residency-helper compilation repair. Its first parent,
-`90fdd4a9a4c042c211e715a1e118922768c8f0fb`, supplies the warm build and
+`5300e673923c47cb3bc2d8b0d8985137258384d6`, supplies the warm build and
 selected-package base.
 The coverage proof runs only on pushes to `ci/228-merge-proof`, not on pull requests.
 Check its results before landing.
