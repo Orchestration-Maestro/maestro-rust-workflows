@@ -1,48 +1,86 @@
-name: Maestro macOS key-frame proof
+name: Native workspace proof
 
 on:
   push:
     branches: [ci/228-merge-proof]
-    paths: [.github/workflows/ci-proof.yml]
+    paths: [.github/workflows/ci.yml, .github/workflows/ci-proof.yml]
 
 permissions:
   contents: read
 
 jobs:
   maestro:
-    name: Native macOS key frames
-    runs-on: macos-15
-    defaults:
-      run:
-        shell: bash
-        working-directory: maestro
-    env:
-      TEST_PACKAGES: '["maestro-chat", "maestro-tools"]'
-      COLLECT_COVERAGE: 'false'
-      SHARD: '1'
-      TEST_SHARD_COUNT: '1'
+    name: Maestro partitioned coverage
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: maestro
+      checkout-repository: Orchestration-Maestro/maestro
+      checkout-ref: 7689dbbebe2f11d52fa599936f0149491c3bb9d4
+      concurrency-key: maestro-proof
+      test-event: merge_group
+
+  packages:
+    name: Package workspace
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      working-directory: packages
+      checkout-repository: Orchestration-Maestro/maestro-packages
+      checkout-ref: 1177fc157c2091354ef352395a3e3e9356102dd9
+      concurrency-key: packages-proof
+      test-event: merge_group
+
+  native:
+    name: Native fixture mutation (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.runner }}
     steps:
-      - name: Checkout workflow
+      - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          path: workflow
-      - name: Checkout Maestro
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          repository: Orchestration-Maestro/maestro
-          ref: 3250668d309f5a63fa7d9508de3fd77df1bf3449
-          path: maestro
-      - name: Extract workflow steps
-        working-directory: .
-        run: python3 workflow/.github/extract-workflow-steps.py
-      - name: Test toolchain
-        run: bash -e -o pipefail "$PROOF_STEPS/Test toolchain"
-      - name: Test runner
-        run: bash -e -o pipefail "$PROOF_STEPS/Coverage tools"
-      - name: Search tools
-        run: bash -e -o pipefail "$PROOF_STEPS/Search tools"
-      - name: Native tests
-        timeout-minutes: 45
-        run: bash -e -o pipefail "$PROOF_STEPS/Isolated tests"
+      - name: Failed and restored native fixture
+        shell: python
+        run: |
+          import ast
+          import pathlib
+          import sys
+          import textwrap
+          import traceback
+
+          source = pathlib.Path('.github/ci-internal/caller-checks-at-workflow-seam.py')
+          tree = ast.parse(textwrap.dedent(source.read_text(encoding='utf-8')))
+          tree.body = [node for node in tree.body if not isinstance(node, ast.Expr)]
+          namespace = {}
+          exec(compile(tree, 'workflow seam', 'exec'), namespace)
+          fixture = pathlib.Path('fixtures/host-test-rejected/src/lib.rs')
+          original = fixture.read_bytes()
+          host = 'macos' if sys.platform == 'darwin' else 'windows'
+          assert original.count(b'"linux"') == 1
+          try:
+              fixture.write_bytes(original.replace(b'"linux"', f'"{host}"'.encode('utf-8')))
+              print('::group::native_test_failures_are_detected RED', flush=True)
+              try:
+                  namespace['native_test_failures_are_detected']()
+              except AssertionError as error:
+                  assert 'PASS' in str(error), str(error)
+                  traceback.print_exc(file=sys.stdout)
+                  print('PASS mutation sensitivity: accepting this host fails the seam', flush=True)
+              else:
+                  raise AssertionError('Native host acceptance mutation survived')
+          finally:
+              fixture.write_bytes(original)
+              print('::endgroup::', flush=True)
+          assert fixture.read_bytes() == original
+          print('::group::native_test_failures_are_detected GREEN', flush=True)
+          namespace['native_test_failures_are_detected']()
+          print('PASS native_test_failures_are_detected after exact restoration', flush=True)
+          print('::endgroup::', flush=True)
