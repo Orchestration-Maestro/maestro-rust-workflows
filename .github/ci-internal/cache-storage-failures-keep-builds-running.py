@@ -69,7 +69,7 @@ def storage():
 def environment(directory):
     env = {k: v for k, v in os.environ.items()
            if not k.startswith(('SCCACHE_', 'ACTIONS_', 'RUSTC_', 'CARGO_'))
-           and k not in ('GITHUB_API_URL', 'GITHUB_SERVER_URL')}
+           and k not in ('GITHUB_API_URL', 'GITHUB_SERVER_URL', 'HOST_CC', 'CC')}
     return env | {'RUNNER_TEMP': str(directory), 'GITHUB_ENV': str(directory / 'env'),
                   'GITHUB_PATH': str(directory / 'paths'), 'SCCACHE_SERVER_UDS': str(directory / 'daemon.sock'),
                   'SCCACHE_CONF': str(directory / 'no-config'), 'SCCACHE_CACHED_CONF': str(directory / 'cached-config'),
@@ -78,11 +78,11 @@ def environment(directory):
                   'CARGO_INCREMENTAL': '0', 'CARGO_BUILD_JOBS': '3'}
 
 @contextlib.contextmanager
-def daemon(directory, outcome='success', matched='false'):
+def daemon(directory, outcome='success', matched='false', compiler=None):
     env = environment(directory) | {'bin': str(binary.parent), 'PATH': str(binary.parent) + os.pathsep + os.environ['PATH'],
-                                    'CACHE_RESTORE_OUTCOME': outcome, 'CACHE_RESTORE_MATCHED': matched}
+                                    'CACHE_RESTORE_OUTCOME': outcome, 'CACHE_RESTORE_MATCHED': matched} | (compiler or {})
     try:
-        started = shell(startup, env)
+        started = run(['bash', '-e', '-o', 'pipefail', '-c', startup], env, directory)
         assert started.returncode == 0, (started.returncode, started.stdout, started.stderr)
         (directory / 'restore-message').write_text(started.stdout, encoding='utf-8')
         env.update(line.split('=', 1) for line in (directory / 'env').read_text(encoding='utf-8').splitlines())
@@ -464,6 +464,76 @@ def cache_wrapper_is_cargo_configuration():
     assert 'test "$CARGO_BUILD_RUSTC_WRAPPER" = sccache' in body('Compile cache statistics')
     assert 'CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER-}"' in body('Isolated tests')
 
+def native_c_compiler_defaults_preserve_explicit_compilers():
+    for compiler in [{}, {'HOST_CC': 'clang'}, {'CC': 'clang -m64'},
+                     {'HOST_CC': ''}, {'CC': ''}, {'HOST_CC': 'sccache clang', 'CC': 'gcc'}]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            with daemon(directory, compiler=compiler) as env:
+                exported = dict(line.split('=', 1) for line in
+                                (directory / 'env').read_text(encoding='utf-8').splitlines())
+                expected = compiler or {'HOST_CC': 'sccache cc'}
+                assert {key: env[key] for key in ('HOST_CC', 'CC') if key in env} == expected
+                assert {key: exported[key] for key in ('HOST_CC', 'CC') if key in exported} == (
+                    {} if compiler else expected)
+                assert not any(key.startswith(('CC_', 'TARGET_')) for key in exported)
+
+def cargo_configured_c_compilers_keep_their_precedence():
+    for filename in ['config.toml', 'config']:
+        for setting in ['CC = "clang"', 'HOST_CC = "clang"',
+                        'CC = { value = "clang -m64", force = true }', 'UNRELATED = "value"']:
+            with tempfile.TemporaryDirectory() as temporary:
+                directory = pathlib.Path(temporary)
+                (directory / '.cargo').mkdir()
+                (directory / '.cargo' / filename).write_text('[env]\n' + setting + '\n', encoding='utf-8')
+                with daemon(directory) as env:
+                    explicit = not setting.startswith('UNRELATED')
+                    assert ('HOST_CC' not in env) == explicit, (filename, setting)
+                    message = (directory / 'restore-message').read_text(encoding='utf-8')
+                    assert ('Native C cache keeps caller compiler configuration' in message) == explicit, message
+
+def native_c_compiler_configuration_reaches_isolated_children():
+    isolated = re.search(r'^run_isolated\(\) \{\n.*?^\}', body('Isolated tests'), re.MULTILINE | re.DOTALL)
+    assert isolated
+    probe = 'import json, os; print(json.dumps({k: os.environ[k] for k in ("HOST_CC", "CC") if k in os.environ}))'
+    for compiler in [{}, {'HOST_CC': 'sccache cc'}, {'HOST_CC': 'clang'},
+                     {'CC': 'clang -m64'}, {'HOST_CC': ''}, {'CC': ''}]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            env = environment(directory) | compiler | {
+                'isolation': temporary, 'diagnostics': temporary,
+                'cargo_home': str(directory / 'cargo'), 'rustup_home': str(directory / 'rustup'),
+                'RUSTUP_TOOLCHAIN': 'stable'}
+            result = shell(isolated[0] + '\nrun_isolated python3 -c ' + shlex.quote(probe), env)
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert json.loads(result.stdout) == compiler, (compiler, result.stdout)
+
+def native_c_compilations_keep_cache_under_coverage():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        with daemon(directory) as env:
+            shown = run(['cargo', 'llvm-cov', 'show-env', '--sh'], env, root / 'fixtures/sample')
+            assert shown.returncode == 0, shown.stderr
+            coverage = env | dict(shlex.split(line)[1].split('=', 1)
+                                  for line in shown.stdout.splitlines() if line.startswith('export '))
+            assert pathlib.Path(coverage['RUSTC_WRAPPER']).name != 'sccache'
+            source = directory / 'native.c'
+            output = directory / 'native.o'
+            source.write_text('int answer(void) { return 42; }\n', encoding='utf-8')
+            compiler = shlex.split(coverage.get('HOST_CC', coverage.get('CC', 'cc')))
+            command = compiler + ['-c', str(source), '-o', str(output)]
+            for _ in range(2):
+                result = run(command, coverage)
+                assert result.returncode == 0 and output.stat().st_size > 0, result.stdout + result.stderr
+                output.unlink()
+            result = shell(body('Compile cache statistics'), coverage)
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert re.search(r'^Cache hits \(C/C\+\+\)\s+1$', result.stdout, re.MULTILINE), result.stdout
+            assert re.search(r'^Cache misses \(C/C\+\+\)\s+1$', result.stdout, re.MULTILINE), result.stdout
+            print(result.stdout, flush=True)
+            source.write_text('invalid C source\n', encoding='utf-8')
+            assert run(command, coverage).returncode != 0
+
 def builds_without_the_coverage_wrapper_keep_the_cache():
     # A build a test starts drops RUSTC_WRAPPER to stay uninstrumented and must still reach the cache.
     with tempfile.TemporaryDirectory() as temporary:
@@ -519,7 +589,7 @@ def cache_install_selects_pinned_host_asset():
         assert forbidden not in installer
     with tempfile.TemporaryDirectory(prefix='cache install space ') as temporary:
         archives = pathlib.Path(temporary)
-        for host, arch, platform in hosts:
+        for _host, _arch, platform in hosts:
             archive = archives / (platform + '.tar.gz')
             url = f'https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-{platform}.tar.gz'
             subprocess.run(['curl', '--fail', '--location', url, '--output', str(archive)], check=True)
@@ -613,6 +683,9 @@ with tempfile.TemporaryDirectory() as temporary:
     for test in [snapshot_missing_entries_build_uncached, snapshot_partial_restore_is_discarded,
                  snapshot_restore_outage_builds_uncached, snapshot_save_outage_keeps_build_success,
                  snapshot_restart_preserves_isolated_local_policy, cache_outage_keeps_compiler_failure,
-                 builds_without_the_coverage_wrapper_keep_the_cache, cache_installation_failure_stays_fatal]:
+                 builds_without_the_coverage_wrapper_keep_the_cache, native_c_compiler_defaults_preserve_explicit_compilers,
+                 cargo_configured_c_compilers_keep_their_precedence,
+                 native_c_compiler_configuration_reaches_isolated_children,
+                 native_c_compilations_keep_cache_under_coverage, cache_installation_failure_stays_fatal]:
         test()
         print('PASS ' + test.__name__, flush=True)
