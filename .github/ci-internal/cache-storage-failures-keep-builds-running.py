@@ -1,3 +1,4 @@
+import ast
 import contextlib
 import hashlib
 import http.server
@@ -11,13 +12,17 @@ import subprocess
 import tempfile
 import textwrap
 import threading
+from typing import Callable, cast
 
 root = pathlib.Path.cwd()
 workflow = (root / '.github/workflows/ci.yml').read_text(encoding='utf-8')
 
-def body(name):
-    step = next(s for s in workflow.split('      - name: ')[1:] if s.splitlines()[0] == name)
-    return textwrap.dedent(re.search(r'^        run: (?:&[\w-]+ )?\|\n((?:          .*\n|\n)+)', step, re.M)[1])
+code = (root / '.github/ci-internal/caller-checks-at-workflow-seam.py').read_text(encoding='utf-8')
+tree = ast.parse(code)
+tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
+resolver: dict[str, object] = {'workflow': workflow}
+exec(compile(tree, 'workflow body resolver', 'exec'), resolver)
+body = cast(Callable[[str], str], resolver['body'])
 
 install, startup = body('Compile cache').split('if [ "$CACHE_RESTORE_OUTCOME"', 1)
 startup = 'if [ "$CACHE_RESTORE_OUTCOME"' + startup
