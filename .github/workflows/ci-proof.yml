@@ -32,7 +32,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Orchestration-Maestro/maestro
-          ref: 96bb4ae0c00e010e74325c5ddcde634c5ab79d7f
+          ref: 3250668d309f5a63fa7d9508de3fd77df1bf3449
           path: maestro
       - name: Extract workflow steps
         working-directory: .
