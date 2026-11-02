@@ -314,8 +314,10 @@ cached.
 When the exact key misses, `Prepare test setup` restores the closest earlier
 bundle saved under the same compile cache identity, checkout path and
 `test_prepare` command, which is the last push's bundle. A merge group and the
-push that lands it add bundles that earlier runs of the same workflow
-uploaded:
+push that lands it add bundles that earlier successful runs of this repository
+uploaded at the commit being merged, whichever workflow ran them: a workflow an
+organization ruleset requires runs pull requests and merge groups, while a push
+may run the caller's own workflow:
 
 - A merge group adds, for each pull request that is not on the default branch
   yet, whether in this group or queued ahead of it (found from the `(#N)` that
@@ -325,7 +327,10 @@ uploaded:
   of the pushed commit.
 - A pull request run adds nothing, so every added bundle was built by the code
   being merged, starting from a bundle the default branch saved. Runs from forks
-  are never added.
+  are never added: a bundle holds executables that the run then starts.
+
+When the runs cannot be listed, the job logs a warning that names the failed
+request and prepares from the bundles it found before the failure.
 
 `Prepare test setup` extracts each bundle to its own directory, separate from
 `TEST_PREPARE_OUTPUT`, and sets `TEST_PREPARE_BASE` to the list of those
