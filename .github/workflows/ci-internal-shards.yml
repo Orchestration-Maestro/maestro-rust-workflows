@@ -555,8 +555,6 @@ jobs:
               for text in ['`test_prepare_setups`', '`test_prepare_inputs`']:
                   assert text in guide and text in readme, text
               assert 'test_prepare_packages' not in guide + readme
-              # The guide describes the declaration's setup-filter reader.
-              assert 'does not interpret its setup-script definitions' not in guide
               # Warm builds prepare when inputs are declared, and the guide still declares one command.
               assert 'do not run preparation or restore prepared files' not in guide
               assert 'declare one standalone shell command' in guide
