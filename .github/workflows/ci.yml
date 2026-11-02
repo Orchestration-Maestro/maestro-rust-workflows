@@ -686,6 +686,7 @@ jobs:
           CACHE_JOB: ${{ github.job }}
           CACHE_INDEX: ${{ strategy.job-index || 0 }}
           CACHE_CALL: ${{ inputs.concurrency-key }}
+          ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
           CACHE_COVERAGE: ${{ needs.declaration.outputs.coverage }}
           CACHE_ENABLED: ${{ needs.declaration.outputs.enabled }}
           CACHE_WARM: ${{ inputs.warm-cache }}
@@ -744,7 +745,7 @@ jobs:
           name=sccache-v$version-$platform
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-sccache.XXXXXX")
           archive=$(mktemp)
-          curl --fail --retry 3 --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
           python3 - "$digest" "$archive" <<'PYTHON'
           import hashlib
           import sys
@@ -783,7 +784,7 @@ jobs:
           installed=$(mise --version 2>/dev/null | cut -d ' ' -f 1) || installed=
           if [ "$installed" != "$version" ]; then
             bin=$(mktemp -d "$RUNNER_TEMP/maestro-mise.XXXXXX")
-            curl --fail --retry 3 --location "$url" --output "$bin/$executable"
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$bin/$executable"
             python3 - "$digest" "$bin/$executable" <<'PYTHON'
           import hashlib
           import sys
@@ -809,6 +810,45 @@ jobs:
             if [ "${OS:-}" = Windows_NT ]; then bin=$(cygpath -w "$bin"); fi
             echo "$bin" >> "$GITHUB_PATH"
           done
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: &git-cache-identity |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          root = pathlib.Path.cwd().resolve()
+          locks = {root / 'Cargo.lock'}
+          for manifest in json.loads(os.environ['ADDITIONAL_LOCKED_MANIFESTS']):
+              for directory in (root / manifest).resolve().parents:
+                  if (directory / 'Cargo.lock').is_file():
+                      locks.add(directory / 'Cargo.lock')
+                      break
+                  if directory == root:
+                      break
+          digest = hashlib.sha256()
+          for lock in sorted(path for path in locks if path.is_file()):
+              digest.update(f'{os.path.relpath(lock, root)}\0'.encode('utf-8') + lock.read_bytes() + b'\0')
+          scope = hashlib.sha256(json.dumps([os.environ[name] for name in ['CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'CACHE_CALL', 'HOST_OS']]).encode('utf-8')).hexdigest()
+          prefix = f'maestro-cargo-git-v1-{scope}-'
+          home = os.environ.get('CARGO_HOME') or os.path.expanduser('~/.cargo')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'prefix={prefix}\nkey={prefix}{digest.hexdigest()}\nhome={home}\n')
+          PYTHON
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: &git-cache-restore
+          path: |
+            ${{ steps.git-cache-identity.outputs.home }}/git/db
+            ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
+          key: ${{ steps.git-cache-identity.outputs.key }}
+          restore-keys: ${{ steps.git-cache-identity.outputs.prefix }}
+          enableCrossOsArchive: false
+          fail-on-cache-miss: false
       - name: Format
         run: cargo fmt --all --check
       - name: Lint
@@ -998,6 +1038,15 @@ jobs:
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: *caller-tools
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: *git-cache-identity
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-restore
       - name: Docs
         env:
           RUSTDOCFLAGS: -D warnings -D missing_docs
@@ -1084,7 +1133,7 @@ jobs:
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-coverage-tools.XXXXXX")
           while read -r url digest binary; do
             archive=$(mktemp)
-            curl --fail --retry 3 --location "$url" --output "$archive"
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
             tar -xzf "$archive" -C "$bin" "$binary"
             test -x "$bin/$binary"
@@ -1098,42 +1147,12 @@ jobs:
       - name: Cargo git cache identity
         id: git-cache-identity
         env: *sccache-identity-env
-        run: &git-cache-identity |
-          python3 - <<'PYTHON'
-          import hashlib
-          import json
-          import os
-          import pathlib
-          root = pathlib.Path.cwd().resolve()
-          locks = {root / 'Cargo.lock'}
-          for manifest in json.loads(os.environ['ADDITIONAL_LOCKED_MANIFESTS']):
-              for directory in (root / manifest).resolve().parents:
-                  if (directory / 'Cargo.lock').is_file():
-                      locks.add(directory / 'Cargo.lock')
-                      break
-                  if directory == root:
-                      break
-          digest = hashlib.sha256()
-          for lock in sorted(path for path in locks if path.is_file()):
-              digest.update(f'{os.path.relpath(lock, root)}\0'.encode('utf-8') + lock.read_bytes() + b'\0')
-          scope = hashlib.sha256(json.dumps([os.environ[name] for name in ['CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'CACHE_CALL']]).encode('utf-8')).hexdigest()
-          prefix = f'maestro-cargo-git-v1-{scope}-'
-          home = os.environ.get('CARGO_HOME') or os.path.expanduser('~/.cargo')
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'prefix={prefix}\nkey={prefix}{digest.hexdigest()}\nhome={home}\n')
-          PYTHON
+        run: *git-cache-identity
       - name: Restore Cargo git cache
         id: git-cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with: &git-cache-restore
-          path: |
-            ${{ steps.git-cache-identity.outputs.home }}/git/db
-            ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
-          key: ${{ steps.git-cache-identity.outputs.key }}
-          restore-keys: ${{ steps.git-cache-identity.outputs.prefix }}
-          enableCrossOsArchive: false
-          fail-on-cache-miss: false
+        with: *git-cache-restore
       - name: Fetch additional locked manifests
         if: needs.declaration.outputs.additional_locked_manifests != '[]'
         run: &fetch-locked-manifests |
@@ -1156,7 +1175,7 @@ jobs:
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-search-bin.XXXXXX")
           while read -r url digest binary; do
             archive=$(mktemp)
-            curl --fail --retry 3 --location "$url" --output "$archive"
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
             unpack=$(mktemp -d)
             tar -xzf "$archive" -C "$unpack"
@@ -1195,7 +1214,7 @@ jobs:
         if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
+        with: &git-cache-save
           path: |
             ${{ steps.git-cache-identity.outputs.home }}/git/db
             ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
@@ -1455,6 +1474,7 @@ jobs:
                   target.truncate(size)
               streams = max(1, min(STREAMS, size // MINIMUM_RANGE))
               step = -(-size // streams)
+              # All ranges start together, within the signed URL's roughly one-minute lifetime.
               with ThreadPoolExecutor(streams) as pool:
                   for future in [pool.submit(fetch, url, start, min(start + step, size) - 1) for start in range(0, size, step)]:
                       future.result()
@@ -1464,7 +1484,7 @@ jobs:
 
           def fall_back(reason, started):
               print(f'::warning::{reason}' + ('' if run_ids else '; using the single-stream download'), file=sys.stderr)
-              print(f'artifact-download name={name} bytes=0 seconds={time.monotonic() - started:.2f} streams=0')
+              print(f'artifact-download name={name} bytes=0 seconds={time.monotonic() - started:.2f} mb_per_second=0.00 streams=0')
               with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
                   output.write('fallback=true\n')
 
@@ -1497,7 +1517,7 @@ jobs:
                       bundle.extractall(destination)
               finally:
                   partial.unlink(missing_ok=True)
-              print(f"artifact-download name={name} bytes={size} seconds={seconds:.2f} streams={streams}")
+              print(f"artifact-download name={name} bytes={size} seconds={seconds:.2f} mb_per_second={size / 1e6 / seconds:.2f} streams={streams}")
 
           # One run's artifact goes straight to the path; a list of runs puts each in a directory named for its run, and a run whose bundle is missing, fails its checks or cannot be read is skipped.
           if not run_ids:
@@ -2059,7 +2079,7 @@ jobs:
             # Only the fuzz job needs cargo-fuzz; the required checks never download it.
             if [ "$binary" = cargo-fuzz ] && [ "${FUZZ_SCAN:-}" != true ]; then continue; fi
             archive=$(mktemp)
-            curl --fail --retry 3 --location "$url" --output "$archive"
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
             if [ "$binary" = shfmt ]; then
               install -m 0755 "$archive" "$bin/$binary"
@@ -2085,6 +2105,15 @@ jobs:
           https://github.com/mvdan/sh/releases/download/v3.14.1/shfmt_v3.14.1_linux_amd64 76e77641faa025814b77f153b29796b8e6fa2fca03e0c76a691608b86c7ea7bf shfmt
           TOOLS
           echo "TOOLS=$bin" >> "$GITHUB_ENV"
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: *git-cache-identity
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-restore
       - name: Embedded check defaults
         run: &check-defaults |
           python3 - <<'PYTHON'
@@ -2522,12 +2551,11 @@ jobs:
       - name: Toolchain
         run: rustup show
       - name: Compile cache identity
-        if: &sccache-target-host runner.os != 'Windows'
         id: cache-identity
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
-        if: *sccache-target-host
+        if: &sccache-target-host runner.os != 'Windows'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -2539,6 +2567,15 @@ jobs:
           CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
         timeout-minutes: 10
         run: *sccache-install
+      - name: Cargo git cache identity
+        id: git-cache-identity
+        env: *sccache-identity-env
+        run: *git-cache-identity
+      - name: Restore Cargo git cache
+        id: git-cache-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-restore
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
@@ -2553,6 +2590,11 @@ jobs:
           COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
           TARGET: ${{ matrix.target }}
         run: *clippy
+      - name: Save Cargo git cache
+        if: runner.os != 'Linux' && steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *git-cache-save
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && runner.os != 'Windows'
@@ -2725,14 +2767,14 @@ jobs:
         run: |
           tools=$(mktemp -d "$RUNNER_TEMP/browser-runtime.XXXXXX")
           cd "$tools"
-          curl --fail --retry 3 --silent --show-error --location https://cdn.playwright.dev/builds/cft/156.0.8078.4/linux64/chrome-linux64.zip -o chromium.zip
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://cdn.playwright.dev/builds/cft/156.0.8078.4/linux64/chrome-linux64.zip -o chromium.zip
           echo '43fd31766c7533a02dda2ded5ad50c2f861cd5400be7509c0abad71129f79d79  chromium.zip' | sha256sum --check --status
           unzip -q chromium.zip
-          curl --fail --retry 3 --silent --show-error --location https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz -o bindgen.tar.gz
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz -o bindgen.tar.gz
           echo '82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e  bindgen.tar.gz' | sha256sum --check --status
           tar -xzf bindgen.tar.gz
-          curl --fail --retry 3 --silent --show-error --location https://registry.npmjs.org/playwright/-/playwright-1.64.1.tgz -o playwright.tgz
-          curl --fail --retry 3 --silent --show-error --location https://registry.npmjs.org/playwright-core/-/playwright-core-1.64.1.tgz -o playwright-core.tgz
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://registry.npmjs.org/playwright/-/playwright-1.64.1.tgz -o playwright.tgz
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://registry.npmjs.org/playwright-core/-/playwright-core-1.64.1.tgz -o playwright-core.tgz
           python3 - <<'PYTHON'
           import base64
           import hashlib

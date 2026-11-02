@@ -14,10 +14,10 @@ parent as its PR base. The warmer is non-required, and consumers still run if it
 fails. See [Compile cache](../README.md#compile-cache) for snapshot shapes,
 fail-open transfers and storage limits.
 Advance all proof checkout references together after checking locked dependencies.
-The proof uses `070f3791057ec2d329c6a907316011c5d8c7525d`, the Maestro main
+The proof uses `b47360ed727388c16a4d61d459f0cf99d2bc88f6`, the Maestro main
 revision that qualifies the current release, and it still includes the native
 residency-helper compilation repair. Its first parent,
-`83c9991e0b6322e338c441e23211f357c1818736`, supplies the warm build and
+`7a86f43b58ab6f613266c6290b68765e79daebd5`, supplies the warm build and
 selected-package base.
 The coverage proof runs only on pushes to `ci/228-merge-proof`, not on pull requests.
 Check its results before landing.
@@ -142,8 +142,8 @@ still instrument workspace builds and send their compiles through the cache.
 | Declared target checks | Linux, arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
 | Declared target checks | x86_64 Windows | Never | Never |
 
-Windows checks run uncached because sccache expands response files beyond
-Windows' command-line limit; [Windows caching](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/166)
+Windows checks run without the compile cache because sccache expands response
+files beyond Windows' command-line limit; [Windows caching](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/166)
 tracks the upstream fix.
 
 A push with `warm-cache: true`, including a feature-branch push, also runs the
@@ -166,15 +166,29 @@ GitHub eviction can remove even the newest snapshot of a shape.
 
 ### Cargo git dependency cache
 
-Build test archive, Prepare test setup and every test shard restore Cargo's `git/db` and
-`git/checkouts` directories before the first `cargo fetch`, so a cache hit
-fetches git dependencies without network access. The key hashes the caller's
-`Cargo.lock` and the `Cargo.lock` of every `additional_locked_manifests` entry;
-a different lock file misses and falls back to the newest entry of the same
-caller and directory. Only a default-branch push that missed the exact key
-saves it, from Build test archive. It counts against the 10 GB repository
-allowance: Maestro's `wasmtime` git revision with its submodules compresses to
-about 0.6 GB per entry.
+No caller setting is needed. Lint, Docs, dependency/source/coverage checks,
+declared target checks, Build test archive, Prepare test setup and every test
+shard restore Cargo's `git/db` and `git/checkouts` before resolving dependencies.
+Doctests share the test-shard route. A hit containing the locked revision avoids
+fetching that git source; Cargo still downloads missing registry packages.
+
+The key hashes the caller's `Cargo.lock` and the `Cargo.lock` of every
+`additional_locked_manifests` entry. Entries stay separate by caller repository,
+directory, workflow concurrency key and runner operating system. A changed lock
+file falls back to the newest entry in that scope; Cargo fetches any missing
+revision normally. A cache miss or transfer failure does not bypass a check or
+change its result.
+
+Only a default-branch push that missed the exact key saves an entry. Build test
+archive seeds Linux; native target checks seed macOS and Windows after a
+successful check. Each uses its native Cargo home. Archives never cross operating
+systems. Windows reuses git sources without enabling the compile cache.
+
+These entries count against the 10 GB repository allowance. One measured Linux
+entry for Maestro's `wasmtime` revision and submodules is 436 MB compressed.
+Allow for a separate entry per native host and retained lock-file revision;
+measure native sizes and restore time before claiming a saving. Cache eviction
+can remove an entry before the next reader runs.
 
 ## Test shards
 
@@ -230,13 +244,17 @@ runs doctests once on every pull request, merge group and main push, without
 waiting for the archive build.
 Warm-cache runs keep their existing compile route and cache shape.
 
-Each shard fetches the archive and the test setup bundle in 16 parallel byte ranges from
-artifact storage, checks the size and SHA-256 digest the Actions API reports, then extracts.
-A digest or size mismatch fails the step before anything is extracted. If the listing has no
-digest or the transfer fails, the step hands over to the single-stream `download-artifact`
-action. Each download prints one line, `artifact-download name=<artifact> bytes=<n>
-seconds=<s> streams=<n>`, so the time guard can read transfer rate apart from test time;
-`streams=0` marks a handover.
+Each shard fetches the archive and the test setup bundle in up to 16 parallel byte ranges
+from artifact storage, checks the size and SHA-256 digest the Actions API reports, then
+extracts. Storage without range support supplies one stream. A digest or size mismatch
+fails the step before anything is extracted. If the listing has no digest or the transfer
+fails, the step hands over to the single-stream `download-artifact` action without retrying
+individual ranges.
+
+Each download prints one line, `artifact-download name=<artifact> bytes=<n> seconds=<s>
+mb_per_second=<rate> streams=<n>`. The rate uses decimal MB (1,000,000 bytes) and measures
+transfer time only, excluding verification, extraction and test work. `streams=0` and
+`mb_per_second=0.00` mark a handover, not a measured single-stream transfer.
 
 A caller that needs prepared files can declare one standalone shell command:
 
@@ -450,6 +468,14 @@ cargo-machete 0.9.2, cargo-hakari 0.9.39, typos 1.51.1, gitleaks 8.30.1, zizmor 
 actionlint 1.7.12 and cargo-llvm-cov 0.9.1. Checksums and download URLs are
 pinned together in the workflow. LLVM tools come from the caller's rustup
 component distribution, not a caller-provided executable.
+
+Pinned tool downloads use curl's `--retry 3 --retry-all-errors --retry-delay 30`.
+After an error, curl uses a 30-second retry interval, up to three times. A server's
+`Retry-After` can extend the wait. This covers receive resets and gateway errors lasting
+60 seconds without increasing the retry count.
+Permanent failures still fail after the last attempt, including a missing release asset.
+Downloaded bytes pass the same pinned checksum check before installation; corrupt bytes
+never become tools. Existing installation deadlines still apply.
 
 - cargo-deny checks licenses, bans, sources and advisories across the workspace
   with all features. Advisories and yanked crates without declared exceptions fail. Registries
