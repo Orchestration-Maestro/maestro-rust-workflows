@@ -554,7 +554,14 @@ def cargo_git_cache_restores_before_every_fetch():
     build = workflow.split('  test-build:\n', 1)[1].split('\n  test-prepare:', 1)[0]
     prepare = workflow.split('  test-prepare:\n', 1)[1].split('\n  tests:', 1)[0]
     tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
-    for job, fetching in [(build, ['Fetch additional locked manifests', 'Build test archive']),
+    jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
+                           workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+    shared_env = workflow.split('env: &sccache-identity-env\n', 1)[1].split('        run:', 1)[0]
+    assert 'ADDITIONAL_LOCKED_MANIFESTS: $' + '{{ needs.declaration.outputs.additional_locked_manifests }}' in shared_env
+    for job, fetching in [(jobs['quality'], ['Lint']), (jobs['docs'], ['Docs']),
+                          (jobs['checks'], ['Embedded check defaults', 'Licenses and dependencies', 'Coverage']),
+                          (jobs['targets'], ['Check target']),
+                          (build, ['Fetch additional locked manifests', 'Build test archive']),
                           (prepare, ['Fetch additional locked manifests', 'Prepare test setup']),
                           (tests, ['Fetch additional locked manifests', 'Tests', 'Isolated tests'])]:
         names = [step.splitlines()[0] for step in job.split('      - name: ')[1:]]
@@ -562,7 +569,9 @@ def cargo_git_cache_restores_before_every_fetch():
         assert [names.index(name) for name in order] == sorted(names.index(name) for name in order), names
         restore = next(step for step in job.split('      - name: ')[1:] if step.startswith('Restore Cargo git cache\n'))
         assert 'uses: actions/cache/restore@' in restore and 'continue-on-error: true' in restore
-        if job is not build:
+        identity_step = next(step for step in job.split('      - name: ')[1:] if step.startswith('Cargo git cache identity\n'))
+        assert 'env: *sccache-identity-env' in identity_step
+        if job is not jobs['quality']:
             assert 'with: *git-cache-restore' in restore
             continue
         assert 'with: &git-cache-restore' in restore
@@ -582,7 +591,8 @@ def cargo_git_cache_restores_before_every_fetch():
         output.write_text('', encoding='utf-8')
         env = {'GITHUB_OUTPUT': str(output), 'ADDITIONAL_LOCKED_MANIFESTS': manifests, 'GITHUB_EVENT_NAME': 'push',
                'GITHUB_REF': 'refs/heads/main', 'CACHE_DEFAULT_BRANCH': 'main', 'CALLER_DIRECTORY': '.',
-               'CACHE_CALL': '', 'CALLER_REPOSITORY': 'owner/repo', 'HOME': '/home/runner', 'CARGO_HOME': None} | extra
+               'CACHE_CALL': '', 'CALLER_REPOSITORY': 'owner/repo', 'HOST_OS': 'Linux',
+               'HOME': '/home/runner', 'CARGO_HOME': None} | extra
         result = execute('Cargo git cache identity', directory, env)
         assert result.returncode == 0, result.stderr
         return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
@@ -603,6 +613,115 @@ def cargo_git_cache_restores_before_every_fetch():
         assert identity(directory)['key'] != before['key']
         assert identity(directory, CACHE_CALL='other')['prefix'] != before['prefix']
         assert 'writer' not in before
+        hosts = [identity(directory, HOST_OS=host)['prefix'] for host in ['Linux', 'macOS', 'Windows']]
+        assert len(set(hosts)) == 3, 'native hosts must not compete for an incompatible archive'
+
+    target = jobs['targets']
+    identity_step = next(step for step in target.split('      - name: ')[1:] if step.startswith('Compile cache identity\n'))
+    assert '        if:' not in identity_step, 'Windows needs the shared writer decision, not the compiler cache'
+    save = next(step for step in target.split('      - name: ')[1:] if step.startswith('Save Cargo git cache\n'))
+    assert "if: runner.os != 'Linux' && steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'" in save
+    assert 'with: *git-cache-save' in save
+    assert target.index('name: Check target') < target.index('name: Save Cargo git cache')
+
+def cargo_git_cache_reuses_exact_locked_sources():
+    import shutil
+    # Exercise the authored archive paths with real Cargo resolution and an unavailable origin.
+    restore = workflow.split('with: &git-cache-restore\n', 1)[1].split('      - name:', 1)[0]
+    paths = re.findall(r'outputs.home \}\}/(git/[^\n]+)', restore)
+    with tempfile.TemporaryDirectory(prefix='git sources space ') as temporary:
+        directory = pathlib.Path(temporary)
+        origin, caller = directory / 'origin', directory / 'caller'
+        origin.mkdir()
+        caller.mkdir()
+        (origin / 'src').mkdir()
+        (origin / 'Cargo.toml').write_text('[package]\nname="source-fixture"\nversion="0.1.0"\n', encoding='utf-8')
+        (origin / 'src/lib.rs').write_text('pub const VALUE: u8 = 1;\n', encoding='utf-8')
+        submodule = directory / 'submodule origin'
+        submodule.mkdir()
+        (submodule / 'marker').write_text('locked submodule\n', encoding='utf-8')
+        fixture_git(submodule, 'init', '--quiet')
+        fixture_git(submodule, 'add', 'marker')
+        fixture_git(submodule, 'commit', '-qm', 'submodule')
+        fixture_git(origin, 'init', '--quiet')
+        fixture_git(origin, '-c', 'protocol.file.allow=always', 'submodule', 'add', submodule.as_uri(), 'vendor')
+        fixture_git(origin, 'add', 'Cargo.toml', 'src/lib.rs', '.gitmodules', 'vendor')
+        fixture_git(origin, 'commit', '-qm', 'source')
+        revision = fixture_git(origin, 'rev-parse', 'HEAD')
+        (caller / 'src').mkdir()
+        (caller / 'src/lib.rs').write_text('pub use source_fixture::VALUE;\n', encoding='utf-8')
+        (caller / 'Cargo.toml').write_text('[package]\nname="caller"\nversion="0.1.0"\n[dependencies]\n'
+            + 'source-fixture = { git = ' + json.dumps(origin.as_uri()) + ', rev = "' + revision + '" }\n', encoding='utf-8')
+        writer = directory / 'writer cargo'
+        env = {name: value for name, value in os.environ.items() if not name.startswith(('CARGO_', 'RUSTC_'))}
+        env.update(CARGO_HOME=str(writer), CARGO_NET_RETRY='0')
+        command = ['cargo', 'metadata', '--format-version', '1']
+        if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+            command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+        fetched = subprocess.run(command, cwd=caller, env=env, capture_output=True, text=True, check=False)
+        assert fetched.returncode == 0, fetched.stderr
+        locked = (caller / 'Cargo.lock').read_bytes()
+        identities = []
+        for home in [writer, directory / 'restored']:
+            output = directory / 'github-output'
+            output.write_text('', encoding='utf-8')
+            result = execute('Cargo git cache identity', caller, {
+                'GITHUB_OUTPUT': str(output), 'ADDITIONAL_LOCKED_MANIFESTS': '[]', 'CARGO_HOME': str(home),
+                'CALLER_REPOSITORY': 'example/caller', 'CALLER_DIRECTORY': '.', 'CACHE_CALL': '',
+                'HOST_OS': os.environ.get('RUNNER_OS', 'Linux')})
+            assert result.returncode == 0, result.stderr
+            identity = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            assert pathlib.Path(identity['home']) == home, identity
+            identities.append(identity['key'])
+        assert identities[0] == identities[1], 'writer and reader must address the same native entry'
+        manifest = (caller / 'Cargo.toml').read_bytes()
+        (origin / 'src/lib.rs').write_text('pub const VALUE: u8 = 2;\n', encoding='utf-8')
+        fixture_git(origin, 'add', 'src/lib.rs')
+        fixture_git(origin, 'commit', '-qm', 'updated source')
+        next_revision = fixture_git(origin, 'rev-parse', 'HEAD')
+        next_manifest = manifest.replace(revision.encode(), next_revision.encode())
+        (caller / 'Cargo.toml').write_bytes(next_manifest)
+        result = subprocess.run(command, cwd=caller, env=env | {'CARGO_HOME': str(directory / 'next revision')},
+                                capture_output=True, text=True, check=False)
+        assert result.returncode == 0, result.stderr
+        next_locked = (caller / 'Cargo.lock').read_bytes()
+        (caller / 'Cargo.toml').write_bytes(manifest)
+        (caller / 'Cargo.lock').write_bytes(locked)
+        origin.rename(directory / 'unavailable')
+        submodule.rename(directory / 'unavailable submodule')
+        for state in ['restored', 'missing', 'stale']:
+            home = directory / state
+            if state != 'missing':
+                for path in paths:
+                    shutil.copytree(writer / path, home / path)
+            if state == 'stale':
+                (caller / 'Cargo.toml').write_bytes(next_manifest)
+                (caller / 'Cargo.lock').write_bytes(next_locked)
+            result = subprocess.run([*command, '--locked'], cwd=caller, env=env | {'CARGO_HOME': str(home)},
+                                    capture_output=True, text=True, check=False)
+            if state == 'restored':
+                assert result.returncode == 0, result.stderr
+                packages = json.loads(result.stdout)['packages']
+                dependency = next(package for package in packages if package['name'] == 'source-fixture')
+                assert dependency['source'].endswith('#' + revision), dependency
+                assert pathlib.Path(dependency['manifest_path']).is_relative_to(home)
+                assert (caller / 'Cargo.lock').read_bytes() == locked
+                assert 'Updating git' not in result.stderr, result.stderr
+                marker = pathlib.Path(dependency['manifest_path']).parent / 'vendor/marker'
+                assert marker.read_text(encoding='utf-8') == 'locked submodule\n'
+            else:
+                assert result.returncode != 0 and 'failed' in result.stderr, result.stderr
+            (caller / 'Cargo.toml').write_bytes(manifest)
+            (caller / 'Cargo.lock').write_bytes(locked)
+        (directory / 'unavailable').rename(origin)
+        (directory / 'unavailable submodule').rename(submodule)
+        for state in ['missing', 'stale']:
+            if state == 'stale':
+                (caller / 'Cargo.toml').write_bytes(next_manifest)
+                (caller / 'Cargo.lock').write_bytes(next_locked)
+            result = subprocess.run([*command, '--locked'], cwd=caller, env=env | {'CARGO_HOME': str(directory / state)},
+                                    capture_output=True, text=True, check=False)
+            assert result.returncode == 0 and 'Updating git repository' in result.stderr, result.stderr
 
 def archive_signal_reaches_only_archived_shards():
     for shard, warm, coverage, archive, expected in [
@@ -3940,3 +4059,6 @@ def workflow_safety_is_unchanged():
 
 workflow_safety_is_unchanged()
 print('PASS workflow_safety_is_unchanged')
+
+cargo_git_cache_reuses_exact_locked_sources()
+print('PASS cargo_git_cache_reuses_exact_locked_sources')

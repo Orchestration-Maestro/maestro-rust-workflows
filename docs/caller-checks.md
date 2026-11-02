@@ -150,8 +150,8 @@ still instrument workspace builds and send their compiles through the cache.
 | Declared target checks | Linux, arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
 | Declared target checks | x86_64 Windows | Never | Never |
 
-Windows checks run uncached because sccache expands response files beyond
-Windows' command-line limit; [Windows caching](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/166)
+Windows checks run without the compile cache because sccache expands response
+files beyond Windows' command-line limit; [Windows caching](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/166)
 tracks the upstream fix.
 
 A push with `warm-cache: true`, including a feature-branch push, also runs the
@@ -174,15 +174,29 @@ GitHub eviction can remove even the newest snapshot of a shape.
 
 ### Cargo git dependency cache
 
-Build test archive, Prepare test setup and every test shard restore Cargo's `git/db` and
-`git/checkouts` directories before the first `cargo fetch`, so a cache hit
-fetches git dependencies without network access. The key hashes the caller's
-`Cargo.lock` and the `Cargo.lock` of every `additional_locked_manifests` entry;
-a different lock file misses and falls back to the newest entry of the same
-caller and directory. Only a default-branch push that missed the exact key
-saves it, from Build test archive. It counts against the 10 GB repository
-allowance: Maestro's `wasmtime` git revision with its submodules compresses to
-about 0.6 GB per entry.
+No caller setting is needed. Lint, Docs, dependency/source/coverage checks,
+declared target checks, Build test archive, Prepare test setup and every test
+shard restore Cargo's `git/db` and `git/checkouts` before resolving dependencies.
+Doctests share the test-shard route. A hit containing the locked revision avoids
+fetching that git source; Cargo still downloads missing registry packages.
+
+The key hashes the caller's `Cargo.lock` and the `Cargo.lock` of every
+`additional_locked_manifests` entry. Entries stay separate by caller repository,
+directory, workflow concurrency key and runner operating system. A changed lock
+file falls back to the newest entry in that scope; Cargo fetches any missing
+revision normally. A cache miss or transfer failure does not bypass a check or
+change its result.
+
+Only a default-branch push that missed the exact key saves an entry. Build test
+archive seeds Linux; native target checks seed macOS and Windows after a
+successful check. Each uses its native Cargo home. Archives never cross operating
+systems. Windows reuses git sources without enabling the compile cache.
+
+These entries count against the 10 GB repository allowance. One measured Linux
+entry for Maestro's `wasmtime` revision and submodules is 436 MB compressed.
+Allow for a separate entry per native host and retained lock-file revision;
+measure native sizes and restore time before claiming a saving. Cache eviction
+can remove an entry before the next reader runs.
 
 ## Test shards
 

@@ -1,5 +1,6 @@
 import pathlib
 import re
+
 workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
 def snapshot_jobs_share_one_owner():
     import json
@@ -25,7 +26,9 @@ def snapshot_jobs_share_one_owner():
                 parsed = next(item for item in document['jobs'][name]['steps'] if item.get('name') == stage)
                 condition = parsed.get('if', '')
                 host = "runner.os != 'Windows'"
-                if stage == 'Compile cache statistics':
+                if stage == 'Compile cache identity':
+                    assert condition == '', 'Windows still needs the shared default-branch writer decision'
+                elif stage == 'Compile cache statistics':
                     assert condition == 'always() && ' + host
                 elif stage == 'Save compile cache':
                     assert condition == host + " && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'"
