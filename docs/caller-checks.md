@@ -322,18 +322,49 @@ It identifies archived execution, not the presence of prepared files.
 files they need before reusing them. No nextest archive include is needed.
 Nextest setup scripts can export paths into that directory;
 they must reuse those files instead of preparing them again. The caller owns the
-preparation logic and exported environment. Shared CI does not interpret its
-setup-script definitions. The existing `concurrency-key` distinguishes both
-artifacts when a workflow makes several calls.
+preparation logic and exported environment. The existing `concurrency-key`
+distinguishes both artifacts when a workflow makes several calls.
 
-`test_prepare_packages` names the workspace packages that read the prepared files.
-When it is set and a run selects none of them, the declaration drops the command:
-`Prepare test setup` does not start, and the shards skip the download and restore.
-A run that selects a listed package keeps the command. Every merge group and
-main push selects all listed consumers.
-A change to this list, to `test_prepare` or to `test_prepare_inputs` selects the
-whole workspace. Names must be workspace packages; anything else fails the
-declaration. Without the list every run that tests prepares.
+To prepare only when selected tests need the files, set `test_prepare_setups` to
+the nextest setup-script names that read them:
+
+```toml
+test_prepare_setups = ["native-fixture", "author-component"]
+```
+
+The declaration reads the caller's `.config/nextest.toml`. It collects packages
+from every `[[profile.default.scripts]]` entry whose `setup` names a listed
+script, either as a string or in an array. Other profiles and unlisted setups
+do not contribute packages.
+
+Each filter must be a union of terms. Every term must conjoin exactly one
+`package(NAME)` or `package(=NAME)` atom with expressions containing no package
+atom. For example:
+
+```toml
+[[profile.default.scripts]]
+filter = "package(wasm-host) | (package(wasm-guest) & (test(component::) | !test(slow::)))"
+setup = "author-component"
+```
+
+This filter names `wasm-host` and `wasm-guest` as packages that need preparation.
+The declaration refuses a listed setup with no default-profile script entry, a
+rule without a filter, a term without a package, or a term with more than one
+package conjunct. It also refuses package atoms under `!`, `not` or the right
+side of `-`, package glob, regex and `~` substring matchers, and `deps()` or
+`rdeps()`. Errors name the nextest file, the setup and the reason. Every named
+package must belong to the workspace.
+
+When none of these packages is selected, `Prepare test setup` does not start,
+and the shards skip the download and restore. Selecting any of them keeps the
+command. Every merge group and main push selects the whole workspace, so it
+prepares whenever a consumer exists. An empty setup list disables preparation;
+without the key every run that tests prepares.
+
+A change to `.config/nextest.toml`, `test_prepare_setups`, `test_prepare` or
+`test_prepare_inputs` selects the whole workspace on pull requests. This also
+applies when a source includes the nextest file or a `test_inputs` entry routes
+it to specific packages.
 
 `test_prepare_inputs` lists the files the `test_prepare` command reads, as
 repository-relative path globs from the caller's working directory, such as
@@ -384,7 +415,7 @@ unset. An exact hit still skips the command.
 
 ```toml
 test_prepare = "sh .config/prepare-tests.sh"
-test_prepare_packages = ["wasm-host", "wasm-guest"]
+test_prepare_setups = ["author-component"]
 test_prepare_inputs = [".config/prepare-tests.sh", "tools/**/*.toml"]
 ```
 

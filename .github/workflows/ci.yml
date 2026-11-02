@@ -252,13 +252,14 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
-                  raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
+                  replacement = '; test_prepare_setups replaces test_prepare_packages' if 'test_prepare_packages' in unknown else ''
+                  raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}' + replacement)
               for key in ('wasm_crates', 'check_targets'):
                   if key not in config or not isinstance(config[key], list) or any(type(item) is not str for item in config[key]):
                       raise SystemExit(f'{path}: {key} must be an array of strings')
@@ -288,13 +289,13 @@ jobs:
               threshold = config.get('coverage_min_lines', 80)
               if type(threshold) not in (int, float) or not 80 <= threshold <= 100:
                   raise SystemExit(f'{path}: coverage_min_lines must be a number from 80 to 100')
-              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_packages', 'test_prepare_inputs'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_setups', 'test_prepare_inputs'):
                   if not isinstance(config.get(key, []), list) or any(type(item) is not str or not item for item in config.get(key, [])):
                       raise SystemExit(f'{path}: {key} must be an array of nonempty strings')
               def validate_toml_string(key, value):
                   if any(ord(char) < 32 or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
                       raise SystemExit(f'{path}: {key} cannot contain control characters or surrogates')
-              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_packages', 'test_prepare_inputs'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_setups', 'test_prepare_inputs'):
                   for value in config.get(key, []):
                       validate_toml_string(key, value)
               def contained_manifest(value):
@@ -406,9 +407,118 @@ jobs:
                   if crate not in packages:
                       raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
               values.update(browser_test_crates=json.dumps(sorted(set(browser_tests))))
-              for name in config.get('test_prepare_packages', []):
-                  if name not in packages:
-                      raise SystemExit(f'{path}: test_prepare_packages contains unknown package {name!r}')
+              def prepared_consumers(setups):
+                  nextest = pathlib.Path('.config/nextest.toml')
+                  try:
+                      with nextest.open('rb') as source:
+                          scripts = tomllib.load(source).get('profile', {}).get('default', {}).get('scripts', [])
+                  except FileNotFoundError:
+                      scripts = []
+                  except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, AttributeError) as error:
+                      raise SystemExit(f'{nextest}: {error}') from error
+                  if not isinstance(scripts, list) or any(not isinstance(rule, dict) for rule in scripts):
+                      raise SystemExit(f'{nextest}: profile.default.scripts must be an array of tables')
+                  consumers = set()
+                  for setup in setups:
+                      def refuse(reason):
+                          raise SystemExit(f'{nextest}: setup {setup!r} {reason}')
+                      rules = [rule for rule in scripts if rule.get('setup') == setup or
+                               isinstance(rule.get('setup'), list) and setup in rule['setup']]
+                      if not rules:
+                          refuse('has no [[profile.default.scripts]] entry')
+                      for rule in rules:
+                          if 'filter' not in rule:
+                              refuse('rule has no filter, so it runs before every test')
+                          text = rule['filter']
+                          if not isinstance(text, str):
+                              refuse('filter must be a string')
+                          position = 0
+                          def token():
+                              nonlocal position
+                              position += len(text[position:]) - len(text[position:].lstrip())
+                              return re.match(r'([a-z_]+)\s*\(\s*(/(?:\\.|[^/\\])*/|(?:\\.|[^()\\])*)\s*\)', text[position:])
+                          def expression(minimum=0):
+                              nonlocal position
+                              atom = token()
+                              start = position
+                              if atom:
+                                  position += atom.end()
+                                  name, value = atom[1], atom[2].strip()
+                                  if name in ('deps', 'rdeps'):
+                                      refuse('filter selects packages by dependency: ' + atom[0])
+                                  if name == 'package':
+                                      value = value.removeprefix('=')
+                                      for prefix, kind in [('/', 'a regular expression'), ('~', 'a substring')]:
+                                          if value.startswith(prefix):
+                                              refuse(f'filter matches packages by {kind}: ' + atom[0])
+                                      if any(char in value for char in '*?[]#'):
+                                          refuse('filter matches packages by a glob: ' + atom[0])
+                                  elif name not in ('all', 'none', 'test', 'binary', 'binary_id', 'kind', 'platform'):
+                                      refuse('filter has unsupported atom: ' + atom[0])
+                                  node = (name, value, atom[0])
+                              elif text[position:position + 1] == '(':
+                                  position += 1
+                                  node = expression()
+                                  token()
+                                  if text[position:position + 1] != ')':
+                                      refuse(f'filter cannot be read at offset {position}')
+                                  position += 1
+                              else:
+                                  negation = re.match(r'!|not\b', text[position:])
+                                  if not negation:
+                                      refuse(f'filter cannot be read at offset {position}')
+                                  position += negation.end()
+                                  node = ('not', expression(3), text[start:position])
+                              while True:
+                                  token()
+                                  operator = re.match(r'\||\+|or\b|&|and\b|-', text[position:])
+                                  if not operator:
+                                      return node
+                                  op = 'or' if operator[0] in ('|', '+', 'or') else 'and'
+                                  precedence = 1 if op == 'or' else 2
+                                  if precedence < minimum:
+                                      return node
+                                  position += operator.end()
+                                  right = expression(precedence + 1)
+                                  if operator[0] == '-':
+                                      right = ('not', right, right[2])
+                                  node = (op, (node, right), text[start:position])
+                          def package_atoms(node, negated=False):
+                              if node[0] == 'package':
+                                  if negated:
+                                      refuse('filter negates package(' + node[1] + ')')
+                                  return [node[1]]
+                              if node[0] == 'not':
+                                  return package_atoms(node[1], True)
+                              if node[0] in ('and', 'or'):
+                                  return [name for child in node[1] for name in package_atoms(child, negated)]
+                              return []
+                          def terms(node, operator):
+                              if node[0] == operator:
+                                  return [term for child in node[1] for term in terms(child, operator)]
+                              return [node]
+                          try:
+                              tree = expression()
+                              token()
+                              if position != len(text):
+                                  refuse(f'filter cannot be read at offset {position}')
+                              package_atoms(tree)
+                              for term in terms(tree, 'or'):
+                                  conjuncts = terms(term, 'and')
+                                  exact = [node[1] for node in conjuncts if node[0] == 'package']
+                                  if not package_atoms(term):
+                                      refuse(f'filter term {term[2]!r} names no package')
+                                  if len(exact) != 1 or len(package_atoms(term)) != 1:
+                                      refuse(f'filter term {term[2]!r} needs exactly one package() conjunct')
+                                  for name in exact:
+                                      if name not in packages:
+                                          refuse(f'filter contains unknown package {name!r}')
+                                  consumers.update(exact)
+                          except RecursionError:
+                              refuse('filter nesting is too deep')
+                  return sorted(consumers)
+              if 'test_prepare_setups' in config:
+                  values['test_prepare_consumers'] = json.dumps(prepared_consumers(config['test_prepare_setups']))
               def repository_relative(key):
                   return bool(pathlib.PurePosixPath(key).parts) and not key.startswith('/') and '\\' not in key and '..' not in pathlib.PurePosixPath(key).parts
               for pattern in config.get('test_prepare_inputs', []):
@@ -446,6 +556,7 @@ jobs:
           TEST_EVENT: ${{ inputs.warm-cache && 'push' || github.repository_id == '1404598722' && inputs.test-event || github.event_name }}
           BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           TEST_SHARD_COUNT: ${{ steps.config.outputs.test_shard_count }}
+          TEST_PREPARE_CONSUMERS: ${{ steps.config.outputs.test_prepare_consumers }}
         run: |
           python3 - <<'PYTHON'
           import ast
@@ -550,7 +661,7 @@ jobs:
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)
-                  if filename in ('Cargo.toml', 'rust-toolchain', 'rust-toolchain.toml', '.github/ci.schema.json') or filename.startswith('.github/workflows/'):
+                  if filename in ('Cargo.toml', 'rust-toolchain', 'rust-toolchain.toml', '.github/ci.schema.json', '.config/nextest.toml') or filename.startswith('.github/workflows/'):
                       selected = set(members)
                       trigger = f'shared input: {filename}'
                       break
@@ -572,7 +683,7 @@ jobs:
               if '.github/ci.toml' in changed:
                   before, after = declarations()
                   browser_changed = before.get('browser_test_crates', []) != after.get('browser_test_crates', [])
-                  if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
+                  if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
                       selected = set(members)
                       trigger = 'shared input: .github/ci.toml'
               if 'Cargo.lock' in changed and selected != members:
@@ -636,7 +747,7 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
               # The preparation job runs only when a selected package reads its output.
-              consumers = config.get('test_prepare_packages')
+              consumers = json.loads(os.environ['TEST_PREPARE_CONSUMERS'])
               prepare = json.dumps(config.get('test_prepare', '') if consumers is None or set(consumers) & set(names) else '')
               output.write('test_prepare=' + prepare + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
