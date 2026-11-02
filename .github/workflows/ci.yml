@@ -1618,6 +1618,7 @@ jobs:
                   target.truncate(size)
               streams = max(1, min(STREAMS, size // MINIMUM_RANGE))
               step = -(-size // streams)
+              # All ranges start together, within the signed URL's roughly one-minute lifetime.
               with ThreadPoolExecutor(streams) as pool:
                   for future in [pool.submit(fetch, url, start, min(start + step, size) - 1) for start in range(0, size, step)]:
                       future.result()

@@ -637,6 +637,8 @@ jobs:
                   assert files == [] and 'fallback=true' in outputs and leftovers == [], (fault, files, outputs, leftovers)
                   assert line(result)[1:4:2] == ('0', '0'), (fault, result.stdout)
                   assert len([request for request in server.requests if request[0].endswith('/zip')]) == 1, (fault, server.requests)
+                  if fault == 'fail':
+                      assert len([request for request in server.requests if request[0] == '/blob']) <= 6, server.requests
 
           def several_runs_land_in_a_directory_each_and_a_run_without_a_bundle_is_skipped():
               result, server, files, extracted, outputs, leftovers = download(run_ids='7 8 9', without_artifact=(8,))
