@@ -3849,6 +3849,60 @@ def isolation_creates_a_missing_cargo_home():
 isolation_creates_a_missing_cargo_home()
 print('PASS isolation_creates_a_missing_cargo_home')
 
+def windows_known_folders_resolve_inside_isolated_profile():
+    if os.name != 'nt':
+        return
+    import shutil
+    import sys
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        probe = directory / 'known-folders.py'
+        probe.write_text(textwrap.dedent('''
+            import ctypes
+            import os
+            import pathlib
+            import uuid
+            shell = ctypes.windll.shell32.SHGetKnownFolderPath
+            shell.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+            shell.restype = ctypes.c_long
+            home = pathlib.Path(os.environ['USERPROFILE']).resolve()
+            assert home == pathlib.Path(os.environ['HOME']).resolve()
+            for variable, identifier in [
+                ('LOCALAPPDATA', 'F1B32785-6FBA-4FCF-9D55-7B8E7F157091'),
+                ('APPDATA', '3EB685DB-65F9-4CF6-A03A-E3EF65729F3D'),
+            ]:
+                pointer = ctypes.c_void_p()
+                result = shell(uuid.UUID(identifier).bytes_le, 0, None, ctypes.byref(pointer))
+                try:
+                    assert result == 0, f'{variable}: SHGetKnownFolderPath failed: {result & 0xffffffff:#x}'
+                    path = pathlib.Path(ctypes.wstring_at(pointer)).resolve()
+                finally:
+                    ctypes.windll.ole32.CoTaskMemFree(pointer)
+                assert path.is_dir() and path.is_relative_to(home), path
+                assert path == pathlib.Path(os.environ[variable]).resolve(), path
+                marker = path / 'isolated-write'
+                marker.write_text('disposable', encoding='utf-8')
+                assert marker.read_text(encoding='utf-8') == 'disposable'
+                print(f'PASS {variable}: {path}', flush=True)
+        '''), encoding='utf-8')
+        setup = body('Isolated tests').split('cargo fetch --locked', 1)[0]
+        script = directory / 'probe.sh'
+        script.write_text(setup + '\nrun_isolated ' + shlex.quote(pathlib.Path(sys.executable).as_posix()) +
+                          ' ' + shlex.quote(probe.as_posix()) + '\n', encoding='utf-8', newline='\n')
+        git = shutil.which('git')
+        assert git is not None, 'Git Bash is required for the Windows seam'
+        bash = pathlib.Path(git).parent.parent / 'bin/bash.exe'
+        env = {k: v for k, v in os.environ.items() if k not in credential_names and not k.endswith('_API_KEY')}
+        env.update(RUNNER_TEMP=temporary, CARGO_HOME=temporary, RUSTUP_HOME=temporary, RUSTUP_TOOLCHAIN='stable')
+        result = subprocess.run([str(bash), '-e', '-o', 'pipefail', script.as_posix()],
+                                cwd=directory, env=env, capture_output=True, text=True)
+        print(result.stdout + result.stderr, flush=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert not list(directory.glob('maestro-tests.*')), 'Isolated profile was not cleaned'
+
+windows_known_folders_resolve_inside_isolated_profile()
+print('PASS windows_known_folders_resolve_inside_isolated_profile')
+
 def native_test_failures_are_detected():
     import shutil
     with tempfile.TemporaryDirectory() as temporary:
@@ -3994,7 +4048,9 @@ def browser_test_downloads_verify_every_archive():
         source = directory / 'shim-source'
         trace = directory / 'unpacked'
         for extractor in ['tar', 'unzip']:
-            source.write_text('#!/bin/sh\necho "$*" >> ' + shlex.quote(str(trace)) + '\nexec ' + shlex.quote(shutil.which(extractor)) + ' "$@"\n', encoding='utf-8')
+            executable = shutil.which(extractor)
+            assert executable is not None, f'Missing archive extractor: {extractor}'
+            source.write_text('#!/bin/sh\necho "$*" >> ' + shlex.quote(str(trace)) + '\nexec ' + shlex.quote(executable) + ' "$@"\n', encoding='utf-8')
             subprocess.run(['install', '-m', '0700', str(source), str(shim / extractor)], check=True)
         # Only the downloader is replaced: production verification and unpacking remain real.
         def downloader(corrupt):
@@ -4157,7 +4213,9 @@ print('PASS workflow_failures_remain_required')
 
 def reusable_calls_complete_independently():
     internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding="utf-8")
-    group = re.search(r'^  group: (.+)$', workflow, re.MULTILINE).group(1)
+    match = re.search(r'^  group: (.+)$', workflow, re.MULTILINE)
+    assert match is not None, 'Missing workflow concurrency group'
+    group = match.group(1)
     assert group == 'rust-ci-$' + "{{ github.event_name == 'push' && format('{0}-{1}', github.workflow, github.sha) || github.ref }}$" + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
         'The push group must name the caller and the commit, other runs the ref, and keyed calls the key'
     keys = []
@@ -4176,7 +4234,9 @@ print('PASS reusable_calls_complete_independently')
 
 def caller_name_stays_in_the_concurrency_group():
     named = [line for line in workflow.splitlines() if re.search(r'github\.workflow\b', line)]
-    assert named == [re.search(r'^  group: .+$', workflow, re.MULTILINE).group(0)], \
+    match = re.search(r'^  group: .+$', workflow, re.MULTILINE)
+    assert match is not None, 'Missing workflow concurrency group'
+    assert named == [match.group(0)], \
         'The caller name must not reach artifact names, coverage keys or cache keys'
     assert "name: coverage-$" + "{{ inputs.concurrency-key || 'root' }}-full" in workflow
     assert "COVERAGE_KEY: $" + "{{ inputs.concurrency-key || 'root' }}" in workflow

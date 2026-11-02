@@ -703,9 +703,12 @@ nextest instead of the Linux coverage route.
 
 Windows keeps its system locations (`SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`,
 `COMSPEC`, `PATHEXT`, program and program-data directories), processor metadata
-and `OS`. `USERPROFILE`, `APPDATA` and `LOCALAPPDATA` point into the fresh
-isolated home, config and data directories. Paths passed to native programs
-use Windows mixed separators.
+and `OS`. `USERPROFILE` points to the fresh isolated home. The workflow creates
+`AppData/Roaming` and `AppData/Local` beneath it and sets `APPDATA` and
+`LOCALAPPDATA` to those directories. Windows known-folder APIs require these
+directories to exist; they resolve inside the isolated profile rather than the
+runner's application settings or caches. XDG locations remain separate.
+Paths passed to native programs use Windows mixed separators.
 
 The test setup exports Rustup's active toolchain before compilation; both test
 routes pass it to child builds, including dependencies outside the checkout.

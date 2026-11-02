@@ -2123,7 +2123,9 @@ jobs:
               PROCESSOR_ARCHITECTURE OS; do
               if value=$(printenv "$name"); then system+=("$name=$value"); fi
             done
-            system+=(USERPROFILE="$isolation/home" APPDATA="$isolation/config" LOCALAPPDATA="$isolation/data")
+            # Known-folder APIs expand USERPROFILE and require these directories to exist.
+            mkdir -p "$isolation/home/AppData/"{Roaming,Local}
+            system+=(USERPROFILE="$isolation/home" APPDATA="$isolation/home/AppData/Roaming" LOCALAPPDATA="$isolation/home/AppData/Local")
           fi
           run_isolated() {
           env -i "${system[@]}" PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
