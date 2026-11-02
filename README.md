@@ -70,9 +70,13 @@ changing their pins or integrity checks.
 Numeric test shards download one nextest archive instead of compiling the workspace.
 An optional caller `test_prepare` command runs beside the host build and writes
 reusable outputs to `TEST_PREPARE_OUTPUT` (`target/test-setup`). Shards download
-those files separately and setup scripts reuse them. `test_prepare_packages`
-limits the command to runs that select a package reading its output, and
-`test_prepare_inputs` caches the output across runs. Doctests compile and run in
+those files separately and setup scripts reuse them. `test_prepare_setups` names
+the nextest setup scripts that read those files; shared CI reads their consumer
+packages from the caller's `.config/nextest.toml` filters and prepares only when
+one is selected. Without
+the key every run that tests prepares. Changes to the nextest configuration or
+the setup list select the full workspace. `test_prepare_inputs` caches the output
+across runs. Doctests compile and run in
 parallel in their own leg. See [test shards](docs/caller-checks.md#test-shards).
 
 ## Compile cache
@@ -269,6 +273,14 @@ at `v0.1.0`. Each new release requests Quality sync before asset generation. A
 notification failure fails the release job; the published release remains, but
 asset generation does not start. CI changes, features and fixes appear in the
 changelog.
+
+The advisory and fuzz scans of Maestro's `main` use the released workflow,
+pinned by full commit SHA, not the candidate workflow on a pull request.
+Candidate changes are tested by the self-test fixtures and workflow seams.
+
+During the same release run that updates Maestro's caller pin, update the
+`scan` job's workflow SHA in `.github/workflows/advisories.yml` and
+`.github/workflows/fuzz.yml` to that release.
 
 ### Verify a release
 

@@ -165,6 +165,8 @@ def execute(name, cwd, extra=None):
     env = {k: v for k, v in os.environ.items()
            if k not in credential_names and not k.endswith('_API_KEY')}
     env['TEST_SHARD_COUNT'] = '16'
+    # The declaration's output without test_prepare_setups.
+    env['TEST_PREPARE_CONSUMERS'] = 'null'
     env.update(extra or {})
     if name in ['Tests', 'Isolated tests']:
         env.update(toolchain_environment(cwd, env))
@@ -809,7 +811,7 @@ print('PASS preparation_runs_beside_host_compilation')
 def absent_keeps_base_checks():
     result, values = declaration(root / 'fixtures/sample')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert values == {'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
+    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
     assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
     assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
     assert "inputs.working-directory != '.'" in workflow
@@ -1840,6 +1842,27 @@ def fuzz_schema_matches_contract():
 fuzz_schema_matches_contract()
 print('PASS fuzz_schema_matches_contract')
 
+def scheduled_scans_follow_released_workflow():
+    references = set()
+    for filename, mode in [('advisories.yml', 'advisory-scan'), ('fuzz.yml', 'fuzz-scan')]:
+        document = json.loads(subprocess.check_output(
+            ['yq', '-o=json', str(root / '.github/workflows' / filename)], text=True))
+        if filename == 'advisories.yml':
+            assert document['on']['pull_request']['paths'] == ['.github/workflows/advisories.yml'], document['on']
+        else:
+            assert 'pull_request' not in document['on'], document['on']
+        scan = document['jobs']['scan']
+        reference = scan['uses']
+        assert re.fullmatch(r'Orchestration-Maestro/maestro-rust-workflows/\.github/workflows/ci\.yml@[0-9a-f]{40}', reference), reference
+        references.add(reference)
+        assert scan['with']['checkout-repository'] == 'Orchestration-Maestro/maestro', scan
+        assert scan['with']['checkout-ref'] == 'main' and scan['with'][mode] is True, scan
+        assert scan['permissions'] == {'contents': 'read', 'actions': 'read'}, scan
+    assert len(references) == 1, references
+
+scheduled_scans_follow_released_workflow()
+print('PASS scheduled_scans_follow_released_workflow')
+
 def fuzz_scan_runs_only_declaration_and_fuzz():
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     job = jobs['fuzz']
@@ -2697,7 +2720,10 @@ def merge_groups_run_full_suite():
         (directory / '.github').mkdir()
         (directory / '.github/ci.toml').write_text(
             'wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=["b"]\n'
-            'test_prepare="prepare"\ntest_prepare_packages=["b"]\n', encoding='utf-8')
+            'test_prepare="prepare"\ntest_prepare_setups=["prepared"]\n', encoding='utf-8')
+        (directory / '.config').mkdir()
+        (directory / '.config/nextest.toml').write_text(
+            '[[profile.default.scripts]]\nfilter="package(b)"\nsetup="prepared"\n', encoding='utf-8')
         names = ['a', 'b', 'c', 'build', 'dev', 'target', 'unrelated']
         (directory / 'Cargo.toml').write_text(
             '[workspace]\nresolver="3"\nmembers=' + json.dumps(names) + '\n', encoding='utf-8')
@@ -2719,11 +2745,14 @@ def merge_groups_run_full_suite():
         git('add', '.')
         git('commit', '-qm', 'base')
         base = git('rev-parse', 'HEAD')
+        result, declared = declaration(directory)
+        assert result.returncode == 0 and declared['test_prepare_consumers'] == '["b"]', result.stderr
         def select(base_ref=base, event='merge_group'):
             output = directory / '.git/selection'
             output.write_text('', encoding='utf-8')
             result = select_packages(directory, {
-                'TEST_EVENT': event, 'BASE_REF': base_ref, 'GITHUB_OUTPUT': str(output)})
+                'TEST_EVENT': event, 'BASE_REF': base_ref, 'GITHUB_OUTPUT': str(output),
+                'TEST_PREPARE_CONSUMERS': declared['test_prepare_consumers']})
             assert result.returncode == 0, result.stdout + result.stderr
             values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
             assert values['coverage'] == 'true'
@@ -2798,10 +2827,10 @@ def changed_packages_include_reverse_dependencies():
         git('add', '.')
         git('commit', '-qm', 'base')
         base = git('rev-parse', 'HEAD')
-        def select(event='pull_request'):
+        def select(event='pull_request', extra=None):
             output = directory / '.git/selection'
             output.write_text('', encoding='utf-8')
-            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)} | (extra or {}))
             assert result.returncode == 0, result.stdout + result.stderr
             return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
         declaration_path = directory / '.github/ci.toml'
@@ -2889,16 +2918,22 @@ def changed_packages_include_reverse_dependencies():
                     assert '--all-targets' in args and args[-3:] == ['--', '-D', 'warnings'], args
                     assert ('--target' in args) == (job == 'targets'), args
         declared = declaration_path.read_text(encoding='utf-8')
-        for consumers, prepared in [(['d'], False), (['b'], True)]:
-            declaration_path.write_text(declared + 'test_prepare="prepare"\ntest_prepare_packages=' +
-                                        json.dumps(consumers) + '\n', encoding='utf-8')
-            prepared_values = select()
+        nextest = directory / '.config/nextest.toml'
+        nextest.parent.mkdir()
+        for consumer, prepared in [('d', False), ('b', True)]:
+            nextest.write_text(f'[[profile.default.scripts]]\nfilter="package({consumer})"\nsetup="prepared"\n', encoding='utf-8')
+            declaration_path.write_text(declared + 'test_prepare="prepare"\ntest_prepare_setups=["prepared"]\n', encoding='utf-8')
+            result, consumers = declaration(directory)
+            assert result.returncode == 0, result.stderr
+            prepared_values = select(extra={'TEST_PREPARE_CONSUMERS': consumers['test_prepare_consumers']})
             assert prepared_values['test_prepare'] == ('"prepare"' if prepared else '""'), prepared_values
             prepare_context = context | {
                 'needs.declaration.outputs.test_prepare_inputs': '[]',
                 'needs.declaration.outputs.test_prepare': prepared_values['test_prepare']}
             assert bool(evaluate(document['jobs']['test-prepare']['if'], prepare_context)) == prepared
         declaration_path.write_text(declared, encoding='utf-8')
+        nextest.unlink()
+        nextest.parent.rmdir()
         assert values['browser_tests'] == 'true'
         declaration_path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=[]\n', encoding='utf-8')
         git('add', '.')

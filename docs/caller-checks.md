@@ -322,18 +322,51 @@ It identifies archived execution, not the presence of prepared files.
 files they need before reusing them. No nextest archive include is needed.
 Nextest setup scripts can export paths into that directory;
 they must reuse those files instead of preparing them again. The caller owns the
-preparation logic and exported environment. Shared CI does not interpret its
-setup-script definitions. The existing `concurrency-key` distinguishes both
-artifacts when a workflow makes several calls.
+preparation logic and exported environment. The existing `concurrency-key`
+distinguishes both artifacts when a workflow makes several calls.
 
-`test_prepare_packages` names the workspace packages that read the prepared files.
-When it is set and a run selects none of them, the declaration drops the command:
-`Prepare test setup` does not start, and the shards skip the download and restore.
-A run that selects a listed package keeps the command. Every merge group and
-main push selects all listed consumers.
-A change to this list, to `test_prepare` or to `test_prepare_inputs` selects the
-whole workspace. Names must be workspace packages; anything else fails the
-declaration. Without the list every run that tests prepares.
+To prepare only when selected tests need the files, set `test_prepare_setups` to
+the nextest setup-script names that read them:
+
+```toml
+test_prepare_setups = ["native-fixture", "author-component"]
+```
+
+The declaration reads the caller's `.config/nextest.toml`. It collects packages
+from every `[[profile.default.scripts]]` entry whose `setup` names a listed
+script, either as a string or in an array. Other profiles and unlisted setups
+do not contribute packages.
+
+Each filter must be a union of terms. Every term must conjoin exactly one
+`package(NAME)` or `package(=NAME)` atom with expressions containing no package
+atom. For example:
+
+```toml
+[[profile.default.scripts]]
+filter = "package(wasm-host) | (package(wasm-guest) & (test(component::) | !test(slow::)))"
+setup = "author-component"
+```
+
+This filter names `wasm-host` and `wasm-guest` as packages that need preparation.
+The declaration refuses a listed setup with no default-profile script entry, a
+rule without a filter, a term without a package, or a term with more than one
+package conjunct. It also refuses package atoms under `!`, `not` or the right
+side of `-`, package glob, regex and `~` substring matchers, and `deps()` or
+`rdeps()`. Unsupported atoms such as `default()` or `group()` are refused, and
+unreadable filters fail with the offset where parsing stopped. Errors name the
+nextest file, the setup and the reason. Every named package must belong to the
+workspace.
+
+When none of these packages is selected, `Prepare test setup` does not start,
+and the shards skip the download and restore. Selecting any of them keeps the
+command. Every merge group and main push selects the whole workspace, so it
+prepares whenever a consumer exists. An empty setup list disables preparation;
+without the key every run that tests prepares.
+
+A change to `.config/nextest.toml`, `test_prepare_setups`, `test_prepare` or
+`test_prepare_inputs` selects the whole workspace on pull requests. This also
+applies when a source includes the nextest file or a `test_inputs` entry routes
+it to specific packages.
 
 `test_prepare_inputs` lists the files the `test_prepare` command reads, as
 repository-relative path globs from the caller's working directory, such as
@@ -384,7 +417,7 @@ unset. An exact hit still skips the command.
 
 ```toml
 test_prepare = "sh .config/prepare-tests.sh"
-test_prepare_packages = ["wasm-host", "wasm-guest"]
+test_prepare_setups = ["author-component"]
 test_prepare_inputs = [".config/prepare-tests.sh", "tools/**/*.toml"]
 ```
 
@@ -519,13 +552,14 @@ never become tools. Existing installation deadlines still apply.
   advisories were not checked.
   Pushes to `main`, other events and the scheduled scan always check them, so they still
   catch an advisory that reaches `main`.
-- The scheduled advisory scan (`.github/workflows/advisories.yml`) runs this workflow in
+- The scheduled advisory scan (`.github/workflows/advisories.yml`) runs the
+  [released workflow](../README.md#versions), pinned by full commit SHA, in
   advisory-scan mode against Maestro's `main` every hour and on manual dispatch: only the
   declaration and the advisory check run, with the declared exceptions. Each undeclared
   advisory or yanked crate opens one issue in that repository, titled `Priority: <identifier> on main`
   and its crates, unless an open issue title already starts with `Priority: <identifier> on main`; the
-  run fails while any remains. Pull requests that change the workflow run the scan without
-  opening issues.
+  run fails while any remains. Pull requests that change `advisories.yml` run the pinned
+  scan without opening issues.
 - The cargo-deny license allowlist is MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
   Apache-2.0 WITH LLVM-exception, Unicode-DFS-2016, Unicode-3.0, CC0-1.0,
   CDLA-Permissive-2.0, MPL-2.0, MIT-0 and BSL-1.0. BSL-1.0 is the Boost Software
@@ -931,8 +965,9 @@ the workflow's fuzz-scan mode runs the fuzz job, next to the declaration, and
 the organization's required workflow never sets that mode. This repository's
 own pull requests also run the `fixtures/fuzz` planted targets to test the
 workflow code; callers' pull requests do not.
-`.github/workflows/fuzz.yml` calls the workflow in that mode for Maestro's
-`main` every night at 04:41 UTC and on manual dispatch. Each target job installs
+`.github/workflows/fuzz.yml` calls the [released workflow](../README.md#versions),
+pinned by full commit SHA, in that mode for Maestro's `main` every night at
+04:41 UTC and on manual dispatch. Each target job installs
 cargo-fuzz 0.13.2, a checksum-verified release that only this job downloads,
 and the `nightly-2026-09-15` toolchain, which replaces the caller's
 `rust-toolchain.toml` for that job only. It fuzzes on Linux x86_64
