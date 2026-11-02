@@ -296,7 +296,6 @@ class SearchReleases(unittest.TestCase):
                 self.wfile.flush()
                 self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
                 self.close_connection = True
-                self.wfile.close()
                 self.rfile.close()
                 self.connection.close()
 
@@ -625,7 +624,6 @@ class SearchReleases(unittest.TestCase):
                                 'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_API_URL': 'https://api.github.test',
                                 'ASSETS': str(directory / 'assets'), 'GH_TOKEN': 'fixture'}
             executable = shutil.which('bash')
-            assert executable is not None
             self.assertEqual(pathlib.Path(executable).resolve(), pathlib.Path('/usr/bin/bash'))
             result = subprocess.run([executable, '-e', '-o', 'pipefail', '-c', command],
                                     env=env, capture_output=True, text=True)

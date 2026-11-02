@@ -459,8 +459,9 @@ pinned together in the workflow. LLVM tools come from the caller's rustup
 component distribution, not a caller-provided executable.
 
 Pinned tool downloads use curl's `--retry 3 --retry-all-errors --retry-delay 30`.
-After an error, curl waits 30 seconds before retrying, up to three times. This covers
-receive resets and gateway errors lasting 60 seconds without increasing the retry count.
+After an error, curl uses a 30-second retry interval, up to three times. A server's
+`Retry-After` can extend the wait. This covers receive resets and gateway errors lasting
+60 seconds without increasing the retry count.
 Permanent failures still fail after the last attempt, including a missing release asset.
 Downloaded bytes pass the same pinned checksum check before installation; corrupt bytes
 never become tools. Existing installation deadlines still apply.
