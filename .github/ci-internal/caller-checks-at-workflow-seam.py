@@ -1842,6 +1842,23 @@ def fuzz_schema_matches_contract():
 fuzz_schema_matches_contract()
 print('PASS fuzz_schema_matches_contract')
 
+def scheduled_scans_follow_released_workflow():
+    references = set()
+    for filename, mode in [('advisories.yml', 'advisory-scan'), ('fuzz.yml', 'fuzz-scan')]:
+        document = json.loads(subprocess.check_output(
+            ['yq', '-o=json', str(root / '.github/workflows' / filename)], text=True))
+        scan = document['jobs']['scan']
+        reference = scan['uses']
+        assert re.fullmatch(r'Orchestration-Maestro/maestro-rust-workflows/\.github/workflows/ci\.yml@[0-9a-f]{40}', reference), reference
+        references.add(reference)
+        assert scan['with']['checkout-repository'] == 'Orchestration-Maestro/maestro', scan
+        assert scan['with']['checkout-ref'] == 'main' and scan['with'][mode] is True, scan
+        assert scan['permissions'] == {'contents': 'read', 'actions': 'read'}, scan
+    assert len(references) == 1, references
+
+scheduled_scans_follow_released_workflow()
+print('PASS scheduled_scans_follow_released_workflow')
+
 def fuzz_scan_runs_only_declaration_and_fuzz():
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     job = jobs['fuzz']

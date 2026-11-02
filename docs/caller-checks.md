@@ -552,7 +552,8 @@ never become tools. Existing installation deadlines still apply.
   advisories were not checked.
   Pushes to `main`, other events and the scheduled scan always check them, so they still
   catch an advisory that reaches `main`.
-- The scheduled advisory scan (`.github/workflows/advisories.yml`) runs this workflow in
+- The scheduled advisory scan (`.github/workflows/advisories.yml`) runs the
+  [released workflow](../README.md#versions), pinned by full commit SHA, in
   advisory-scan mode against Maestro's `main` every hour and on manual dispatch: only the
   declaration and the advisory check run, with the declared exceptions. Each undeclared
   advisory or yanked crate opens one issue in that repository, titled `Priority: <identifier> on main`

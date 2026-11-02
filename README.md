@@ -273,6 +273,16 @@ notification failure fails the release job; the published release remains, but
 asset generation does not start. CI changes, features and fixes appear in the
 changelog.
 
+The advisory and fuzz scans of Maestro's `main` use the released workflow,
+pinned by full commit SHA, not the candidate workflow on a pull request.
+Candidate changes are tested by the self-test fixtures and workflow seams.
+
+During the same release run that updates Maestro's caller pin, update the
+`scan` job's workflow SHA in `.github/workflows/advisories.yml` and
+`.github/workflows/fuzz.yml` to that release. Keep `pin-pending` active until
+the caller pin and any required declaration changes have landed, both scan pins
+match the release, and the required checks have been re-triggered.
+
 ### Verify a release
 
 Releases include `source.tar.gz` (a git archive of the tag), `sbom.spdx.json`
