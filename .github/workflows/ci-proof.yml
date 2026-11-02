@@ -51,7 +51,7 @@ jobs:
       checkout-ref: 061008d12ca79d17b168014b3159d5a8d80603ec
       checkout-base-ref: ee60f16cd95d74c6a6c0e9b5663d88c558705b1e
       concurrency-key: maestro-selected
-      test-event: merge_group
+      test-event: pull_request
 
   comparison:
     name: Maestro single coverage

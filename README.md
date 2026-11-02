@@ -16,16 +16,14 @@ A new push to a pull request cancels that pull request's older run.
 
 After declaration validation, pull requests run formatting, Clippy, docs,
 dependency and source checks, declared Windows target checks, wasm/browser
-builds and doctests in parallel. Test shards, coverage, other foreign-target
-checks (including macOS) and Chromium tests run on merge groups and main pushes,
-not on ordinary pull-request heads; [included-input changes](docs/caller-checks.md#pull-request-selection-and-retries) also run reader tests on pull requests without coverage.
-Those full events also keep the Windows check.
+builds and doctests in parallel. Tests, host Clippy and the Windows check use
+one shared selection: changed crates, included-input readers and their workspace
+dependents. PR tests use one non-coverage leg. Merge groups and main pushes run
+the full shard matrix, coverage and every declared foreign-target check.
 
-In merge groups, Chromium tests run only when the shared workspace graph selects
-at least one declared `browser_test_crates` package, including a package affected
-through a changed dependency. Unrelated crate changes skip Chromium. Shared-input
-or unresolved-selection fallbacks run it. Main pushes always run declared
-Chromium tests, regardless of changed paths. See [browser selection](docs/caller-checks.md#chromium-browser-tests).
+Merge groups and main pushes always run declared Chromium tests, regardless of
+changed paths. Ordinary pull requests skip Chromium runtime tests. See
+[browser selection](docs/caller-checks.md#chromium-browser-tests).
 
 Tests run with checksum-pinned cargo-nextest 0.9.148 on 16 Linux runners by
 default, using automatic count partitions rather than package lists. A caller
@@ -33,27 +31,23 @@ can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
 [test shards](docs/caller-checks.md#test-shards). Doctests run in a
 parallel `Doctests` matrix leg on pull requests, merge groups and main pushes.
 The aggregate `Tests (ubuntu-latest)` always requires `Doctests` to succeed.
-It requires every shard to succeed on full runs and accepts event-skipped shards
-on pull requests unless the included-input rule requires them to succeed.
+It requires every shard to succeed on full runs. Pull requests require their
+selected test leg to succeed, or skip that leg when no packages are selected.
 Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-diagnostics)
 and the reporter log after isolated tests fail or time out.
 
 Each nextest test can retry twice; flaky passes are named in job summaries,
-while permanent failures still fail. Declared merge groups test crates changed
-since a verified full-coverage baseline and every transitive workspace dependent,
-including build, development and target-specific dependencies. Shared inputs,
-an unavailable baseline or unresolved selection run the full suite. Undeclared
-callers and main pushes run the full suite. Narrowed runs combine fresh selected
-coverage with unchanged baseline packages to enforce the workspace floor;
-selected-package coverage is informational. See [test selection and retries](docs/caller-checks.md#pull-request-selection-and-retries)
+while permanent failures still fail. Pull requests select direct and transitive
+workspace dependents, including build, development and target-specific
+dependencies. Merge groups and main pushes always test the full workspace.
+See [test selection and retries](docs/caller-checks.md#pull-request-selection-and-retries)
 for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those partitions with `cargo llvm-cov
 nextest`. Only the numeric shards upload LCOV; the aggregate counts a
 source line as covered if any shard covers it and enforces the workspace union's
-80% floor (or caller's higher threshold), including unchanged baseline packages
-on narrowed runs. Missing shard reports fail. Undeclared callers
-retain single-job coverage in `Dependency, source and coverage checks`.
+80% floor (or caller's higher threshold). Missing shard reports fail. Undeclared
+callers retain single-job coverage in `Dependency, source and coverage checks`.
 
 For an independent workspace built by tests, extend the optional declaration:
 
