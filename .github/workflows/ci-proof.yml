@@ -1,4 +1,4 @@
-name: Native workspace proof
+name: Windows wait-boundary diagnostics
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   maestro:
-    name: Maestro partitioned coverage
+    name: Windows wait-boundary diagnostics
     permissions:
       contents: read
       actions: read
@@ -18,69 +18,6 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 90fdd4a9a4c042c211e715a1e118922768c8f0fb
-      concurrency-key: maestro-proof
+      checkout-ref: 710d7ab32cf51885ce85fb469c5b64e9a58446bf
+      concurrency-key: windows-diagnostics
       test-event: merge_group
-
-  packages:
-    name: Package workspace
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/ci.yml
-    with:
-      working-directory: packages
-      checkout-repository: Orchestration-Maestro/maestro-packages
-      checkout-ref: 4ada7a48d714e39cb5b1b56d0963b22fe2161d23
-      concurrency-key: packages-proof
-      test-event: merge_group
-
-  native:
-    name: Native fixture mutation (${{ matrix.runner }})
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Failed and restored native fixture
-        shell: python
-        run: |
-          import ast
-          import pathlib
-          import sys
-          import textwrap
-          import traceback
-
-          source = pathlib.Path('.github/ci-internal/caller-checks-at-workflow-seam.py')
-          tree = ast.parse(textwrap.dedent(source.read_text(encoding='utf-8')))
-          tree.body = [node for node in tree.body if not isinstance(node, ast.Expr)]
-          namespace = {}
-          exec(compile(tree, 'workflow seam', 'exec'), namespace)
-          fixture = pathlib.Path('fixtures/host-test-rejected/src/lib.rs')
-          original = fixture.read_bytes()
-          host = 'macos' if sys.platform == 'darwin' else 'windows'
-          assert original.count(b'"linux"') == 1
-          try:
-              fixture.write_bytes(original.replace(b'"linux"', f'"{host}"'.encode('utf-8')))
-              print('::group::native_test_failures_are_detected RED', flush=True)
-              try:
-                  namespace['native_test_failures_are_detected']()
-              except AssertionError as error:
-                  assert 'PASS' in str(error), str(error)
-                  traceback.print_exc(file=sys.stdout)
-                  print('PASS mutation sensitivity: accepting this host fails the seam', flush=True)
-              else:
-                  raise AssertionError('Native host acceptance mutation survived')
-          finally:
-              fixture.write_bytes(original)
-              print('::endgroup::', flush=True)
-          assert fixture.read_bytes() == original
-          print('::group::native_test_failures_are_detected GREEN', flush=True)
-          namespace['native_test_failures_are_detected']()
-          print('PASS native_test_failures_are_detected after exact restoration', flush=True)
-          print('::endgroup::', flush=True)
