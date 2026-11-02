@@ -3736,6 +3736,41 @@ def windows_known_folders_resolve_inside_isolated_profile():
 windows_known_folders_resolve_inside_isolated_profile()
 print('PASS windows_known_folders_resolve_inside_isolated_profile')
 
+def windows_system_locations_accept_mixed_case_names():
+    if os.name != 'nt':
+        return
+    import shutil
+    import sys
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        variables = {name: name + ' location with spaces' for name in [
+            'ProgramData', 'ProgramFiles(x86)', 'ProgramW6432',
+            'CommonProgramFiles(x86)', 'CommonProgramW6432']}
+        probe = 'import os\n'
+        for name, value in variables.items():
+            probe += f'assert os.environ.get({name!r}) == {value!r}, ({name!r}, os.environ.get({name!r}))\n'
+        probe += "assert 'UNRELATED_AMBIENT_CANARY' not in os.environ\n"
+        setup = body('Isolated tests').split('cargo fetch --locked', 1)[0]
+        script = directory / 'probe.sh'
+        script.write_text(setup + '\nrun_isolated ' + shlex.quote(pathlib.Path(sys.executable).as_posix()) +
+                          ' -c ' + shlex.quote(probe) + '\n', encoding='utf-8', newline='\n')
+        # Inject through the shell after Python has normalized Windows environment names.
+        unset = ['-u ' + shlex.quote(name.upper()) for name in variables]
+        assignments = [shlex.quote(name + '=' + value) for name, value in variables.items()]
+        command = 'env ' + ' '.join(unset + assignments) + ' UNRELATED_AMBIENT_CANARY=discarded "$BASH" -e -o pipefail ' + shlex.quote(script.as_posix())
+        git = shutil.which('git')
+        assert git is not None, 'Git Bash is required for the Windows seam'
+        bash = pathlib.Path(git).parent.parent / 'bin/bash.exe'
+        env = {k: v for k, v in os.environ.items() if k not in credential_names and not k.endswith('_API_KEY')}
+        env.update(RUNNER_TEMP=temporary, CARGO_HOME=temporary, RUSTUP_HOME=temporary, RUSTUP_TOOLCHAIN='stable')
+        result = subprocess.run([str(bash), '-e', '-o', 'pipefail', '-c', command],
+                                cwd=directory, env=env, capture_output=True, text=True)
+        print(result.stdout + result.stderr, flush=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+windows_system_locations_accept_mixed_case_names()
+print('PASS windows_system_locations_accept_mixed_case_names')
+
 def native_test_failures_are_detected():
     import shutil
     with tempfile.TemporaryDirectory() as temporary:

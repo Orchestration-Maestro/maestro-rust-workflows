@@ -708,7 +708,9 @@ nextest instead of the Linux coverage route.
 
 Windows keeps its system locations (`SYSTEMROOT`, `WINDIR`, `SYSTEMDRIVE`,
 `COMSPEC`, `PATHEXT`, program and program-data directories), processor metadata
-and `OS`. `USERPROFILE` points to the fresh isolated home. The workflow creates
+and `OS`. The workflow matches these system-variable names without regard to
+case and keeps their values unchanged. `USERPROFILE` points to the fresh
+isolated home. The workflow creates
 `AppData/Roaming` and `AppData/Local` beneath it and sets `APPDATA` and
 `LOCALAPPDATA` to those directories. Windows known-folder APIs require these
 directories to exist; they resolve inside the isolated profile rather than the

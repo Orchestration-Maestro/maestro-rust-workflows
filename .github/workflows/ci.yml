@@ -1956,11 +1956,18 @@ jobs:
           # Preserve Windows system locations, but give profile and application data a fresh home.
           system=()
           if [ "${OS:-}" = Windows_NT ]; then
-            for name in SYSTEMROOT WINDIR SYSTEMDRIVE COMSPEC PATHEXT PROGRAMDATA PROGRAMFILES 'PROGRAMFILES(X86)' \
-              PROGRAMW6432 COMMONPROGRAMFILES 'COMMONPROGRAMFILES(X86)' COMMONPROGRAMW6432 NUMBER_OF_PROCESSORS \
-              PROCESSOR_ARCHITECTURE OS; do
-              if value=$(printenv "$name"); then system+=("$name=$value"); fi
-            done
+            # Windows environment names are case-insensitive, unlike Bash's printenv.
+            while IFS= read -r -d '' variable; do system+=("$variable"); done < <(python3 - <<'PYTHON'
+          import os
+          names = '''SYSTEMROOT WINDIR SYSTEMDRIVE COMSPEC PATHEXT PROGRAMDATA PROGRAMFILES PROGRAMFILES(X86)
+          PROGRAMW6432 COMMONPROGRAMFILES COMMONPROGRAMFILES(X86) COMMONPROGRAMW6432 NUMBER_OF_PROCESSORS
+          PROCESSOR_ARCHITECTURE OS'''.split()
+          for name, value in os.environ.items():
+              key = name.upper()
+              if key in names:
+                  print(key + '=' + value, end='\0')
+          PYTHON
+            )
             # Known-folder APIs expand USERPROFILE and require these directories to exist.
             mkdir -p "$isolation/home/AppData/"{Roaming,Local}
             system+=(USERPROFILE="$isolation/home" APPDATA="$isolation/home/AppData/Roaming" LOCALAPPDATA="$isolation/home/AppData/Local")
