@@ -490,7 +490,7 @@ jobs:
           hosts = {'ubuntu-latest': count}
           if config is not None and os.environ.get('TEST_EVENT') != 'pull_request' and os.environ.get('WARM') != 'true':
               hosts.update({runner: min(shards, count) for target, (runner, shards) in native_tests.items() if target in config['check_targets']})
-          hosts = {'macos-latest': 4}
+          hosts = {'windows-latest': 4}
           values.update(test_hosts=json.dumps(hosts), test_runners=json.dumps(list(hosts)))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
               for key, value in values.items():
@@ -838,7 +838,7 @@ jobs:
     needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ inputs.concurrency-key != 'macos-diagnostics' }}
+    if: ${{ inputs.concurrency-key != 'windows-diagnostics' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -1179,7 +1179,7 @@ jobs:
     needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ inputs.concurrency-key != 'macos-diagnostics' }}
+    if: ${{ inputs.concurrency-key != 'windows-diagnostics' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -2184,7 +2184,16 @@ jobs:
               partition=()
               if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT"); fi
               run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
-                "${build_args[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" -E 'test(wasi_access::)' 2>&1 | tee nextest.log
+                "${build_args[@]}" --retries 2 --flaky-result pass --final-status-level flaky --success-output immediate --no-tests pass "${partition[@]}" -E 'test(component_handler_presence_tracks_registration) | test(git_checkpoint_component_requires_checkpoint_ui_and_yes) | test(payload_edits_are_read_after_the_awaited_callback) | test(registered_guest_streams_invoke_native_hook_handles) | test(builtin_renderers_keep_native_paint_and_retained_state) | test(component_failures_are_attributed_and_do_not_stop_loading)' 2>&1 | tee nextest.log | while IFS= read -r line; do
+                  printf '%s\n' "$line"
+                  case "$line" in
+                    *'SLOW ['*)
+                      echo '::group::Windows process tree at the nextest slow boundary'
+                      powershell.exe -NoProfile -Command 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Depth 3'
+                      echo '::endgroup::'
+                      ;;
+                  esac
+                done
             fi
           fi
           if [[ "${WARM_CACHE:-false}" != true && -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( -z "${TEST_ARCHIVE:-}" && "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
@@ -2291,7 +2300,7 @@ jobs:
       actions: read
     name: ${{ matrix.runner == 'ubuntu-latest' && 'Doctests' || format('Doctests ({0})', matrix.runner) }}
     needs: declaration
-    if: ${{ inputs.concurrency-key != 'macos-diagnostics' }}
+    if: ${{ inputs.concurrency-key != 'windows-diagnostics' }}
     runs-on: ${{ matrix.runner == 'ubuntu-latest' && fromJSON(needs.declaration.outputs.linux_runner) || matrix.runner }}
     strategy:
       fail-fast: false
@@ -2307,7 +2316,7 @@ jobs:
   tests-result:
     name: Tests (ubuntu-latest)
     needs: [tests, doctests, declaration, test-build]
-    if: ${{ inputs.concurrency-key != 'macos-diagnostics' }}
+    if: ${{ inputs.concurrency-key != 'windows-diagnostics' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     steps:
       - name: Runner hardware
@@ -2367,7 +2376,7 @@ jobs:
       actions: read
     name: Dependency, source and coverage checks
     needs: declaration
-    if: ${{ inputs.concurrency-key != 'macos-diagnostics' }}
+    if: ${{ inputs.concurrency-key != 'windows-diagnostics' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -2670,7 +2679,7 @@ jobs:
   fuzz:
     name: Fuzz ${{ matrix.name }}
     needs: declaration
-    if: ${{ inputs.concurrency-key != 'macos-diagnostics' }}
+    if: ${{ inputs.concurrency-key != 'windows-diagnostics' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     strategy:
       fail-fast: false
@@ -2782,7 +2791,7 @@ jobs:
   advisories:
     name: Advisory scan
     needs: declaration
-    if: ${{ inputs.concurrency-key != 'macos-diagnostics' }}
+    if: ${{ inputs.concurrency-key != 'windows-diagnostics' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -2848,7 +2857,7 @@ jobs:
       actions: read
     name: Check (${{ matrix.target }})
     needs: declaration
-    if: ${{ inputs.concurrency-key != 'macos-diagnostics' }}
+    if: ${{ inputs.concurrency-key != 'windows-diagnostics' }}
     strategy:
       fail-fast: false
       matrix:
@@ -2948,7 +2957,7 @@ jobs:
       actions: read
     name: Wasm and browser build
     needs: declaration
-    if: ${{ inputs.concurrency-key != 'macos-diagnostics' }}
+    if: ${{ inputs.concurrency-key != 'windows-diagnostics' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -3047,7 +3056,7 @@ jobs:
       actions: read
     name: Chromium browser tests
     needs: declaration
-    if: ${{ inputs.concurrency-key != 'macos-diagnostics' }}
+    if: ${{ inputs.concurrency-key != 'windows-diagnostics' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:

@@ -1,4 +1,4 @@
-name: macOS file-access diagnostics
+name: Windows wait-boundary diagnostics
 
 on:
   push:
@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   maestro:
-    name: macOS file-access diagnostics
+    name: Windows wait-boundary diagnostics
     permissions:
       contents: read
       actions: read
@@ -18,6 +18,6 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: c9123bbff124ddd802c46b4fe568fbf5e8d72453
-      concurrency-key: macos-diagnostics
+      checkout-ref: 2fc7e82191bb0075c08177661deece214f03f12b
+      concurrency-key: windows-diagnostics
       test-event: merge_group
