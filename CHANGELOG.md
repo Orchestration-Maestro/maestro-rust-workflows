@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.19.7](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.6...v0.19.7) (2026-11-02)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#303](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/303)) ([38a73de](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/38a73def3eea3e9b16c7661fdc07ecdcf2b31ddc))
+* reuse Cargo git sources in remaining check jobs ([#300](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/300)) ([9fa8cb6](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/9fa8cb6e44346cf3f4618c5c870dd158b5b9c95d))
+
+
+### Bug Fixes
+
+* **ci:** retry tool transport errors and report transfer rates ([#299](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/299)) ([bda1782](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/bda17825ccc5342a110795b85cc1a78687395a14))
+
 ## [0.19.6](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.5...v0.19.6) (2026-11-02)
 
 
