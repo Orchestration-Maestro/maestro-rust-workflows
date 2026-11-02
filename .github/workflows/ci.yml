@@ -168,7 +168,6 @@ jobs:
       coverage_exclude: ${{ steps.selection.outputs.coverage_exclude }}
       coverage_layout: ${{ steps.selection.outputs.coverage_layout }}
       included_tests: ${{ steps.selection.outputs.included_tests }}
-      test_runners: ${{ steps.config.outputs.test_runners }}
       test_shard_count: ${{ steps.config.outputs.test_shard_count }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
@@ -280,7 +279,6 @@ jobs:
       - name: Read caller declaration
         id: config
         env:
-          WARM: ${{ inputs.warm-cache }}
           TEST_EVENT: ${{ inputs.warm-cache && 'push' || github.repository_id == '1404598722' && inputs.test-event || github.event_name }}
         run: |
           python3 - <<'PYTHON'
@@ -484,12 +482,6 @@ jobs:
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
-          native_tests = {'aarch64-apple-darwin': ('macos-latest', 4), 'x86_64-pc-windows-msvc': ('windows-latest', 4)}
-          count = int(values['test_shard_count'])
-          hosts = {'ubuntu-latest': count}
-          if config is not None and os.environ.get('TEST_EVENT') != 'pull_request' and os.environ.get('WARM') != 'true':
-              hosts.update({runner: min(shards, count) for target, (runner, shards) in native_tests.items() if target in config['check_targets']})
-          values.update(test_hosts=json.dumps(hosts), test_runners=json.dumps(list(hosts)))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
@@ -580,7 +572,6 @@ jobs:
           BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           COVERAGE_KEY: ${{ inputs.concurrency-key || 'root' }}
           TEST_SHARD_COUNT: ${{ steps.config.outputs.test_shard_count }}
-          TEST_HOSTS: ${{ steps.config.outputs.test_hosts }}
         run: |
           python3 - <<'PYTHON'
           import ast
@@ -816,8 +807,7 @@ jobs:
               output.write('coverage_exclude=' + json.dumps(sorted(packages[p]['name'] for p in members - selected)) + '\n')
               output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
               output.write('included_tests=' + str(bool(included_readers)).lower() + '\n')
-              hosts = json.loads(os.environ['TEST_HOSTS'])
-              shards = [dict(runner=runner, shard=shard, count=count) for runner, count in hosts.items() for shard in range(1, count + 1)]
+              shards = list(range(1, int(os.environ['TEST_SHARD_COUNT']) + 1))
               output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
@@ -881,7 +871,7 @@ jobs:
           import subprocess
           shape = os.environ['CACHE_JOB']
           if shape in ('tests', 'test-build', 'doctests'):
-              coverage = os.environ['HOST_OS'] == 'Linux' and shape != 'doctests' and (os.environ['CACHE_WARM'] == 'true' or (os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true' and (shape == 'test-build' or os.environ.get('SHARD', '') not in ('', 'doctests'))))
+              coverage = shape != 'doctests' and (os.environ['CACHE_WARM'] == 'true' or (os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true' and (shape == 'test-build' or os.environ.get('SHARD', '') not in ('', 'doctests'))))
               shape = 'tests-coverage' if coverage else 'tests-plain'
           elif shape == 'targets':
               shape += '-clippy-' + os.environ['CACHE_TARGET']
@@ -896,7 +886,7 @@ jobs:
           writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
           if os.environ['CACHE_JOB'] in ('tests', 'doctests') and not (os.environ['CACHE_JOB'] == 'doctests' and os.environ['CACHE_WARM'] == 'true'):
               shard = os.environ.get('SHARD', '')
-              writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['HOST_OS'] == 'Linux' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
+              writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\nshape={shape}\nnamespace={namespace}\nseeder={seeder}\n')
           PYTHON
@@ -1198,18 +1188,14 @@ jobs:
       actions: read
     outputs:
       coverage_checkout_root: ${{ steps.archive-root.outputs.path }}
-    name: ${{ matrix.runner == 'ubuntu-latest' && 'Build test archive' || format('Build test archive ({0})', matrix.runner) }}
+    name: Build test archive
     if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: ${{ fromJSON(needs.declaration.outputs.test_runners) }}
-    runs-on: ${{ matrix.runner == 'ubuntu-latest' && fromJSON(needs.declaration.outputs.linux_runner) || matrix.runner }}
+    runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
-      COLLECT_COVERAGE: ${{ matrix.runner == 'ubuntu-latest' && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' }}
+      COLLECT_COVERAGE: ${{ needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' }}
     defaults:
       run:
         shell: bash
@@ -1227,7 +1213,7 @@ jobs:
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
-        if: runner.os == 'Linux' && runner.environment == 'github-hosted' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
+        if: runner.environment == 'github-hosted' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
         run: &free-build-space |
           # The deletion overlaps the toolchain, tools and compilation; the build needs the space minutes later.
           sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc >/dev/null 2>&1 &
@@ -1242,13 +1228,11 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
-        if: &sccache-target-host runner.os != 'Windows'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-restore
       - name: Compile cache
-        if: *sccache-target-host
         env:
           CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
           CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
@@ -1257,53 +1241,18 @@ jobs:
       - name: Coverage tools
         timeout-minutes: 10
         run: &coverage-tools |
-          case "$(uname -s):$(uname -m)" in
-            Linux:x86_64) tools='
-          https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz 3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522 cargo-llvm-cov
-          https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-unknown-linux-musl.tar.gz bf92cb81450872d960ffa13857a83084d557ec0cdc141663d263bb23ef756f97 cargo-nextest
-          ' ;;
-            Darwin:arm64) tools='
-          https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-universal-apple-darwin.tar.gz 6c23b7fb4ca82c571fc8dfedbab45bfa773d45918f933170c85d21cd7f4b852b cargo-nextest
-          ' ;;
-            MINGW*:x86_64) tools='
-          https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-pc-windows-msvc.zip 7a931b4a9123fe5e641dd0f2b73d897f64bcf77bb06f080db17cb434b7eac782 cargo-nextest.exe
-          ' ;;
-            *) echo 'Unsupported test tool host' >&2; exit 1 ;;
-          esac
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-coverage-tools.XXXXXX")
           while read -r url digest binary; do
-            [ -n "$url" ] || continue
             archive=$(mktemp)
             curl --fail --retry 3 --location "$url" --output "$archive"
-            python3 - "$digest" "$archive" "$binary" "$bin" <<'PYTHON'
-          import gzip
-          import hashlib
-          import io
-          import pathlib
-          import sys
-          import tarfile
-          import zipfile
-          digest, archive, binary, directory = sys.argv[1:]
-          data = pathlib.Path(archive).read_bytes()
-          if hashlib.sha256(data).hexdigest() != digest:
-              raise SystemExit(f'{binary}: archive digest mismatch')
-          if zipfile.is_zipfile(io.BytesIO(data)):
-              with zipfile.ZipFile(io.BytesIO(data)) as source:
-                  names = [name for name in source.namelist() if name.split('/')[-1] == binary]
-                  content = source.read(names[0]) if len(names) == 1 else None
-          else:
-              with tarfile.TarFile(fileobj=gzip.GzipFile(fileobj=io.BytesIO(data))) as source:
-                  members = [member for member in source.getmembers() if member.isfile() and member.name.split('/')[-1] == binary]
-                  content = source.extractfile(members[0]).read() if len(members) == 1 else None
-          if content is None:
-              raise SystemExit(f'{binary}: the archive must hold exactly one {binary}')
-          target = pathlib.Path(directory) / binary
-          target.write_bytes(content)
-          target.chmod(0o755)
-          PYTHON
+            printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+            tar -xzf "$archive" -C "$bin" "$binary"
+            test -x "$bin/$binary"
             rm "$archive"
-          done <<< "$tools"
-          if [ "${OS:-}" = Windows_NT ]; then bin=$(cygpath -m "$bin"); fi
+          done <<'TOOLS'
+          https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-musl.tar.gz 3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522 cargo-llvm-cov
+          https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.148/cargo-nextest-0.9.148-x86_64-unknown-linux-musl.tar.gz bf92cb81450872d960ffa13857a83084d557ec0cdc141663d263bb23ef756f97 cargo-nextest
+          TOOLS
           echo "TOOLS=$bin" >> "$GITHUB_ENV"
           echo "$bin" >> "$GITHUB_PATH"
       - name: Cargo git cache identity
@@ -1363,57 +1312,23 @@ jobs:
         timeout-minutes: 10
         if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         run: &search-tools |
-          case "$(uname -s):$(uname -m)" in
-            Linux:x86_64) tools='
-          https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz 33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c rg
-          https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-unknown-linux-musl.tar.gz 761c72dc8e120d85b22292063be8a796e2eeb20eb3e4f38b8fa2343ccf3514a7 fd
-          ' ;;
-            Darwin:arm64) tools='
-          https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz 3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4 rg
-          https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-aarch64-apple-darwin.tar.gz b67e1836c468e42e411984b56e52fa7abec08c2bd22c867398e7cc134aac5e12 fd
-          ' ;;
-            MINGW*:x86_64) tools='
-          https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-pc-windows-msvc.zip 71b2fef860abe467217a538ff31de02f5258807c0129f771846f87bd029aafc5 rg.exe
-          https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-pc-windows-msvc.zip a227701b8551c35a9931d9f6da75503cf86d88e182d71fb849a70864c5d57cd7 fd.exe
-          ' ;;
-            *) echo 'Unsupported test tool host' >&2; exit 1 ;;
-          esac
+          # Digests: ripgrep's release .sha256 file and fd's GitHub release asset digest.
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-search-bin.XXXXXX")
           while read -r url digest binary; do
-            [ -n "$url" ] || continue
             archive=$(mktemp)
             curl --fail --retry 3 --location "$url" --output "$archive"
-            python3 - "$digest" "$archive" "$binary" "$bin" <<'PYTHON'
-          import gzip
-          import hashlib
-          import io
-          import pathlib
-          import sys
-          import tarfile
-          import zipfile
-          digest, archive, binary, directory = sys.argv[1:]
-          data = pathlib.Path(archive).read_bytes()
-          if hashlib.sha256(data).hexdigest() != digest:
-              raise SystemExit(f'{binary}: archive digest mismatch')
-          if zipfile.is_zipfile(io.BytesIO(data)):
-              with zipfile.ZipFile(io.BytesIO(data)) as source:
-                  names = [name for name in source.namelist() if name.split('/')[-1] == binary]
-                  content = source.read(names[0]) if len(names) == 1 else None
-          else:
-              with tarfile.TarFile(fileobj=gzip.GzipFile(fileobj=io.BytesIO(data))) as source:
-                  members = [member for member in source.getmembers() if member.isfile() and member.name.split('/')[-1] == binary]
-                  content = source.extractfile(members[0]).read() if len(members) == 1 else None
-          if content is None:
-              raise SystemExit(f'{binary}: the archive must hold exactly one {binary}')
-          target = pathlib.Path(directory) / binary
-          target.write_bytes(content)
-          target.chmod(0o755)
-          PYTHON
-            rm "$archive"
-          done <<< "$tools"
+            printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
+            unpack=$(mktemp -d)
+            tar -xzf "$archive" -C "$unpack"
+            find "$unpack" -type f -name "$binary" -exec cp '{}' "$bin/$binary" \;
+            test -x "$bin/$binary"
+            rm -rf "$archive" "$unpack"
+          done <<'TOOLS'
+          https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz 33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c rg
+          https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-unknown-linux-musl.tar.gz 761c72dc8e120d85b22292063be8a796e2eeb20eb3e4f38b8fa2343ccf3514a7 fd
+          TOOLS
           "$bin/rg" --version
           "$bin/fd" --version
-          if [ "${OS:-}" = Windows_NT ]; then bin=$(cygpath -m "$bin"); fi
           echo "$bin" >> "$GITHUB_PATH"
       - name: Mise bootstrap
         timeout-minutes: 10
@@ -1425,22 +1340,27 @@ jobs:
         run: *caller-tools
       - name: Record archive checkout root
         id: archive-root
-        if: matrix.runner == 'ubuntu-latest'
         run: printf 'path=%s\n' "$PWD" >> "$GITHUB_OUTPUT"
       - name: Build test archive
         timeout-minutes: 45
         run: |
           cargo fetch --locked
-          packages=()
-          while IFS= read -r -d '' argument; do packages+=("$argument"); done < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${COLLECT_COVERAGE:-false}" = true ]; then
             "$TOOLS/cargo-llvm-cov" llvm-cov nextest-archive --user-config-file none \
-              --locked "${packages[@]}" --archive-file test-binaries.tar.zst
+              --locked "${packages[@]}" --archive-file test-binaries.tar.zst --timings
           else
             "$TOOLS/cargo-nextest" nextest archive --user-config-file none \
-              --locked "${packages[@]}" --archive-file test-binaries.tar.zst
+              --locked "${packages[@]}" --archive-file test-binaries.tar.zst --timings
           fi
+      - name: Upload archive timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: archive-timings-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ inputs.working-directory || '.' }}/target/**/cargo-timings/*.html
+          if-no-files-found: error
       - name: Save Cargo git cache
         if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
         continue-on-error: true
@@ -1453,24 +1373,23 @@ jobs:
       - name: Upload test archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: &test-archive-name test-archive-${{ inputs.concurrency-key || 'root' }}${{ matrix.runner != 'ubuntu-latest' && format('-{0}', matrix.runner) || '' }}
+          name: test-archive-${{ inputs.concurrency-key || 'root' }}
           path: ${{ inputs.working-directory || '.' }}/test-binaries.tar.zst
           compression-level: 0
           if-no-files-found: error
       - name: Compile cache statistics
         id: cache-statistics
-        if: always() && runner.os != 'Windows'
+        if: always()
         run: *sccache-stats
       - name: Upload compile cache errors
         if: *sccache-artifact-condition
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: *sccache-artifact
       - name: Seal compile cache
-        if: *sccache-target-host
         id: cache-seal
         run: *sccache-seal
       - name: Save compile cache
-        if: runner.os != 'Windows' && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
@@ -1484,13 +1403,9 @@ jobs:
       contents: read
       actions: read
     needs: declaration
-    name: ${{ matrix.runner == 'ubuntu-latest' && 'Prepare test setup' || format('Prepare test setup ({0})', matrix.runner) }}
+    name: Prepare test setup
     if: ${{ needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: ${{ fromJSON(needs.declaration.outputs.test_runners) }}
-    runs-on: ${{ matrix.runner == 'ubuntu-latest' && fromJSON(needs.declaration.outputs.linux_runner) || matrix.runner }}
+    runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       TEST_PREPARE: ${{ fromJSON(needs.declaration.outputs.test_prepare) }}
@@ -1511,7 +1426,7 @@ jobs:
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
-        if: runner.os == 'Linux' && runner.environment == 'github-hosted' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
+        if: runner.environment == 'github-hosted' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
         run: *free-build-space
       - name: Test toolchain
         run: *test-toolchain
@@ -1520,13 +1435,11 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
-        if: *sccache-target-host
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-restore
       - name: Compile cache
-        if: *sccache-target-host
         env:
           CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
           CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
@@ -1601,7 +1514,7 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_NAME: &test-setup-name test-setup-${{ inputs.concurrency-key || 'root' }}${{ matrix.runner != 'ubuntu-latest' && format('-{0}', matrix.runner) || '' }}
+          ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
           CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           CACHE_WRITER: ${{ steps.cache-identity.outputs.writer }}
         run: |
@@ -1620,19 +1533,21 @@ jobs:
               return any(not item['expired'] for item in listing['artifacts'])
           def newest_with_bundle(runs):
               return next((run for run in runs if has_bundle(run)), None)
+          def runs_at(event, head):
+              # The repository's own runs of that event at that commit, whichever workflow ran them: a workflow an organization ruleset requires has no route under actions/workflows, and a push runs another workflow than its merge group. Fork runs are not this repository's code under review.
+              runs = api(f'actions/runs?event={event}&head_sha={head}&status=success&per_page=100')['workflow_runs']
+              return [run for run in runs if (run['head_repository'] or {}).get('full_name') == repository]
           candidates = []
-          if event == 'merge_group' or pushed:
-              workflow = api('actions/runs/' + os.environ['GITHUB_RUN_ID'])['workflow_id']
-          if event == 'merge_group':
-              # The queue branch is cut from the previous group, so only the default branch lists every pull request still ahead of it.
-              subjects = [item['commit']['message'].split('\n', 1)[0] for item in api(f"compare/{os.environ['CACHE_DEFAULT_BRANCH']}...{sha}?per_page=100")['commits']]
-              for number in [int(match[1]) for match in map(re.compile(r'\(#(\d+)\)$').search, subjects) if match]:
-                  head = api(f'pulls/{number}')['head']['sha']
-                  runs = api(f'actions/workflows/{workflow}/runs?event=pull_request&head_sha={head}&status=success&per_page=100')['workflow_runs']
-                  # Fork runs are not this repository's code under review.
-                  candidates.append(newest_with_bundle(run for run in runs if run['head_repository']['full_name'] == repository))
-          elif pushed:
-              candidates.append(newest_with_bundle(api(f'actions/workflows/{workflow}/runs?event=merge_group&head_sha={sha}&status=success&per_page=100')['workflow_runs']))
+          try:
+              if event == 'merge_group':
+                  # The queue branch is cut from the previous group, so only the default branch lists every pull request still ahead of it.
+                  subjects = [item['commit']['message'].split('\n', 1)[0] for item in api(f"compare/{os.environ['CACHE_DEFAULT_BRANCH']}...{sha}?per_page=100")['commits']]
+                  for number in [int(match[1]) for match in map(re.compile(r'\(#(\d+)\)$').search, subjects) if match]:
+                      candidates.append(newest_with_bundle(runs_at('pull_request', api(f'pulls/{number}')['head']['sha'])))
+              elif pushed:
+                  candidates.append(newest_with_bundle(runs_at('merge_group', sha)))
+          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError) as error:
+              print(f'::warning::The test setup candidates could not be listed ({error}); preparing from the bases found so far.', flush=True)
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('runs=' + ' '.join(str(run['id']) for run in candidates if run) + '\n')
           PYTHON
@@ -1641,7 +1556,7 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_NAME: *test-setup-name
+          ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
           ARTIFACT_PATH: ${{ runner.temp }}/test-setup-candidates
           ARTIFACT_RUN_IDS: ${{ steps.candidates.outputs.runs }}
         run: &download-artifact |
@@ -1771,7 +1686,6 @@ jobs:
           TEST_SETUP_CANDIDATE_RUNS: ${{ steps.candidates.outputs.runs }}
         run: |
           export TEST_PREPARE_OUTPUT="$PWD/target/test-setup"
-          if [ "${OS:-}" = Windows_NT ]; then TEST_PREPARE_OUTPUT=$(cygpath -m "$TEST_PREPARE_OUTPUT"); fi
           export CARGO_TARGET_DIR="$RUNNER_TEMP/maestro-test-prepare-build"
           mkdir -p "$TEST_PREPARE_OUTPUT"
           # The preparation's bases, in order: a miss on the exact key may still restore the closest earlier bundle, and the candidates follow. Each is extracted to its own directory, apart from the output.
@@ -1779,7 +1693,7 @@ jobs:
           bases=()
           extract() {
             mkdir -p "$2"
-            if tar -C "$2" -xf - < "$1"; then
+            if tar -C "$2" -xf "$1"; then
               bases+=("$2/test-setup")
             else
               echo "::warning::The earlier test setup bundle $1 is unreadable; preparing without it."
@@ -1796,10 +1710,10 @@ jobs:
           done
           if [ "${#bases[@]}" -gt 0 ]; then
             export TEST_PREPARE_BASE
-            TEST_PREPARE_BASE=$(python3 -c 'import os, sys; print(os.pathsep.join(sys.argv[1:]))' "${bases[@]}")
+            TEST_PREPARE_BASE=$(IFS=:; echo "${bases[*]}")
           fi
           bash -e -o pipefail -c "$TEST_PREPARE"
-          tar -C target -cf - test-setup > "$RUNNER_TEMP/test-setup.tar"
+          tar -C target -cf "$RUNNER_TEMP/test-setup.tar" test-setup
       - name: Save test setup cache
         if: ${{ steps.cache-identity.outputs.writer == 'true' && steps.setup-cache.outputs.cache-hit != 'true' && needs.declaration.outputs.test_prepare_inputs != '[]' }}
         continue-on-error: true
@@ -1810,23 +1724,22 @@ jobs:
       - name: Upload test setup
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: *test-setup-name
+          name: test-setup-${{ inputs.concurrency-key || 'root' }}
           path: ${{ runner.temp }}/test-setup.tar
           if-no-files-found: error
       - name: Compile cache statistics
         id: cache-statistics
-        if: always() && runner.os != 'Windows'
+        if: always()
         run: *sccache-stats
       - name: Upload compile cache errors
         if: *sccache-artifact-condition
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: *sccache-artifact
       - name: Seal compile cache
-        if: *sccache-target-host
         id: cache-seal
         run: *sccache-seal
       - name: Save compile cache
-        if: runner.os != 'Windows' && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
@@ -1840,22 +1753,22 @@ jobs:
     permissions:
       contents: read
       actions: read
-    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.runner == 'ubuntu-latest' && format('Test shard ({0}/{1})', matrix.shard, matrix.count) || format('Test shard ({0} {1}/{2})', matrix.runner, matrix.shard, matrix.count) }}
+    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
     if: ${{ !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.included_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(inputs.warm-cache && '[{"runner":"ubuntu-latest","shard":"warm"}]' || needs.declaration.outputs.test_shards) }}
-    runs-on: ${{ matrix.runner == 'ubuntu-latest' && fromJSON(needs.declaration.outputs.linux_runner) || matrix.runner }}
+        shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.test_shards) }}
+    runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env: &test-env
-      TEST_SHARD_COUNT: ${{ matrix.count || needs.declaration.outputs.test_shard_count }}
+      TEST_SHARD_COUNT: ${{ needs.declaration.outputs.test_shard_count }}
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       WARM_CACHE: ${{ inputs.warm-cache && matrix.shard != 'doctests' }}
       WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
       SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ matrix.shard == 'doctests' && needs.declaration.outputs.doctest_packages || needs.declaration.outputs.packages }}
       TEST_ARCHIVE: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && format('{0}/{1}/test-binaries.tar.zst', github.workspace, inputs.working-directory || '.') || '' }}
-      COLLECT_COVERAGE: ${{ matrix.runner == 'ubuntu-latest' && needs.declaration.outputs.coverage || 'false' }}
+      COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
       COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
       COVERAGE_EXCLUDE: ${{ needs.declaration.outputs.coverage_exclude }}
     defaults: &test-defaults
@@ -1875,23 +1788,23 @@ jobs:
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
-        if: runner.os == 'Linux' && runner.environment == 'github-hosted' && (env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true')
+        if: runner.environment == 'github-hosted' && (env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true')
         run: *free-build-space
       - name: Test toolchain
         run: *test-toolchain
       - name: Compile cache identity
-        if: runner.os != 'Windows' && (inputs.warm-cache || matrix.shard == 'doctests')
+        if: (inputs.warm-cache || matrix.shard == 'doctests')
         id: cache-identity
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
-        if: runner.os != 'Windows' && (inputs.warm-cache || matrix.shard == 'doctests')
+        if: (inputs.warm-cache || matrix.shard == 'doctests')
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-restore
       - name: Compile cache
-        if: runner.os != 'Windows' && (inputs.warm-cache || matrix.shard == 'doctests')
+        if: (inputs.warm-cache || matrix.shard == 'doctests')
         env:
           CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
           CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
@@ -1917,41 +1830,40 @@ jobs:
         if: ${{ !inputs.warm-cache && matrix.shard != 'doctests' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_NAME: *test-archive-name
+          ARTIFACT_NAME: test-archive-${{ inputs.concurrency-key || 'root' }}
           ARTIFACT_PATH: .
         run: *download-artifact
       - name: Download test archive in one stream
         if: ${{ steps.archive-download.outputs.fallback == 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: *test-archive-name
+          name: test-archive-${{ inputs.concurrency-key || 'root' }}
           path: ${{ inputs.working-directory || '.' }}
       - name: Download test setup
         id: setup-download
         if: ${{ matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') }}
         env:
           GH_TOKEN: ${{ github.token }}
-          ARTIFACT_NAME: *test-setup-name
+          ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
           ARTIFACT_PATH: ${{ runner.temp }}/maestro-test-setup
         run: *download-artifact
       - name: Download test setup in one stream
         if: ${{ steps.setup-download.outputs.fallback == 'true' }}
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: *test-setup-name
+          name: test-setup-${{ inputs.concurrency-key || 'root' }}
           path: ${{ runner.temp }}/maestro-test-setup
       - name: Restore test setup
         if: ${{ matrix.shard != 'doctests' && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') }}
         run: |
           mkdir -p target
-          tar -C target -xf - < "$RUNNER_TEMP/maestro-test-setup/test-setup.tar"
+          tar -C target -xf "$RUNNER_TEMP/maestro-test-setup/test-setup.tar"
       - name: Tests
         timeout-minutes: 45
         if: ${{ env.WARM_CACHE != 'true' && needs.declaration.outputs.enabled != 'true' }}
         run: |
           cargo fetch --locked
-          packages=()
-          while IFS= read -r -d '' argument; do packages+=("$argument"); done < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
           build_args=(--locked "${packages[@]}")
@@ -1977,7 +1889,7 @@ jobs:
         if: needs.declaration.outputs.test_tools == 'true'
         run: *caller-tools
       - name: Reserved ports
-        if: runner.os == 'Linux' && runner.environment == 'github-hosted' && needs.declaration.outputs.reserved_ports != ''
+        if: runner.environment == 'github-hosted' && needs.declaration.outputs.reserved_ports != ''
         env:
           RESERVED_PORTS: ${{ needs.declaration.outputs.reserved_ports }}
         run: sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"
@@ -2002,16 +1914,10 @@ jobs:
           if found:
               raise SystemExit('Credential variables present: ' + ', '.join(found))
           PYTHON
-          # Windows programs need mixed-separator paths rather than MSYS paths.
-          native() { if [ "${OS:-}" = Windows_NT ]; then cygpath -m "$1"; else printf '%s\n' "$1"; fi; }
-          mkdir -p "${CARGO_HOME:-$HOME/.cargo}"
           cargo_home=$(cd "${CARGO_HOME:-$HOME/.cargo}" && pwd)
           rustup_home=$(cd "${RUSTUP_HOME:-$HOME/.rustup}" && pwd)
-          cargo_home=$(native "$cargo_home")
-          rustup_home=$(native "$rustup_home")
           diagnostics="$PWD/target/browser-author-diagnostics"
           mkdir -p "$diagnostics"
-          diagnostics=$(native "$diagnostics")
           isolation=$(mktemp -d "$RUNNER_TEMP/maestro-tests.XXXXXX")
           # Tests can leave processes that keep writing here: stop and name them, and keep the test status.
           cleanup_isolation() {
@@ -2023,8 +1929,6 @@ jobs:
           import signal
           import sys
           import time
-          if not os.path.isdir('/proc'):
-              sys.exit(0)
           roots = tuple(path + '/' for path in {sys.argv[1], os.path.realpath(sys.argv[1])})
           def link(path):
               try:
@@ -2077,25 +1981,14 @@ jobs:
           }
           trap cleanup_isolation EXIT
           mkdir "$isolation"/{home,tmp,config,data,cache,state,runtime,config-dirs,data-dirs}
-          isolation=$(native "$isolation")
-          # Preserve Windows system locations, but give profile and application data a fresh home.
-          system=()
-          if [ "${OS:-}" = Windows_NT ]; then
-            for name in SYSTEMROOT WINDIR SYSTEMDRIVE COMSPEC PATHEXT PROGRAMDATA PROGRAMFILES 'PROGRAMFILES(X86)' \
-              PROGRAMW6432 COMMONPROGRAMFILES 'COMMONPROGRAMFILES(X86)' COMMONPROGRAMW6432 NUMBER_OF_PROCESSORS \
-              PROCESSOR_ARCHITECTURE OS; do
-              if value=$(printenv "$name"); then system+=("$name=$value"); fi
-            done
-            system+=(USERPROFILE="$isolation/home" APPDATA="$isolation/config" LOCALAPPDATA="$isolation/data")
-          fi
           run_isolated() {
-          env -i "${system[@]}" PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+          env -i PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
             HOME="$isolation/home" TMPDIR="$isolation/tmp" TMP="$isolation/tmp" TEMP="$isolation/tmp" \
             XDG_CONFIG_HOME="$isolation/config" XDG_DATA_HOME="$isolation/data" \
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
             XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 MAESTRO_TEST_DIAGNOSTICS_DIR="$diagnostics" \
-            TEST_PREPARE_OUTPUT="$(native "$PWD/target/test-setup")" ${TEST_ARCHIVE:+TEST_ARCHIVE=1} \
+            TEST_PREPARE_OUTPUT="$PWD/target/test-setup" ${TEST_ARCHIVE:+TEST_ARCHIVE=1} \
             CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
             SCCACHE_DIR="${SCCACHE_DIR-}" SCCACHE_CACHE_SIZE="${SCCACHE_CACHE_SIZE-}" \
             SCCACHE_LOCAL_RW_MODE="${SCCACHE_LOCAL_RW_MODE-}" SCCACHE_GHA_ENABLED="${SCCACHE_GHA_ENABLED-}" \
@@ -2103,8 +1996,7 @@ jobs:
             "$@"
           }
           cargo fetch --locked
-          packages=()
-          while IFS= read -r -d '' argument; do packages+=("$argument"); done < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${TEST_PACKAGES:-}" = '[]' ] && [ "${WARM_CACHE:-false}" != true ]; then exit 0; fi
           build_args=(--locked "${packages[@]}")
@@ -2113,8 +2005,7 @@ jobs:
           fi
           if [ "${SHARD:-}" != doctests ]; then
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] || [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
-              report_packages=()
-              while IFS= read -r -d '' argument; do report_packages+=("$argument"); done < <(python3 -c 'import json, os; print("".join("--exclude-from-report\0" + name + "\0" for name in json.loads(os.environ.get("COVERAGE_EXCLUDE") or "[]")), end="")')
+              mapfile -d '' -t report_packages < <(python3 -c 'import json, os; print("".join("--exclude-from-report\0" + name + "\0" for name in json.loads(os.environ.get("COVERAGE_EXCLUDE") or "[]")), end="")')
               partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT")
               report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
               if [ "${WARM_CACHE:-false}" = true ]; then
@@ -2157,7 +2048,6 @@ jobs:
           CALLER_REPOSITORY: ${{ inputs.checkout-repository || github.repository }}
           CALLER_DIRECTORY: ${{ inputs.working-directory || '.' }}
           CALL_KEY: ${{ inputs.concurrency-key }}
-          TEST_RUNNER: ${{ matrix.runner }}
         run: |
           python3 - <<'PYTHON'
           import hashlib
@@ -2168,8 +2058,7 @@ jobs:
           import sys
           identity = [os.environ['CALLER_REPOSITORY'], os.environ['CALLER_DIRECTORY'], os.environ['CALL_KEY']]
           digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
-          host = '' if os.environ.get('TEST_RUNNER', 'ubuntu-latest') == 'ubuntu-latest' else '-' + os.environ['TEST_RUNNER']
-          name = f"test-diagnostics{host}-{os.environ['GITHUB_REPOSITORY_ID']}-{digest}-shard-{os.environ['SHARD']}-run-{os.environ['GITHUB_RUN_ID']}-attempt-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          name = f"test-diagnostics-{os.environ['GITHUB_REPOSITORY_ID']}-{digest}-shard-{os.environ['SHARD']}-run-{os.environ['GITHUB_RUN_ID']}-attempt-{os.environ['GITHUB_RUN_ATTEMPT']}"
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'artifact_name={name}\n')
           token = secrets.token_hex(32)
@@ -2218,18 +2107,18 @@ jobs:
           PYTHON
       - name: Compile cache statistics
         id: cache-statistics
-        if: always() && runner.os != 'Windows' && (inputs.warm-cache || matrix.shard == 'doctests')
+        if: always() && (inputs.warm-cache || matrix.shard == 'doctests')
         run: *sccache-stats
       - name: Upload compile cache errors
         if: *sccache-artifact-condition
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: *sccache-artifact
       - name: Seal compile cache
-        if: runner.os != 'Windows' && (inputs.warm-cache || matrix.shard == 'doctests')
+        if: (inputs.warm-cache || matrix.shard == 'doctests')
         id: cache-seal
         run: *sccache-seal
       - name: Save compile cache
-        if: runner.os != 'Windows' && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
+        if: steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-save
@@ -2238,7 +2127,7 @@ jobs:
         env: *sccache-floor-env
         run: *sccache-floor
       - name: Upload shard coverage
-        if: ${{ !inputs.warm-cache && matrix.runner == 'ubuntu-latest' && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}
+        if: ${{ !inputs.warm-cache && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' && matrix.shard != 'doctests' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ inputs.concurrency-key || 'root' }}-${{ matrix.shard }}
@@ -2249,17 +2138,14 @@ jobs:
     permissions:
       contents: read
       actions: read
-    name: ${{ matrix.runner == 'ubuntu-latest' && 'Doctests' || format('Doctests ({0})', matrix.runner) }}
+    name: ${{ matrix.shard == 'doctests' && 'Doctests' }}
     needs: declaration
     if: ${{ (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
-    runs-on: ${{ matrix.runner == 'ubuntu-latest' && fromJSON(needs.declaration.outputs.linux_runner) || matrix.runner }}
+    runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJSON(needs.declaration.outputs.test_runners) }}
         shard: [doctests]
-        # Zero uses the declared shard count in the shared test environment.
-        count: [0]
     env: *test-env
     defaults: *test-defaults
     steps: *test-steps
@@ -2826,7 +2712,7 @@ jobs:
       - name: Toolchain
         run: rustup show
       - name: Compile cache identity
-        if: *sccache-target-host
+        if: &sccache-target-host runner.os != 'Windows'
         id: cache-identity
         env: *sccache-identity-env
         run: *sccache-identity

@@ -1,4 +1,4 @@
-name: Native workspace proof
+name: Archive phase diagnosis
 
 on:
   push:
@@ -9,78 +9,91 @@ permissions:
   contents: read
 
 jobs:
-  maestro:
-    name: Maestro partitioned coverage
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/ci.yml
-    with:
-      working-directory: maestro
-      checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 7689dbbebe2f11d52fa599936f0149491c3bb9d4
-      concurrency-key: maestro-proof
-      test-event: merge_group
-
-  packages:
-    name: Package workspace
-    permissions:
-      contents: read
-      actions: read
-    uses: ./.github/workflows/ci.yml
-    with:
-      working-directory: packages
-      checkout-repository: Orchestration-Maestro/maestro-packages
-      checkout-ref: 1177fc157c2091354ef352395a3e3e9356102dd9
-      concurrency-key: packages-proof
-      test-event: merge_group
-
-  native:
-    name: Native fixture mutation (${{ matrix.runner }})
+  archive:
+    name: Archive timing (${{ matrix.shape }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-latest, windows-latest]
-    runs-on: ${{ matrix.runner }}
+        include:
+          - shape: selected-plain
+            ref: adae6d15e7e70d0bb7662e4474e50cf3fc6e7be9
+            coverage: 'false'
+            scope: selected packages
+          - shape: full-coverage
+            ref: 2705373dfc6043cea4621d54ad5987816b9b5131
+            coverage: 'true'
+            scope: full workspace
+    env:
+      TEST_PACKAGES: '["maestro", "maestro-agent", "maestro-app", "maestro-brand", "maestro-catalog", "maestro-chat", "maestro-cli", "maestro-credentials", "maestro-daemon", "maestro-detection", "maestro-export", "maestro-extensions", "maestro-extensions-wasm", "maestro-extensions-wasmtime", "maestro-markdown", "maestro-models", "maestro-multiplexer", "maestro-packages", "maestro-pattern", "maestro-resources", "maestro-rpc", "maestro-session", "maestro-settings", "maestro-subagents", "maestro-terminal", "maestro-test-conventions", "maestro-test-terminal", "maestro-text", "maestro-theme", "maestro-tooling", "maestro-tools", "maestro-tui", "maestro-tui-crossterm", "maestro-web", "maestro-workspace"]'
+      COVERAGE_SCOPE: ${{ matrix.scope }}
+      COLLECT_COVERAGE: ${{ matrix.coverage }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: maestro
     steps:
-      - name: Checkout
+      - name: Checkout workflow
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Failed and restored native fixture
-        shell: python
+          path: workflow
+      - name: Checkout workspace
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: Orchestration-Maestro/maestro
+          ref: ${{ matrix.ref }}
+          path: maestro
+      - name: Extract workflow steps
+        working-directory: .
+        run: python3 workflow/.github/extract-workflow-steps.py
+      - name: Runner hardware
+        run: bash -e -o pipefail "$PROOF_STEPS/Runner hardware"
+      - name: Free instrumented build space
+        run: bash -e -o pipefail "$PROOF_STEPS/Free instrumented build space"
+      - name: Test toolchain
+        run: bash -e -o pipefail "$PROOF_STEPS/Test toolchain"
+      - name: Compile cache
+        env:
+          CACHE_RESTORE_OUTCOME: skipped
+          CACHE_RESTORE_MATCHED: ''
+        run: bash -e -o pipefail "$PROOF_STEPS/Compile cache"
+      - name: Coverage tools
+        timeout-minutes: 10
+        run: bash -e -o pipefail "$PROOF_STEPS/Coverage tools"
+      - name: Search tools
+        timeout-minutes: 10
+        run: bash -e -o pipefail "$PROOF_STEPS/Search tools"
+      - name: Mise bootstrap
+        timeout-minutes: 10
+        run: bash -e -o pipefail "$PROOF_STEPS/Mise bootstrap"
+      - name: Test tools
+        timeout-minutes: 10
+        run: bash -e -o pipefail "$PROOF_STEPS/Test tools"
+      - name: Seed compile cache
+        timeout-minutes: 45
         run: |
-          import ast
-          import pathlib
-          import sys
-          import textwrap
-          import traceback
-
-          source = pathlib.Path('.github/ci-internal/caller-checks-at-workflow-seam.py')
-          tree = ast.parse(textwrap.dedent(source.read_text(encoding='utf-8')))
-          tree.body = [node for node in tree.body if not isinstance(node, ast.Expr)]
-          namespace = {}
-          exec(compile(tree, 'workflow seam', 'exec'), namespace)
-          fixture = pathlib.Path('fixtures/host-test-rejected/src/lib.rs')
-          original = fixture.read_bytes()
-          host = 'macos' if sys.platform == 'darwin' else 'windows'
-          assert original.count(b'"linux"') == 1
-          try:
-              fixture.write_bytes(original.replace(b'"linux"', f'"{host}"'.encode('utf-8')))
-              print('::group::native_test_failures_are_detected RED', flush=True)
-              try:
-                  namespace['native_test_failures_are_detected']()
-              except AssertionError as error:
-                  assert 'PASS' in str(error), str(error)
-                  traceback.print_exc(file=sys.stdout)
-                  print('PASS mutation sensitivity: accepting this host fails the seam', flush=True)
-              else:
-                  raise AssertionError('Native host acceptance mutation survived')
-          finally:
-              fixture.write_bytes(original)
-              print('::endgroup::', flush=True)
-          assert fixture.read_bytes() == original
-          print('::group::native_test_failures_are_detected GREEN', flush=True)
-          namespace['native_test_failures_are_detected']()
-          print('PASS native_test_failures_are_detected after exact restoration', flush=True)
-          print('::endgroup::', flush=True)
+          bash -e -o pipefail "$PROOF_STEPS/Build test archive"
+          mkdir -p "$RUNNER_TEMP/archive-cold-timings"
+          find target -path '*/cargo-timings/*.html' -exec cp '{}' "$RUNNER_TEMP/archive-cold-timings/" \;
+          sccache --show-stats
+      - name: Remove generated Cargo outputs
+        run: |
+          cargo clean
+          sccache --zero-stats
+      - name: Warm archive timing
+        timeout-minutes: 45
+        run: bash -e -o pipefail "$PROOF_STEPS/Build test archive"
+      - name: Compile cache statistics
+        if: always()
+        run: bash -e -o pipefail "$PROOF_STEPS/Compile cache statistics"
+      - name: Upload archive timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: archive-timings-${{ matrix.shape }}
+          path: |
+            maestro/target/**/cargo-timings/*.html
+            ${{ runner.temp }}/archive-cold-timings/*.html
+          if-no-files-found: error
