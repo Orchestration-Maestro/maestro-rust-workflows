@@ -1,4 +1,5 @@
 import ast
+import itertools
 import json
 import os
 import pathlib
@@ -13,12 +14,38 @@ root = pathlib.Path.cwd()
 default_ref = "format('refs/heads/{0}', github.event.repository.default_branch)"
 
 def evaluate(condition, values):
+    values = {'inputs.browser-only': False} | values
     expression = condition.removeprefix('$' + '{{').removesuffix('}}').strip()
     for key, value in values.items():
         expression = expression.replace(key, repr(value))
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     expression = re.sub(r'!(?!=)', ' not ', expression).strip()
     return eval(expression, {'__builtins__': {}})
+
+def routed_jobs(document, values):
+    # Every gate is open except the two scans; values set the inputs a case proves.
+    gates = {
+        'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'inputs.warm-cache': False,
+        'github.event_name': 'push', 'github.ref': 'refs/heads/main', default_ref: 'refs/heads/main',
+        'github.repository_id': 'caller', 'inputs.working-directory': '.',
+        'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.tests_reused': 'false',
+        'needs.declaration.outputs.targets': '[{}]', 'needs.declaration.outputs.fuzz_targets': '["target"]',
+        'needs.declaration.outputs.wasm_crates': '["web"]',
+        'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.browser_tests': 'true',
+        # Longer names first: evaluate substitutes by prefix.
+        'needs.declaration.outputs.test_prepare_inputs': '[]',
+        'needs.declaration.outputs.test_prepare': json.dumps('echo ready'),
+        'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
+        'always()': True, 'cancelled()': False, 'success()': True, 'failure()': False}
+    routed = set()
+    for name, job in document['jobs'].items():
+        condition = job['if'].removeprefix('$' + '{{').removesuffix('}}')
+        # GitHub adds success() to a job condition that calls no status function.
+        if not re.search(r'\b(?:always|success|failure|cancelled)\(\)', condition):
+            condition = 'success() && (' + condition + ')'
+        if evaluate(condition, gates | values):
+            routed.add(name)
+    return routed
 
 def body(name, source=workflow):
     import json
@@ -165,6 +192,8 @@ def execute(name, cwd, extra=None):
     env = {k: v for k, v in os.environ.items()
            if k not in credential_names and not k.endswith('_API_KEY')}
     env['TEST_SHARD_COUNT'] = '16'
+    # The declaration's output without test_prepare_setups.
+    env['TEST_PREPARE_CONSUMERS'] = 'null'
     env.update(extra or {})
     if name == 'Select test packages':
         env.setdefault('TEST_HOSTS', json.dumps({'ubuntu-latest': int(env['TEST_SHARD_COUNT'])}))
@@ -378,9 +407,15 @@ print('PASS browser_test_declaration_checks_exact_packages')
 def browser_test_job_is_single_and_optional():
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     job = jobs['browser-tests']
-    assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true' }}" in job
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    assert 'browser-tests' in routed_jobs(document, {})
+    for closed in ({'needs.declaration.outputs.browser_tests': 'false'}, {'needs.declaration.outputs.coverage': 'false'},
+                   {'inputs.advisory-scan': True}, {'inputs.fuzz-scan': True},
+                   {'inputs.warm-cache': True, 'github.event_name': 'pull_request'},
+                   {'inputs.warm-cache': True, 'github.ref': 'refs/heads/feature'}):
+        assert 'browser-tests' not in routed_jobs(document, closed), closed
     assert 'runs-on: $' + '{{ fromJSON(needs.declaration.outputs.linux_runner) }}' in job and 'matrix:' not in job
-    assert body('Browser test recipe').strip() == 'just browser-test'
+    assert body('Browser test recipe').strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"')
     assert 'mise exec' not in body('Browser test recipe')
     assert 'if:' not in job.split('- name: Browser test caller tools', 1)[1].split('- name:', 1)[0]
     assert job.index('run: *caller-tools') < job.index('name: Browser runtime tools') < job.index('name: Browser test recipe')
@@ -388,6 +423,128 @@ def browser_test_job_is_single_and_optional():
 
 browser_test_job_is_single_and_optional()
 print('PASS browser_test_job_is_single_and_optional')
+
+def manual_browser_proof_selects_only_existing_chromium_job():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    inputs = document['on']['workflow_call']['inputs']
+    assert inputs['browser-only']['type'] == 'boolean' and inputs['browser-only']['default'] is False
+    values = {
+        'inputs.browser-only': True, 'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
+        'inputs.warm-cache': False, 'inputs.working-directory': '.',
+        'github.repository_id': 'caller', 'github.event_name': 'workflow_dispatch',
+        'github.ref': 'refs/heads/main',
+        "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
+        'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.browser_tests': 'true',
+        'always()': True, 'cancelled()': False,
+    }
+    for name, job in document['jobs'].items():
+        condition = job['if']
+        assert evaluate(condition, values) == (name in ('declaration', 'browser-tests')), name
+    for name in ('declaration', 'browser-tests'):
+        job = document['jobs'][name]
+        checkout = next(step for step in job['steps'] if step['name'] == 'Checkout')
+        assert checkout['with']['ref'] == '${{ inputs.checkout-ref || github.sha }}'
+        assert checkout['with']['persist-credentials'] is False
+        assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
+    job = document['jobs']['browser-tests']
+    assert 'matrix' not in job.get('strategy', {})
+    assert job['runs-on'] == '${{ fromJSON(needs.declaration.outputs.linux_runner) }}'
+    for event, coverage, declared, warm, expected in [
+        ('workflow_dispatch', 'true', 'true', False, True),
+        ('workflow_dispatch', 'true', 'false', False, False),
+        ('pull_request', 'false', 'true', False, False),
+        ('merge_group', 'true', 'true', False, True),
+        ('push', 'true', 'true', False, True),
+        ('workflow_dispatch', 'true', 'true', True, False),
+    ]:
+        scenario = values | {'github.event_name': event, 'inputs.browser-only': False,
+                             'inputs.warm-cache': warm, 'needs.declaration.outputs.coverage': coverage,
+                             'needs.declaration.outputs.browser_tests': declared}
+        assert evaluate(job['if'], scenario) == expected, scenario
+    print('PASS manual_browser_proof_selects_only_existing_chromium_job', flush=True)
+
+
+manual_browser_proof_selects_only_existing_chromium_job()
+
+def browser_only_rejects_requests_that_cannot_run_tests():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['declaration']['steps']
+    validation = next(step for step in steps if step['name'] == 'Validate browser-only request')
+    assert steps.index(validation) > next(i for i, step in enumerate(steps) if step.get('id') == 'selection')
+    assert evaluate(validation['if'], {'inputs.browser-only': True})
+    assert not evaluate(validation['if'], {'inputs.browser-only': False})
+    values = {'steps.selection.outputs.coverage': 'true', 'steps.selection.outputs.browser_tests': 'true',
+              'inputs.warm-cache': False, 'inputs.advisory-scan': False, 'inputs.fuzz-scan': False}
+    scenarios = [({}, True), ({'steps.selection.outputs.browser_tests': 'false'}, False),
+                 ({'steps.selection.outputs.browser_tests': ''}, False),
+                 ({'steps.selection.outputs.coverage': 'false'}, False)]
+    scenarios += [({mode: True}, False) for mode in ('inputs.warm-cache', 'inputs.advisory-scan', 'inputs.fuzz-scan')]
+    with tempfile.TemporaryDirectory() as temporary:
+        for overrides, expected in scenarios:
+            permitted = evaluate(validation['env']['CAN_RUN_BROWSER'], values | overrides)
+            result = execute('Validate browser-only request', temporary, {'CAN_RUN_BROWSER': str(permitted).lower()})
+            assert (result.returncode == 0) == expected, (overrides, result.stdout, result.stderr)
+            if not expected:
+                assert 'browser-only requires selected browser tests' in result.stderr
+    print('PASS browser_only_rejects_requests_that_cannot_run_tests', flush=True)
+
+
+browser_only_rejects_requests_that_cannot_run_tests()
+
+
+def browser_proof_recipe_preserves_failures_and_log():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        bin_dir = directory / 'bin'
+        bin_dir.mkdir()
+        just = bin_dir / 'just'
+        just.write_text('#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = browser-test ] || exit 23\nprintf "stdout evidence\\n"\nprintf "stderr evidence\\n" >&2\nexit "$RECIPE_STATUS"\n', encoding='utf-8')
+        just.chmod(0o755)
+        config = directory / '.config/nextest.toml'
+        original = '[profile.default]\nfail-fast = true\nslow-timeout = "30s"\n'
+        config.parent.mkdir()
+        config.write_text(original, encoding='utf-8')
+        for status in ['0', '17']:
+            result = execute('Browser test recipe', directory, {
+                'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
+                'RECIPE_STATUS': status})
+            assert result.returncode == int(status), result.stdout + result.stderr
+            log = directory / 'browser-test.log'
+            assert log.read_text(encoding='utf-8') == 'stdout evidence\nstderr evidence\n'
+            assert config.read_text(encoding='utf-8') == original
+    job = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))['jobs']['browser-tests']
+    upload = next(step for step in job['steps'] if step['name'] == 'Upload browser test log')
+    assert upload['if'] == "always() && (steps.browser-recipe.outcome == 'success' || steps.browser-recipe.outcome == 'failure')"
+    assert upload['with']['name'] == "browser-test-${{ inputs.concurrency-key || 'root' }}-${{ github.run_attempt }}"
+    assert upload['with']['path'] == '${{ runner.temp }}/browser-test.log'
+    assert upload['with']['if-no-files-found'] == 'error'
+    print('PASS browser_proof_recipe_preserves_failures_and_log', flush=True)
+
+
+browser_proof_recipe_preserves_failures_and_log()
+
+
+def browser_proof_dispatch_example_reuses_workflow():
+    guide = (root / 'docs/caller-checks.md').read_text(encoding='utf-8')
+    example = 'name: Browser proof\n' + guide.split('name: Browser proof\n', 1)[1].split('```', 1)[0]
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=example, text=True))
+    assert set(document['on']) == {'workflow_dispatch'}
+    ref = document['on']['workflow_dispatch']['inputs']['ref']
+    assert ref['required'] is True and ref['type'] == 'string'
+    assert document['permissions'] == {'contents': 'read'}
+    assert set(document['jobs']) == {'browser'}
+    job = document['jobs']['browser']
+    assert job['uses'] == 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@RELEASE_COMMIT'
+    assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
+    assert job['with'] == {'browser-only': True, 'checkout-ref': '${{ inputs.ref }}', 'concurrency-key': 'browser-proof'}
+    reusable = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    assert set(job['with']) <= set(reusable['on']['workflow_call']['inputs'])
+    assert 'secrets' not in job and 'steps' not in job
+    print('PASS browser_proof_dispatch_example_reuses_workflow', flush=True)
+
+
+browser_proof_dispatch_example_reuses_workflow()
+
 
 def browser_qualification_reuses_production_bodies():
     source = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
@@ -457,6 +614,10 @@ print('PASS test_prepare_command_is_validated_and_forwarded')
 
 def archived_shards_reuse_build_and_prepared_outputs():
     import shutil
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    upload = next(step for step in document['jobs']['test-build']['steps']
+                  if step.get('name') == 'Upload archive build timings')
+    timing_glob = upload['with']['path'].replace('$' + "{{ inputs.working-directory || '.' }}", '.')
     for coverage, route in [('false', 'Tests'), ('true', 'Isolated tests')]:
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary) / 'caller'
@@ -486,6 +647,7 @@ def archived_shards_reuse_build_and_prepared_outputs():
             result = execute('Build test archive', directory, env)
             assert result.returncode == 0, result.stdout + result.stderr
             assert (result.stdout + result.stderr).count('Compiling sample ') == 1, result.stdout + result.stderr
+            assert list(directory.glob(timing_glob)), f'No uploaded Cargo timings for coverage={coverage}: {timing_glob}'
             assert (directory / 'test-binaries.tar.zst').is_file()
             assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
             shutil.rmtree(directory / 'target')
@@ -794,9 +956,9 @@ def doctests_run_independently_and_remain_required():
         for docs in ['success', 'failure', 'cancelled', 'skipped']:
             result = subprocess.run(['python3', '-c', body('All test shards passed')],
                                     env=os.environ | {'RESULT': tests, 'DOCTEST_RESULT': docs,
-                                    'COLLECT_COVERAGE': coverage, 'DECLARATION_RESULT': 'success', 'SELECTED_TESTS': 'false'},
+                                    'COLLECT_COVERAGE': coverage, 'DECLARATION_RESULT': 'success'},
                                     capture_output=True, text=True)
-            assert (result.returncode == 0) == (docs == 'success'), (coverage, docs, result.stderr)
+            assert (result.returncode == 0) == (docs == tests), (coverage, docs, result.stderr)
 
 doctests_run_independently_and_remain_required()
 print('PASS doctests_run_independently_and_remain_required')
@@ -807,7 +969,8 @@ def preparation_runs_beside_host_compilation():
     assert jobs['test-build']['needs'] == jobs['test-prepare']['needs'] == 'declaration'
     assert set(jobs['tests']['needs']) == {'declaration', 'test-build', 'test-prepare'}
     assert 'TEST_PREPARE' not in jobs['test-build']['env']
-    assert 'needs.declaration.outputs.test_prepare' in jobs['test-prepare']['if']
+    assert 'test-prepare' in routed_jobs(document, {})
+    assert 'test-prepare' not in routed_jobs(document, {'needs.declaration.outputs.test_prepare': json.dumps('')})
     assert 'TEST_PREPARE_OUTPUT' in body('Prepare test setup')
     assert 'target/test-setup' in body('Prepare test setup')
     assert 'tar -C target' in body('Restore test setup')
@@ -825,7 +988,7 @@ print('PASS preparation_runs_beside_host_compilation')
 def absent_keeps_base_checks():
     result, values = declaration(root / 'fixtures/sample')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert values == {'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}', 'test_runners': '["ubuntu-latest"]'}
+    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}'}
     assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
     assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
     assert "inputs.working-directory != '.'" in workflow
@@ -961,6 +1124,30 @@ def clippy_selection_works_without_mapfile():
 clippy_selection_works_without_mapfile()
 print('PASS clippy_selection_works_without_mapfile')
 
+def archive_build_publishes_cargo_timings():
+    for coverage, command in [('false', ['nextest', 'archive']), ('true', ['llvm-cov', 'nextest-archive'])]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            tools, log = install_recording_runner(directory)
+            result = execute('Build test archive', directory, {
+                'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                'COLLECT_COVERAGE': coverage, 'TEST_PACKAGES': '["sample"]'})
+            assert result.returncode == 0, result.stdout + result.stderr
+            args = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])['args']
+            assert args[:2] == command and args.count('--timings') == 1, args
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['test-build']['steps']
+    upload = next(step for step in steps if step.get('name') == 'Upload archive build timings')
+    assert upload['uses'] == 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
+    assert upload['with']['name'] == 'test-build-timings-$' + "{{ inputs.concurrency-key || 'root' }}"
+    assert upload['with']['path'].startswith('$' + "{{ inputs.working-directory || '.' }}/")
+    assert upload['with']['if-no-files-found'] == 'error'
+    assert steps.index(upload) > next(index for index, step in enumerate(steps)
+                                      if step.get('name') == 'Build test archive')
+
+archive_build_publishes_cargo_timings()
+print('PASS archive_build_publishes_cargo_timings')
+
 def selected_archive_build_compiles_only_selected_packages():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
@@ -1009,6 +1196,7 @@ def undeclared_coverage_measures_the_full_workspace():
         commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
         args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
         assert '--workspace' in args and '-p' not in args and '--exclude-from-report' not in args, args
+        assert args[args.index('--partition') + 1] == 'slice:1/1', args
     step = workflow.split('      - name: Coverage\n', 1)[1].split('      - name: ', 1)[0]
     for name in ['TEST_PACKAGES', 'COVERAGE_EXCLUDE', 'COVERAGE_SCOPE']:
         assert name not in step, name + ' reaches the undeclared coverage step'
@@ -1134,7 +1322,7 @@ def warm_filter_failures_keep_job_red():
                 assert 'failed to parse filterset' in output, output
             elif status == 100:
                 assert 'intentional warm failure' in output and 'assertion `left == right` failed' in output, output
-                assert 'TRY 3 FAIL' in output, output
+                assert 'FAIL' in output and 'TRY 2' not in output, output
             else:
                 assert '0 tests run' in output, output
             assert not (directory / 'child-built').exists() and not (directory / 'unrelated-ran').exists()
@@ -1165,7 +1353,6 @@ def warm_push_seeds_non_test_shapes():
                             'inputs.fuzz-scan': excluded == 'fuzz',
                             'github.repository_id': 'caller', 'inputs.working-directory': '.',
                             'needs.declaration.outputs.coverage': 'true',
-                            'needs.declaration.outputs.selected_tests': 'true',
                             'needs.declaration.outputs.wasm_crates': '["web"]',
                             'needs.declaration.outputs.browser_build': 'true',
                             'needs.declaration.outputs.browser_tests': 'true'})
@@ -1191,7 +1378,7 @@ def warm_push_seeds_non_test_shapes():
             'Free instrumented build space': True, 'Tests': False, 'Search tools': True, 'Isolated tests': True}, enabled
     assert doctests['steps'] == document['jobs']['tests']['steps']
     assert doctests['env']['SHARD'] == document['jobs']['tests']['env']['SHARD']
-    assert next(step for step in document['jobs']['browser-tests']['steps'] if step.get('name') == 'Browser test recipe')['run'].strip() == 'just browser-test'
+    assert next(step for step in document['jobs']['browser-tests']['steps'] if step.get('name') == 'Browser test recipe')['run'].strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"')
 
 warm_push_seeds_non_test_shapes()
 print('PASS warm_push_seeds_non_test_shapes')
@@ -1215,9 +1402,12 @@ def warm_cache_keeps_one_writer():
     assert "warm-cache:\n        description:" in workflow
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                            workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-    for name, job in jobs.items():
-        if name not in ('declaration', 'tests', 'targets', 'quality', 'docs', 'browser', 'browser-tests', 'doctests'):
-            assert '!inputs.warm-cache' in re.search(r'^    if: (.*)', job, re.MULTILINE)[1], name
+    # Warm calls run only the declaration and the shapes they seed, whatever the event or scan.
+    seeding = {'declaration', 'tests', 'targets', 'quality', 'docs', 'browser', 'browser-tests', 'doctests'}
+    for event in ('push', 'pull_request', 'merge_group', 'workflow_dispatch'):
+        for scan in ({}, {'inputs.advisory-scan': True}, {'inputs.fuzz-scan': True}):
+            routed = routed_jobs(document, {'inputs.warm-cache': True, 'github.event_name': event} | scan)
+            assert routed <= seeding, (event, scan, sorted(routed))
     condition = document['jobs']['targets']['if']
     for warm in (False, True):
         for event in ('push', 'pull_request', 'merge_group', 'workflow_dispatch'):
@@ -1312,7 +1502,7 @@ def warm_cache_builds_without_tests_or_reports():
             assert commands[1]['tool'] == 'cargo-llvm-cov'
             assert commands[1]['args'] == [
                 'llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
-                '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
+                '--retries', '0', '--final-status-level', 'flaky',
                 '-E', 'none()', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--no-report']
             assert commands[1]['home'] != os.environ.get('HOME')
             assert not list(directory.glob('*.lcov'))
@@ -1358,8 +1548,7 @@ def coverage_matrix_splits_doctests_from_partitions():
                 assert result.returncode == 0, result.stderr
                 selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                 legs = json.loads(selected['test_shards'])
-                count = 1 if event == 'pull_request' else 16
-                assert legs == [{'runner': 'ubuntu-latest', 'shard': shard, 'count': count} for shard in range(1, count + 1)]
+                assert legs == [{'runner': 'ubuntu-latest', 'shard': shard, 'count': 16} for shard in range(1, 17)], (event, selected)
 
 coverage_matrix_splits_doctests_from_partitions()
 print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -1430,7 +1619,7 @@ def diagnostic_directory_reaches_isolated_runner():
                         assert children[0]['args'] == ['test', '--locked', '--doc', '--workspace']
                     else:
                         assert children[0]['tool'] == ('cargo-llvm-cov' if coverage == 'true' else 'cargo-nextest')
-                        assert children[0]['args'][children[0]['args'].index('--partition') + 1] == f'count:{shard}/16'
+                        assert children[0]['args'][children[0]['args'].index('--partition') + 1] == f'slice:{shard}/16'
                         if shard == '1' and coverage == 'false':
                             assert children[1]['args'] == ['test', '--locked', '--doc', '--workspace']
                     assert (pathlib.Path(expected) / 'runner.txt').read_text(encoding='utf-8') == 'child marker'
@@ -1579,15 +1768,14 @@ def diagnostic_upload_is_unconditional_and_scoped():
     assert 'timeout-minutes: 45\n' in steps['Isolated tests']
     assert "if: $" + "{{ env.WARM_CACHE != 'true' && needs.declaration.outputs.enabled != 'true' }}\n" in steps['Tests']
     for coverage in ['false', 'true']:
-        for included in ['false', 'true']:
-            for status in ['success', 'failure', 'cancelled', 'skipped']:
-                for docs in ['success', 'failure', 'cancelled', 'skipped']:
-                    result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                            env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': docs, 'COLLECT_COVERAGE': coverage,
-                                                              'SELECTED_TESTS': included, 'DECLARATION_RESULT': 'success'},
-                                            capture_output=True, text=True)
-                    expected = 'success' if 'true' in (coverage, included) else 'skipped'
-                    assert (result.returncode == 0) == (status == expected and docs == 'success'), (coverage, included, status, docs, result.stderr)
+        for status in ['success', 'failure', 'cancelled', 'skipped']:
+            for docs in ['success', 'failure', 'cancelled', 'skipped']:
+                result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': docs, 'COLLECT_COVERAGE': coverage,
+                                                          'DECLARATION_RESULT': 'success'},
+                                        capture_output=True, text=True)
+                expected = 'success' if coverage == 'true' else 'skipped'
+                assert (result.returncode == 0) == (status == expected and docs == expected), (coverage, status, docs, result.stderr)
 
 diagnostic_upload_is_unconditional_and_scoped()
 print('PASS diagnostic_upload_is_unconditional_and_scoped')
@@ -1648,7 +1836,7 @@ def shard_runner_status_survives_log_capture():
                     runners = [command for command in commands if '--partition' in command['args']]
                     assert len(runners) == 1
                     args = runners[0]['args']
-                    assert args[args.index('--partition') + 1] == f'count:{shard}/16'
+                    assert args[args.index('--partition') + 1] == f'slice:{shard}/16'
                     doctests = [command for command in commands if command['args'][:1] == ['test']]
                     assert bool(doctests) == (shard == 1 and status == 0 and coverage == 'false'), commands
                     report = directory / f'shard-{shard}.lcov'
@@ -1866,11 +2054,41 @@ def fuzz_schema_matches_contract():
 fuzz_schema_matches_contract()
 print('PASS fuzz_schema_matches_contract')
 
+def scheduled_scans_follow_released_workflow():
+    references = set()
+    for filename, mode in [('advisories.yml', 'advisory-scan'), ('fuzz.yml', 'fuzz-scan')]:
+        document = json.loads(subprocess.check_output(
+            ['yq', '-o=json', str(root / '.github/workflows' / filename)], text=True))
+        if filename == 'advisories.yml':
+            assert document['on']['pull_request']['paths'] == ['.github/workflows/advisories.yml'], document['on']
+        else:
+            assert 'pull_request' not in document['on'], document['on']
+        scan = document['jobs']['scan']
+        reference = scan['uses']
+        assert re.fullmatch(r'Orchestration-Maestro/maestro-rust-workflows/\.github/workflows/ci\.yml@[0-9a-f]{40}', reference), reference
+        references.add(reference)
+        assert scan['with']['checkout-repository'] == 'Orchestration-Maestro/maestro', scan
+        assert scan['with']['checkout-ref'] == 'main' and scan['with'][mode] is True, scan
+        assert scan['permissions'] == {'contents': 'read', 'actions': 'read'}, scan
+    assert len(references) == 1, references
+
+scheduled_scans_follow_released_workflow()
+print('PASS scheduled_scans_follow_released_workflow')
+
 def fuzz_scan_runs_only_declaration_and_fuzz():
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     job = jobs['fuzz']
-    assert "    if: $" + "{{ !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}\n" in job
-    assert 'fuzz-scan' not in jobs['declaration'] and 'fuzz-scan' not in jobs['advisories']
+    condition = re.search(r'^    if: (.+)$', job, re.MULTILINE)
+    assert condition is not None, 'Missing fuzz job condition'
+    for browser_only, warm_cache, fuzz_scan, has_targets in itertools.product([False, True], repeat=4):
+        values = {'inputs.browser-only': browser_only, 'inputs.warm-cache': warm_cache,
+                  'inputs.fuzz-scan': fuzz_scan,
+                  'needs.declaration.outputs.fuzz_targets': '["target"]' if has_targets else '[]'}
+        expected = not browser_only and not warm_cache and fuzz_scan and has_targets
+        assert evaluate(condition[1], values) == expected, values
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    routed = routed_jobs(document, {'inputs.fuzz-scan': True})
+    assert routed == {'declaration', 'fuzz'}, sorted(routed)
     assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: nightly-2026-09-15\n' in job
     assert workflow.count('nightly-') == 1 and workflow.count('/cargo-fuzz/') == 1
     assert '        env:\n          FUZZ_SCAN: true\n        run: *check-tools\n' in job
@@ -2078,19 +2296,19 @@ def locked_manifests_precede_all_test_routes():
                 expected = ['test', '--locked', '--doc', '-p', 'sample']
             elif threshold:
                 expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
-                            '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                            '--partition', 'count:1/1', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
+                            '--retries', '0', '--final-status-level', 'flaky',
+                            '--partition', 'slice:1/1', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
             elif route == 'Isolated tests' and coverage == 'true':
                 expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
-                            '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                            '--partition', f'count:{shard}/16', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
+                            '--retries', '0', '--final-status-level', 'flaky',
+                            '--partition', f'slice:{shard}/16', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
             else:
                 expected = ['nextest', 'run', '--user-config-file', 'none', '--ignore-default-filter', '--locked',
-                            '-p', 'sample', '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky']
+                            '-p', 'sample', '--retries', '0', '--final-status-level', 'flaky']
                 if route == 'Tests':
-                    expected += ['--partition', f'count:{shard}/16', '--no-tests', 'pass']
+                    expected += ['--partition', f'slice:{shard}/16', '--no-tests', 'pass']
                 else:
-                    expected += ['--no-tests', 'pass', '--partition', f'count:{shard}/16']
+                    expected += ['--no-tests', 'pass', '--partition', f'slice:{shard}/16']
             assert runners[0]['args'] == expected, runners[0]['args']
             assert [c['args'] for c in runners[1:]] == ([['test', '--locked', '--doc', '-p', 'sample']] if shard == 1 and not threshold and coverage == 'false' else [])
             print(f'PASS provisioning route {index}: {route}, shard {shard}, coverage {coverage}, threshold {threshold}', flush=True)
@@ -2413,7 +2631,7 @@ print('PASS test_tools_follow_only_caller_pins')
 
 def event_policy_keeps_pull_requests_fast():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-    slow = {'test-build', 'test-prepare', 'tests', 'browser-tests'}
+    slow = {'test-build', 'test-prepare', 'tests', 'doctests', 'browser', 'browser-tests'}
     for event in ['pull_request', 'merge_group', 'push']:
         for warm, advisory, fuzz in [(False, False, False), (True, False, False),
                                       (False, True, False), (False, False, True)]:
@@ -2423,7 +2641,7 @@ def event_policy_keeps_pull_requests_fast():
                     'TEST_EVENT': 'push' if warm else event, 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
                 assert result.returncode == 0, result.stderr
                 values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-            for name in slow | {'targets', 'quality', 'docs', 'checks', 'doctests', 'browser'}:
+            for name in slow | {'targets', 'quality', 'docs', 'checks'}:
                 context = {'cancelled()': False, 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                            'needs.declaration.outputs.test_prepare_inputs': '[]',
                            'needs.declaration.outputs.test_prepare': json.dumps('echo ready'), 'inputs.warm-cache': warm, 'inputs.advisory-scan': advisory,
@@ -2431,16 +2649,16 @@ def event_policy_keeps_pull_requests_fast():
                            default_ref: 'refs/heads/main', 'github.ref': 'refs/heads/main',
                            'github.repository_id': 'caller', 'inputs.working-directory': '.',
                            'needs.declaration.outputs.coverage': values['coverage'],
-                           'needs.declaration.outputs.selected_tests': values['selected_tests'],
+                           'needs.declaration.outputs.tests_reused': 'false',
                            'needs.declaration.outputs.targets': '[{}]',
                            'needs.declaration.outputs.wasm_crates': '["sample"]',
                            'needs.declaration.outputs.browser_build': 'true',
                            'needs.declaration.outputs.browser_tests': 'true'}
                 expected = not advisory and not fuzz
                 if name in slow:
-                    expected &= name != 'browser-tests' or event != 'pull_request' or warm
+                    expected &= event != 'pull_request' or warm
                     expected &= not warm or name == 'tests' or (event == 'push' and name in ('doctests', 'browser', 'browser-tests'))
-                elif name in ('targets', 'doctests', 'browser'):
+                elif name == 'targets':
                     expected &= not warm or event == 'push'
                 else:
                     expected &= not warm or (event == 'push' and name in ('quality', 'docs'))
@@ -2450,13 +2668,13 @@ def event_policy_keeps_pull_requests_fast():
 event_policy_keeps_pull_requests_fast()
 print('PASS event_policy_keeps_pull_requests_fast')
 
-def windows_checks_run_on_every_pull_request_push():
+def native_checks_run_on_every_pull_request_push():
     import shutil
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     declaration_steps = document['jobs']['declaration']['steps']
     config = next(step for step in declaration_steps if step.get('id') == 'config')
     selection = next(step for step in declaration_steps if step.get('id') == 'selection')
-    assert document['jobs']['targets']['needs'] == 'declaration', 'Windows must not wait for other PR jobs'
+    assert document['jobs']['targets']['needs'] == 'declaration', 'Native checks must not wait for other PR jobs'
     declared = [
         {'target': 'aarch64-unknown-linux-gnu', 'runner': 'ubuntu-24.04-arm'},
         {'target': 'aarch64-apple-darwin', 'runner': 'macos-latest'},
@@ -2469,8 +2687,10 @@ def windows_checks_run_on_every_pull_request_push():
         (directory / '.github').mkdir()
         path = directory / '.github/ci.toml'
         for event in ['pull_request', 'merge_group', 'push']:
-            for targets, pr_targets in [([], []), (declared, [declared[-1]]),
-                                        (declared[:-1], []), (declared[-1:], [declared[-1]])]:
+            for targets, pr_targets in [([], []), (declared, declared[1:]),
+                                        (declared[:1], []), (declared[1:3], declared[1:3]),
+                                        (declared[1:2] * 2, declared[1:2] * 2),
+                                        (declared[-1:], [declared[-1]])]:
                 path.write_text('wasm_crates=[]\ncheck_targets=' + json.dumps([target['target'] for target in targets]), encoding='utf-8')
                 output = directory / 'output'
                 output.write_text('', encoding='utf-8')
@@ -2484,8 +2704,8 @@ def windows_checks_run_on_every_pull_request_push():
         assert result.returncode != 0 and 'unknown target' in result.stderr, result.stderr
     assert config['env']['TEST_EVENT'] == selection['env']['TEST_EVENT']
 
-windows_checks_run_on_every_pull_request_push()
-print('PASS windows_checks_run_on_every_pull_request_push')
+native_checks_run_on_every_pull_request_push()
+print('PASS native_checks_run_on_every_pull_request_push')
 
 def removed_shard_lists_fail_clearly():
     import shutil
@@ -2499,18 +2719,21 @@ def removed_shard_lists_fail_clearly():
         assert result.returncode != 0 and not values and 'test_shards was removed' in result.stderr, result.stdout + result.stderr
     aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
     assert 'name: Tests (ubuntu-latest)' in aggregate
-    assert 'needs: [tests, doctests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
-    for coverage, selected, required in [('false', 'false', 'skipped'), ('false', 'true', 'success'),
-                                         ('true', 'false', 'success'), ('true', 'true', 'success'),
-                                         ('', 'false', None), ('', 'true', None)]:
+    assert 'needs: [tests, doctests, declaration]' in aggregate
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    # Failed shards still reach the aggregate, which then fails the run.
+    assert 'tests-result' in routed_jobs(document, {'success()': False, 'failure()': True})
+    # An implicit success() covers the whole condition, not only its first operand.
+    assert 'declaration' not in routed_jobs(document, {'success()': False, 'inputs.working-directory': 'sub'})
+    for coverage, required in [('false', 'skipped'), ('true', 'success'), ('', None)]:
         for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
             for status in ['success', 'failure', 'cancelled', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'success', 'COLLECT_COVERAGE': coverage,
-                                                          'SELECTED_TESTS': selected, 'DECLARATION_RESULT': declaration_status},
+                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': required or 'skipped', 'COLLECT_COVERAGE': coverage,
+                                                          'DECLARATION_RESULT': declaration_status},
                                         capture_output=True, text=True)
                 expected = declaration_status == 'success' and required is not None and status == required
-                assert (result.returncode == 0) == expected, f'{coverage} {selected} {declaration_status} {status}\n' + result.stdout + result.stderr
+                assert (result.returncode == 0) == expected, f'{coverage} {declaration_status} {status}\n' + result.stdout + result.stderr
 
 removed_shard_lists_fail_clearly()
 print('PASS removed_shard_lists_fail_clearly')
@@ -2731,7 +2954,10 @@ def merge_groups_run_full_suite():
         (directory / '.github').mkdir()
         (directory / '.github/ci.toml').write_text(
             'wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=["b"]\n'
-            'test_prepare="prepare"\ntest_prepare_packages=["b"]\n', encoding='utf-8')
+            'test_prepare="prepare"\ntest_prepare_setups=["prepared"]\n', encoding='utf-8')
+        (directory / '.config').mkdir()
+        (directory / '.config/nextest.toml').write_text(
+            '[[profile.default.scripts]]\nfilter="package(b)"\nsetup="prepared"\n', encoding='utf-8')
         names = ['a', 'b', 'c', 'build', 'dev', 'target', 'unrelated']
         (directory / 'Cargo.toml').write_text(
             '[workspace]\nresolver="3"\nmembers=' + json.dumps(names) + '\n', encoding='utf-8')
@@ -2753,11 +2979,14 @@ def merge_groups_run_full_suite():
         git('add', '.')
         git('commit', '-qm', 'base')
         base = git('rev-parse', 'HEAD')
+        result, declared = declaration(directory)
+        assert result.returncode == 0 and declared['test_prepare_consumers'] == '["b"]', result.stderr
         def select(base_ref=base, event='merge_group'):
             output = directory / '.git/selection'
             output.write_text('', encoding='utf-8')
             result = select_packages(directory, {
-                'TEST_EVENT': event, 'BASE_REF': base_ref, 'GITHUB_OUTPUT': str(output)})
+                'TEST_EVENT': event, 'BASE_REF': base_ref, 'GITHUB_OUTPUT': str(output),
+                'TEST_PREPARE_CONSUMERS': declared['test_prepare_consumers']})
             assert result.returncode == 0, result.stdout + result.stderr
             values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
             assert values['coverage'] == 'true'
@@ -2833,10 +3062,10 @@ def changed_packages_include_reverse_dependencies():
         git('add', '.')
         git('commit', '-qm', 'base')
         base = git('rev-parse', 'HEAD')
-        def select(event='pull_request'):
+        def select(event='pull_request', extra=None):
             output = directory / '.git/selection'
             output.write_text('', encoding='utf-8')
-            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)})
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)} | (extra or {}))
             assert result.returncode == 0, result.stdout + result.stderr
             return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
         declaration_path = directory / '.github/ci.toml'
@@ -2869,34 +3098,16 @@ def changed_packages_include_reverse_dependencies():
         git('commit', '-qm', 'source')
         values = select()
         assert json.loads(values['packages']) == ['a', 'b', 'c'] and values['coverage'] == 'false'
-        assert values['selected_tests'] == 'true', values
-        assert json.loads(values['test_shards']) == [{'runner': 'ubuntu-latest', 'shard': 1, 'count': 1}], values
+        assert json.loads(values['test_shards']) == [{'runner': 'ubuntu-latest', 'shard': shard, 'count': 16} for shard in range(1, 17)], values
         document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
         context = {'cancelled()': False, 'needs.test-build.result': 'success',
                    'needs.test-prepare.result': 'skipped', 'inputs.warm-cache': False,
                    'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
                    'github.repository_id': 'caller', 'inputs.working-directory': '.',
                    'needs.declaration.outputs.coverage': values['coverage'],
-                   'needs.declaration.outputs.selected_tests': values['selected_tests']}
+                   'needs.declaration.outputs.tests_reused': 'false'}
         for job in ['test-build', 'tests']:
-            assert evaluate(document['jobs'][job]['if'], context), job
-        count = evaluate(document['jobs']['tests']['env']['TEST_SHARD_COUNT'], {
-            'matrix.count': str(json.loads(values['test_shards'])[0]['count']),
-            'needs.declaration.outputs.test_shard_count': '32'})
-        assert count == '1', count
-        with tempfile.TemporaryDirectory() as runner_temp:
-            runner = pathlib.Path(runner_temp)
-            tools, log = install_recording_runner(runner)
-            result = execute('Isolated tests', runner, {
-                'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
-                'RUNNER_TEMP': runner_temp, 'SHARD': '1', 'TEST_SHARD_COUNT': count,
-                'COLLECT_COVERAGE': 'false', 'WARM_CACHE': 'false',
-                'TEST_PACKAGES': values['packages'], 'CARGO_COVERAGE_MIN_LINES': ''})
-            assert result.returncode == 0, result.stdout + result.stderr
-            commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
-            args = next(args for args in commands if args[:2] == ['nextest', 'run'])
-            assert args[args.index('--partition') + 1] == 'count:1/1', args
-            assert [args[i + 1] for i, arg in enumerate(args) if arg == '-p'] == ['a', 'b', 'c'], args
+            assert not evaluate(document['jobs'][job]['if'], context), job
         for selection in [values, select('merge_group'), values | {'packages': '[]'}]:
             for job, step_name in [('quality', 'Lint'), ('targets', 'Check target')]:
                 step = next(step for step in document['jobs'][job]['steps'] if step.get('name') == step_name)
@@ -2924,16 +3135,22 @@ def changed_packages_include_reverse_dependencies():
                     assert '--all-targets' in args and args[-3:] == ['--', '-D', 'warnings'], args
                     assert ('--target' in args) == (job == 'targets'), args
         declared = declaration_path.read_text(encoding='utf-8')
-        for consumers, prepared in [(['d'], False), (['b'], True)]:
-            declaration_path.write_text(declared + 'test_prepare="prepare"\ntest_prepare_packages=' +
-                                        json.dumps(consumers) + '\n', encoding='utf-8')
-            prepared_values = select()
+        nextest = directory / '.config/nextest.toml'
+        nextest.parent.mkdir()
+        for consumer, prepared in [('d', False), ('b', True)]:
+            nextest.write_text(f'[[profile.default.scripts]]\nfilter="package({consumer})"\nsetup="prepared"\n', encoding='utf-8')
+            declaration_path.write_text(declared + 'test_prepare="prepare"\ntest_prepare_setups=["prepared"]\n', encoding='utf-8')
+            result, consumers = declaration(directory)
+            assert result.returncode == 0, result.stderr
+            prepared_values = select(extra={'TEST_PREPARE_CONSUMERS': consumers['test_prepare_consumers']})
             assert prepared_values['test_prepare'] == ('"prepare"' if prepared else '""'), prepared_values
             prepare_context = context | {
                 'needs.declaration.outputs.test_prepare_inputs': '[]',
                 'needs.declaration.outputs.test_prepare': prepared_values['test_prepare']}
-            assert bool(evaluate(document['jobs']['test-prepare']['if'], prepare_context)) == prepared
+            assert not evaluate(document['jobs']['test-prepare']['if'], prepare_context)
         declaration_path.write_text(declared, encoding='utf-8')
+        nextest.unlink()
+        nextest.parent.rmdir()
         assert values['browser_tests'] == 'true'
         declaration_path.write_text('wasm_crates=[]\ncheck_targets=[]\nbrowser_test_crates=[]\n', encoding='utf-8')
         git('add', '.')
@@ -3034,15 +3251,15 @@ def included_docs_run_only_readers_and_reverse_dependencies():
         git('add', '.')
         git('commit', '-qm', 'base')
         base = git('rev-parse', 'HEAD')
-        for changed, expected, runs in [
-                (('docs/policy.md',), ['a', 'b'], 'true'),
-                (('docs/bytes.md',), ['a', 'b'], 'true'),
-                (('docs/escaped.md',), ['a', 'b'], 'true'),
-                (('docs/line\nbreak.md',), ['a', 'b'], 'true'),
-                (('docs/commented.md',), ['a', 'b'], 'true'),
-                (('docs/unrelated.md',), [], 'false'),
-                (('crates/c/src/lib.rs',), ['c'], 'true'),
-                (('crates/c/src/lib.rs', 'docs/policy.md'), ['a', 'b', 'c'], 'true')]:
+        for changed, expected in [
+                (('docs/policy.md',), ['a', 'b']),
+                (('docs/bytes.md',), ['a', 'b']),
+                (('docs/escaped.md',), ['a', 'b']),
+                (('docs/line\nbreak.md',), ['a', 'b']),
+                (('docs/commented.md',), ['a', 'b']),
+                (('docs/unrelated.md',), []),
+                (('crates/c/src/lib.rs',), ['c']),
+                (('crates/c/src/lib.rs', 'docs/policy.md'), ['a', 'b', 'c'])]:
             for path in changed:
                 (directory / path).write_text('// changed\n', encoding='utf-8')
             git('add', '.')
@@ -3053,16 +3270,9 @@ def included_docs_run_only_readers_and_reverse_dependencies():
             assert result.returncode == 0, result.stdout + result.stderr
             values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
             assert json.loads(values['packages']) == expected, (changed, values)
-            assert values.get('selected_tests') == runs, (changed, values)
             assert values['coverage'] == 'false', values
             git('reset', '--hard', base)
-        tests = workflow.split('  tests:\n', 1)[1].split('\n  checks:', 1)[0]
-        condition = next(line for line in tests.splitlines() if line.startswith('    if:'))
-        assert "(needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.selected_tests == 'true')" in condition
-        assert 'selected_tests: $' + '{{ steps.selection.outputs.selected_tests }}' in workflow
         document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-        condition = document['jobs']['doctests']['if']
-        assert 'coverage' not in condition and 'selected_tests' not in condition
         assert document['jobs']['doctests']['env']['TEST_PACKAGES'] == '$' + '{{ needs.declaration.outputs.packages }}'
 
 included_docs_run_only_readers_and_reverse_dependencies()
@@ -3121,7 +3331,7 @@ def included_package_inputs_keep_owners_and_reverse_dependencies():
                 assert result.returncode == 0, result.stdout + result.stderr
                 values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                 assert json.loads(values['packages']) == expected, (root_package, path, values)
-                assert values['selected_tests'] == 'true' and values['coverage'] == 'false', values
+                assert values['coverage'] == 'false', values
                 git('reset', '--hard', base)
 
 included_package_inputs_keep_owners_and_reverse_dependencies()
@@ -3166,7 +3376,6 @@ def included_readers_follow_member_roots():
             assert result.returncode == 0, result.stdout + result.stderr
             values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
             assert json.loads(values['packages']) == (['child'] if nested else ['root-reader']), (nested, values)
-            assert values['selected_tests'] == 'true', (nested, values)
             assert values['coverage'] == 'false', values
             if nested:
                 (directory / 'crates/source/src/lib.rs').write_text('// ordinary source change\n', encoding='utf-8')
@@ -3181,19 +3390,261 @@ def included_readers_follow_member_roots():
 included_readers_follow_member_roots()
 print('PASS included_readers_follow_member_roots')
 
-def included_test_failures_remain_required():
-    for included in ['false', 'true']:
-        for status in ['success', 'failure', 'cancelled', 'skipped']:
-            result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                    env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'success', 'COLLECT_COVERAGE': 'false',
-                                                      'SELECTED_TESTS': included, 'DECLARATION_RESULT': 'success'},
-                                    capture_output=True, text=True)
-            expected = status == ('success' if included == 'true' else 'skipped')
-            assert (result.returncode == 0) == expected, (included, status, result.stderr)
-    assert 'SELECTED_TESTS: $' + '{{ needs.declaration.outputs.selected_tests }}' in workflow
+def merge_queue_identity_is_exact_and_shared():
+    from unittest.mock import patch
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['declaration']['steps']
+    identity = next(step for step in steps if step['name'] == 'Test evidence identity')
+    assert identity['env']['GH_TOKEN'] == '${{ github.token }}'
+    assert identity['env']['CURRENT_WORKFLOW_REF'] == '${{ github.workflow_ref }}'
+    assert identity['env']['CURRENT_WORKFLOW_SHA'] == '${{ github.workflow_sha }}'
+    for name in ['Check merge queue result', 'Record merge queue evidence']:
+        step = next(step for step in steps if step['name'] == name)
+        for key in ['WORKFLOW_REF', 'WORKFLOW_SHA']:
+            assert step['env'][key] == '${{ steps.evidence-scope.outputs.' + key.lower() + ' }}'
+    match = re.search(r"python3 <<'PYTHON'\n(.*?)\nPYTHON", body('Test evidence identity'), re.S)
+    assert match
+    path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
+    reference = {'path': path + '@v1', 'sha': 'c' * 40}
+    for raw, sha, references, expected in [(path + '@v1', 'c' * 40, [], 'c' * 40),
+            ('owner/repo/.github/workflows/suite.yml@main', 'a' * 40, [reference], 'c' * 40),
+            (path + '@v1', 'c' * 40, [reference], 'c' * 40),
+            ('owner/repo/.github/workflows/ci.yml@main', 'c' * 40, [], ''),
+            ('.github/workflows/ci.yml@main', 'c' * 40, [], ''),
+            (path + '@v1', 'a' * 40, [reference], ''),
+            (path + '@v1', 'c' * 40, [reference, reference], ''),
+            (path + '@v1', 'invalid', [], ''), ('', '', [], ''), ('', '', None, '')]:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = pathlib.Path(temporary) / 'output'
+            def api(argv, references=references, **kwargs):
+                assert argv == ['gh', 'api', 'repos/owner/repo/actions/runs/9']
+                if references is None:
+                    raise subprocess.CalledProcessError(1, argv)
+                return json.dumps({'referenced_workflows': references})
+            with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_RUN_ID': '9',
+                    'GITHUB_OUTPUT': str(output), 'CURRENT_WORKFLOW_REF': raw, 'CURRENT_WORKFLOW_SHA': sha,
+                    'CALLER_DIRECTORY': '.', 'CALL_KEY': '', 'GH_TOKEN': 'read-token'}), \
+                    patch('subprocess.check_output', side_effect=api):
+                exec(compile(match[1], 'Test evidence identity', 'exec'), {})
+            values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            assert values['workflow_sha'] == expected, (raw, references, values)
+            assert values['workflow_ref'] == (path + '@' + expected if expected else ''), values
+            assert re.fullmatch('[0-9a-f]{64}', values['scope'])
 
-included_test_failures_remain_required()
-print('PASS included_test_failures_remain_required')
+merge_queue_identity_is_exact_and_shared()
+print('PASS merge_queue_identity_is_exact_and_shared')
+
+
+def merge_queue_evidence_records_full_suite_and_revision():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['declaration']['steps']
+    record = next(step for step in steps if step['name'] == 'Record merge queue evidence')
+    upload = next(step for step in steps if step['name'] == 'Upload merge queue evidence')
+    assert record['if'] == upload['if'] == "github.event_name == 'merge_group'"
+    assert record['env']['WORKFLOW_REF'] == '${{ steps.evidence-scope.outputs.workflow_ref }}'
+    assert record['env']['WORKFLOW_SHA'] == '${{ steps.evidence-scope.outputs.workflow_sha }}'
+    assert upload['with']['name'] == 'merge-queue-tests-${{ steps.evidence-scope.outputs.scope }}-${{ github.run_attempt }}'
+    assert upload['with']['if-no-files-found'] == 'error'
+    match = re.search(r"python3 <<'PYTHON'\n(.*?)\nPYTHON", body('Record merge queue evidence'), re.S)
+    assert match
+    with tempfile.TemporaryDirectory() as temporary:
+        for scope, coverage, warm, scan, override, full in [('full workspace', 'true', False, False, '', True),
+                ('selected packages: a', 'true', False, False, '', False), ('full workspace', 'false', False, False, '', False),
+                ('full workspace', 'true', True, False, '', False), ('full workspace', 'true', False, True, '', False),
+                ('full workspace', 'true', False, False, 'fixture', False)]:
+            context = {'steps.selection.outputs.coverage_scope': scope, 'steps.selection.outputs.coverage': coverage,
+                       'inputs.warm-cache': warm, 'inputs.advisory-scan': scan, 'inputs.fuzz-scan': False,
+                       'inputs.checkout-repository': override, 'inputs.checkout-ref': '', 'inputs.test-event': ''}
+            assert bool(evaluate(record['env']['FULL_TEST_SET'], context)) == full
+            result = subprocess.run(['python3', '-c', match[1]], capture_output=True, text=True,
+                env=os.environ | {'RUNNER_TEMP': temporary, 'WORKFLOW_REF': 'owner/workflows/.github/workflows/ci.yml@v1',
+                                  'WORKFLOW_SHA': 'c' * 40, 'FULL_TEST_SET': str(full).lower()})
+            assert result.returncode == 0, result.stderr
+            assert json.loads((pathlib.Path(temporary) / 'merge-queue-tests.json').read_text(encoding='utf-8')) == {
+                'workflow_ref': 'owner/workflows/.github/workflows/ci.yml@v1', 'workflow_sha': 'c' * 40, 'full_test_set': full}
+
+merge_queue_evidence_records_full_suite_and_revision()
+print('PASS merge_queue_evidence_records_full_suite_and_revision')
+
+
+def main_reuses_only_exact_successful_merge_queue_tests():
+    import io
+    import shutil
+    import zipfile
+    from unittest.mock import patch
+    assert 'TESTS_REUSED: $' + '{{ steps.queue.outputs.tests_reused }}' in workflow
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['declaration']['steps']
+    check = next(step for step in steps if step['name'] == 'Check merge queue result')
+    marker = next(step for step in steps if step['name'] == 'Reuse merge queue tests')
+    assert check['env']['GH_TOKEN'] == '${{ github.token }}'
+    assert check['env']['EVIDENCE_SCOPE'] == '${{ steps.evidence-scope.outputs.scope }}'
+    assert document['jobs']['declaration']['permissions'] == {'contents': 'read', 'actions': 'read'}
+    assert document['jobs']['declaration']['outputs']['tests_reused'] == '${{ steps.queue.outputs.tests_reused }}'
+    context = {'github.event_name': 'push', 'github.ref': 'refs/heads/main', default_ref: 'refs/heads/main',
+               'inputs.warm-cache': False, 'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
+               'inputs.checkout-repository': '', 'inputs.checkout-ref': '', 'inputs.test-event': ''}
+    assert evaluate(check['if'], context)
+    for key, value in [('github.event_name', 'merge_group'), ('github.ref', 'refs/heads/topic'),
+                       ('inputs.warm-cache', True), ('inputs.advisory-scan', True), ('inputs.fuzz-scan', True),
+                       ('inputs.checkout-repository', 'owner/fixture'), ('inputs.checkout-ref', 'other'),
+                       ('inputs.test-event', 'push')]:
+        assert not evaluate(check['if'], context | {key: value}), key
+    match = re.search(r"python3 <<'PYTHON'\n(.*?)\nPYTHON", body('Check merge queue result'), re.S)
+    assert match
+    script = match[1]
+    path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
+    good = {'id': 1, 'workflow_id': 5, 'head_sha': 'a' * 40, 'event': 'merge_group',
+            'head_repository': {'full_name': 'owner/repo'},
+            'run_attempt': 2, 'status': 'completed', 'conclusion': 'success'}
+    evidence = {'workflow_ref': path + '@v1', 'workflow_sha': 'c' * 40, 'full_test_set': True}
+    scenarios = [('passed', [[good]], True), ('direct', [[]], False),
+                 ('other-caller', [[good | {'workflow_id': 6}]], True),
+                 ('fork', [[good | {'head_repository': {'full_name': 'other/fork'}}]], False),
+                 ('missing-repository', [[{key: value for key, value in good.items() if key != 'head_repository'}]], False),
+                 ('null-repository', [[good | {'head_repository': None}]], False),
+                 ('other-commit', [[good | {'head_sha': 'b' * 40}]], False),
+                 ('pr', [[good | {'event': 'pull_request'}]], False),
+                 ('failed', [[good | {'conclusion': 'failure'}]], False),
+                 ('cancelled', [[good | {'conclusion': 'cancelled'}]], False),
+                 ('in-progress', [[good | {'status': 'in_progress'}]], False),
+                 ('pagination', [[], [good]], True), ('permission', None, False),
+                 ('version-mismatch', [[good]], False), ('other-path', [[good]], False),
+                 ('subset', [[good]], False), ('missing-artifact', [[good]], False),
+                 ('expired-artifact', [[good]], False), ('unreadable-artifact', [[good]], False),
+                 ('old-attempt', [[good]], False), ('missing-identity', [[good]], False)]
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        fixture_git(directory, 'init', '--quiet')
+        fixture_git(directory, 'add', '.')
+        fixture_git(directory, 'commit', '-qm', 'main suite fixture')
+        observed = set()
+        for name, pages, reused in scenarios:
+            output = directory / '.git/result'
+            output.write_text('', encoding='utf-8')
+            def api(argv, name=name, pages=pages, **kwargs):
+                assert os.environ['GH_TOKEN'] == 'read-token'
+                if pages is None:
+                    raise subprocess.CalledProcessError(1, argv)
+                if '/actions/artifacts/7/zip' in argv[-1]:
+                    if name == 'unreadable-artifact':
+                        return b'corrupt archive'
+                    record = evidence | ({'workflow_sha': 'd' * 40} if name == 'version-mismatch' else
+                        {'full_test_set': False} if name == 'subset' else
+                        {'workflow_ref': 'owner/other/.github/workflows/ci.yml@v1'} if name == 'other-path' else {})
+                    archive = io.BytesIO()
+                    with zipfile.ZipFile(archive, 'w') as bundle:
+                        bundle.writestr('merge-queue-tests.json', json.dumps(record))
+                    return archive.getvalue()
+                if '/actions/runs/1/artifacts?' in argv[-1]:
+                    assert argv[-1].endswith('name=merge-queue-tests-scope-2&per_page=100')
+                    assert '--paginate' in argv and '--slurp' in argv
+                    artifact = {'id': 7, 'name': 'merge-queue-tests-scope-' + ('1' if name == 'old-attempt' else '2'),
+                                'expired': name == 'expired-artifact'}
+                    return json.dumps([{'artifacts': []}, {'artifacts': [] if name == 'missing-artifact' else [artifact]}])
+                assert argv[-1] == 'repos/owner/repo/actions/runs?event=merge_group&status=success&head_sha=' + 'a' * 40 + '&per_page=100'
+                assert '--paginate' in argv and '--slurp' in argv
+                return json.dumps([{'workflow_runs': runs} for runs in pages])
+            with patch.dict(os.environ, {'GH_TOKEN': 'read-token', 'GITHUB_REPOSITORY': 'owner/repo',
+                    'GITHUB_RUN_ID': '9', 'GITHUB_SHA': 'a' * 40, 'GITHUB_OUTPUT': str(output), 'EVIDENCE_SCOPE': 'scope',
+                    'WORKFLOW_REF': path + '@v1', 'WORKFLOW_SHA': '' if name == 'missing-identity' else 'c' * 40}), \
+                    patch('subprocess.check_output', side_effect=api):
+                exec(compile(script, 'Check merge queue result', 'exec'), {})
+            values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            assert values['tests_reused'] == str(reused).lower(), (name, values)
+            assert evaluate(marker['if'], {'steps.queue.outputs.tests_reused': values['tests_reused']}) == reused
+            if reused in observed:
+                continue
+            observed.add(reused)
+            output.write_text('', encoding='utf-8')
+            result = select_packages(directory, {'TEST_EVENT': 'push', 'BASE_REF': '',
+                'TESTS_REUSED': values['tests_reused'], 'GITHUB_OUTPUT': str(output)})
+            assert result.returncode == 0, result.stderr
+            selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            assert selected['coverage'] == str(not reused).lower(), (name, selected)
+            conditions = context | {'needs.declaration.outputs.coverage': selected['coverage'],
+                'needs.declaration.outputs.tests_reused': values['tests_reused'],
+                'needs.declaration.outputs.enabled': 'true', 'needs.declaration.outputs.browser_tests': 'true',
+                'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.wasm_crates': '["web"]',
+                'needs.declaration.outputs.test_prepare_inputs': '[]', 'needs.declaration.outputs.test_prepare': '"prepare"',
+                'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
+                'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True,
+                'matrix.runner': 'ubuntu-latest'}
+            for job, upload in [('test-build', 'Upload test archive'), ('test-prepare', 'Upload test setup')]:
+                assert evaluate(document['jobs'][job]['if'], conditions), (name, job, 'main must seed compiled objects')
+                step = next(step for step in document['jobs'][job]['steps'] if step['name'] == upload)
+                assert bool(evaluate(step.get('if', 'True'), conditions)) == (not reused), (name, upload)
+            for job in ['tests', 'doctests', 'browser', 'browser-tests']:
+                assert bool(evaluate(document['jobs'][job]['if'], conditions)) == (not reused), (name, job)
+            archive = document['jobs']['test-build']
+            assert evaluate(archive['env']['COLLECT_COVERAGE'], conditions), 'main must build instrumented objects'
+            identity = next(step for step in archive['steps'] if step['name'] == 'Compile cache identity')
+            assert evaluate(identity['env']['CACHE_COVERAGE'], conditions), 'main must seed the merge-group cache shape'
+            for job in ['quality', 'docs', 'tests', 'doctests', 'browser', 'browser-tests', 'targets']:
+                warm = conditions | {'inputs.warm-cache': True, 'needs.declaration.outputs.coverage': 'true',
+                                     'needs.declaration.outputs.targets': '["windows"]'}
+                assert evaluate(document['jobs'][job]['if'], warm), job
+            result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                env=os.environ | {'DECLARATION_RESULT': 'success', 'COLLECT_COVERAGE': selected['coverage'],
+                                  'RESULT': 'skipped' if reused else 'success', 'DOCTEST_RESULT': 'skipped' if reused else 'success'},
+                capture_output=True, text=True)
+            assert result.returncode == 0, result.stderr
+
+main_reuses_only_exact_successful_merge_queue_tests()
+print('PASS main_reuses_only_exact_successful_merge_queue_tests')
+
+def main_setup_writers_prepare_even_with_exact_bundle():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = {step['name']: step for step in document['jobs']['test-prepare']['steps']}
+    prepare = steps['Prepare test setup']
+    for writer, hit, expected in [('true', 'true', True), ('true', 'false', True),
+                                  ('false', 'true', False), ('false', 'false', True)]:
+        context = {'steps.setup-cache.outputs.cache-hit': hit, 'steps.cache-identity.outputs.writer': writer,
+                   'steps.candidates.outputs.runs': '' if writer == 'true' else '7',
+                   'needs.declaration.outputs.test_prepare_inputs': '["inputs/**"]'}
+        restore = steps['Restore test setup cache']
+        assert bool(evaluate(restore['with'].get('lookup-only', 'False'), context)) == (writer == 'true'), (writer, hit, 'writers must not download bundles')
+        candidates = steps['Test setup candidates']
+        assert bool(evaluate(candidates['if'], context)) == (writer != 'true' and hit != 'true'), (writer, hit, 'writers must not fetch candidates')
+        assert not evaluate(candidates['if'], context | {'needs.declaration.outputs.test_prepare_inputs': '[]'})
+        assert bool(evaluate(prepare['if'], context)) == expected, (writer, hit, 'writer must populate compile objects')
+        if not expected:
+            continue
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            # A restored bundle is a base, not evidence that the compiler cache has its objects.
+            restored = directory / 'restored/test-setup'
+            restored.mkdir(parents=True)
+            (restored / 'kept').write_text('prepared', encoding='utf-8')
+            subprocess.run(['tar', '-C', str(restored.parent), '-cf', str(directory / 'test-setup.tar'), 'test-setup'], check=True)
+            if writer != 'true':
+                candidate = directory / 'test-setup-candidates/7'
+                candidate.mkdir(parents=True)
+                (candidate / 'test-setup.tar').write_bytes((directory / 'test-setup.tar').read_bytes())
+            forwarded = {key: evaluate(value, context) for key, value in prepare['env'].items()}
+            result = execute('Prepare test setup', directory, {'RUNNER_TEMP': temporary,
+                'TEST_PREPARE_BASE': '/inherited', **forwarded,
+                'TEST_PREPARE': 'printf "%s" "${TEST_PREPARE_BASE-unset}" > "$TEST_PREPARE_OUTPUT/bases"'})
+            assert result.returncode == 0, result.stdout + result.stderr
+            bases = subprocess.check_output(['tar', '-xOf', str(directory / 'test-setup.tar'), 'test-setup/bases'], text=True)
+            expected_base = 'unset' if writer == 'true' else f'{directory}/test-setup-base/test-setup:{directory}/test-setup-candidate-7/test-setup'
+            assert bases == expected_base, (writer, hit, bases)
+
+main_setup_writers_prepare_even_with_exact_bundle()
+print('PASS main_setup_writers_prepare_even_with_exact_bundle')
+
+def pull_request_test_results_must_be_skipped():
+    for status in ['success', 'failure', 'cancelled', 'skipped']:
+        result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                                env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'skipped', 'COLLECT_COVERAGE': 'false',
+                                                  'DECLARATION_RESULT': 'success'},
+                                capture_output=True, text=True)
+        expected = status == 'skipped'
+        assert (result.returncode == 0) == expected, (status, result.stderr)
+
+pull_request_test_results_must_be_skipped()
+print('PASS pull_request_test_results_must_be_skipped')
 
 def declared_test_inputs_select_their_readers():
     from functools import partial
@@ -3253,24 +3704,51 @@ declared_test_inputs_select_their_readers()
 print('PASS declared_test_inputs_select_their_readers')
 print('PASS browser_test_selection_reuses_package_scope')
 
-def retries_report_flaky_tests_and_keep_failures():
+def failed_tests_keep_every_runner_route_red():
+    routes = [('Tests', '1', 'false', ''), ('Isolated tests', '1', 'false', ''),
+              ('Isolated tests', '1', 'true', ''), ('Isolated tests', '', 'true', '0'),
+              ('Coverage', '', 'true', '0'), ('Isolated tests', 'warm', 'false', '')]
+    for name, shard, coverage, floor in routes:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            tools, log = install_recording_runner(directory, status=100)
+            result = execute(name, directory, {
+                'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                'RUNNER_TEMP': temporary, 'SHARD': shard, 'COLLECT_COVERAGE': coverage,
+                'CARGO_COVERAGE_MIN_LINES': floor, 'WARM_CACHE': str(shard == 'warm').lower()})
+            assert result.returncode == 100, result.stdout + result.stderr
+            commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+            runners = [command for command in commands if command['tool'] != 'cargo']
+            assert len(runners) == 1, commands
+            args = runners[0]['args']
+            assert '--flaky-result' not in args, args
+            assert 'runner stdout' in (directory / 'nextest.log').read_text(encoding='utf-8')
+            print(f'PASS failed_tests_keep_every_runner_route_red: {name}, shard={shard}', flush=True)
+
+failed_tests_keep_every_runner_route_red()
+
+def caller_retries_cannot_rescue_a_failed_first_attempt():
     import shutil
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
-        source = directory / 'src/lib.rs'
-        source.write_text('#[test] fn flaky_control() { assert_eq!(std::env::var("NEXTEST_ATTEMPT").unwrap(), "3"); }\n', encoding='utf-8')
-        result = execute('Isolated tests', directory, {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': 'false'})
-        assert result.returncode == 0 and 'FLAKY' in result.stdout, result.stdout + result.stderr
-        summary = directory / 'summary'
-        result = execute('Flaky test summary', directory, {'GITHUB_STEP_SUMMARY': str(summary)})
-        assert result.returncode == 0 and 'flaky_control' in summary.read_text(encoding='utf-8'), result.stderr
-        source.write_text('#[test] fn permanent_failure() { panic!("permanent"); }\n', encoding='utf-8')
-        result = execute('Isolated tests', directory, {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': 'false'})
-        assert result.returncode != 0 and 'permanent_failure' in result.stdout, result.stdout + result.stderr
+        (directory / '.config').mkdir()
+        (directory / '.config/nextest.toml').write_text(
+            '[profile.default]\nretries=2\n'
+            '[[profile.default.overrides]]\nfilter="all()"\nretries=2\n', encoding='utf-8')
+        (directory / 'src/lib.rs').write_text(
+            '#[test] fn fails_first_attempt() { assert_ne!(std::env::var("NEXTEST_ATTEMPT").unwrap(), "1"); }\n',
+            encoding='utf-8')
+        for name, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
+            result = execute(name, directory, {
+                'RUNNER_TEMP': temporary, 'SHARD': '1', 'TEST_SHARD_COUNT': '1',
+                'COLLECT_COVERAGE': coverage})
+            output = result.stdout + result.stderr
+            assert result.returncode == 100 and 'fails_first_attempt' in output, output
+            assert 'FAIL' in output and 'TRY 2' not in output and 'FLAKY' not in output, output
+            print(f'PASS caller_retries_cannot_rescue_a_failed_first_attempt: {name}, coverage={coverage}', flush=True)
 
-retries_report_flaky_tests_and_keep_failures()
-print('PASS retries_report_flaky_tests_and_keep_failures')
+caller_retries_cannot_rescue_a_failed_first_attempt()
 
 def declaration_types_are_checked():
     with tempfile.TemporaryDirectory() as temporary:
@@ -3553,19 +4031,23 @@ def native_test_hosts_follow_claims_and_full_suite_events():
                     result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output), 'TEST_EVENT': event, 'WARM': warm})
                     assert result.returncode == 0, result.stderr
                     values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-                    runners = ['ubuntu-latest'] + (native if event != 'pull_request' and warm == 'false' else [])
-                    assert json.loads(values['test_runners']) == runners, (targets, event, warm, values)
-                    result = select_packages(directory, {'GITHUB_OUTPUT': str(directory / 'selection-output'), 'TEST_EVENT': event,
-                                             'BASE_REF': '', 'TEST_SHARD_COUNT': str(count), 'TEST_HOSTS': values['test_hosts']})
-                    assert result.returncode == 0, result.stderr
-                    selected = dict(line.split('=', 1) for line in (directory / 'selection-output').read_text(encoding='utf-8').splitlines())
-                    legs = json.loads(selected['test_shards'])
-                    linux_count = 1 if event == 'pull_request' else count
-                    for runner in runners:
-                        expected = linux_count if runner == 'ubuntu-latest' else min(4, count)
-                        assert [leg for leg in legs if leg['runner'] == runner] == [
-                            {'runner': runner, 'shard': shard, 'count': expected} for shard in range(1, expected + 1)]
-                    assert len(legs) == linux_count + (len(runners) - 1) * min(4, count)
+                    hosts = ['ubuntu-latest'] + (native if event != 'pull_request' and warm == 'false' else [])
+                    assert list(json.loads(values['test_hosts'])) == hosts, (targets, event, warm, values)
+                    for reused in ['false', 'true']:
+                        result = select_packages(directory, {'GITHUB_OUTPUT': str(directory / 'selection-output'), 'TEST_EVENT': event,
+                                                 'BASE_REF': '', 'TEST_SHARD_COUNT': str(count), 'TEST_HOSTS': values['test_hosts'],
+                                                 'TESTS_REUSED': reused})
+                        assert result.returncode == 0, result.stderr
+                        selected = dict(line.split('=', 1) for line in (directory / 'selection-output').read_text(encoding='utf-8').splitlines())
+                        (directory / 'selection-output').unlink()
+                        runners = ['ubuntu-latest'] if reused == 'true' else hosts
+                        assert json.loads(selected['test_runners']) == runners, (targets, event, reused, selected)
+                        legs = json.loads(selected['test_shards'])
+                        for runner in runners:
+                            expected = count if runner == 'ubuntu-latest' else min(4, count)
+                            assert [leg for leg in legs if leg['runner'] == runner] == [
+                                {'runner': runner, 'shard': shard, 'count': expected} for shard in range(1, expected + 1)]
+                        assert len(legs) == count + (len(runners) - 1) * min(4, count)
     for name in ['test-prepare', 'test-build', 'doctests']:
         assert 'test_runners' in jobs[name]['strategy']['matrix']['runner']
     assert 'test_shards' in jobs['tests']['strategy']['matrix']['include']
@@ -3794,6 +4276,42 @@ def native_test_failures_are_detected():
 native_test_failures_are_detected()
 print('PASS native_test_failures_are_detected')
 
+def apple_type_errors_fail_pull_requests():
+    import shutil
+    target = os.environ.get('TARGET', '')
+    if not target.endswith('apple-darwin'):
+        return
+    targets_job = workflow.split('\n  targets:\n', 1)[1].split('\n  browser:', 1)[0]
+    assert 'continue-on-error:' not in targets_job.split('    steps:', 1)[0]
+    check = targets_job.split('      - name: Check target\n', 1)[1].split('      - name: ', 1)[0]
+    assert 'continue-on-error:' not in check and '        if:' not in check
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/macos-rejected', directory, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns('target'))
+        (directory / '.github').mkdir()
+        (directory / '.github/ci.toml').write_text(
+            'wasm_crates=[]\ncheck_targets=' + json.dumps([target]) + '\n', encoding='utf-8')
+        output = directory / 'output'
+        result = execute('Read caller declaration', directory,
+                         {'TEST_EVENT': 'pull_request', 'GITHUB_OUTPUT': str(output)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+        assert json.loads(values['targets']) == [{'target': target, 'runner': 'macos-latest'}], values['targets']
+        env = {'TARGET': target, 'TEST_PACKAGES': '["macos-rejected"]',
+               'COVERAGE_SCOPE': 'selected packages: macos-rejected'}
+        source = directory / 'src/lib.rs'
+        broken = source.read_text(encoding='utf-8').replace(
+            'compile_error!("fixture rejects macos");', 'const _: u16 = 0o644_u32;')
+        for text, expected in [(broken, False), (broken.replace('0o644_u32', '0o644_u16'), True)]:
+            source.write_text(text, encoding='utf-8')
+            result = execute('Check target', directory, env)
+            assert (result.returncode == 0) == expected, result.stdout + result.stderr
+            if not expected:
+                assert 'error[E0308]' in result.stderr and 'expected `u16`, found `u32`' in result.stderr, result.stderr
+            print(f'Apple PR target {target}: compiler exit {result.returncode}', flush=True)
+    print('PASS apple_type_errors_fail_pull_requests', flush=True)
+
 def browser_recipe_runs_after_wasm():
     import shutil
     with tempfile.TemporaryDirectory() as temporary:
@@ -4011,12 +4529,13 @@ def workflow_failures_remain_required():
         section = workflow.split(f'  {name}:\n')[1]
         assert ('needs: [declaration, test-build, test-prepare]' if name == 'tests' else 'needs: declaration') in section
     assert 'pull_request:' in workflow and 'merge_group:' in workflow
-    assert "if: $" + "{{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
-    # Each scan mode runs only the declaration and its own job.
-    jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-    assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
-    assert all('!inputs.advisory-scan && !inputs.fuzz-scan' in job.split('\n    steps:', 1)[0]
-               for name, job in jobs.items() if name not in ('declaration', 'advisories', 'fuzz')), sorted(jobs)
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    routed = routed_jobs(document, {})
+    assert routed == set(document['jobs']) - {'advisories', 'fuzz'}, sorted(routed)
+    assert 'browser' not in routed_jobs(document, {'needs.declaration.outputs.coverage': 'false'})
+    # An advisory scan runs only the declaration and its own job.
+    routed = routed_jobs(document, {'inputs.advisory-scan': True})
+    assert routed == {'declaration', 'advisories'}, sorted(routed)
 
 def browser_test_result_stays_required():
     internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')

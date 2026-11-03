@@ -12,7 +12,7 @@ on:
         type: string
         default: ''
       checkout-ref:
-        description: Checkout ref (self-test, proof, and advisory and fuzz scans; defaults to caller)
+        description: Checkout ref (self-test, proof, browser-only, and advisory and fuzz scans; defaults to caller)
         type: string
         default: ''
       checkout-base-ref:
@@ -31,6 +31,10 @@ on:
         description: Stable key distinguishing multiple calls in one workflow
         type: string
         default: ''
+      browser-only:
+        description: Run only the declared Chromium browser tests (manual named-ref proof)
+        type: boolean
+        default: false
       warm-cache:
         description: Build the full coverage test graph with optional filtered test execution
         type: boolean
@@ -120,9 +124,9 @@ jobs:
       packages: ${{ steps.selection.outputs.packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
+      tests_reused: ${{ steps.queue.outputs.tests_reused }}
       coverage_scope: ${{ steps.selection.outputs.coverage_scope }}
-      selected_tests: ${{ steps.selection.outputs.selected_tests }}
-      test_runners: ${{ steps.config.outputs.test_runners }}
+      test_runners: ${{ steps.selection.outputs.test_runners }}
       test_shard_count: ${{ steps.config.outputs.test_shard_count }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
@@ -254,13 +258,14 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
-                  raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}')
+                  replacement = '; test_prepare_setups replaces test_prepare_packages' if 'test_prepare_packages' in unknown else ''
+                  raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}' + replacement)
               for key in ('wasm_crates', 'check_targets'):
                   if key not in config or not isinstance(config[key], list) or any(type(item) is not str for item in config[key]):
                       raise SystemExit(f'{path}: {key} must be an array of strings')
@@ -290,13 +295,13 @@ jobs:
               threshold = config.get('coverage_min_lines', 80)
               if type(threshold) not in (int, float) or not 80 <= threshold <= 100:
                   raise SystemExit(f'{path}: coverage_min_lines must be a number from 80 to 100')
-              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_packages', 'test_prepare_inputs'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_setups', 'test_prepare_inputs'):
                   if not isinstance(config.get(key, []), list) or any(type(item) is not str or not item for item in config.get(key, [])):
                       raise SystemExit(f'{path}: {key} must be an array of nonempty strings')
               def validate_toml_string(key, value):
                   if any(ord(char) < 32 or 127 <= ord(char) <= 159 or 0xD800 <= ord(char) <= 0xDFFF for char in value):
                       raise SystemExit(f'{path}: {key} cannot contain control characters or surrogates')
-              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_packages', 'test_prepare_inputs'):
+              for key in ('spelling_words', 'git_sources', 'privileged_trigger_workflows', 'additional_locked_manifests', 'test_prepare_setups', 'test_prepare_inputs'):
                   for value in config.get(key, []):
                       validate_toml_string(key, value)
               def contained_manifest(value):
@@ -408,9 +413,120 @@ jobs:
                   if crate not in packages:
                       raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
               values.update(browser_test_crates=json.dumps(sorted(set(browser_tests))))
-              for name in config.get('test_prepare_packages', []):
-                  if name not in packages:
-                      raise SystemExit(f'{path}: test_prepare_packages contains unknown package {name!r}')
+              def prepared_consumers(setups):
+                  nextest = pathlib.Path('.config/nextest.toml')
+                  try:
+                      with nextest.open('rb') as source:
+                          scripts = tomllib.load(source).get('profile', {}).get('default', {}).get('scripts', [])
+                  except FileNotFoundError:
+                      scripts = []
+                  except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, AttributeError) as error:
+                      raise SystemExit(f'{nextest}: {error}') from error
+                  if not isinstance(scripts, list) or any(not isinstance(rule, dict) for rule in scripts):
+                      raise SystemExit(f'{nextest}: profile.default.scripts must be an array of tables')
+                  consumers = set()
+                  def skip_whitespace():
+                      nonlocal position
+                      position += len(text[position:]) - len(text[position:].lstrip())
+                  def token():
+                      return re.match(r'([a-z_]+)\s*\(\s*(/(?:\\.|[^/\\])*/|(?:\\.|[^()\\])*)\s*\)', text[position:])
+                  def expression(minimum=0):
+                      nonlocal position
+                      skip_whitespace()
+                      atom = token()
+                      start = position
+                      if atom:
+                          position += atom.end()
+                          name, value = atom[1], atom[2].strip()
+                          if name in ('deps', 'rdeps'):
+                              refuse('filter selects packages by dependency: ' + atom[0])
+                          if name == 'package':
+                              value = value.removeprefix('=')
+                              for prefix, kind in [('/', 'a regular expression'), ('~', 'a substring')]:
+                                  if value.startswith(prefix):
+                                      refuse(f'filter matches packages by {kind}: ' + atom[0])
+                              if any(char in value for char in '*?[]#'):
+                                  refuse('filter matches packages by a glob: ' + atom[0])
+                          elif name not in ('all', 'none', 'test', 'binary', 'binary_id', 'kind', 'platform'):
+                              refuse('filter has unsupported atom: ' + atom[0])
+                          node = (name, value, atom[0])
+                      elif text[position:position + 1] == '(':
+                          position += 1
+                          node = expression()
+                          skip_whitespace()
+                          if text[position:position + 1] != ')':
+                              refuse(f'filter cannot be read at offset {position}')
+                          position += 1
+                      else:
+                          negation = re.match(r'!|not\b', text[position:])
+                          if not negation:
+                              refuse(f'filter cannot be read at offset {position}')
+                          position += negation.end()
+                          node = ('not', expression(3), text[start:position])
+                      while True:
+                          skip_whitespace()
+                          operator = re.match(r'\||\+|or\b|&|and\b|-', text[position:])
+                          if not operator:
+                              return node
+                          op = 'or' if operator[0] in ('|', '+', 'or') else 'and'
+                          precedence = 1 if op == 'or' else 2
+                          if precedence < minimum:
+                              return node
+                          position += operator.end()
+                          right = expression(precedence + 1)
+                          if operator[0] == '-':
+                              right = ('not', right, right[2])
+                          node = (op, (node, right), text[start:position])
+                  def package_atoms(node, negated=False):
+                      if node[0] == 'package':
+                          if negated:
+                              refuse('filter negates package(' + node[1] + ')')
+                          return [node[1]]
+                      if node[0] == 'not':
+                          return package_atoms(node[1], True)
+                      if node[0] in ('and', 'or'):
+                          return [name for child in node[1] for name in package_atoms(child, negated)]
+                      return []
+                  def terms(node, operator):
+                      if node[0] == operator:
+                          return [term for child in node[1] for term in terms(child, operator)]
+                      return [node]
+                  for setup in setups:
+                      def refuse(reason):
+                          raise SystemExit(f'{nextest}: setup {setup!r} {reason}')
+                      rules = [rule for rule in scripts if rule.get('setup') == setup or
+                               isinstance(rule.get('setup'), list) and setup in rule['setup']]
+                      if not rules:
+                          refuse('has no [[profile.default.scripts]] entry')
+                      for rule in rules:
+                          if 'filter' not in rule:
+                              refuse('rule has no filter, so it runs before every test')
+                          text = rule['filter']
+                          if not isinstance(text, str):
+                              refuse('filter must be a string')
+                          position = 0
+                          try:
+                              tree = expression()
+                              skip_whitespace()
+                              if position != len(text):
+                                  refuse(f'filter cannot be read at offset {position}')
+                              package_atoms(tree)
+                              for term in terms(tree, 'or'):
+                                  conjuncts = terms(term, 'and')
+                                  exact = [node[1] for node in conjuncts if node[0] == 'package']
+                                  if not package_atoms(term):
+                                      refuse(f'filter term {term[2]!r} names no package')
+                                  if len(exact) != 1 or len(package_atoms(term)) != 1:
+                                      refuse(f'filter term {term[2]!r} needs exactly one package() conjunct')
+                                  for name in exact:
+                                      if name not in packages:
+                                          refuse(f'filter contains unknown package {name!r}')
+                                  consumers.update(exact)
+                          except RecursionError:
+                              refuse('filter nesting is too deep')
+                  return sorted(consumers)
+              if 'test_prepare_setups' in config:
+                  values['test_prepare_consumers'] = json.dumps(prepared_consumers(config['test_prepare_setups']))
               def repository_relative(key):
                   return bool(pathlib.PurePosixPath(key).parts) and not key.startswith('/') and '\\' not in key and '..' not in pathlib.PurePosixPath(key).parts
               for pattern in config.get('test_prepare_inputs', []):
@@ -432,7 +548,7 @@ jobs:
                       raise SystemExit(f'{path}: check_targets contains unknown target {target!r}')
                   if target not in runners:
                       raise SystemExit(f'{path}: check_targets has no runner for {target!r}')
-                  if os.environ.get('TEST_EVENT') != 'pull_request' or target == 'x86_64-pc-windows-msvc':
+                  if os.environ.get('TEST_EVENT') != 'pull_request' or target in ('aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-pc-windows-msvc'):
                       targets.append(dict(target=target, runner=runners[target]))
               values.update(targets=json.dumps(targets))
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
@@ -443,11 +559,103 @@ jobs:
           hosts = {'ubuntu-latest': count}
           if config is not None and os.environ.get('TEST_EVENT') != 'pull_request' and os.environ.get('WARM') != 'true':
               hosts.update({runner: min(shards, count) for target, (runner, shards) in native_tests.items() if target in config['check_targets']})
-          values.update(test_hosts=json.dumps(hosts), test_runners=json.dumps(list(hosts)))
+          values.update(test_hosts=json.dumps(hosts))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
           PYTHON
+      - name: Test evidence identity
+        id: evidence-scope
+        if: github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_WORKFLOW_REF: ${{ github.workflow_ref }}
+          CURRENT_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          CALLER_DIRECTORY: ${{ inputs.working-directory || '.' }}
+          CALL_KEY: ${{ inputs.concurrency-key }}
+        run: |
+          python3 <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          identity = [os.environ['GITHUB_REPOSITORY'], os.environ['CALLER_DIRECTORY'], os.environ['CALL_KEY']]
+          scope = hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode('utf-8')).hexdigest()
+          path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
+          revision = ''
+          try:
+              current = json.loads(subprocess.check_output(['gh', 'api',
+                  f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"], text=True))
+              references = [item for item in current['referenced_workflows'] if item['path'].startswith(path + '@')]
+              if len(references) > 1:
+                  raise ValueError('Ambiguous reusable workflow identity')
+              revisions = {item['sha'] for item in references}
+              if os.environ['CURRENT_WORKFLOW_REF'].startswith(path + '@'):
+                  revisions.add(os.environ['CURRENT_WORKFLOW_SHA'])
+              if len(revisions) != 1 or not re.fullmatch('[0-9a-f]{40}', next(iter(revisions))):
+                  raise ValueError('Reusable workflow identity is unresolved or conflicting')
+              revision = revisions.pop()
+          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
+              print('Reusable workflow identity unavailable; merge queue tests cannot be reused')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'scope={scope}\nworkflow_sha={revision}\nworkflow_ref=' + (path + '@' + revision if revision else '') + '\n')
+          PYTHON
+      - name: Check merge queue result
+        id: queue
+        if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.checkout-repository && !inputs.checkout-ref && !inputs.test-event }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVIDENCE_SCOPE: ${{ steps.evidence-scope.outputs.scope }}
+          WORKFLOW_REF: ${{ steps.evidence-scope.outputs.workflow_ref }}
+          WORKFLOW_SHA: ${{ steps.evidence-scope.outputs.workflow_sha }}
+        run: |
+          python3 <<'PYTHON'
+          import io
+          import json
+          import os
+          import re
+          import subprocess
+          import zipfile
+          repository = os.environ['GITHUB_REPOSITORY']
+          workflow_path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
+          def api(path, paginate=False, binary=False):
+              flags = ['--paginate', '--slurp'] if paginate else []
+              result = subprocess.check_output(['gh', 'api', *flags, f'repos/{repository}/{path}'], text=not binary)
+              return result if binary else json.loads(result)
+          reused = False
+          try:
+              revision = os.environ['WORKFLOW_SHA']
+              if not re.fullmatch('[0-9a-f]{40}', revision) or os.environ['WORKFLOW_REF'].rsplit('@', 1)[0] != workflow_path:
+                  raise ValueError('Current reusable workflow revision is not verifiable')
+              pages = api(f"actions/runs?event=merge_group&status=success&head_sha={os.environ['GITHUB_SHA']}&per_page=100", True)
+              for run in (run for page in pages for run in page['workflow_runs']):
+                  if ((run.get('head_repository') or {}).get('full_name') != repository
+                          or run['head_sha'] != os.environ['GITHUB_SHA'] or run['event'] != 'merge_group'
+                          or run['status'] != 'completed' or run['conclusion'] != 'success'):
+                      continue
+                  name = f"merge-queue-tests-{os.environ['EVIDENCE_SCOPE']}-{run['run_attempt']}"
+                  listed = api(f"actions/runs/{run['id']}/artifacts?name={name}&per_page=100", True)
+                  artifacts = [item for page in listed for item in page['artifacts'] if item['name'] == name and not item['expired']]
+                  if len(artifacts) != 1:
+                      continue
+                  archive = api(f"actions/artifacts/{artifacts[0]['id']}/zip", binary=True)
+                  with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+                      if bundle.namelist() != ['merge-queue-tests.json'] or bundle.infolist()[0].file_size > 4096:
+                          raise ValueError('Invalid merge queue evidence archive')
+                      evidence = json.loads(bundle.read('merge-queue-tests.json'))
+                  if (evidence['workflow_ref'].rsplit('@', 1)[0] == workflow_path
+                          and evidence['workflow_sha'] == revision and evidence['full_test_set'] is True):
+                      reused = True
+                      break
+          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError, OSError, zipfile.BadZipFile):
+              print('Merge queue evidence unavailable; running the full suite')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('tests_reused=' + str(reused).lower() + '\n')
+          PYTHON
+      - name: Reuse merge queue tests
+        if: steps.queue.outputs.tests_reused == 'true'
+        run: echo 'Exact commit already passed this workflow in the merge queue; tests skipped. Archive and preparation still seed compile caches. Cache warm-up remains independent.'
       - name: Select test packages
         id: selection
         env:
@@ -455,6 +663,8 @@ jobs:
           BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           TEST_SHARD_COUNT: ${{ steps.config.outputs.test_shard_count }}
           TEST_HOSTS: ${{ steps.config.outputs.test_hosts }}
+          TEST_PREPARE_CONSUMERS: ${{ steps.config.outputs.test_prepare_consumers }}
+          TESTS_REUSED: ${{ steps.queue.outputs.tests_reused }}
         run: |
           python3 - <<'PYTHON'
           import ast
@@ -559,7 +769,7 @@ jobs:
               selected = set()
               for filename in changed:
                   path = pathlib.Path(filename)
-                  if filename in ('Cargo.toml', 'rust-toolchain', 'rust-toolchain.toml', '.github/ci.schema.json') or filename.startswith('.github/workflows/'):
+                  if filename in ('Cargo.toml', 'rust-toolchain', 'rust-toolchain.toml', '.github/ci.schema.json', '.config/nextest.toml') or filename.startswith('.github/workflows/'):
                       selected = set(members)
                       trigger = f'shared input: {filename}'
                       break
@@ -581,7 +791,7 @@ jobs:
               if '.github/ci.toml' in changed:
                   before, after = declarations()
                   browser_changed = before.get('browser_test_crates', []) != after.get('browser_test_crates', [])
-                  if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_prepare_packages', 'test_prepare_inputs', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
+                  if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
                       selected = set(members)
                       trigger = 'shared input: .github/ci.toml'
               if 'Cargo.lock' in changed and selected != members:
@@ -645,20 +855,53 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
               # The preparation job runs only when a selected package reads its output.
-              consumers = config.get('test_prepare_packages')
+              consumers = json.loads(os.environ['TEST_PREPARE_CONSUMERS'])
               prepare = json.dumps(config.get('test_prepare', '') if consumers is None or set(consumers) & set(names) else '')
               output.write('test_prepare=' + prepare + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
               output.write('coverage_scope=' + ('full workspace' if selected == members else 'selected packages: ' + ', '.join(names)) + '\n')
-              output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
-              output.write('selected_tests=' + str(event == 'pull_request' and bool(selected)).lower() + '\n')
+              output.write('coverage=' + str(event != 'pull_request' and os.environ.get('TESTS_REUSED') != 'true').lower() + '\n')
               hosts = json.loads(os.environ['TEST_HOSTS'])
-              if event == 'pull_request':
-                  hosts = {'ubuntu-latest': 1}
+              # A reused queue result seeds only the Linux compile cache.
+              if os.environ.get('TESTS_REUSED') == 'true':
+                  hosts = {'ubuntu-latest': hosts['ubuntu-latest']}
               shards = [dict(runner=runner, shard=shard, count=count) for runner, count in hosts.items() for shard in range(1, count + 1)]
               output.write('test_shards=' + json.dumps(shards) + '\n')
+              output.write('test_runners=' + json.dumps(list(hosts)) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
+      - name: Validate browser-only request
+        if: inputs.browser-only
+        env:
+          CAN_RUN_BROWSER: ${{ steps.selection.outputs.browser_tests == 'true' && steps.selection.outputs.coverage == 'true' && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan }}
+        run: |
+          if [ "$CAN_RUN_BROWSER" != true ]; then
+            echo 'browser-only requires selected browser tests and cannot be combined with warm-cache, advisory-scan or fuzz-scan' >&2
+            exit 1
+          fi
+      - name: Record merge queue evidence
+        if: github.event_name == 'merge_group'
+        env:
+          WORKFLOW_REF: ${{ steps.evidence-scope.outputs.workflow_ref }}
+          WORKFLOW_SHA: ${{ steps.evidence-scope.outputs.workflow_sha }}
+          FULL_TEST_SET: ${{ steps.selection.outputs.coverage_scope == 'full workspace' && steps.selection.outputs.coverage == 'true' && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.checkout-repository && !inputs.checkout-ref && !inputs.test-event }}
+        run: |
+          python3 <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          evidence = {'workflow_ref': os.environ['WORKFLOW_REF'], 'workflow_sha': os.environ['WORKFLOW_SHA'],
+                      'full_test_set': os.environ['FULL_TEST_SET'] == 'true'}
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'merge-queue-tests.json'
+          path.write_text(json.dumps(evidence) + '\n', encoding='utf-8')
+          PYTHON
+      - name: Upload merge queue evidence
+        if: github.event_name == 'merge_group'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: merge-queue-tests-${{ steps.evidence-scope.outputs.scope }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/merge-queue-tests.json
+          if-no-files-found: error
 
   quality:
     permissions:
@@ -667,7 +910,7 @@ jobs:
     needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -700,7 +943,7 @@ jobs:
           CACHE_INDEX: ${{ strategy.job-index || 0 }}
           CACHE_CALL: ${{ inputs.concurrency-key }}
           ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
-          CACHE_COVERAGE: ${{ needs.declaration.outputs.coverage }}
+          CACHE_COVERAGE: ${{ needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' }}
           CACHE_ENABLED: ${{ needs.declaration.outputs.enabled }}
           CACHE_WARM: ${{ inputs.warm-cache }}
           CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -1023,7 +1266,7 @@ jobs:
     needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -1106,7 +1349,7 @@ jobs:
       contents: read
       actions: read
     name: ${{ matrix.runner == 'ubuntu-latest' && 'Build test archive' || format('Build test archive ({0})', matrix.runner) }}
-    if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.selected_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1116,7 +1359,7 @@ jobs:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
-      COLLECT_COVERAGE: ${{ matrix.runner == 'ubuntu-latest' && needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' }}
+      COLLECT_COVERAGE: ${{ matrix.runner == 'ubuntu-latest' && needs.declaration.outputs.enabled == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') }}
     defaults:
       run:
         shell: bash
@@ -1309,10 +1552,10 @@ jobs:
           if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${COLLECT_COVERAGE:-false}" = true ]; then
             "$TOOLS/cargo-llvm-cov" llvm-cov nextest-archive --user-config-file none \
-              --locked "${packages[@]}" --archive-file test-binaries.tar.zst
+              --locked "${packages[@]}" --timings --archive-file test-binaries.tar.zst
           else
             "$TOOLS/cargo-nextest" nextest archive --user-config-file none \
-              --locked "${packages[@]}" --archive-file test-binaries.tar.zst
+              --locked "${packages[@]}" --timings --archive-file test-binaries.tar.zst
           fi
       - name: Save Cargo git cache
         if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
@@ -1324,11 +1567,18 @@ jobs:
             ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
           key: ${{ steps.git-cache-identity.outputs.key }}
       - name: Upload test archive
+        if: needs.declaration.outputs.tests_reused != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: &test-archive-name test-archive-${{ inputs.concurrency-key || 'root' }}${{ matrix.runner != 'ubuntu-latest' && format('-{0}', matrix.runner) || '' }}
           path: ${{ inputs.working-directory || '.' }}/test-binaries.tar.zst
           compression-level: 0
+          if-no-files-found: error
+      - name: Upload archive build timings
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-build-timings-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ inputs.working-directory || '.' }}/target/**/cargo-timings/cargo-timing.html
           if-no-files-found: error
       - name: Compile cache statistics
         id: cache-statistics
@@ -1358,7 +1608,7 @@ jobs:
       actions: read
     needs: declaration
     name: ${{ matrix.runner == 'ubuntu-latest' && 'Prepare test setup' || format('Prepare test setup ({0})', matrix.runner) }}
-    if: ${{ needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.selected_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1465,18 +1715,18 @@ jobs:
           path: ${{ runner.temp }}/test-setup.tar
           key: ${{ steps.setup-identity.outputs.key }}
           restore-keys: ${{ steps.setup-identity.outputs.prefix }}
+          lookup-only: ${{ steps.cache-identity.outputs.writer == 'true' }}
           enableCrossOsArchive: false
           fail-on-cache-miss: false
-      # A merge group and the push that lands it have no cache a pull request run could write, but the runs that tested the same change uploaded its bundle as an artifact. Pull request runs list none, so every candidate was built by the code being merged from a bundle the default branch saved.
+      # A merge group adds bundles from the pull request runs that tested the change. Writers compile without bases, so they need no candidates.
       - name: Test setup candidates
         id: candidates
-        if: ${{ steps.setup-cache.outputs.cache-hit != 'true' && needs.declaration.outputs.test_prepare_inputs != '[]' }}
+        if: ${{ steps.cache-identity.outputs.writer != 'true' && steps.setup-cache.outputs.cache-hit != 'true' && needs.declaration.outputs.test_prepare_inputs != '[]' }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_NAME: &test-setup-name test-setup-${{ inputs.concurrency-key || 'root' }}${{ matrix.runner != 'ubuntu-latest' && format('-{0}', matrix.runner) || '' }}
           CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          CACHE_WRITER: ${{ steps.cache-identity.outputs.writer }}
         run: |
           python3 - <<'PYTHON'
           import json
@@ -1485,7 +1735,6 @@ jobs:
           import subprocess
           import urllib.parse
           repository, event, sha = os.environ['GITHUB_REPOSITORY'], os.environ['GITHUB_EVENT_NAME'], os.environ['GITHUB_SHA']
-          pushed = os.environ['CACHE_WRITER'] == 'true'
           def api(path):
               return json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/{path}'], text=True))
           def has_bundle(run):
@@ -1494,7 +1743,7 @@ jobs:
           def newest_with_bundle(runs):
               return next((run for run in runs if has_bundle(run)), None)
           def runs_at(event, head):
-              # The repository's own runs of that event at that commit, whichever workflow ran them: a workflow an organization ruleset requires has no route under actions/workflows, and a push runs another workflow than its merge group. Fork runs are not this repository's code under review.
+              # The repository's own runs of that event at that commit, whichever workflow ran them: a workflow an organization ruleset requires has no route under actions/workflows. Fork runs are not this repository's code under review.
               runs = api(f'actions/runs?event={event}&head_sha={head}&status=success&per_page=100')['workflow_runs']
               return [run for run in runs if (run['head_repository'] or {}).get('full_name') == repository]
           candidates = []
@@ -1504,8 +1753,6 @@ jobs:
                   subjects = [item['commit']['message'].split('\n', 1)[0] for item in api(f"compare/{os.environ['CACHE_DEFAULT_BRANCH']}...{sha}?per_page=100")['commits']]
                   for number in [int(match[1]) for match in map(re.compile(r'\(#(\d+)\)$').search, subjects) if match]:
                       candidates.append(newest_with_bundle(runs_at('pull_request', api(f'pulls/{number}')['head']['sha'])))
-              elif pushed:
-                  candidates.append(newest_with_bundle(runs_at('merge_group', sha)))
           except (subprocess.CalledProcessError, ValueError, KeyError, TypeError) as error:
               print(f'::warning::The test setup candidates could not be listed ({error}); preparing from the bases found so far.', flush=True)
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
@@ -1641,10 +1888,12 @@ jobs:
                   shutil.rmtree(destination / run_id, ignore_errors=True)
           PYTHON
       - name: Prepare test setup
-        if: steps.setup-cache.outputs.cache-hit != 'true'
+        # A bundle hit supplies prepared files, not the compiler objects the next build needs.
+        if: steps.setup-cache.outputs.cache-hit != 'true' || steps.cache-identity.outputs.writer == 'true'
         timeout-minutes: 45
         env:
           TEST_SETUP_CANDIDATE_RUNS: ${{ steps.candidates.outputs.runs }}
+          CACHE_WRITER: ${{ steps.cache-identity.outputs.writer }}
         run: |
           export TEST_PREPARE_OUTPUT="$PWD/target/test-setup"
           if [ "${OS:-}" = Windows_NT ]; then TEST_PREPARE_OUTPUT=$(cygpath -m "$TEST_PREPARE_OUTPUT"); fi
@@ -1662,14 +1911,17 @@ jobs:
               rm -rf "$2"
             fi
           }
-          if [ -f "$RUNNER_TEMP/test-setup.tar" ]; then
-            extract "$RUNNER_TEMP/test-setup.tar" "$RUNNER_TEMP/test-setup-base"
-          fi
-          for run in ${TEST_SETUP_CANDIDATE_RUNS-}; do
-            if [ -f "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" ]; then
-              extract "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" "$RUNNER_TEMP/test-setup-candidate-$run"
+          # Writers compile every input to seed objects; reusing prepared files would leave their cache cold.
+          if [ "${CACHE_WRITER:-false}" != true ]; then
+            if [ -f "$RUNNER_TEMP/test-setup.tar" ]; then
+              extract "$RUNNER_TEMP/test-setup.tar" "$RUNNER_TEMP/test-setup-base"
             fi
-          done
+            for run in ${TEST_SETUP_CANDIDATE_RUNS-}; do
+              if [ -f "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" ]; then
+                extract "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" "$RUNNER_TEMP/test-setup-candidate-$run"
+              fi
+            done
+          fi
           if [ "${#bases[@]}" -gt 0 ]; then
             export TEST_PREPARE_BASE
             TEST_PREPARE_BASE=$(python3 -c 'import os, sys; print(os.pathsep.join(sys.argv[1:]))' "${bases[@]}")
@@ -1684,6 +1936,7 @@ jobs:
           path: ${{ runner.temp }}/test-setup.tar
           key: ${{ steps.setup-identity.outputs.key }}
       - name: Upload test setup
+        if: needs.declaration.outputs.tests_reused != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: *test-setup-name
@@ -1717,7 +1970,7 @@ jobs:
       contents: read
       actions: read
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.runner == 'ubuntu-latest' && format('Test shard ({0}/{1})', matrix.shard, matrix.count) || format('Test shard ({0} {1}/{2})', matrix.runner, matrix.shard, matrix.count) }}
-    if: ${{ !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.selected_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1834,7 +2087,7 @@ jobs:
             build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
           fi
           if [ "${SHARD:-}" != doctests ]; then
-            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${build_args[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/$TEST_SHARD_COUNT" --no-tests pass 2>&1 | tee nextest.log
+            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${build_args[@]}" --retries 0 --final-status-level flaky --partition "slice:$SHARD/$TEST_SHARD_COUNT" --no-tests pass 2>&1 | tee nextest.log
           fi
           if [[ "$SHARD" == doctests || ( -z "${TEST_ARCHIVE:-}" && "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
             cargo test --locked --doc "${packages[@]}"
@@ -1999,14 +2252,14 @@ jobs:
           fi
           if [ "${SHARD:-}" != doctests ]; then
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] || [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
-              partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT")
+              partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT")
               report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
               if [ "${WARM_CACHE:-false}" = true ]; then
                 packages=(--workspace)
                 partition=(-E "${WARM_TEST_FILTER-none()}")
                 report=(--no-report)
               elif [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
-                partition=(--partition count:1/1)
+                partition=(--partition slice:1/1)
                 mkdir -p target/single-coverage
                 report=(--lcov --output-path "$PWD/target/single-coverage/shard-1.lcov")
               fi
@@ -2018,16 +2271,16 @@ jobs:
                 coverage_build_args=(--no-clean --archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" \
+                --retries 0 --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" \
                 --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee nextest.log
               if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] && [ "${WARM_CACHE:-false}" != true ]; then
                 COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
               fi
             else
               partition=()
-              if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT"); fi
+              if [ -n "${SHARD:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); fi
               run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
-                "${build_args[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
+                "${build_args[@]}" --retries 0 --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi
           fi
           if [[ "${WARM_CACHE:-false}" != true && -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( -z "${TEST_ARCHIVE:-}" && "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
@@ -2073,20 +2326,6 @@ jobs:
             ${{ inputs.working-directory || '.' }}/target/browser-author-diagnostics
             ${{ inputs.working-directory || '.' }}/nextest.log
           if-no-files-found: ignore
-      - name: Flaky test summary
-        if: always()
-        run: &flaky-test-summary |
-          python3 - <<'PYTHON'
-          import os
-          import pathlib
-          import re
-          path = pathlib.Path('nextest.log')
-          text = path.read_text(encoding='utf-8') if path.exists() else ''
-          text = re.sub(r'\x1b\[[0-9;]*m', '', text)
-          flaky = sorted(set(re.findall(r'^\s*FLAKY(?:\s+\d+/\d+)?\s+\[[^]]*\]\s*(.+)$', text, re.MULTILINE)))
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
-              output.write('### Flaky tests (passed on retry)\n' + ('\n'.join('- ' + name for name in flaky) if flaky else 'None') + '\n')
-          PYTHON
       - name: Test work units
         if: always()
         run: |
@@ -2134,7 +2373,7 @@ jobs:
       actions: read
     name: ${{ matrix.runner == 'ubuntu-latest' && 'Doctests' || format('Doctests ({0})', matrix.runner) }}
     needs: declaration
-    if: ${{ (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && needs.declaration.outputs.coverage == 'true' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ matrix.runner == 'ubuntu-latest' && fromJSON(needs.declaration.outputs.linux_runner) || matrix.runner }}
     strategy:
       fail-fast: false
@@ -2150,7 +2389,7 @@ jobs:
   tests-result:
     name: Tests (ubuntu-latest)
     needs: [tests, doctests, declaration]
-    if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     steps:
       - name: Runner hardware
@@ -2162,7 +2401,6 @@ jobs:
           RESULT: ${{ needs.tests.result }}
           DOCTEST_RESULT: ${{ needs.doctests.result }}
           DECLARATION_RESULT: ${{ needs.declaration.result }}
-          SELECTED_TESTS: ${{ needs.declaration.outputs.selected_tests }}
           COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
         shell: python
         run: |
@@ -2170,9 +2408,9 @@ jobs:
           assert os.environ['DECLARATION_RESULT'] == 'success'
           expected = {'false': 'skipped', 'true': 'success'}
           assert os.environ['COLLECT_COVERAGE'] in expected
-          required = 'success' if os.environ.get('SELECTED_TESTS') == 'true' else expected[os.environ['COLLECT_COVERAGE']]
+          required = expected[os.environ['COLLECT_COVERAGE']]
           assert os.environ['RESULT'] == required
-          assert os.environ['DOCTEST_RESULT'] == 'success'
+          assert os.environ['DOCTEST_RESULT'] == required
       - name: Download shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -2193,7 +2431,7 @@ jobs:
       actions: read
     name: Dependency, source and coverage checks
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -2464,13 +2702,10 @@ jobs:
           done
           mkdir -p target/single-coverage
           PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-            --retries 2 --flaky-result pass --final-status-level flaky --partition count:1/1 --no-tests pass --workspace --locked \
+            --retries 0 --final-status-level flaky --partition slice:1/1 --no-tests pass --workspace --locked \
             --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
             --lcov --output-path "$PWD/target/single-coverage/shard-1.lcov" 2>&1 | tee nextest.log
           COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
-      - name: Coverage flaky test summary
-        if: always() && needs.declaration.outputs.enabled != 'true' && needs.declaration.outputs.coverage == 'true'
-        run: *flaky-test-summary
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && needs.declaration.outputs.enabled != 'true'
@@ -2496,7 +2731,7 @@ jobs:
   fuzz:
     name: Fuzz ${{ matrix.name }}
     needs: declaration
-    if: ${{ !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}
+    if: ${{ !inputs.browser-only && !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     strategy:
       fail-fast: false
@@ -2608,7 +2843,7 @@ jobs:
   advisories:
     name: Advisory scan
     needs: declaration
-    if: ${{ inputs.advisory-scan && !inputs.warm-cache }}
+    if: ${{ !inputs.browser-only && inputs.advisory-scan && !inputs.warm-cache }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -2674,7 +2909,7 @@ jobs:
       actions: read
     name: Check (${{ matrix.target }})
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
+    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
       matrix:
@@ -2773,7 +3008,7 @@ jobs:
       actions: read
     name: Wasm and browser build
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ !inputs.browser-only && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -2962,8 +3197,16 @@ jobs:
           echo "PLAYWRIGHT_MODULE=$tools/node_modules/playwright" >> "$GITHUB_ENV"
           echo "CHROMIUM_PATH=$tools/chrome-linux64/chrome" >> "$GITHUB_ENV"
       - name: Browser test recipe
+        id: browser-recipe
         run: |
-          just browser-test
+          just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"
+      - name: Upload browser test log
+        if: always() && (steps.browser-recipe.outcome == 'success' || steps.browser-recipe.outcome == 'failure')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: browser-test-${{ inputs.concurrency-key || 'root' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/browser-test.log
+          if-no-files-found: error
       - name: Compile cache statistics
         id: cache-statistics
         if: always()
