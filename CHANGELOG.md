@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.19.13](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.12...v0.19.13) (2026-11-03)
+
+
+### Continuous Integration
+
+* advance the proof snapshot to the 0.19.12 pin ([#346](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/346)) ([c9a5321](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/c9a53218d5e25768ec5e990c4d424b1cc9db6d18))
+* allow named-ref Chromium browser proofs ([#339](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/339)) ([563bc20](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/563bc20a87e89254d4e12eb714ec057983830762))
+* fail tests without retrying failures ([#343](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/343)) ([b4641fe](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/b4641fe624954177eca40de7b9c6be19472b8830))
+
+## [0.19.12](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.11...v0.19.12) (2026-11-03)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#342](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/342)) ([a0f396f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/a0f396ff2d758bd43c4f92915acc2134e569a5e6))
+* move main scan pins to v0.19.11 ([#337](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/337)) ([a9241db](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/a9241db214221103a9923e45f1e2bf37328dce1e))
+
+
+### Bug Fixes
+
+* **ci:** seed test snapshots when main reuses queue results ([#341](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/341)) ([04f9eea](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/04f9eea17a07b018e7e87120aba1dfc4f37cc80e))
+
+## [0.19.11](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.10...v0.19.11) (2026-11-03)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#335](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/335)) ([09892a7](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/09892a7ab5ffe4ad6dada46ab9b73cbffbf8fe9b))
+* reuse merge-queue tests after landing ([#333](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/333)) ([03dc5ae](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/03dc5ae0298eb386c8e64dcc3b346285d13d3817))
+* run Apple target checks on pull requests ([#332](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/332)) ([43c8b4b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/43c8b4b792108a8e85ae07e39261a50f123ece01))
+* use slice test shards and publish build timings ([#327](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/327)) ([7e8e1b1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/7e8e1b122c692e8ba16136e01a193ec4b36ee5db))
+
+## [0.19.10](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.9...v0.19.10) (2026-11-03)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#328](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/328)) ([544782f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/544782f0e785a271a7518181bc22a6449732c6f5))
+* move main scan pins to v0.19.9 ([#321](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/321)) ([341f856](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/341f856395460f6093d622322dcdf096c894a253))
+* run only fast checks on pull requests ([#325](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/325)) ([d782d2d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/d782d2d9cbcb969257e82befaa76143a1ca274a8))
+
+## [0.19.9](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.8...v0.19.9) (2026-11-02)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#318](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/318)) ([bdf52cd](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/bdf52cd17ddd895871877ff13fc9ad1202d241e9))
+* derive prepared consumers from nextest setups ([#316](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/316)) ([497ec63](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/497ec63ae38cf62afa538ecadc9812c6d0e8ca33))
+
 ## [0.19.8](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.7...v0.19.8) (2026-11-02)
 
 

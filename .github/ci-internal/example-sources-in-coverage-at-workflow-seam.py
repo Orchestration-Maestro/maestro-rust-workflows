@@ -83,36 +83,30 @@ def single_coverage_runs_setup_scripts(name):
         assert '1 passed' in result.stderr + result.stdout
         print(f'PASS single_coverage_runs_setup_scripts: {name}', flush=True)
 
-def coverage_retries_report_flaky_tests_and_keep_failures():
+def caller_retries_cannot_rescue_a_coverage_failure():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary) / 'caller'
         shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
-        source = directory / 'src/lib.rs'
-        source.write_text('#[test] fn coverage_only_flaky() { assert_eq!(std::env::var("NEXTEST_ATTEMPT").unwrap(), "3"); }\n', encoding='utf-8')
+        (directory / '.config').mkdir()
+        (directory / '.config/nextest.toml').write_text(
+            '[profile.default]\nretries=2\n'
+            '[[profile.default.overrides]]\nfilter="all()"\nretries=2\n', encoding='utf-8')
+        (directory / 'src/lib.rs').write_text(
+            '#[test] fn fails_first_attempt() { assert_ne!(std::env::var("NEXTEST_ATTEMPT").unwrap(), "1"); }\n',
+            encoding='utf-8')
         toolchain = subprocess.check_output(['rustup', 'show', 'active-toolchain'], cwd=directory, text=True).split()[0]
         env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
                             'CARGO_COVERAGE_MIN_LINES': '0'}
-        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Coverage')],
-                                cwd=directory, env=env, capture_output=True, text=True)
-        assert result.returncode == 0, result.stdout + result.stderr
-        log = directory / 'nextest.log'
-        assert log.exists(), 'Coverage must capture nextest output for its flaky summary'
-        assert 'FLAKY' in log.read_text(encoding='utf-8')
-        summary = directory / 'summary'
-        checks = workflow.split('  checks:\n', 1)[1].split('\n  fuzz:', 1)[0]
-        assert "if: always()" in checks.split('      - name: Coverage flaky test summary\n', 1)[1].split('      - name:', 1)[0]
-        assert body('Coverage flaky test summary') == body('Flaky test summary')
-        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Coverage flaky test summary')],
-                                cwd=directory, env=env | {'GITHUB_STEP_SUMMARY': str(summary)}, capture_output=True, text=True)
-        assert result.returncode == 0 and 'coverage_only_flaky' in summary.read_text(encoding='utf-8'), result.stderr
-        source.write_text('#[test] fn coverage_permanent_failure() { panic!("permanent"); }\n', encoding='utf-8')
-        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Coverage')],
-                                cwd=directory, env=env, capture_output=True, text=True)
-        assert result.returncode != 0, result.stdout + result.stderr
-        assert 'coverage_permanent_failure' in log.read_text(encoding='utf-8')
-        print('PASS coverage_retries_report_flaky_tests_and_keep_failures', flush=True)
+        for name in ['Coverage', 'Isolated tests']:
+            result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body(name)],
+                                    cwd=directory, env=env, capture_output=True, text=True)
+            output = result.stdout + result.stderr
+            assert result.returncode == 100 and 'fails_first_attempt' in output, output
+            assert 'FAIL' in output and 'TRY 2' not in output and 'FLAKY' not in output, output
+            assert 'fails_first_attempt' in (directory / 'nextest.log').read_text(encoding='utf-8')
+            print(f'PASS caller_retries_cannot_rescue_a_coverage_failure: {name}', flush=True)
 
-coverage_retries_report_flaky_tests_and_keep_failures()
+caller_retries_cannot_rescue_a_coverage_failure()
 
 single_coverage_runs_setup_scripts('Isolated tests')
 single_coverage_runs_setup_scripts('Coverage')

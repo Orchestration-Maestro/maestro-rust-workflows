@@ -5,7 +5,7 @@ on:
     - cron: '17 * * * *'
   workflow_dispatch:
   pull_request:
-    paths: [.github/workflows/ci.yml, .github/workflows/advisories.yml]
+    paths: [.github/workflows/advisories.yml]
 
 permissions:
   contents: read
@@ -16,7 +16,7 @@ jobs:
       contents: read
       actions: read
     name: Maestro main
-    uses: ./.github/workflows/ci.yml
+    uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@054ba93c6899728b1bf0807f7dd8b7d66f944bfc # v0.19.11
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro

@@ -95,9 +95,6 @@ jobs:
               if not seen:
                   return None
               value = seen[-1]
-              if "needs.declaration.outputs.coverage == 'true'" in value:
-                  return str(evaluate(value, {'needs.declaration.outputs.coverage': 'true',
-                                              'needs.declaration.outputs.test_shard_count': outputs['test_shard_count']}))
               return resolve(value)
 
           def declared_shard_count_reaches_every_reader():
@@ -160,19 +157,84 @@ jobs:
                   directory = pathlib.Path(temporary)
                   shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
                   (directory / '.github').mkdir()
+                  (directory / '.config').mkdir()
                   path = directory / '.github/ci.toml'
+                  nextest = directory / '.config/nextest.toml'
                   base = 'wasm_crates=[]\ncheck_targets=[]\n'
-                  path.write_text(base + 'test_prepare_packages=["sample"]\ntest_prepare_inputs=["tools/**/*.toml", ".config/prepare.sh"]\n', encoding='utf-8')
+                  path.write_text(base + 'test_prepare_inputs=["tools/**/*.toml", ".config/prepare.sh"]\n', encoding='utf-8')
                   result, values = declaration(directory)
                   assert result.returncode == 0, result.stderr
                   assert json.loads(values['test_prepare_inputs']) == ['tools/**/*.toml', '.config/prepare.sh']
+                  assert values['test_prepare_consumers'] == 'null', values
                   path.write_text(base, encoding='utf-8')
                   result, values = declaration(directory)
                   assert result.returncode == 0 and values['test_prepare_inputs'] == '[]', result.stderr
+                  # Only the listed setups are read, so an unlisted setup may run before every test.
+                  def setup_filter(text, rule='filter={}'):
+                      nextest.write_text('[[profile.default.scripts]]\nfilter="all()"\nsetup="unlisted"\n'
+                                         '[[profile.default.scripts]]\n' + rule.format(json.dumps(text)) + '\nsetup=["unlisted", "prepared"]\n',
+                                         encoding='utf-8')
+                      path.write_text(base + 'test_prepare_setups=["prepared"]\n', encoding='utf-8')
+                      return declaration(directory)
+                  for accepted in ['package(sample)', 'package(=sample) & test(x)', 'package(sample) & !test(y)',
+                                   'package(sample) | package(=sample) | (package(sample) & (test(x::) | test(/y::/)))',
+                                   'package(sample) and not test(z) - test(w) + (test(v) & package(sample))',
+                                   'package (sample)\n  & test(/^a\\/b(c)/) & kind(lib)']:
+                      result, values = setup_filter(accepted)
+                      assert result.returncode == 0, (accepted, result.stderr)
+                      assert json.loads(values['test_prepare_consumers']) == ['sample'], (accepted, values)
+                  path.write_text(base + 'test_prepare_setups=[]\n', encoding='utf-8')
+                  result, values = declaration(directory)
+                  assert result.returncode == 0 and values['test_prepare_consumers'] == '[]', result.stderr
+                  setup = ".config/nextest.toml: setup 'prepared' "
+                  for refused, message in [
+                      ('package(sample) & default()', 'filter has unsupported atom: default()'),
+                      (1, 'filter must be a string'),
+                      ('(' * 2000 + 'package(sample)' + ')' * 2000, 'filter nesting is too deep'),
+                      ('test(x)', "filter term 'test(x)' names no package"),
+                      ('package(sample) | all()', "filter term 'all()' names no package"),
+                      ('package(sample) & !package(other)', 'filter negates package(other)'),
+                      ('package(sample) & not package(other)', 'filter negates package(other)'),
+                      ('package(sample) - package(other)', 'filter negates package(other)'),
+                      ('not (package(sample) | package(other))', 'filter negates package(sample)'),
+                      ('package(samp*)', 'filter matches packages by a glob: package(samp*)'),
+                      ('package(#sample)', 'filter matches packages by a glob: package(#sample)'),
+                      ('package(/sample/)', 'filter matches packages by a regular expression: package(/sample/)'),
+                      ('package(~sample)', 'filter matches packages by a substring: package(~sample)'),
+                      ('deps(sample)', 'filter selects packages by dependency: deps(sample)'),
+                      ('package(sample) & rdeps(sample)', 'filter selects packages by dependency: rdeps(sample)'),
+                      ('package(sample) & package(other)', "filter term 'package(sample) & package(other)' needs exactly one package() conjunct"),
+                      ('(package(sample) | test(x)) & test(y)', "filter term '(package(sample) | test(x)) & test(y)' needs exactly one package() conjunct"),
+                      ('package(missing)', "filter contains unknown package 'missing'"),
+                      ('package(sample', 'filter cannot be read at offset 0'),
+                      ('package(sample) && test(x)', 'filter cannot be read at offset 17')]:
+                      result, values = setup_filter(refused)
+                      assert result.returncode != 0 and not values, (refused, result.stdout)
+                      assert result.stderr.strip() == setup + message, (refused, result.stderr)
+                  result, values = setup_filter('', rule='platform="cfg(unix)"')
+                  assert result.returncode != 0 and not values, result.stdout
+                  assert result.stderr.strip() == setup + 'rule has no filter, so it runs before every test', result.stderr
+                  nextest.write_text('[profile.default]\nscripts=[1]\n', encoding='utf-8')
+                  result, values = declaration(directory)
+                  assert result.returncode != 0 and not values, result.stdout
+                  assert result.stderr.strip() == '.config/nextest.toml: profile.default.scripts must be an array of tables', result.stderr
+                  nextest.write_text('[[profile.default.scripts]\n', encoding='utf-8')
+                  result, values = declaration(directory)
+                  assert result.returncode != 0 and not values, result.stdout
+                  assert result.stderr.startswith('.config/nextest.toml: '), result.stderr
+                  nextest.unlink()
                   for declared, message in [
-                      ('test_prepare_packages="sample"', 'test_prepare_packages must be an array of nonempty strings'),
-                      ('test_prepare_packages=[1]', 'test_prepare_packages must be an array of nonempty strings'),
-                      ('test_prepare_packages=["missing"]', "test_prepare_packages contains unknown package 'missing'"),
+                      ('test_prepare_setups="prepared"', '.github/ci.toml: test_prepare_setups must be an array of nonempty strings'),
+                      ('test_prepare_setups=[1]', '.github/ci.toml: test_prepare_setups must be an array of nonempty strings'),
+                      ('test_prepare_setups=[""]', '.github/ci.toml: test_prepare_setups must be an array of nonempty strings'),
+                      ('test_prepare_setups=["a\\u0007"]', '.github/ci.toml: test_prepare_setups cannot contain control characters or surrogates'),
+                      ('test_prepare_setups=["missing"]', ".config/nextest.toml: setup 'missing' has no [[profile.default.scripts]] entry"),
+                      ('test_prepare_packages=["sample"]', ".github/ci.toml: unknown keys ['test_prepare_packages']; test_prepare_setups replaces test_prepare_packages")]:
+                      path.write_text(base + declared + '\n', encoding='utf-8')
+                      result, values = declaration(directory)
+                      assert result.returncode != 0 and not values, (declared, result.stdout)
+                      assert result.stderr.strip() == message, (declared, result.stderr)
+                  for declared, message in [
                       ('test_prepare_inputs="key.txt"', 'test_prepare_inputs must be an array of nonempty strings'),
                       ('test_prepare_inputs=[1]', 'test_prepare_inputs must be an array of nonempty strings'),
                       ('test_prepare_inputs=[""]', 'test_prepare_inputs must be an array of nonempty strings'),
@@ -186,39 +248,81 @@ jobs:
                       assert result.returncode != 0 and not values, (declared, result.stdout)
                       assert result.stderr.strip() == '.github/ci.toml: ' + message, (declared, result.stderr)
               schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
-              packages = schema['properties']['test_prepare_packages']
-              assert packages['type'] == 'array' and packages['items'] == {'type': 'string'} and packages['default'] == []
+              setups = schema['properties']['test_prepare_setups']
+              assert setups['type'] == 'array' and setups['items'] == {'type': 'string'} and setups['default'] == []
+              assert 'test_prepare_packages' not in schema['properties']
               inputs = schema['properties']['test_prepare_inputs']
               assert inputs['type'] == 'array' and inputs['items'] == {'type': 'string'} and inputs['default'] == []
-              assert not {'test_prepare_packages', 'test_prepare_inputs'} & set(schema['required'])
+              assert not {'test_prepare_setups', 'test_prepare_inputs'} & set(schema['required'])
 
           prepare_declaration_keys_are_validated()
           print('PASS prepare_declaration_keys_are_validated')
 
-          def prepare_gate_follows_selected_consumers():
-              def prepared(directory, event, extra=None):
-                  with tempfile.NamedTemporaryFile() as output:
-                      result = select_packages(directory, {'TEST_EVENT': event, 'GITHUB_OUTPUT': output.name} | (extra or {}))
-                      assert result.returncode == 0, result.stderr
-                      return dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding='utf-8').splitlines())['test_prepare']
+          def prepared_packages_follow_all_default_setup_entries():
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
                   (directory / '.github').mkdir()
+                  (directory / '.config').mkdir()
+                  names = ['a', 'b', 'c']
+                  (directory / 'Cargo.toml').write_text('[workspace]\nresolver="2"\nmembers=' + json.dumps(names) + '\n', encoding='utf-8')
+                  for name in names:
+                      (directory / name / 'src').mkdir(parents=True)
+                      (directory / name / 'src/lib.rs').write_text('', encoding='utf-8')
+                      (directory / name / 'Cargo.toml').write_text(f'[package]\nname="{name}"\nversion="0.1.0"\n', encoding='utf-8')
+                  subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=directory, check=True)
+                  (directory / '.github/ci.toml').write_text(
+                      'wasm_crates=[]\ncheck_targets=[]\ntest_prepare_setups=["first", "second"]\n', encoding='utf-8')
+                  (directory / '.config/nextest.toml').write_text(
+                      '[[profile.default.scripts]]\nfilter="package(a) | (package(b) & (test(x) | !test(y)))"\nsetup="first"\n'
+                      '[[profile.default.scripts]]\nfilter="package(c)"\nsetup=["unlisted", "first"]\n'
+                      '[[profile.default.scripts]]\nfilter="package(=b)"\nsetup="second"\n'
+                      '[[profile.default.scripts]]\nfilter="all()"\nsetup="unlisted"\n'
+                      '[[profile.custom.scripts]]\nfilter="all()"\nsetup="first"\n', encoding='utf-8')
+                  result, values = declaration(directory)
+                  assert result.returncode == 0, result.stderr
+                  assert json.loads(values['test_prepare_consumers']) == names, values
+
+          prepared_packages_follow_all_default_setup_entries()
+          print('PASS prepared_packages_follow_all_default_setup_entries')
+
+          def prepare_gate_follows_selected_consumers():
+              def selection(directory, event, extra=None):
+                  # The selection step reads the consumers the declaration step read from the nextest configuration.
+                  result, declared = declaration(directory)
+                  assert result.returncode == 0, result.stderr
+                  with tempfile.NamedTemporaryFile() as output:
+                      result = select_packages(directory, {'TEST_EVENT': event, 'GITHUB_OUTPUT': output.name,
+                                                           'TEST_PREPARE_CONSUMERS': declared['test_prepare_consumers']} | (extra or {}))
+                      assert result.returncode == 0, result.stderr
+                      values = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding='utf-8').splitlines())
+                      return values['test_prepare'], json.loads(values['packages']), result.stdout
+              def prepared(directory, event, extra=None):
+                  return selection(directory, event, extra)[0]
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / '.github').mkdir()
+                  (directory / '.config').mkdir()
                   members = ['consumer', 'plain']
                   (directory / 'Cargo.toml').write_text('[workspace]\nresolver="2"\nmembers=["consumer", "plain"]\n', encoding='utf-8')
                   for member in members:
                       (directory / member / 'src').mkdir(parents=True)
-                      (directory / member / 'src/lib.rs').write_text('', encoding='utf-8')
                       (directory / member / 'Cargo.toml').write_text(f'[package]\nname="{member}"\nversion="0.1.0"\nedition="2021"\n', encoding='utf-8')
+                  (directory / 'consumer/src/lib.rs').write_text('', encoding='utf-8')
+                  # A test that reads the nextest configuration must not narrow a change to it.
+                  (directory / 'plain/src/lib.rs').write_text('pub const NEXTEST: &str = include_str!("../../.config/nextest.toml");\n', encoding='utf-8')
                   subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=directory, check=True)
-                  declared = 'wasm_crates=[]\ncheck_targets=[]\ntest_prepare="echo ready"\ntest_prepare_packages=["consumer"]\n'
+                  scripts = ('[[profile.default.scripts]]\nfilter="package(consumer)"\nsetup="prepared"\n'
+                             '[[profile.default.scripts]]\nfilter="package(plain)"\nsetup="other"\n')
+                  (directory / '.config/nextest.toml').write_text(scripts, encoding='utf-8')
+                  declared = 'wasm_crates=[]\ncheck_targets=[]\ntest_prepare="echo ready"\ntest_prepare_setups=["prepared"]\n'
                   (directory / '.github/ci.toml').write_text(declared, encoding='utf-8')
                   fixture_git(directory, 'init', '--quiet')
                   fixture_git(directory, 'add', '.')
                   fixture_git(directory, 'commit', '-qm', 'base')
                   base = fixture_git(directory, 'rev-parse', 'HEAD').strip()
                   def change(member, text):
-                      (directory / member / 'src/lib.rs').write_text(text, encoding='utf-8')
+                      with (directory / member / 'src/lib.rs').open('a', encoding='utf-8') as source:
+                          source.write(text)
                       fixture_git(directory, 'commit', '-qam', 'change ' + member)
                   change('plain', '// plain\n')
                   assert prepared(directory, 'pull_request', {'BASE_REF': base}) == '""'
@@ -230,11 +334,20 @@ jobs:
                   fixture_git(directory, 'add', '.')
                   fixture_git(directory, 'commit', '-qm', 'shared input')
                   assert prepared(directory, 'merge_group', {'BASE_REF': base}) == json.dumps('echo ready')
+                  # A nextest configuration change can make any package a consumer, so it runs the full suite.
+                  fixture_git(directory, 'checkout', '-q', base)
+                  (directory / '.config/nextest.toml').write_text(scripts.replace('"package(plain)"', '"package(plain) & test(x)"'), encoding='utf-8')
+                  fixture_git(directory, 'commit', '-qam', 'edit a setup filter')
+                  command, packages, log = selection(directory, 'pull_request', {'BASE_REF': base})
+                  assert (command, packages) == (json.dumps('echo ready'), members), log
+                  assert 'Full-suite fallback: shared input: .config/nextest.toml' in log, log
                   # A declaration that names the preparation keys is itself a full-suite change on pull requests.
                   fixture_git(directory, 'checkout', '-q', base)
-                  (directory / '.github/ci.toml').write_text(declared.replace('["consumer"]', '["consumer", "plain"]'), encoding='utf-8')
+                  (directory / '.github/ci.toml').write_text(declared.replace('["prepared"]', '["prepared", "other"]'), encoding='utf-8')
                   fixture_git(directory, 'commit', '-qam', 'declare plain')
-                  assert prepared(directory, 'pull_request', {'BASE_REF': base}) == json.dumps('echo ready')
+                  command, packages, log = selection(directory, 'pull_request', {'BASE_REF': base})
+                  assert (command, packages) == (json.dumps('echo ready'), members), log
+                  assert 'Full-suite fallback: shared input: .github/ci.toml' in log, log
                   # Naming the preparation inputs is a declaration change too.
                   fixture_git(directory, 'checkout', '-q', base)
                   (directory / '.github/ci.toml').write_text(declared + 'test_prepare_inputs=["justfile"]\n', encoding='utf-8')
@@ -242,13 +355,15 @@ jobs:
                   assert prepared(directory, 'pull_request', {'BASE_REF': base}) == json.dumps('echo ready')
                   # Without the list every selection keeps the command.
                   fixture_git(directory, 'checkout', '-q', base)
-                  (directory / '.github/ci.toml').write_text(declared.replace('test_prepare_packages=["consumer"]\n', ''), encoding='utf-8')
-                  fixture_git(directory, 'commit', '-qam', 'drop the consumer list')
+                  (directory / '.github/ci.toml').write_text(declared.replace('test_prepare_setups=["prepared"]\n', ''), encoding='utf-8')
+                  fixture_git(directory, 'commit', '-qam', 'drop the setup list')
                   base = fixture_git(directory, 'rev-parse', 'HEAD').strip()
                   change('plain', '// plain again\n')
                   assert prepared(directory, 'pull_request', {'BASE_REF': base}) == json.dumps('echo ready')
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               assert document['jobs']['declaration']['outputs']['test_prepare'] == '$' + '{{ steps.selection.outputs.test_prepare }}'
+              step = next(step for step in document['jobs']['declaration']['steps'] if step.get('name') == 'Select test packages')
+              assert step['env']['TEST_PREPARE_CONSUMERS'] == '$' + '{{ steps.config.outputs.test_prepare_consumers }}'
 
           prepare_gate_follows_selected_consumers()
           print('PASS prepare_gate_follows_selected_consumers')
@@ -273,7 +388,11 @@ jobs:
               assert steps['Restore test setup cache']['with']['key'] == '$' + '{{ steps.setup-identity.outputs.key }}'
               # A missed key restores the closest earlier bundle of the same identity; only the exact key is saved.
               assert steps['Restore test setup cache']['with']['restore-keys'] == '$' + '{{ steps.setup-identity.outputs.prefix }}'
-              assert steps['Prepare test setup']['if'] == "steps.setup-cache.outputs.cache-hit != 'true'"
+              for writer, hit, expected in [('true', 'true', True), ('true', '', True),
+                                            ('false', 'true', False), ('false', '', True)]:
+                  assert bool(evaluate(steps['Prepare test setup']['if'], {
+                      'steps.setup-cache.outputs.cache-hit': hit,
+                      'steps.cache-identity.outputs.writer': writer})) == expected, (writer, hit)
               save = steps['Save test setup cache']
               assert condition(save) == "steps.cache-identity.outputs.writer == 'true' && steps.setup-cache.outputs.cache-hit != 'true' && " + declared
               assert save['with'] == {'path': '$' + '{{ runner.temp }}/test-setup.tar', 'key': '$' + '{{ steps.setup-identity.outputs.key }}'}
@@ -345,7 +464,7 @@ jobs:
           cache_identity_follows_the_declared_inputs()
           print('PASS cache_identity_follows_the_declared_inputs')
 
-          def second_run_with_unchanged_inputs_restores_and_skips():
+          def writers_rebuild_while_unchanged_readers_skip_preparation():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               job, steps = prepare_steps(document)
               with tempfile.TemporaryDirectory() as temporary:
@@ -359,7 +478,8 @@ jobs:
                       checkout.mkdir(parents=True)
                       (checkout / 'key.txt').write_text(printed, encoding='utf-8')
                       env = {'TEST_PREPARE': command, 'TEST_PREPARE_INPUTS': json.dumps(['key.txt']), 'RUNNER_TEMP': str(runner),
-                             'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work'}
+                             'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work',
+                             'CACHE_WRITER': 'true' if writer else 'false'}
                       with tempfile.NamedTemporaryFile() as output:
                           result = execute('Test setup cache identity', checkout, env | {'GITHUB_OUTPUT': output.name})
                           assert result.returncode == 0, result.stderr
@@ -386,10 +506,10 @@ jobs:
                   # A pull request reads the cache and never writes it.
                   assert run('pull-request', 'inputs-1', False)[:3] == (False, True, False)
                   assert not list(cache.iterdir())
-                  # The first push prepares and saves; the second, with unchanged input files, restores and skips.
+                  # Writers compile on exact hits too, but never overwrite an existing bundle key.
                   assert run('push-1', 'inputs-1', True)[:3] == (False, True, True)
                   hit, prepared, saved, tarball = run('push-2', 'inputs-1', True)
-                  assert (hit, prepared, saved) == (True, False, False)
+                  assert (hit, prepared, saved) == (True, True, False)
                   listing = subprocess.check_output(['tar', '-tf', str(tarball)], text=True)
                   assert 'test-setup/count' in listing and 'test-setup/base-count' not in listing, listing
                   assert subprocess.check_output(['tar', '-xOf', str(tarball), 'test-setup/count'], text=True) == 'once\n'
@@ -398,16 +518,20 @@ jobs:
                   # Changed inputs miss the exact key, prepare again and save under the new key.
                   hit, prepared, saved, tarball = run('push-3', 'inputs-2', True)
                   assert (hit, prepared, saved) == (False, True, True)
-                  # They start from push-2's bundle, restored by prefix and handed over as the base.
+                  listing = subprocess.check_output(['tar', '-tf', str(tarball)], text=True)
+                  assert 'test-setup/base-count' not in listing, listing
+                  # A reader's exact miss still receives the closest bundle as its base.
+                  hit, prepared, saved, tarball = run('reader-new-inputs', 'inputs-3', False)
+                  assert (hit, prepared, saved) == (False, True, False)
                   assert subprocess.check_output(['tar', '-xOf', str(tarball), 'test-setup/base-count'], text=True) == 'once\n'
 
-          second_run_with_unchanged_inputs_restores_and_skips()
-          print('PASS second_run_with_unchanged_inputs_restores_and_skips')
+          writers_rebuild_while_unchanged_readers_skip_preparation()
+          print('PASS writers_rebuild_while_unchanged_readers_skip_preparation')
 
           def every_bundle_reader_restores_on_a_hit():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               base = {'cancelled()': False, 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
-                      'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.selected_tests': 'false',
+                      'needs.declaration.outputs.coverage': 'true',
                       'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'github.repository_id': 'caller',
                       'inputs.working-directory': '.', 'matrix.shard': '1'}
               def values(key, warm, **extra):
@@ -444,8 +568,9 @@ jobs:
           def docs_list_the_preparation_keys():
               guide = ' '.join((root / 'docs/caller-checks.md').read_text(encoding='utf-8').split())
               readme = ' '.join((root / 'README.md').read_text(encoding='utf-8').split())
-              for text in ['`test_prepare_packages`', '`test_prepare_inputs`']:
+              for text in ['`test_prepare_setups`', '`test_prepare_inputs`']:
                   assert text in guide and text in readme, text
+              assert 'test_prepare_packages' not in guide + readme
               # Warm builds prepare when inputs are declared, and the guide still declares one command.
               assert 'do not run preparation or restore prepared files' not in guide
               assert 'declare one standalone shell command' in guide
@@ -1622,6 +1747,43 @@ jobs:
           a_pinned_job_that_did_not_run_is_reported()
           print('PASS a_pinned_job_that_did_not_run_is_reported')
 
+          def reused_main_tests_keep_the_other_required_checks():
+              pinned = SETTINGS['required']
+              ran = [job(name.rstrip('*') + ('1/16)' if name.endswith('*') else ''), 5) for name in pinned]
+              omitted = {'Test shard (1/16)', 'Doctests'}
+              declaration = next(item for item in ran if item['name'] == 'Caller declaration')
+              declaration['steps'] = [{'name': 'Reuse merge queue tests', 'conclusion': 'success'}]
+              skipped = [dict(item, conclusion='skipped') if item['name'] in omitted else item for item in ran]
+              main = run_of(7, 39, event='push')
+              assert judging['required_finding'](main, skipped, pinned) is None
+              for event, branch, status in [('merge_group', 'main', 'success'), ('push', 'topic', 'success'),
+                                             ('push', 'main', 'skipped'), ('push', 'main', 'failure')]:
+                  declaration['steps'][0]['conclusion'] = status
+                  assert judging['required_finding'](run_of(7, 39, event=event, branch=branch), skipped, pinned)
+              declaration['steps'][0]['conclusion'] = 'success'
+              for required in ['Docs', 'Build test archive']:
+                  broken = [dict(item, conclusion='skipped') if item['name'] == required else item for item in skipped]
+                  finding = judging['required_finding'](main, broken, pinned)
+                  assert finding and f'`{required}`' in finding['body'] and 'Test shard' not in finding['body'], finding
+              # A reused run starts a separate job-shape history, not a false removal escalation.
+              gh, _ = fake_repository(event='push')
+              def reused_repository(*args):
+                  result = gh(*args)
+                  if '/actions/runs/7/jobs?' in args[-1]:
+                      pages = json.loads(result)
+                      for page in pages:
+                          for item in page['jobs']:
+                              if item['name'] in omitted or item['name'].startswith('Test shard ('):
+                                  item['conclusion'] = 'skipped'
+                              if item['name'] == 'Caller declaration':
+                                  item.setdefault('steps', []).append({'name': 'Reuse merge queue tests', 'conclusion': 'success'})
+                      return json.dumps(pages)
+                  return result
+              assert judging['judge']('7', 'owner/repo', reused_repository, SETTINGS) == []
+
+          reused_main_tests_keep_the_other_required_checks()
+          print('PASS reused_main_tests_keep_the_other_required_checks')
+
           def selection_rows(*shares):
               return [(identifier, selected, 51, trigger) for identifier, (selected, trigger) in enumerate(shares, 1)]
 
@@ -1930,11 +2092,16 @@ jobs:
               assert result.returncode == 0 and 'Work units' not in result.stdout, result.stdout + result.stderr
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               text = jobs['tests']
-              assert text.index('- name: Flaky test summary') < text.index('- name: Test work units'), 'the summary step comes before the work units'
               assert '- name: Test work units\n        if: always()\n' in text, 'the work units are reported even when a test fails'
 
           the_shards_and_the_archive_build_report_their_work_units()
           print('PASS the_shards_and_the_archive_build_report_their_work_units')
+
+          def no_step_reports_flaky_passes_because_tests_never_retry():
+              assert 'FLAKY' not in workflow and '- name: Flaky test summary' not in workflow and '- name: Coverage flaky test summary' not in workflow, 'a step parses FLAKY lines that no-retry runs never print'
+
+          no_step_reports_flaky_passes_because_tests_never_retry()
+          print('PASS no_step_reports_flaky_passes_because_tests_never_retry')
 
           def every_job_that_saves_a_snapshot_judges_its_cache_floor_after_its_statistics():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))

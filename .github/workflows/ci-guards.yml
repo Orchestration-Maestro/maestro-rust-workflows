@@ -535,8 +535,14 @@ jobs:
                                'Fix the test at its cause; do not raise a timeout.\n'}
                       for test, mark in sorted(slow.items())]
 
+          def reuses_tests(run, jobs):
+              """A main push whose declaration confirmed reuse of this exact commit's merge-queue tests."""
+              return seeds(run) and any(job['name'] == 'Caller declaration' and reached(job, 'Reuse merge queue tests') for job in jobs)
+
           def required_finding(run, jobs, pinned):
               """Pinned jobs that did not run at all, so a renamed or removed gate cannot pass silently."""
+              if reuses_tests(run, jobs):
+                  pinned = [name for name in pinned if name not in ('Test shard (*', 'Doctests')]
               ran = [job['name'] for job in jobs if job.get('conclusion') in ('success', 'failure')]
               missing = [name for name in pinned if not any(
                   job.startswith(name[:-1]) if name.endswith('*') else job == name for job in ran)]
@@ -622,7 +628,7 @@ jobs:
                       other_jobs = jobs_of(other['id'])
                       if band_of(other_jobs, annotations_of) != band:
                           continue
-                      if len(prior) < 5:
+                      if len(prior) < 5 and reuses_tests(run, jobs) == reuses_tests(other, other_jobs):
                           prior.append(other)
                       if len(like) < 5 and job_set(other_jobs) == ran:
                           like.append(other)
