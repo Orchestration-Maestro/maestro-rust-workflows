@@ -3610,13 +3610,11 @@ def apple_type_errors_fail_pull_requests():
         for text, expected in [(broken, False), (broken.replace('0o644_u32', '0o644_u16'), True)]:
             source.write_text(text, encoding='utf-8')
             result = execute('Check target', directory, env)
-            print(result.stdout + result.stderr, flush=True)
             assert (result.returncode == 0) == expected, result.stdout + result.stderr
             if not expected:
                 assert 'error[E0308]' in result.stderr and 'expected `u16`, found `u32`' in result.stderr, result.stderr
             print(f'Apple PR target {target}: compiler exit {result.returncode}', flush=True)
     print('PASS apple_type_errors_fail_pull_requests', flush=True)
-
 
 def browser_recipe_runs_after_wasm():
     import shutil
