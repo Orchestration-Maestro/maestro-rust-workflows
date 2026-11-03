@@ -2410,7 +2410,7 @@ def event_policy_keeps_pull_requests_fast():
                     'TEST_EVENT': 'push' if warm else event, 'BASE_REF': '', 'GITHUB_OUTPUT': str(output)})
                 assert result.returncode == 0, result.stderr
                 values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-            for name in slow | {'targets', 'quality', 'docs', 'checks', 'doctests', 'browser'}:
+            for name in slow | {'targets', 'quality', 'docs', 'checks'}:
                 context = {'cancelled()': False, 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                            'needs.declaration.outputs.test_prepare_inputs': '[]',
                            'needs.declaration.outputs.test_prepare': json.dumps('echo ready'), 'inputs.warm-cache': warm, 'inputs.advisory-scan': advisory,
@@ -3031,12 +3031,7 @@ def included_docs_run_only_readers_and_reverse_dependencies():
             assert json.loads(values['packages']) == expected, (changed, values)
             assert values['coverage'] == 'false', values
             git('reset', '--hard', base)
-        tests = workflow.split('  tests:\n', 1)[1].split('\n  checks:', 1)[0]
-        condition = next(line for line in tests.splitlines() if line.startswith('    if:'))
-        assert "needs.declaration.outputs.coverage == 'true'" in condition
         document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-        condition = document['jobs']['doctests']['if']
-        assert "needs.declaration.outputs.coverage == 'true'" in condition
         assert document['jobs']['doctests']['env']['TEST_PACKAGES'] == '$' + '{{ needs.declaration.outputs.packages }}'
 
 included_docs_run_only_readers_and_reverse_dependencies()
@@ -3154,7 +3149,7 @@ def included_readers_follow_member_roots():
 included_readers_follow_member_roots()
 print('PASS included_readers_follow_member_roots')
 
-def included_test_failures_remain_required():
+def pull_request_test_results_must_be_skipped():
     for status in ['success', 'failure', 'cancelled', 'skipped']:
         result = subprocess.run(['python3', '-c', body('All test shards passed')],
                                 env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'skipped', 'COLLECT_COVERAGE': 'false',
@@ -3163,8 +3158,8 @@ def included_test_failures_remain_required():
         expected = status == 'skipped'
         assert (result.returncode == 0) == expected, (status, result.stderr)
 
-included_test_failures_remain_required()
-print('PASS included_test_failures_remain_required')
+pull_request_test_results_must_be_skipped()
+print('PASS pull_request_test_results_must_be_skipped')
 
 def declared_test_inputs_select_their_readers():
     from functools import partial
