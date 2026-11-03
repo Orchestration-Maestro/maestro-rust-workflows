@@ -11,8 +11,8 @@ disagree, Maestro's file wins.
   rules use the root.
   The caller's `.config/nextest.toml` is test-suite runner metadata (such as
   resource groups), not shared-CI settings. Shared-CI partitioning and coverage
-  policy stay in the workflow; default test filters are ignored and CI allows
-  two retries, naming flaky passes in the summary.
+  policy stay in the workflow; default test filters are ignored.
+  CI does not retry tests; a failed attempt fails its job.
 - Test changes at the workflow seam in `.github/workflows/ci-internal.yml`; its
   seam steps run the scripts in `.github/ci-internal/`.
   Keep the broken fixtures broken, and outside any root workspace.

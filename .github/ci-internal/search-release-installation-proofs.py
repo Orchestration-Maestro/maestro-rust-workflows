@@ -208,10 +208,10 @@ for name in ['Coverage tools', 'Caller tools']:
     permit('ci-proof', 'comparison', name, 'timeout-minutes', '10')
 permit('ci-proof', 'comparison', 'Single-job coverage baseline', 'timeout-minutes', '45')
 permit('ci-internal', 'browser-qualification', 'Compile cache', 'timeout-minutes', '10')
-permit('ci', 'tests', 'Tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
-permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
-permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '2')
-permit('ci', 'checks', 'Coverage / "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '2')
+permit('ci', 'tests', 'Tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '0')
+permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '0')
+permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '0')
+permit('ci', 'checks', 'Coverage / "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '0')
 permit('ci', 'fuzz', 'Fuzz target', 'caller fuzz timeout', 'TIMEOUT')
 permit('release-please', 'evidence', 'Export the dependency graph SBOM', 'sleep', '5')
 permit('content', 'content', 'Mise bootstrap', '--retry', '3')
@@ -405,12 +405,12 @@ class SearchReleases(unittest.TestCase):
 
     def test_retry_changes_are_rejected_per_branch(self):
         source = files['.github/workflows/ci.yml']
-        positions = [m.start() for m in re.finditer('--retries 2', source)]
+        positions = [m.start() for m in re.finditer('--retries 0', source)]
         self.assertEqual(len(positions), 4)
         for offset in positions:
-            for replacement in ['--retries 3', '--retries 0', '--retries 2 --retries 2']:
+            for replacement in ['', '--retries 2', '--retries 0 --retries 0']:
                 with self.subTest(offset=offset, replacement=replacement):
-                    candidate = source[:offset] + source[offset:].replace('--retries 2', replacement, 1)
+                    candidate = source[:offset] + source[offset:].replace('--retries 0', replacement, 1)
                     self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
 
     def test_authority_is_bound_to_its_owner(self):
@@ -436,13 +436,13 @@ class SearchReleases(unittest.TestCase):
         coverage = '              run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest'
         plain = '              run_isolated "$TOOLS/cargo-nextest" nextest run'
         start = source.index(plain)
-        end = source.index('\n', source.index('--retries 2', start))
+        end = source.index('\n', source.index('--retries 0', start))
         command = source[start:end]
         candidate = source.replace(command, command + '\n' + command, 1)
         start = candidate.index(coverage)
-        offset = candidate.index('--retries 2', start)
-        candidate = candidate[:offset] + candidate[offset:].replace('--retries 2', '', 1)
-        self.assertEqual(candidate.count('--retries 2'), 4)
+        offset = candidate.index('--retries 0', start)
+        candidate = candidate[:offset] + candidate[offset:].replace('--retries 0', '', 1)
+        self.assertEqual(candidate.count('--retries 0'), 4)
         self.assert_policy(files | {'.github/workflows/ci.yml': candidate}, False)
 
     def test_deadline_after_steps_keeps_job_ownership(self):

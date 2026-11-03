@@ -1974,7 +1974,7 @@ jobs:
             build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
           fi
           if [ "${SHARD:-}" != doctests ]; then
-            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${build_args[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "slice:$SHARD/$TEST_SHARD_COUNT" --no-tests pass 2>&1 | tee nextest.log
+            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${build_args[@]}" --retries 0 --final-status-level flaky --partition "slice:$SHARD/$TEST_SHARD_COUNT" --no-tests pass 2>&1 | tee nextest.log
           fi
           if [[ "$SHARD" == doctests || ( -z "${TEST_ARCHIVE:-}" && "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
             cargo test --locked --doc "${packages[@]}"
@@ -2129,7 +2129,7 @@ jobs:
                 coverage_build_args=(--no-clean --archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
               fi
               run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-                --retries 2 --flaky-result pass --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" \
+                --retries 0 --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" \
                 --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee nextest.log
               if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] && [ "${WARM_CACHE:-false}" != true ]; then
                 COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
@@ -2138,7 +2138,7 @@ jobs:
               partition=()
               if [ -n "${SHARD:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); fi
               run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
-                "${build_args[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
+                "${build_args[@]}" --retries 0 --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi
           fi
           if [[ "${WARM_CACHE:-false}" != true && -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( -z "${TEST_ARCHIVE:-}" && "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
@@ -2182,20 +2182,6 @@ jobs:
             ${{ inputs.working-directory || '.' }}/target/browser-author-diagnostics
             ${{ inputs.working-directory || '.' }}/nextest.log
           if-no-files-found: ignore
-      - name: Flaky test summary
-        if: always()
-        run: &flaky-test-summary |
-          python3 - <<'PYTHON'
-          import os
-          import pathlib
-          import re
-          path = pathlib.Path('nextest.log')
-          text = path.read_text(encoding='utf-8') if path.exists() else ''
-          text = re.sub(r'\x1b\[[0-9;]*m', '', text)
-          flaky = sorted(set(re.findall(r'^\s*FLAKY(?:\s+\d+/\d+)?\s+\[[^]]*\]\s*(.+)$', text, re.MULTILINE)))
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as output:
-              output.write('### Flaky tests (passed on retry)\n' + ('\n'.join('- ' + name for name in flaky) if flaky else 'None') + '\n')
-          PYTHON
       - name: Test work units
         if: always()
         run: |
@@ -2569,13 +2555,10 @@ jobs:
           done
           mkdir -p target/single-coverage
           PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-            --retries 2 --flaky-result pass --final-status-level flaky --partition slice:1/1 --no-tests pass --workspace --locked \
+            --retries 0 --final-status-level flaky --partition slice:1/1 --no-tests pass --workspace --locked \
             --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
             --lcov --output-path "$PWD/target/single-coverage/shard-1.lcov" 2>&1 | tee nextest.log
           COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
-      - name: Coverage flaky test summary
-        if: always() && needs.declaration.outputs.enabled != 'true' && needs.declaration.outputs.coverage == 'true'
-        run: *flaky-test-summary
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && needs.declaration.outputs.enabled != 'true'
