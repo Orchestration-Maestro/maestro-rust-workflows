@@ -968,6 +968,7 @@ def archive_build_publishes_cargo_timings():
     upload = next(step for step in steps if step.get('name') == 'Upload archive build timings')
     assert upload['uses'] == 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
     assert upload['with']['name'] == 'test-build-timings-$' + "{{ inputs.concurrency-key || 'root' }}"
+    assert upload['with']['path'].startswith('$' + "{{ inputs.working-directory || '.' }}/")
     assert upload['with']['if-no-files-found'] == 'error'
     assert steps.index(upload) > next(index for index, step in enumerate(steps)
                                       if step.get('name') == 'Build test archive')
