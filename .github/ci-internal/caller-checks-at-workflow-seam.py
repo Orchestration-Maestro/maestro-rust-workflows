@@ -452,6 +452,10 @@ print('PASS test_prepare_command_is_validated_and_forwarded')
 
 def archived_shards_reuse_build_and_prepared_outputs():
     import shutil
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    upload = next(step for step in document['jobs']['test-build']['steps']
+                  if step.get('name') == 'Upload archive build timings')
+    timing_glob = upload['with']['path'].replace('$' + "{{ inputs.working-directory || '.' }}", '.')
     for coverage, route in [('false', 'Tests'), ('true', 'Isolated tests')]:
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary) / 'caller'
@@ -481,6 +485,7 @@ def archived_shards_reuse_build_and_prepared_outputs():
             result = execute('Build test archive', directory, env)
             assert result.returncode == 0, result.stdout + result.stderr
             assert (result.stdout + result.stderr).count('Compiling sample ') == 1, result.stdout + result.stderr
+            assert list(directory.glob(timing_glob)), f'No uploaded Cargo timings for coverage={coverage}: {timing_glob}'
             assert (directory / 'test-binaries.tar.zst').is_file()
             assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
             shutil.rmtree(directory / 'target')
@@ -947,6 +952,30 @@ def clippy_selection_works_without_mapfile():
 clippy_selection_works_without_mapfile()
 print('PASS clippy_selection_works_without_mapfile')
 
+def archive_build_publishes_cargo_timings():
+    for coverage, command in [('false', ['nextest', 'archive']), ('true', ['llvm-cov', 'nextest-archive'])]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            tools, log = install_recording_runner(directory)
+            result = execute('Build test archive', directory, {
+                'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                'COLLECT_COVERAGE': coverage, 'TEST_PACKAGES': '["sample"]'})
+            assert result.returncode == 0, result.stdout + result.stderr
+            args = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])['args']
+            assert args[:2] == command and args.count('--timings') == 1, args
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['test-build']['steps']
+    upload = next(step for step in steps if step.get('name') == 'Upload archive build timings')
+    assert upload['uses'] == 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
+    assert upload['with']['name'] == 'test-build-timings-$' + "{{ inputs.concurrency-key || 'root' }}"
+    assert upload['with']['path'].startswith('$' + "{{ inputs.working-directory || '.' }}/")
+    assert upload['with']['if-no-files-found'] == 'error'
+    assert steps.index(upload) > next(index for index, step in enumerate(steps)
+                                      if step.get('name') == 'Build test archive')
+
+archive_build_publishes_cargo_timings()
+print('PASS archive_build_publishes_cargo_timings')
+
 def selected_archive_build_compiles_only_selected_packages():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
@@ -995,6 +1024,7 @@ def undeclared_coverage_measures_the_full_workspace():
         commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
         args = next(args for args in commands if args[:2] == ['llvm-cov', 'nextest'])
         assert '--workspace' in args and '-p' not in args and '--exclude-from-report' not in args, args
+        assert args[args.index('--partition') + 1] == 'slice:1/1', args
     step = workflow.split('      - name: Coverage\n', 1)[1].split('      - name: ', 1)[0]
     for name in ['TEST_PACKAGES', 'COVERAGE_EXCLUDE', 'COVERAGE_SCOPE']:
         assert name not in step, name + ' reaches the undeclared coverage step'
@@ -1407,7 +1437,7 @@ def diagnostic_directory_reaches_isolated_runner():
                         assert children[0]['args'] == ['test', '--locked', '--doc', '--workspace']
                     else:
                         assert children[0]['tool'] == ('cargo-llvm-cov' if coverage == 'true' else 'cargo-nextest')
-                        assert children[0]['args'][children[0]['args'].index('--partition') + 1] == f'count:{shard}/16'
+                        assert children[0]['args'][children[0]['args'].index('--partition') + 1] == f'slice:{shard}/16'
                         if shard == '1' and coverage == 'false':
                             assert children[1]['args'] == ['test', '--locked', '--doc', '--workspace']
                     assert (pathlib.Path(expected) / 'runner.txt').read_text(encoding='utf-8') == 'child marker'
@@ -1622,7 +1652,7 @@ def shard_runner_status_survives_log_capture():
                     runners = [command for command in commands if '--partition' in command['args']]
                     assert len(runners) == 1
                     args = runners[0]['args']
-                    assert args[args.index('--partition') + 1] == f'count:{shard}/16'
+                    assert args[args.index('--partition') + 1] == f'slice:{shard}/16'
                     doctests = [command for command in commands if command['args'][:1] == ['test']]
                     assert bool(doctests) == (shard == 1 and status == 0 and coverage == 'false'), commands
                     report = directory / f'shard-{shard}.lcov'
@@ -2074,18 +2104,18 @@ def locked_manifests_precede_all_test_routes():
             elif threshold:
                 expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                             '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                            '--partition', 'count:1/1', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
+                            '--partition', 'slice:1/1', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
             elif route == 'Isolated tests' and coverage == 'true':
                 expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                             '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
-                            '--partition', f'count:{shard}/16', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
+                            '--partition', f'slice:{shard}/16', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
             else:
                 expected = ['nextest', 'run', '--user-config-file', 'none', '--ignore-default-filter', '--locked',
                             '-p', 'sample', '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky']
                 if route == 'Tests':
-                    expected += ['--partition', f'count:{shard}/16', '--no-tests', 'pass']
+                    expected += ['--partition', f'slice:{shard}/16', '--no-tests', 'pass']
                 else:
-                    expected += ['--no-tests', 'pass', '--partition', f'count:{shard}/16']
+                    expected += ['--no-tests', 'pass', '--partition', f'slice:{shard}/16']
             assert runners[0]['args'] == expected, runners[0]['args']
             assert [c['args'] for c in runners[1:]] == ([['test', '--locked', '--doc', '-p', 'sample']] if shard == 1 and not threshold and coverage == 'false' else [])
             print(f'PASS provisioning route {index}: {route}, shard {shard}, coverage {coverage}, threshold {threshold}', flush=True)
