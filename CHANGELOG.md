@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.14](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.13...v0.19.14) (2026-11-03)
+
+
+### Continuous Integration
+
+* move main scan pins to v0.19.13 ([#348](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/348)) ([b165146](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/b165146debbaa34950cd65ba058bf013b44ce89c))
+
+
+### Bug Fixes
+
+* **ci:** size the test-setup compile cache to its working set ([#350](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/350)) ([1a46d31](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/1a46d31f14fd2a3a233002ed9471d3a2807ab310))
+
 ## [0.19.13](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.12...v0.19.13) (2026-11-03)
 
 
