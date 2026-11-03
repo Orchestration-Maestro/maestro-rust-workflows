@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.19.13](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.12...v0.19.13) (2026-11-03)
+
+
+### Continuous Integration
+
+* advance the proof snapshot to the 0.19.12 pin ([#346](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/346)) ([c9a5321](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/c9a53218d5e25768ec5e990c4d424b1cc9db6d18))
+* allow named-ref Chromium browser proofs ([#339](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/339)) ([563bc20](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/563bc20a87e89254d4e12eb714ec057983830762))
+* fail tests without retrying failures ([#343](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/343)) ([b4641fe](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/b4641fe624954177eca40de7b9c6be19472b8830))
+
 ## [0.19.12](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.11...v0.19.12) (2026-11-03)
 
 
