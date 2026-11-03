@@ -231,19 +231,22 @@ Each job shape has one cache cap. Compile cache identity sets it as the `size`
 output, Compile cache hands it to sccache as `SCCACHE_CACHE_SIZE`, and Seal
 compile cache reads that same variable:
 
-| Shape | Cap | Largest snapshot saved |
-| --- | --- | --- |
-| `test-prepare` (Prepare test setup) | 1,610,612,736 bytes (1.5 GiB) | 1,626,718,863 bytes |
-| Every other shape | 1,073,741,824 bytes (1 GiB) | 1,084,479,242 bytes |
+| Shape | Cap |
+| --- | --- |
+| `test-prepare` (Prepare test setup) | 1,610,612,736 bytes (1.5 GiB) |
+| Every other shape | 1,073,741,824 bytes (1 GiB) |
 
-The seal skips a snapshot more than 1% above the cap. sccache keeps the
-preprocessor entries of C and assembler compiles in a separate directory that
-its own count leaves out; in Prepare test setup that directory held about 6 MB,
-0.6% of a 1 GiB cap. A snapshot grows toward its cap, because objects that later
-builds stop using stay until sccache evicts the least recently used ones, so a
-full cap alone is normal. A cap is too small when a build that starts from an
-empty cache fills it: the earliest objects are evicted, and every reader then
-misses the objects it needs first.
+sccache applies the cap twice. Its compiled objects stay within the cap, and so
+do the preprocessor entries of C and assembler compiles, which it keeps in a
+separate `preprocessor` directory and leaves out of its reported cache size. The
+seal measures each part and skips the snapshot when either one exceeds the cap,
+so it refuses only a cache that sccache would not have left. The
+`Compile cache snapshot:` line prints both parts; in Prepare test setup the
+preprocessor directory held about 6 MB. A snapshot grows toward its cap, because
+objects that later builds stop using stay until sccache evicts the least
+recently used ones, so a full cap alone is normal. A cap is too small when a
+build that starts from an empty cache fills it: the earliest objects are
+evicted, and every reader then misses the objects it needs first.
 
 Prepare test setup builds every wasm example extension as well as the setup
 tools, so its shape has the larger cap. Source: in seven Maestro default-branch
@@ -259,14 +262,14 @@ number sets the cap.
 
 The bound applies to each save, not the repository's 10 GB cache allowance.
 Compressed snapshot sizes are measured separately, and GitHub eviction can
-remove even the newest snapshot of a shape. On 2026-11-03 one Maestro
-generation held 5,606,616,026 bytes: the other compile snapshots, three Cargo
-git entries and one test setup bundle. The setup snapshot adds one entry of
-about 1.1 GB to each generation, 1.6 GB at most, so a generation stays at or
-below 7.2 GB, under the limit. GitHub evicts by last access, so the previous
-generation goes first: once a shape saves its new snapshot, no reader restores
-the old one. The extra entry makes those old snapshots leave sooner on each
-push.
+remove even the newest snapshot of a shape. On 2026-11-03 one Maestro generation
+held 5,606,616,026 bytes: the other compile snapshots, three Cargo git entries
+and one test setup bundle. The setup snapshot adds one entry of about 1.1 GB to
+each generation: at most 1.6 GB of objects, plus about 6 MB of preprocessor
+entries. A generation then stays near 7.2 GB, under the limit. GitHub evicts by
+last access, so the previous generation goes first: once a shape saves its new
+snapshot, no reader restores the old one. The extra entry makes those old
+snapshots leave sooner on each push.
 
 ### Cargo git dependency cache
 

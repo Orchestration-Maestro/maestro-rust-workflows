@@ -1163,27 +1163,30 @@ jobs:
           import os
           import pathlib
           import stat
-          files = size = 0
-          # sccache's own count leaves out its preprocessor directory, about 0.6% of a 1 GiB cap.
+          files = 0
+          sizes = {'object': 0, 'preprocessor': 0}
+          # sccache caps its objects and its preprocessor directory separately, each at this size.
           limit = int(os.environ['SCCACHE_CACHE_SIZE'])
-          limit += limit // 100
+          root = os.environ['SCCACHE_DIR']
           try:
               def failed(error):
                   raise error
-              for directory, _, names in os.walk(os.environ['SCCACHE_DIR'], onerror=failed):
+              for directory, _, names in os.walk(root, onerror=failed):
+                  part = 'preprocessor' if pathlib.Path(directory).relative_to(root).parts[:1] == ('preprocessor',) else 'object'
                   for name in names:
                       metadata = pathlib.Path(directory, name).lstat()
                       if stat.S_ISREG(metadata.st_mode):
                           files += 1
-                          size += metadata.st_size
+                          sizes[part] += metadata.st_size
           except OSError:
               print('Compile cache snapshot save skipped: cache inspection failed')
           else:
-              print(f'Compile cache snapshot: {files} files, {size} bytes')
-              if not files or not size:
+              print(f"Compile cache snapshot: {files} files, {sizes['object']} object bytes, {sizes['preprocessor']} preprocessor bytes")
+              over = [part for part, size in sizes.items() if size > limit]
+              if not files or not any(sizes.values()):
                   print('Compile cache snapshot save skipped: empty cache')
-              elif size > limit:
-                  print(f'Compile cache snapshot save skipped: exceeds {limit} bytes')
+              elif over:
+                  print(f'Compile cache snapshot save skipped: {over[0]} bytes exceed {limit}')
               else:
                   with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
                       output.write('eligible=true\n')

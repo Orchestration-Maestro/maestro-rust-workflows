@@ -244,11 +244,12 @@ def cache_server_takes_the_shape_cap():
             assert (directory / 'server').read_text(encoding='utf-8') == size + '\n'
 
 def snapshot_size_bound_skips_only_ineligible_saves():
-    # sccache leaves its preprocessor directory out of its own count, so the seal allows 1% above the cap.
-    sizes = [(cap, size) for cap in [1073741824, 1610612736]
-             for size in [0, cap, 1079794032, cap + cap // 100, cap + cap // 100 + 1, None]]
-    for cap, size in sizes:
-        bound = cap + cap // 100
+    # sccache caps its objects and its preprocessor directory separately, each at the shape's cap.
+    # The measured snapshot held 1,079,794,032 bytes with a full 1 GiB of objects.
+    sizes = [(cap, parts) for cap in [1073741824, 1610612736]
+             for parts in [(0, 0), (cap, 0), (cap, 1079794032 - 1073741824), (cap, cap // 100 + 1), (cap, cap),
+                           (cap + 1, 0), (0, cap + 1), None]]
+    for cap, parts in sizes:
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             source = directory / 'source'
@@ -256,10 +257,13 @@ def snapshot_size_bound_skips_only_ineligible_saves():
             subprocess.run(['install', '-m', '0700', str(source), str(directory / 'sccache')], check=True)
             cache = directory / 'cache'
             cache.mkdir()
-            if size:
-                with (cache / 'payload').open('wb') as payload:
-                    payload.truncate(size)
-            if size is None:
+            # sccache stores each entry two directories deep, under preprocessor/ for preprocessor entries.
+            for tree, size in zip([cache, cache / 'preprocessor'], parts or []):
+                if size:
+                    (tree / 'a' / 'b').mkdir(parents=True)
+                    with (tree / 'a' / 'b' / 'abpayload').open('wb') as payload:
+                        payload.truncate(size)
+            if parts is None:
                 cache.rmdir()
                 cache.write_text('not a directory', encoding='utf-8')
             env = environment(directory) | {'PATH': str(directory) + os.pathsep + os.environ['PATH'], 'SCCACHE_DIR': str(cache),
@@ -267,15 +271,18 @@ def snapshot_size_bound_skips_only_ineligible_saves():
             result = shell(body('Seal compile cache'), env)
             assert result.returncode == 0, result.stderr
             output = (directory / 'outputs').read_text(encoding='utf-8') if (directory / 'outputs').exists() else ''
-            assert ('eligible=true' in output) == bool(size and size <= bound), (cap, size)
-            if size is None:
+            assert ('eligible=true' in output) == bool(parts and any(parts) and max(parts) <= cap), (cap, parts)
+            if parts is None:
                 assert result.stdout == 'Compile cache snapshot save skipped: cache inspection failed\n', result.stdout
             else:
-                expected = f'Compile cache snapshot: {int(bool(size))} files, {size} bytes\n'
-                if size == 0:
+                objects, preprocessor = parts
+                expected = f'Compile cache snapshot: {sum(map(bool, parts))} files, {objects} object bytes, {preprocessor} preprocessor bytes\n'
+                if not any(parts):
                     expected += 'Compile cache snapshot save skipped: empty cache\n'
-                elif size > bound:
-                    expected += f'Compile cache snapshot save skipped: exceeds {bound} bytes\n'
+                elif objects > cap:
+                    expected += f'Compile cache snapshot save skipped: object bytes exceed {cap}\n'
+                elif preprocessor > cap:
+                    expected += f'Compile cache snapshot save skipped: preprocessor bytes exceed {cap}\n'
                 assert result.stdout == expected, result.stdout
     # Instrument the actual inspection body, not a second size implementation.
     script = body('Seal compile cache').split("<<'PYTHON'\n", 1)[1].rsplit('\nPYTHON', 1)[0]
@@ -313,7 +320,7 @@ def snapshot_seal_stops_before_measurement():
                 assert result.stdout == 'Compile cache snapshot save skipped: server stop failed\n'
                 assert not (directory / 'outputs').exists()
             else:
-                assert result.stdout == 'Compile cache snapshot: 1 files, 6 bytes\n'
+                assert result.stdout == 'Compile cache snapshot: 1 files, 6 object bytes, 0 preprocessor bytes\n'
                 assert (directory / 'outputs').read_text(encoding='utf-8') == 'eligible=true\n'
 
 def artifact(env):
