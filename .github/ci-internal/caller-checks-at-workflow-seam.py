@@ -452,6 +452,10 @@ print('PASS test_prepare_command_is_validated_and_forwarded')
 
 def archived_shards_reuse_build_and_prepared_outputs():
     import shutil
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    upload = next(step for step in document['jobs']['test-build']['steps']
+                  if step.get('name') == 'Upload archive build timings')
+    timing_glob = upload['with']['path'].replace('$' + "{{ inputs.working-directory || '.' }}", '.')
     for coverage, route in [('false', 'Tests'), ('true', 'Isolated tests')]:
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary) / 'caller'
@@ -481,6 +485,7 @@ def archived_shards_reuse_build_and_prepared_outputs():
             result = execute('Build test archive', directory, env)
             assert result.returncode == 0, result.stdout + result.stderr
             assert (result.stdout + result.stderr).count('Compiling sample ') == 1, result.stdout + result.stderr
+            assert list(directory.glob(timing_glob)), f'No uploaded Cargo timings for coverage={coverage}: {timing_glob}'
             assert (directory / 'test-binaries.tar.zst').is_file()
             assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
             shutil.rmtree(directory / 'target')
@@ -963,7 +968,6 @@ def archive_build_publishes_cargo_timings():
     upload = next(step for step in steps if step.get('name') == 'Upload archive build timings')
     assert upload['uses'] == 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
     assert upload['with']['name'] == 'test-build-timings-$' + "{{ inputs.concurrency-key || 'root' }}"
-    assert upload['with']['path'] == '$' + "{{ inputs.working-directory || '.' }}/target/**/cargo-timings/cargo-timing.html"
     assert upload['with']['if-no-files-found'] == 'error'
     assert steps.index(upload) > next(index for index, step in enumerate(steps)
                                       if step.get('name') == 'Build test archive')
