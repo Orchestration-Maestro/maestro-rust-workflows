@@ -94,9 +94,6 @@ jobs:
               if not seen:
                   return None
               value = seen[-1]
-              if "needs.declaration.outputs.coverage == 'true'" in value:
-                  return str(evaluate(value, {'needs.declaration.outputs.coverage': 'true',
-                                              'needs.declaration.outputs.test_shard_count': outputs['test_shard_count']}))
               return resolve(value)
 
           def declared_shard_count_reaches_every_reader():
@@ -522,7 +519,7 @@ jobs:
           def every_bundle_reader_restores_on_a_hit():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               base = {'cancelled()': False, 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
-                      'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.selected_tests': 'false',
+                      'needs.declaration.outputs.coverage': 'true',
                       'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'github.repository_id': 'caller',
                       'inputs.working-directory': '.', 'matrix.shard': '1'}
               def values(key, warm, **extra):

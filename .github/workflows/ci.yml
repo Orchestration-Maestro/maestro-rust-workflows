@@ -121,7 +121,6 @@ jobs:
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
       coverage_scope: ${{ steps.selection.outputs.coverage_scope }}
-      selected_tests: ${{ steps.selection.outputs.selected_tests }}
       test_shard_count: ${{ steps.config.outputs.test_shard_count }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
@@ -755,8 +754,7 @@ jobs:
               output.write('packages=' + json.dumps(names) + '\n')
               output.write('coverage_scope=' + ('full workspace' if selected == members else 'selected packages: ' + ', '.join(names)) + '\n')
               output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
-              output.write('selected_tests=' + str(event == 'pull_request' and bool(selected)).lower() + '\n')
-              shards = [1] if event == 'pull_request' else list(range(1, int(os.environ['TEST_SHARD_COUNT']) + 1))
+              shards = list(range(1, int(os.environ['TEST_SHARD_COUNT']) + 1))
               output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
@@ -1732,7 +1730,7 @@ jobs:
     permissions:
       contents: read
       actions: read
-    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.coverage == 'true' && needs.declaration.outputs.test_shard_count || '1') }}
+    name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
     if: ${{ !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
@@ -1740,7 +1738,7 @@ jobs:
         shard: ${{ fromJSON(inputs.warm-cache && '["warm"]' || needs.declaration.outputs.test_shards) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env: &test-env
-      TEST_SHARD_COUNT: ${{ needs.declaration.outputs.coverage == 'true' && needs.declaration.outputs.test_shard_count || '1' }}
+      TEST_SHARD_COUNT: ${{ needs.declaration.outputs.test_shard_count }}
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       WARM_CACHE: ${{ inputs.warm-cache && matrix.shard != 'doctests' }}
       WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
@@ -2143,7 +2141,6 @@ jobs:
           RESULT: ${{ needs.tests.result }}
           DOCTEST_RESULT: ${{ needs.doctests.result }}
           DECLARATION_RESULT: ${{ needs.declaration.result }}
-          SELECTED_TESTS: ${{ needs.declaration.outputs.selected_tests }}
           COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
         shell: python
         run: |
