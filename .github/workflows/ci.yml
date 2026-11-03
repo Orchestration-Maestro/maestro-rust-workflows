@@ -855,6 +855,15 @@ jobs:
               output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
+      - name: Validate browser-only request
+        if: inputs.browser-only
+        env:
+          CAN_RUN_BROWSER: ${{ steps.selection.outputs.browser_tests == 'true' && steps.selection.outputs.coverage == 'true' && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan }}
+        run: |
+          if [ "$CAN_RUN_BROWSER" != true ]; then
+            echo 'browser-only requires selected browser tests and cannot be combined with warm-cache, advisory-scan or fuzz-scan' >&2
+            exit 1
+          fi
       - name: Record merge queue evidence
         if: github.event_name == 'merge_group'
         env:
@@ -3067,30 +3076,14 @@ jobs:
           echo "CHROMIUM_PATH=$tools/chrome-linux64/chrome" >> "$GITHUB_ENV"
       - name: Browser test recipe
         id: browser-recipe
-        env:
-          BROWSER_ONLY: ${{ inputs.browser-only }}
         run: |
-          if [ "${BROWSER_ONLY:-false}" = true ]; then
-            python3 - <<'PYTHON'
-          import pathlib
-          import tomllib
-          path = pathlib.Path('.config/nextest.toml')
-          text = path.read_text(encoding='utf-8') if path.exists() else ''
-          config = tomllib.loads(text)
-          if 'shared-ci-browser-proof' in config.get('profile', {}):
-              raise SystemExit('nextest profile shared-ci-browser-proof is reserved for browser proofs')
-          path.parent.mkdir(parents=True, exist_ok=True)
-          path.write_text(text + '\n[profile.shared-ci-browser-proof]\nfail-fast = false\n', encoding='utf-8')
-          PYTHON
-            export NEXTEST_PROFILE=shared-ci-browser-proof
-          fi
-          just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-nextest.log"
-      - name: Upload browser nextest log
+          just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"
+      - name: Upload browser test log
         if: always() && (steps.browser-recipe.outcome == 'success' || steps.browser-recipe.outcome == 'failure')
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: browser-nextest-${{ inputs.concurrency-key || 'root' }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/browser-nextest.log
+          name: browser-test-${{ inputs.concurrency-key || 'root' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/browser-test.log
           if-no-files-found: error
       - name: Compile cache statistics
         id: cache-statistics

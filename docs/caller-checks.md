@@ -892,6 +892,8 @@ merge queue. The dispatch calls this same reusable workflow with
 existing Chromium job run. Keep the caller's nonempty `browser_test_crates`
 declaration, pinned tools and `browser-test` recipe. No new declaration key or
 command hook is needed. Leave `warm-cache`, `advisory-scan` and `fuzz-scan` off.
+The declaration job fails if the proof cannot select browser tests or is
+combined with any of those modes.
 
 Add `.github/workflows/browser-proof.yml` to the caller's default branch. Replace
 `RELEASE_COMMIT` with the full commit SHA of a released workflow version that
@@ -927,19 +929,16 @@ workflow selection on `main` (or the caller's default branch) while the `ref`
 input selects the source under test. A dispatch does not cancel an in-progress
 proof.
 
-The proof job adds a temporary `shared-ci-browser-proof` nextest profile to its
-disposable checkout and selects it with `NEXTEST_PROFILE`. That name is reserved;
-an existing profile with that name fails the proof. The profile inherits the
-caller's `default` settings and sets `fail-fast = false`, so nextest completes
-all selected browser cases after a failure. The recipe must not override the
-profile or pass `--fail-fast` or a finite `--max-fail`. Ordinary CI keeps its
-existing fail-fast policy. A failed nextest command still fails the job; a
-later recipe command is not run after that failure.
+The caller's `browser-test` recipe must report every selected case even after a
+failure, and return a failing status if any case fails. For a nextest browser
+run, pass `--no-fail-fast`. Other browser drivers must collect all case results
+before returning. The shared workflow runs the recipe as written; it does not
+change the caller's test-runner settings.
 
-The job captures both output streams from `just browser-test`, including nextest
-results, in `browser-nextest.log`. After a passing or failing recipe, it uploads
-`browser-nextest-browser-proof-<attempt>`; without that concurrency key the middle
-part is `root`. Setup failures before the recipe have no nextest log. The log
+The job captures both output streams from `just browser-test` in
+`browser-test.log`. After a passing or failing recipe, it uploads
+`browser-test-browser-proof-<attempt>`; without that concurrency key the middle
+part is `root`. Setup failures before the recipe have no recipe log. The log
 upload does not turn failing tests green. Manual proofs restore compatible
 compiled caches but never publish cache snapshots.
 
@@ -960,15 +959,15 @@ To save a red and green pair:
    the attempt number with that run's values:
 
    ```bash
-   gh run download RED_RUN --name browser-nextest-browser-proof-1 --dir proof/red
+   gh run download RED_RUN --name browser-test-browser-proof-1 --dir proof/red
    ```
 
 4. Restore the assertion on a green caller ref and dispatch again with the same
    workflow release. Record the source SHA, run ID and URL. The browser job must
-   pass. Download `browser-nextest-browser-proof-1` from `GREEN_RUN` into
+   pass. Download `browser-test-browser-proof-1` from `GREEN_RUN` into
    `proof/green` with the same command.
-5. Save `proof/red/browser-nextest.log` as `<test>-red.log` and
-   `proof/green/browser-nextest.log` as `<test>-green.log` with the change's test
+5. Save `proof/red/browser-test.log` as `<test>-red.log` and
+   `proof/green/browser-test.log` as `<test>-green.log` with the change's test
    evidence. Check that the red log names the expected assertion failure and
    reports all selected cases, and that the green log passes the same test set.
    Keep both run URLs, source SHAs and the shared release SHA beside the logs.

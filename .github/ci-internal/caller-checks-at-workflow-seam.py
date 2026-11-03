@@ -376,7 +376,7 @@ def browser_test_job_is_single_and_optional():
     job = jobs['browser-tests']
     assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true' }}" in job
     assert 'runs-on: $' + '{{ fromJSON(needs.declaration.outputs.linux_runner) }}' in job and 'matrix:' not in job
-    assert body('Browser test recipe').strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-nextest.log"')
+    assert body('Browser test recipe').strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"')
     assert 'mise exec' not in body('Browser test recipe')
     assert 'if:' not in job.split('- name: Browser test caller tools', 1)[1].split('- name:', 1)[0]
     assert job.index('run: *caller-tools') < job.index('name: Browser runtime tools') < job.index('name: Browser test recipe')
@@ -427,54 +427,57 @@ def manual_browser_proof_selects_only_existing_chromium_job():
 
 manual_browser_proof_selects_only_existing_chromium_job()
 
+def browser_only_rejects_requests_that_cannot_run_tests():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['declaration']['steps']
+    validation = next(step for step in steps if step['name'] == 'Validate browser-only request')
+    assert steps.index(validation) > next(i for i, step in enumerate(steps) if step.get('id') == 'selection')
+    assert evaluate(validation['if'], {'inputs.browser-only': True})
+    assert not evaluate(validation['if'], {'inputs.browser-only': False})
+    values = {'steps.selection.outputs.coverage': 'true', 'steps.selection.outputs.browser_tests': 'true',
+              'inputs.warm-cache': False, 'inputs.advisory-scan': False, 'inputs.fuzz-scan': False}
+    scenarios = [({}, True), ({'steps.selection.outputs.browser_tests': 'false'}, False),
+                 ({'steps.selection.outputs.browser_tests': ''}, False),
+                 ({'steps.selection.outputs.coverage': 'false'}, False)]
+    scenarios += [({mode: True}, False) for mode in ('inputs.warm-cache', 'inputs.advisory-scan', 'inputs.fuzz-scan')]
+    with tempfile.TemporaryDirectory() as temporary:
+        for overrides, expected in scenarios:
+            permitted = evaluate(validation['env']['CAN_RUN_BROWSER'], values | overrides)
+            result = execute('Validate browser-only request', temporary, {'CAN_RUN_BROWSER': str(permitted).lower()})
+            assert (result.returncode == 0) == expected, (overrides, result.stdout, result.stderr)
+            if not expected:
+                assert 'browser-only requires selected browser tests' in result.stderr
+    print('PASS browser_only_rejects_requests_that_cannot_run_tests', flush=True)
+
+
+browser_only_rejects_requests_that_cannot_run_tests()
+
+
 def browser_proof_recipe_preserves_failures_and_log():
-    import tomllib
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         bin_dir = directory / 'bin'
         bin_dir.mkdir()
         just = bin_dir / 'just'
-        just.write_text('#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = browser-test ] || exit 23\nprintf "stdout evidence\\n"\nprintf "stderr evidence\\n" >&2\nprintf "%s" "${NEXTEST_PROFILE-unset}" > selected-profile\nexit "$RECIPE_STATUS"\n', encoding='utf-8')
+        just.write_text('#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = browser-test ] || exit 23\nprintf "stdout evidence\\n"\nprintf "stderr evidence\\n" >&2\nexit "$RECIPE_STATUS"\n', encoding='utf-8')
         just.chmod(0o755)
         config = directory / '.config/nextest.toml'
         original = '[profile.default]\nfail-fast = true\nslow-timeout = "30s"\n'
-        for manual, status in [('false', '0'), ('false', '17'), ('true', '0'), ('true', '17')]:
-            config.parent.mkdir(exist_ok=True)
-            config.write_text(original, encoding='utf-8')
+        config.parent.mkdir()
+        config.write_text(original, encoding='utf-8')
+        for status in ['0', '17']:
             result = execute('Browser test recipe', directory, {
                 'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
-                'BROWSER_ONLY': manual, 'RECIPE_STATUS': status, 'NEXTEST_PROFILE': None})
+                'RECIPE_STATUS': status})
             assert result.returncode == int(status), result.stdout + result.stderr
-            log = directory / 'browser-nextest.log'
+            log = directory / 'browser-test.log'
             assert log.read_text(encoding='utf-8') == 'stdout evidence\nstderr evidence\n'
-            selected = (directory / 'selected-profile').read_text(encoding='utf-8')
-            parsed = tomllib.loads(config.read_text(encoding='utf-8'))
-            assert parsed['profile']['default'] == {'fail-fast': True, 'slow-timeout': '30s'}
-            if manual == 'true':
-                assert parsed['profile'][selected]['fail-fast'] is False
-            else:
-                assert selected == 'unset' and config.read_text(encoding='utf-8') == original
-        config.unlink()
-        config.parent.rmdir()
-        result = execute('Browser test recipe', directory, {
-            'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
-            'BROWSER_ONLY': 'true', 'RECIPE_STATUS': '0', 'NEXTEST_PROFILE': None})
-        assert result.returncode == 0, result.stdout + result.stderr
-        assert tomllib.loads(config.read_text(encoding='utf-8'))['profile']['shared-ci-browser-proof']['fail-fast'] is False
-        for text in [config.read_text(encoding='utf-8'), 'broken [']:
-            config.write_text(text, encoding='utf-8')
-            (directory / 'selected-profile').unlink(missing_ok=True)
-            result = execute('Browser test recipe', directory, {
-                'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
-                'BROWSER_ONLY': 'true', 'RECIPE_STATUS': '0', 'NEXTEST_PROFILE': None})
-            assert result.returncode != 0 and not (directory / 'selected-profile').exists(), result.stderr
-            assert config.read_text(encoding='utf-8') == text
+            assert config.read_text(encoding='utf-8') == original
     job = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))['jobs']['browser-tests']
-    recipe = next(step for step in job['steps'] if step['name'] == 'Browser test recipe')
-    assert recipe['env']['BROWSER_ONLY'] == '${{ inputs.browser-only }}'
-    upload = next(step for step in job['steps'] if step['name'] == 'Upload browser nextest log')
+    upload = next(step for step in job['steps'] if step['name'] == 'Upload browser test log')
     assert upload['if'] == "always() && (steps.browser-recipe.outcome == 'success' || steps.browser-recipe.outcome == 'failure')"
-    assert upload['with']['path'] == '${{ runner.temp }}/browser-nextest.log'
+    assert upload['with']['name'] == "browser-test-${{ inputs.concurrency-key || 'root' }}-${{ github.run_attempt }}"
+    assert upload['with']['path'] == '${{ runner.temp }}/browser-test.log'
     assert upload['with']['if-no-files-found'] == 'error'
     print('PASS browser_proof_recipe_preserves_failures_and_log', flush=True)
 
@@ -1322,7 +1325,7 @@ def warm_push_seeds_non_test_shapes():
             'Free instrumented build space': True, 'Tests': False, 'Search tools': True, 'Isolated tests': True}, enabled
     assert doctests['steps'] == document['jobs']['tests']['steps']
     assert doctests['env']['SHARD'] == document['jobs']['tests']['env']['SHARD']
-    assert next(step for step in document['jobs']['browser-tests']['steps'] if step.get('name') == 'Browser test recipe')['run'].strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-nextest.log"')
+    assert next(step for step in document['jobs']['browser-tests']['steps'] if step.get('name') == 'Browser test recipe')['run'].strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"')
 
 warm_push_seeds_non_test_shapes()
 print('PASS warm_push_seeds_non_test_shapes')
