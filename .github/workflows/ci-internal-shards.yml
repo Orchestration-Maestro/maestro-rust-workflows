@@ -2057,11 +2057,16 @@ jobs:
               assert result.returncode == 0 and 'Work units' not in result.stdout, result.stdout + result.stderr
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               text = jobs['tests']
-              assert text.index('- name: Flaky test summary') < text.index('- name: Test work units'), 'the summary step comes before the work units'
               assert '- name: Test work units\n        if: always()\n' in text, 'the work units are reported even when a test fails'
 
           the_shards_and_the_archive_build_report_their_work_units()
           print('PASS the_shards_and_the_archive_build_report_their_work_units')
+
+          def no_step_reports_flaky_passes_because_tests_never_retry():
+              assert 'FLAKY' not in workflow and '- name: Flaky test summary' not in workflow and '- name: Coverage flaky test summary' not in workflow
+
+          no_step_reports_flaky_passes_because_tests_never_retry()
+          print('PASS no_step_reports_flaky_passes_because_tests_never_retry')
 
           def every_job_that_saves_a_snapshot_judges_its_cache_floor_after_its_statistics():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))

@@ -49,8 +49,7 @@ test and doctest jobs.
 Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-diagnostics)
 and the reporter log after isolated tests fail or time out.
 
-Each nextest test can retry twice; flaky passes are named in job summaries,
-while permanent failures still fail. Pull-request lint selects direct and
+CI does not retry tests; a failed test fails its job. Pull-request lint selects direct and
 transitive workspace dependents, including build, development and target-specific
 dependencies. Merge groups and main pushes always test the full workspace.
 See [PR selection](docs/caller-checks.md#pull-request-selection-and-retries)
