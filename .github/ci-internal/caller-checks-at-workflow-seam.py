@@ -28,8 +28,9 @@ def routed_jobs(document, values):
         'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'inputs.warm-cache': False,
         'github.event_name': 'push', 'github.ref': 'refs/heads/main', default_ref: 'refs/heads/main',
         'github.repository_id': 'caller', 'inputs.working-directory': '.',
-        'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.targets': '[{}]',
-        'needs.declaration.outputs.fuzz_targets': '["target"]', 'needs.declaration.outputs.wasm_crates': '["web"]',
+        'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.tests_reused': 'false',
+        'needs.declaration.outputs.targets': '[{}]', 'needs.declaration.outputs.fuzz_targets': '["target"]',
+        'needs.declaration.outputs.wasm_crates': '["web"]',
         'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.browser_tests': 'true',
         # Longer names first: evaluate substitutes by prefix.
         'needs.declaration.outputs.test_prepare_inputs': '[]',
