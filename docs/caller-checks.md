@@ -44,7 +44,9 @@ run every workspace test with the full shard matrix, doctests, coverage and all
 declared builds and foreign-target checks, except that a main push reuses tests
 when its exact commit already passed a completed merge-group run of the same
 shared workflow revision with the full workspace selected. That push skips the
-test archive, preparation, test shards, doctests, coverage and wasm/browser legs.
+test shards, doctests, coverage and wasm/browser legs. The archive and preparation
+jobs still compile and save their compiled-cache snapshots for the next merge
+group. The archive keeps the same instrumentation and cache shape as that group.
 Formatting, lint, docs, dependency/source checks and target checks still run.
 No caller setting changes this policy.
 
@@ -308,8 +310,8 @@ workspace's unit and integration tests with `cargo nextest archive` (or
 Numeric shards download that archive and run `--archive-file`, keeping the same
 partitions, retries and coverage reports. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
-runs doctests once on every merge group and main push, without
-waiting for the archive build.
+runs doctests once on every merge group and on main pushes that do not reuse
+merge-queue tests, without waiting for the archive build.
 Warm-cache runs keep their existing compile route and cache shape.
 
 Both archive commands pass `--timings` to Cargo. Download the
@@ -420,46 +422,52 @@ repository-relative path globs from the caller's working directory, such as
 files included. The prepared directory is cached under a key built from the
 contents of every matching file, the `test_prepare` command, the compile cache
 identity (repository, directory, host and compiler), and the checkout path. A
-glob that matches no file fails the job. `Prepare test setup` restores the
-bundle on a hit and skips the `test_prepare` command. A warm build restores it
-in the same way, so it uses the bundle in place of building the files again;
-without the list a warm build does not prepare. Every numeric shard then
-downloads the restored directory as before. Only pushes to the default branch
-write the cache, so a merge group reads what the last push saved. Pull requests
-skip preparation. Declare every input the command reads: an unlisted input does
-not change the key and can leave a stale directory in place. Without the list
-nothing is cached.
+glob that matches no file fails the job. On reader runs, `Prepare test setup`
+restores the bundle on an exact hit and skips the `test_prepare` command.
+When preparation is enabled, default-branch pushes run the command even on an
+exact hit, including warm builds and pushes that reuse merge-queue tests.
+These writers check whether the bundle is cached without downloading it and
+pass no `TEST_PREPARE_BASE`, so preparation compiles the inputs and seeds its
+compiled-cache snapshot rather than copying prepared files. A cached bundle
+alone does not contain those compiler objects. Without the list a warm build
+does not prepare. Every numeric shard downloads the prepared directory as before.
+Only pushes to the default branch write the cache, so a merge group reads what
+the last push saved.
+Pull requests skip preparation. Declare every input the command reads: an
+unlisted input does not change the key and can leave a stale directory in place.
+Without the list nothing is cached.
 
-When the exact key misses, `Prepare test setup` restores the closest earlier
-bundle saved under the same compile cache identity, checkout path and
-`test_prepare` command, which is the last push's bundle. A merge group and the
-push that lands it add bundles that earlier successful runs of this repository
-uploaded at the commit being merged, whichever workflow ran them: a workflow an
-organization ruleset requires runs pull requests and merge groups, while a push
-may run the caller's own workflow:
+On reader runs, when the exact key misses, `Prepare test setup` restores the
+closest earlier bundle saved under the same compile cache identity, checkout
+path and `test_prepare` command, which is the last push's bundle. A merge group
+adds bundles that earlier successful runs of this repository uploaded at the
+commit being merged, whichever workflow ran them:
 
 - A merge group adds, for each pull request that is not on the default branch
   yet, whether in this group or queued ahead of it (found from the `(#N)` that
   ends its commit subject), the bundle of that pull request's newest successful
   run at its head.
-- A push to the default branch adds the bundle of the successful merge group run
-  of the pushed commit.
+- Pushes add no candidates: writers must populate compiler objects.
 - A pull request run adds nothing, so every added bundle was built by the code
   being merged, starting from a bundle the default branch saved. Runs from forks
   are never added: a bundle holds executables that the run then starts.
 
 When the runs cannot be listed, the job logs a warning that names the failed
-request and prepares from the bundles it found before the failure.
+request. Reader runs prepare from the bundles found before the failure;
+writers still prepare without bases.
 
-`Prepare test setup` extracts each bundle to its own directory, separate from
-`TEST_PREPARE_OUTPUT`, and sets `TEST_PREPARE_BASE` to the list of those
+On reader runs, `Prepare test setup` extracts each bundle to its own directory,
+separate from `TEST_PREPARE_OUTPUT`, and sets `TEST_PREPARE_BASE` to the list of those
 directories before the command runs: the restored bundle first, then the added
 ones, joined with `:`. A bundle that is missing, expired, fails its size or
 digest check or cannot be read is left out, and the later ones are still tried.
 The command may copy or reuse any file in a listed directory whose own inputs
 are unchanged, and must still write every file it needs to
 `TEST_PREPARE_OUTPUT`. When no bundle is available, `TEST_PREPARE_BASE` is
-unset. An exact hit still skips the command.
+unset. Reader runs still skip the command on an exact hit. Writers leave
+`TEST_PREPARE_BASE` unset. Pushes that reuse merge-queue tests save compiled-cache
+snapshots without uploading the test archive or setup artifacts, since no test
+shard in those runs needs them.
 
 ```toml
 test_prepare = "sh .config/prepare-tests.sh"
@@ -1499,8 +1507,8 @@ When you rename a job on purpose, change the pin and the ruleset in one change.
 
 On a main push that reuses merge-queue tests, the successful `Reuse merge queue
 tests` step in `Caller declaration` records the decision. The required-checks
-guard permits the archive, shard and doctest skips only with that marker; every
-other pinned check must still run. Job-shape comparisons keep reused runs
+guard permits shard and doctest skips only with that marker. The archive and
+every other pinned check must still run. Job-shape comparisons keep reused runs
 separate from full-suite runs, so the deliberate skips do not report removals.
 
 Pull requests require `Caller declaration`, `Format and lint`, `Docs`,
