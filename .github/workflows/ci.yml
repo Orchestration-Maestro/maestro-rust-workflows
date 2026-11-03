@@ -1334,10 +1334,10 @@ jobs:
           if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           if [ "${COLLECT_COVERAGE:-false}" = true ]; then
             "$TOOLS/cargo-llvm-cov" llvm-cov nextest-archive --user-config-file none \
-              --locked "${packages[@]}" --archive-file test-binaries.tar.zst
+              --locked "${packages[@]}" --timings --archive-file test-binaries.tar.zst
           else
             "$TOOLS/cargo-nextest" nextest archive --user-config-file none \
-              --locked "${packages[@]}" --archive-file test-binaries.tar.zst
+              --locked "${packages[@]}" --timings --archive-file test-binaries.tar.zst
           fi
       - name: Save Cargo git cache
         if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
@@ -1354,6 +1354,12 @@ jobs:
           name: test-archive-${{ inputs.concurrency-key || 'root' }}
           path: ${{ inputs.working-directory || '.' }}/test-binaries.tar.zst
           compression-level: 0
+          if-no-files-found: error
+      - name: Upload archive build timings
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-build-timings-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ inputs.working-directory || '.' }}/target/**/cargo-timings/cargo-timing.html
           if-no-files-found: error
       - name: Compile cache statistics
         id: cache-statistics
@@ -1849,7 +1855,7 @@ jobs:
             build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
           fi
           if [ "${SHARD:-}" != doctests ]; then
-            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${build_args[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "count:$SHARD/$TEST_SHARD_COUNT" --no-tests pass 2>&1 | tee nextest.log
+            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${build_args[@]}" --retries 2 --flaky-result pass --final-status-level flaky --partition "slice:$SHARD/$TEST_SHARD_COUNT" --no-tests pass 2>&1 | tee nextest.log
           fi
           if [[ "$SHARD" == doctests || ( -z "${TEST_ARCHIVE:-}" && "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
             cargo test --locked --doc "${packages[@]}"
@@ -1985,14 +1991,14 @@ jobs:
           fi
           if [ "${SHARD:-}" != doctests ]; then
             if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] || [ "${WARM_CACHE:-false}" = true ] || { [ "${COLLECT_COVERAGE:-true}" = true ] && [ -n "${SHARD:-}" ]; }; then
-              partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT")
+              partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT")
               report=(--lcov --output-path "$PWD/shard-$SHARD.lcov")
               if [ "${WARM_CACHE:-false}" = true ]; then
                 packages=(--workspace)
                 partition=(-E "${WARM_TEST_FILTER-none()}")
                 report=(--no-report)
               elif [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
-                partition=(--partition count:1/1)
+                partition=(--partition slice:1/1)
                 mkdir -p target/single-coverage
                 report=(--lcov --output-path "$PWD/target/single-coverage/shard-1.lcov")
               fi
@@ -2011,7 +2017,7 @@ jobs:
               fi
             else
               partition=()
-              if [ -n "${SHARD:-}" ]; then partition=(--partition "count:$SHARD/$TEST_SHARD_COUNT"); fi
+              if [ -n "${SHARD:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); fi
               run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
                 "${build_args[@]}" --retries 2 --flaky-result pass --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi
@@ -2445,7 +2451,7 @@ jobs:
           done
           mkdir -p target/single-coverage
           PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-            --retries 2 --flaky-result pass --final-status-level flaky --partition count:1/1 --no-tests pass --workspace --locked \
+            --retries 2 --flaky-result pass --final-status-level flaky --partition slice:1/1 --no-tests pass --workspace --locked \
             --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
             --lcov --output-path "$PWD/target/single-coverage/shard-1.lcov" 2>&1 | tee nextest.log
           COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"

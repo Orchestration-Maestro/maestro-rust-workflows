@@ -223,7 +223,7 @@ can remove an entry before the next reader runs.
 ## Test shards
 
 Tests use checksum-pinned cargo-nextest 0.9.148 with automatic
-`--partition count:N/COUNT` partitions, where `COUNT` is the declared
+`--partition slice:N/COUNT` partitions, where `COUNT` is the declared
 `test_shard_count`. The caller's `.config/nextest.toml` supplies
 test-suite runner metadata such as resource groups for fixed-port tests. Shared
 CI controls partitioning and coverage; profile default filters are ignored so
@@ -232,7 +232,7 @@ with a clear diagnostic. Unit and integration tests run exactly once; doctests
 run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
 for pull requests, merge groups and main pushes, using the selected packages
 described below. Merge groups and main pushes always select every workspace
-package. Pull requests use one `count:1/1` leg for their selected packages,
+package. Pull requests use one `slice:1/1` leg for their selected packages,
 regardless of `test_shard_count`. An empty selection skips that leg.
 
 `test_shard_count` sets the number of shards. It is an optional whole number
@@ -259,7 +259,7 @@ enforces `coverage_min_lines` on the union. Missing reports or low coverage fail
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. Both coverage modes run tests through nextest,
 so caller setup scripts run in either mode (reusing prepared outputs in shards). Single-job coverage uses one partition
-(`count:1/1`); declared callers combine one report per shard. Both modes use the same
+(`slice:1/1`); declared callers combine one report per shard. Both modes use the same
 line-counting policy: normalize source paths, count each line once, and enforce
 the coverage floor on the union of hits. PRs skip coverage for all callers.
 
@@ -273,6 +273,13 @@ available for tests that intentionally start child builds. `Doctests` compiles a
 runs doctests once on every pull request, merge group and main push, without
 waiting for the archive build.
 Warm-cache runs keep their existing compile route and cache shape.
+
+Both archive commands pass `--timings` to Cargo. Download the
+`test-build-timings-<concurrency-key>` artifact (`test-build-timings-root` when no
+key is set) and open `cargo-timing.html` to inspect per-crate build times.
+The artifact includes the report from `target/cargo-timings/` for plain builds or
+`target/llvm-cov-target/cargo-timings/` for coverage builds. A successful archive
+build must produce a timing report; a missing report fails the upload.
 
 Each shard fetches the archive and the test setup bundle in up to 16 parallel byte ranges
 from artifact storage, checks the size and SHA-256 digest the Actions API reports, then
@@ -480,7 +487,7 @@ select only their compile-input readers and explicit test-input routes when
 included.
 Root manifest and lockfile changes still follow the rules below.
 
-The selected tests run without coverage in one archived `count:1/1` leg.
+The selected tests run without coverage in one archived `slice:1/1` leg.
 Doctests cover the same packages in the parallel `Doctests` job. Host Clippy
 and the declared Windows target check lint those packages with `--all-targets`.
 Merge groups and main pushes lint the whole workspace. An empty PR selection
