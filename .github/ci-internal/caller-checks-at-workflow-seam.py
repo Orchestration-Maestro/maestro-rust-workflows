@@ -1,4 +1,5 @@
 import ast
+import itertools
 import json
 import os
 import pathlib
@@ -2017,7 +2018,14 @@ print('PASS scheduled_scans_follow_released_workflow')
 def fuzz_scan_runs_only_declaration_and_fuzz():
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     job = jobs['fuzz']
-    assert "    if: $" + "{{ !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}\n" in job
+    condition = re.search(r'^    if: (.+)$', job, re.MULTILINE)
+    assert condition is not None, 'Missing fuzz job condition'
+    for browser_only, warm_cache, fuzz_scan, has_targets in itertools.product([False, True], repeat=4):
+        values = {'inputs.browser-only': browser_only, 'inputs.warm-cache': warm_cache,
+                  'inputs.fuzz-scan': fuzz_scan,
+                  'needs.declaration.outputs.fuzz_targets': '["target"]' if has_targets else '[]'}
+        expected = not browser_only and not warm_cache and fuzz_scan and has_targets
+        assert evaluate(condition[1], values) == expected, values
     assert all('fuzz-scan' not in jobs[name].split('    steps:', 1)[0] for name in ['declaration', 'advisories'])
     assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: nightly-2026-09-15\n' in job
     assert workflow.count('nightly-') == 1 and workflow.count('/cargo-fuzz/') == 1
