@@ -1713,6 +1713,42 @@ jobs:
           a_pinned_job_that_did_not_run_is_reported()
           print('PASS a_pinned_job_that_did_not_run_is_reported')
 
+          def reused_main_tests_keep_the_other_required_checks():
+              pinned = SETTINGS['required']
+              ran = [job(name.rstrip('*') + ('1/16)' if name.endswith('*') else ''), 5) for name in pinned]
+              omitted = {'Build test archive', 'Test shard (1/16)', 'Doctests'}
+              declaration = next(item for item in ran if item['name'] == 'Caller declaration')
+              declaration['steps'] = [{'name': 'Reuse merge queue tests', 'conclusion': 'success'}]
+              skipped = [dict(item, conclusion='skipped') if item['name'] in omitted else item for item in ran]
+              main = run_of(7, 39, event='push')
+              assert judging['required_finding'](main, skipped, pinned) is None
+              for event, branch, status in [('merge_group', 'main', 'success'), ('push', 'topic', 'success'),
+                                             ('push', 'main', 'skipped'), ('push', 'main', 'failure')]:
+                  declaration['steps'][0]['conclusion'] = status
+                  assert judging['required_finding'](run_of(7, 39, event=event, branch=branch), skipped, pinned)
+              declaration['steps'][0]['conclusion'] = 'success'
+              broken = [dict(item, conclusion='skipped') if item['name'] == 'Docs' else item for item in skipped]
+              finding = judging['required_finding'](main, broken, pinned)
+              assert '`Docs`' in finding['body'] and 'Test shard' not in finding['body'], finding
+              # A reused run starts a separate job-shape history, not a false removal escalation.
+              gh, _ = fake_repository(event='push')
+              def reused_repository(*args):
+                  result = gh(*args)
+                  if '/actions/runs/7/jobs?' in args[-1]:
+                      pages = json.loads(result)
+                      for page in pages:
+                          for item in page['jobs']:
+                              if item['name'] in omitted or item['name'].startswith('Test shard ('):
+                                  item['conclusion'] = 'skipped'
+                              if item['name'] == 'Caller declaration':
+                                  item.setdefault('steps', []).append({'name': 'Reuse merge queue tests', 'conclusion': 'success'})
+                      return json.dumps(pages)
+                  return result
+              assert judging['judge']('7', 'owner/repo', reused_repository, SETTINGS) == []
+
+          reused_main_tests_keep_the_other_required_checks()
+          print('PASS reused_main_tests_keep_the_other_required_checks')
+
           def selection_rows(*shares):
               return [(identifier, selected, 51, trigger) for identifier, (selected, trigger) in enumerate(shares, 1)]
 

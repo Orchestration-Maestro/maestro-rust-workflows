@@ -1895,7 +1895,7 @@ def fuzz_scan_runs_only_declaration_and_fuzz():
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     job = jobs['fuzz']
     assert "    if: $" + "{{ !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}\n" in job
-    assert 'fuzz-scan' not in jobs['declaration'] and 'fuzz-scan' not in jobs['advisories']
+    assert all('fuzz-scan' not in jobs[name].split('    steps:', 1)[0] for name in ['declaration', 'advisories'])
     assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: nightly-2026-09-15\n' in job
     assert workflow.count('nightly-') == 1 and workflow.count('/cargo-fuzz/') == 1
     assert '        env:\n          FUZZ_SCAN: true\n        run: *check-tools\n' in job
@@ -3181,6 +3181,199 @@ def included_readers_follow_member_roots():
 included_readers_follow_member_roots()
 print('PASS included_readers_follow_member_roots')
 
+def merge_queue_identity_is_exact_and_shared():
+    from unittest.mock import patch
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['declaration']['steps']
+    identity = next(step for step in steps if step['name'] == 'Test evidence identity')
+    assert identity['env']['GH_TOKEN'] == '${{ github.token }}'
+    assert identity['env']['CURRENT_WORKFLOW_REF'] == '${{ github.workflow_ref }}'
+    assert identity['env']['CURRENT_WORKFLOW_SHA'] == '${{ github.workflow_sha }}'
+    for name in ['Check merge queue result', 'Record merge queue evidence']:
+        step = next(step for step in steps if step['name'] == name)
+        for key in ['WORKFLOW_REF', 'WORKFLOW_SHA']:
+            assert step['env'][key] == '${{ steps.evidence-scope.outputs.' + key.lower() + ' }}'
+    match = re.search(r"python3 <<'PYTHON'\n(.*?)\nPYTHON", body('Test evidence identity'), re.S)
+    assert match
+    path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
+    reference = {'path': path + '@v1', 'sha': 'c' * 40}
+    for raw, sha, references, expected in [(path + '@v1', 'c' * 40, [], 'c' * 40),
+            ('owner/repo/.github/workflows/suite.yml@main', 'a' * 40, [reference], 'c' * 40),
+            (path + '@v1', 'c' * 40, [reference], 'c' * 40),
+            ('owner/repo/.github/workflows/ci.yml@main', 'c' * 40, [], ''),
+            ('.github/workflows/ci.yml@main', 'c' * 40, [], ''),
+            (path + '@v1', 'a' * 40, [reference], ''),
+            (path + '@v1', 'c' * 40, [reference, reference], ''),
+            (path + '@v1', 'invalid', [], ''), ('', '', [], ''), ('', '', None, '')]:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = pathlib.Path(temporary) / 'output'
+            def api(argv, references=references, **kwargs):
+                assert argv == ['gh', 'api', 'repos/owner/repo/actions/runs/9']
+                if references is None:
+                    raise subprocess.CalledProcessError(1, argv)
+                return json.dumps({'referenced_workflows': references})
+            with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_RUN_ID': '9',
+                    'GITHUB_OUTPUT': str(output), 'CURRENT_WORKFLOW_REF': raw, 'CURRENT_WORKFLOW_SHA': sha,
+                    'CALLER_DIRECTORY': '.', 'CALL_KEY': '', 'GH_TOKEN': 'read-token'}), \
+                    patch('subprocess.check_output', side_effect=api):
+                exec(compile(match[1], 'Test evidence identity', 'exec'), {})
+            values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            assert values['workflow_sha'] == expected, (raw, references, values)
+            assert values['workflow_ref'] == (path + '@' + expected if expected else ''), values
+            assert re.fullmatch('[0-9a-f]{64}', values['scope'])
+
+merge_queue_identity_is_exact_and_shared()
+print('PASS merge_queue_identity_is_exact_and_shared')
+
+
+def merge_queue_evidence_records_full_suite_and_revision():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['declaration']['steps']
+    record = next(step for step in steps if step['name'] == 'Record merge queue evidence')
+    upload = next(step for step in steps if step['name'] == 'Upload merge queue evidence')
+    assert record['if'] == upload['if'] == "github.event_name == 'merge_group'"
+    assert record['env']['WORKFLOW_REF'] == '${{ steps.evidence-scope.outputs.workflow_ref }}'
+    assert record['env']['WORKFLOW_SHA'] == '${{ steps.evidence-scope.outputs.workflow_sha }}'
+    assert upload['with']['name'] == 'merge-queue-tests-${{ steps.evidence-scope.outputs.scope }}-${{ github.run_attempt }}'
+    assert upload['with']['if-no-files-found'] == 'error'
+    match = re.search(r"python3 <<'PYTHON'\n(.*?)\nPYTHON", body('Record merge queue evidence'), re.S)
+    assert match
+    with tempfile.TemporaryDirectory() as temporary:
+        for scope, coverage, warm, scan, override, full in [('full workspace', 'true', False, False, '', True),
+                ('selected packages: a', 'true', False, False, '', False), ('full workspace', 'false', False, False, '', False),
+                ('full workspace', 'true', True, False, '', False), ('full workspace', 'true', False, True, '', False),
+                ('full workspace', 'true', False, False, 'fixture', False)]:
+            context = {'steps.selection.outputs.coverage_scope': scope, 'steps.selection.outputs.coverage': coverage,
+                       'inputs.warm-cache': warm, 'inputs.advisory-scan': scan, 'inputs.fuzz-scan': False,
+                       'inputs.checkout-repository': override, 'inputs.checkout-ref': '', 'inputs.test-event': ''}
+            assert bool(evaluate(record['env']['FULL_TEST_SET'], context)) == full
+            result = subprocess.run(['python3', '-c', match[1]], capture_output=True, text=True,
+                env=os.environ | {'RUNNER_TEMP': temporary, 'WORKFLOW_REF': 'owner/workflows/.github/workflows/ci.yml@v1',
+                                  'WORKFLOW_SHA': 'c' * 40, 'FULL_TEST_SET': str(full).lower()})
+            assert result.returncode == 0, result.stderr
+            assert json.loads((pathlib.Path(temporary) / 'merge-queue-tests.json').read_text(encoding='utf-8')) == {
+                'workflow_ref': 'owner/workflows/.github/workflows/ci.yml@v1', 'workflow_sha': 'c' * 40, 'full_test_set': full}
+
+merge_queue_evidence_records_full_suite_and_revision()
+print('PASS merge_queue_evidence_records_full_suite_and_revision')
+
+
+def main_reuses_only_exact_successful_merge_queue_tests():
+    import io
+    import shutil
+    import zipfile
+    from unittest.mock import patch
+    assert 'TESTS_REUSED: $' + '{{ steps.queue.outputs.tests_reused }}' in workflow
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['declaration']['steps']
+    check = next(step for step in steps if step['name'] == 'Check merge queue result')
+    marker = next(step for step in steps if step['name'] == 'Reuse merge queue tests')
+    assert check['env']['GH_TOKEN'] == '${{ github.token }}'
+    assert check['env']['EVIDENCE_SCOPE'] == '${{ steps.evidence-scope.outputs.scope }}'
+    assert document['jobs']['declaration']['permissions'] == {'contents': 'read', 'actions': 'read'}
+    context = {'github.event_name': 'push', 'github.ref': 'refs/heads/main', default_ref: 'refs/heads/main',
+               'inputs.warm-cache': False, 'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
+               'inputs.checkout-repository': '', 'inputs.checkout-ref': '', 'inputs.test-event': ''}
+    assert evaluate(check['if'], context)
+    for key, value in [('github.event_name', 'merge_group'), ('github.ref', 'refs/heads/topic'),
+                       ('inputs.warm-cache', True), ('inputs.advisory-scan', True), ('inputs.fuzz-scan', True),
+                       ('inputs.checkout-repository', 'owner/fixture'), ('inputs.checkout-ref', 'other'),
+                       ('inputs.test-event', 'push')]:
+        assert not evaluate(check['if'], context | {key: value}), key
+    match = re.search(r"python3 <<'PYTHON'\n(.*?)\nPYTHON", body('Check merge queue result'), re.S)
+    assert match
+    script = match[1]
+    path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
+    good = {'id': 1, 'workflow_id': 5, 'head_sha': 'a' * 40, 'event': 'merge_group',
+            'head_repository': {'full_name': 'owner/repo'},
+            'run_attempt': 2, 'status': 'completed', 'conclusion': 'success'}
+    evidence = {'workflow_ref': path + '@v1', 'workflow_sha': 'c' * 40, 'full_test_set': True}
+    scenarios = [('passed', [[good]], True), ('direct', [[]], False),
+                 ('other-caller', [[good | {'workflow_id': 6}]], True),
+                 ('fork', [[good | {'head_repository': {'full_name': 'other/fork'}}]], False),
+                 ('missing-repository', [[{key: value for key, value in good.items() if key != 'head_repository'}]], False),
+                 ('null-repository', [[good | {'head_repository': None}]], False),
+                 ('other-commit', [[good | {'head_sha': 'b' * 40}]], False),
+                 ('pr', [[good | {'event': 'pull_request'}]], False),
+                 ('failed', [[good | {'conclusion': 'failure'}]], False),
+                 ('cancelled', [[good | {'conclusion': 'cancelled'}]], False),
+                 ('in-progress', [[good | {'status': 'in_progress'}]], False),
+                 ('pagination', [[], [good]], True), ('permission', None, False),
+                 ('version-mismatch', [[good]], False), ('other-path', [[good]], False),
+                 ('subset', [[good]], False), ('missing-artifact', [[good]], False),
+                 ('expired-artifact', [[good]], False), ('unreadable-artifact', [[good]], False),
+                 ('old-attempt', [[good]], False), ('missing-identity', [[good]], False)]
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        fixture_git(directory, 'init', '--quiet')
+        fixture_git(directory, 'add', '.')
+        fixture_git(directory, 'commit', '-qm', 'main suite fixture')
+        observed = set()
+        for name, pages, reused in scenarios:
+            output = directory / '.git/result'
+            output.write_text('', encoding='utf-8')
+            def api(argv, name=name, pages=pages, **kwargs):
+                assert os.environ['GH_TOKEN'] == 'read-token'
+                if pages is None:
+                    raise subprocess.CalledProcessError(1, argv)
+                if '/actions/artifacts/7/zip' in argv[-1]:
+                    if name == 'unreadable-artifact':
+                        return b'corrupt archive'
+                    record = evidence | ({'workflow_sha': 'd' * 40} if name == 'version-mismatch' else
+                        {'full_test_set': False} if name == 'subset' else
+                        {'workflow_ref': 'owner/other/.github/workflows/ci.yml@v1'} if name == 'other-path' else {})
+                    archive = io.BytesIO()
+                    with zipfile.ZipFile(archive, 'w') as bundle:
+                        bundle.writestr('merge-queue-tests.json', json.dumps(record))
+                    return archive.getvalue()
+                if '/actions/runs/1/artifacts?' in argv[-1]:
+                    assert argv[-1].endswith('name=merge-queue-tests-scope-2&per_page=100')
+                    assert '--paginate' in argv and '--slurp' in argv
+                    artifact = {'id': 7, 'name': 'merge-queue-tests-scope-' + ('1' if name == 'old-attempt' else '2'),
+                                'expired': name == 'expired-artifact'}
+                    return json.dumps([{'artifacts': []}, {'artifacts': [] if name == 'missing-artifact' else [artifact]}])
+                assert argv[-1] == 'repos/owner/repo/actions/runs?event=merge_group&status=success&head_sha=' + 'a' * 40 + '&per_page=100'
+                assert '--paginate' in argv and '--slurp' in argv
+                return json.dumps([{'workflow_runs': runs} for runs in pages])
+            with patch.dict(os.environ, {'GH_TOKEN': 'read-token', 'GITHUB_REPOSITORY': 'owner/repo',
+                    'GITHUB_RUN_ID': '9', 'GITHUB_SHA': 'a' * 40, 'GITHUB_OUTPUT': str(output), 'EVIDENCE_SCOPE': 'scope',
+                    'WORKFLOW_REF': path + '@v1', 'WORKFLOW_SHA': '' if name == 'missing-identity' else 'c' * 40}), \
+                    patch('subprocess.check_output', side_effect=api):
+                exec(compile(script, 'Check merge queue result', 'exec'), {})
+            values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            assert values['tests_reused'] == str(reused).lower(), (name, values)
+            assert evaluate(marker['if'], {'steps.queue.outputs.tests_reused': values['tests_reused']}) == reused
+            if reused in observed:
+                continue
+            observed.add(reused)
+            output.write_text('', encoding='utf-8')
+            result = select_packages(directory, {'TEST_EVENT': 'push', 'BASE_REF': '',
+                'TESTS_REUSED': values['tests_reused'], 'GITHUB_OUTPUT': str(output)})
+            assert result.returncode == 0, result.stderr
+            selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            assert selected['coverage'] == str(not reused).lower(), (name, selected)
+            conditions = context | {'needs.declaration.outputs.coverage': selected['coverage'],
+                'needs.declaration.outputs.enabled': 'true', 'needs.declaration.outputs.browser_tests': 'true',
+                'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.wasm_crates': '["web"]',
+                'needs.declaration.outputs.test_prepare_inputs': '[]', 'needs.declaration.outputs.test_prepare': '"prepare"',
+                'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
+                'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True}
+            for job in ['test-build', 'test-prepare', 'tests', 'doctests', 'browser', 'browser-tests']:
+                assert bool(evaluate(document['jobs'][job]['if'], conditions)) == (not reused), (name, job)
+            for job in ['quality', 'docs', 'tests', 'doctests', 'browser', 'browser-tests', 'targets']:
+                warm = conditions | {'inputs.warm-cache': True, 'needs.declaration.outputs.coverage': 'true',
+                                     'needs.declaration.outputs.targets': '["windows"]'}
+                assert evaluate(document['jobs'][job]['if'], warm), job
+            result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                env=os.environ | {'DECLARATION_RESULT': 'success', 'COLLECT_COVERAGE': selected['coverage'],
+                                  'RESULT': 'skipped' if reused else 'success', 'DOCTEST_RESULT': 'skipped' if reused else 'success'},
+                capture_output=True, text=True)
+            assert result.returncode == 0, result.stderr
+
+main_reuses_only_exact_successful_merge_queue_tests()
+print('PASS main_reuses_only_exact_successful_merge_queue_tests')
+
 def pull_request_test_results_must_be_skipped():
     for status in ['success', 'failure', 'cancelled', 'skipped']:
         result = subprocess.run(['python3', '-c', body('All test shards passed')],
@@ -3893,7 +4086,7 @@ def workflow_failures_remain_required():
     assert "needs.declaration.outputs.coverage == 'true'" in document['jobs']['browser']['if']
     # Each scan mode runs only the declaration and its own job.
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-    assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
+    assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration'].split('    steps:', 1)[0]
     assert all('!inputs.advisory-scan && !inputs.fuzz-scan' in job.split('\n    steps:', 1)[0]
                for name, job in jobs.items() if name not in ('declaration', 'advisories', 'fuzz')), sorted(jobs)
 
