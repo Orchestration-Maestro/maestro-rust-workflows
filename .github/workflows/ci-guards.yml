@@ -532,7 +532,7 @@ jobs:
           def required_finding(run, jobs, pinned):
               """Pinned jobs that did not run at all, so a renamed or removed gate cannot pass silently."""
               if reuses_tests(run, jobs):
-                  pinned = [name for name in pinned if name not in ('Build test archive', 'Test shard (*', 'Doctests')]
+                  pinned = [name for name in pinned if name not in ('Test shard (*', 'Doctests')]
               ran = [job['name'] for job in jobs if job.get('conclusion') in ('success', 'failure')]
               missing = [name for name in pinned if not any(
                   job.startswith(name[:-1]) if name.endswith('*') else job == name for job in ran)]

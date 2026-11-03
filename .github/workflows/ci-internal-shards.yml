@@ -385,7 +385,11 @@ jobs:
               assert steps['Restore test setup cache']['with']['key'] == '$' + '{{ steps.setup-identity.outputs.key }}'
               # A missed key restores the closest earlier bundle of the same identity; only the exact key is saved.
               assert steps['Restore test setup cache']['with']['restore-keys'] == '$' + '{{ steps.setup-identity.outputs.prefix }}'
-              assert steps['Prepare test setup']['if'] == "steps.setup-cache.outputs.cache-hit != 'true'"
+              for writer, hit, expected in [('true', 'true', True), ('true', '', True),
+                                            ('false', 'true', False), ('false', '', True)]:
+                  assert bool(evaluate(steps['Prepare test setup']['if'], {
+                      'steps.setup-cache.outputs.cache-hit': hit,
+                      'steps.cache-identity.outputs.writer': writer})) == expected, (writer, hit)
               save = steps['Save test setup cache']
               assert condition(save) == "steps.cache-identity.outputs.writer == 'true' && steps.setup-cache.outputs.cache-hit != 'true' && " + declared
               assert save['with'] == {'path': '$' + '{{ runner.temp }}/test-setup.tar', 'key': '$' + '{{ steps.setup-identity.outputs.key }}'}
@@ -457,7 +461,7 @@ jobs:
           cache_identity_follows_the_declared_inputs()
           print('PASS cache_identity_follows_the_declared_inputs')
 
-          def second_run_with_unchanged_inputs_restores_and_skips():
+          def writers_rebuild_while_unchanged_readers_skip_preparation():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               job, steps = prepare_steps(document)
               with tempfile.TemporaryDirectory() as temporary:
@@ -471,7 +475,8 @@ jobs:
                       checkout.mkdir(parents=True)
                       (checkout / 'key.txt').write_text(printed, encoding='utf-8')
                       env = {'TEST_PREPARE': command, 'TEST_PREPARE_INPUTS': json.dumps(['key.txt']), 'RUNNER_TEMP': str(runner),
-                             'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work'}
+                             'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work',
+                             'CACHE_WRITER': 'true' if writer else 'false'}
                       with tempfile.NamedTemporaryFile() as output:
                           result = execute('Test setup cache identity', checkout, env | {'GITHUB_OUTPUT': output.name})
                           assert result.returncode == 0, result.stderr
@@ -498,10 +503,10 @@ jobs:
                   # A pull request reads the cache and never writes it.
                   assert run('pull-request', 'inputs-1', False)[:3] == (False, True, False)
                   assert not list(cache.iterdir())
-                  # The first push prepares and saves; the second, with unchanged input files, restores and skips.
+                  # Writers compile on exact hits too, but never overwrite an existing bundle key.
                   assert run('push-1', 'inputs-1', True)[:3] == (False, True, True)
                   hit, prepared, saved, tarball = run('push-2', 'inputs-1', True)
-                  assert (hit, prepared, saved) == (True, False, False)
+                  assert (hit, prepared, saved) == (True, True, False)
                   listing = subprocess.check_output(['tar', '-tf', str(tarball)], text=True)
                   assert 'test-setup/count' in listing and 'test-setup/base-count' not in listing, listing
                   assert subprocess.check_output(['tar', '-xOf', str(tarball), 'test-setup/count'], text=True) == 'once\n'
@@ -510,11 +515,15 @@ jobs:
                   # Changed inputs miss the exact key, prepare again and save under the new key.
                   hit, prepared, saved, tarball = run('push-3', 'inputs-2', True)
                   assert (hit, prepared, saved) == (False, True, True)
-                  # They start from push-2's bundle, restored by prefix and handed over as the base.
+                  listing = subprocess.check_output(['tar', '-tf', str(tarball)], text=True)
+                  assert 'test-setup/base-count' not in listing, listing
+                  # A reader's exact miss still receives the closest bundle as its base.
+                  hit, prepared, saved, tarball = run('reader-new-inputs', 'inputs-3', False)
+                  assert (hit, prepared, saved) == (False, True, False)
                   assert subprocess.check_output(['tar', '-xOf', str(tarball), 'test-setup/base-count'], text=True) == 'once\n'
 
-          second_run_with_unchanged_inputs_restores_and_skips()
-          print('PASS second_run_with_unchanged_inputs_restores_and_skips')
+          writers_rebuild_while_unchanged_readers_skip_preparation()
+          print('PASS writers_rebuild_while_unchanged_readers_skip_preparation')
 
           def every_bundle_reader_restores_on_a_hit():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
@@ -1716,7 +1725,7 @@ jobs:
           def reused_main_tests_keep_the_other_required_checks():
               pinned = SETTINGS['required']
               ran = [job(name.rstrip('*') + ('1/16)' if name.endswith('*') else ''), 5) for name in pinned]
-              omitted = {'Build test archive', 'Test shard (1/16)', 'Doctests'}
+              omitted = {'Test shard (1/16)', 'Doctests'}
               declaration = next(item for item in ran if item['name'] == 'Caller declaration')
               declaration['steps'] = [{'name': 'Reuse merge queue tests', 'conclusion': 'success'}]
               skipped = [dict(item, conclusion='skipped') if item['name'] in omitted else item for item in ran]
@@ -1727,9 +1736,10 @@ jobs:
                   declaration['steps'][0]['conclusion'] = status
                   assert judging['required_finding'](run_of(7, 39, event=event, branch=branch), skipped, pinned)
               declaration['steps'][0]['conclusion'] = 'success'
-              broken = [dict(item, conclusion='skipped') if item['name'] == 'Docs' else item for item in skipped]
-              finding = judging['required_finding'](main, broken, pinned)
-              assert '`Docs`' in finding['body'] and 'Test shard' not in finding['body'], finding
+              for required in ['Docs', 'Build test archive']:
+                  broken = [dict(item, conclusion='skipped') if item['name'] == required else item for item in skipped]
+                  finding = judging['required_finding'](main, broken, pinned)
+                  assert finding and f'`{required}`' in finding['body'] and 'Test shard' not in finding['body'], finding
               # A reused run starts a separate job-shape history, not a false removal escalation.
               gh, _ = fake_repository(event='push')
               def reused_repository(*args):
