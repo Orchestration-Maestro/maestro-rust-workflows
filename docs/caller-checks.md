@@ -32,11 +32,14 @@ test_tools = false
 
 ## Test policy and caller permissions
 
-Pull requests run fast checks and one test leg for changed crates and their
-workspace dependents. Host Clippy and the Windows target check use that same
-package selection; formatting still checks the whole workspace. Merge groups
-and main pushes run every workspace test with the full shard matrix. No caller
-setting changes this policy.
+Pull requests run declaration validation, formatting, Clippy, docs,
+dependency/source checks and the declared Windows target check. Host Clippy and
+the Windows check select changed crates and their workspace dependents;
+formatting still checks the whole workspace. Pull requests skip the test archive,
+test setup, test shards, doctests and wasm/browser builds. Every required check
+name still reports; skipped jobs count as success. Merge groups and main pushes
+run every workspace test with the full shard matrix, doctests, coverage and all
+declared builds and foreign-target checks. No caller setting changes this policy.
 
 See [Test shards](#test-shards) for the required test result and coverage rules.
 
@@ -132,11 +135,10 @@ connection that the kernel assigned that port. Without it nothing runs.
 An absent file runs the standard checks without isolation, search tool
 installation or optional jobs. After declaration validation, pull requests
 run formatting, Clippy, docs, dependency/source checks, declared Windows
-target checks, wasm/browser builds and doctests in parallel. Merge groups and
-main pushes run the full shard matrix, coverage and all declared foreign-target
-checks. Pull requests run one non-coverage test leg for the selected packages.
-Other foreign-target checks (including macOS) and Chromium tests run only on
-those full events.
+target checks in parallel. Merge groups and main pushes also run the test
+archive, test setup, full shard matrix, doctests, coverage, wasm/browser builds,
+Chromium tests and all declared foreign-target checks (including macOS).
+Pull requests skip these jobs without removing their required check names.
 An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
 member or non-boolean tool/build flag fails declaration validation. An empty
@@ -230,10 +232,8 @@ CI controls partitioning and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
 run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
-for pull requests, merge groups and main pushes, using the selected packages
-described below. Merge groups and main pushes always select every workspace
-package. Pull requests use one `slice:1/1` leg for their selected packages,
-regardless of `test_shard_count`. An empty selection skips that leg.
+for merge groups and main pushes. These events always select every workspace
+package. Pull requests skip both test shards and doctests.
 
 `test_shard_count` sets the number of shards. It is an optional whole number
 from 1 to 60 and defaults to 16. Any other value, including a float, a string or
@@ -246,16 +246,16 @@ test_shard_count = 32
 More shards spread the tests over more runners, and each shard repeats its own
 setup. The shard matrix, the partitions, the job names and the coverage union
 all use the declared count on full runs, so the union expects exactly that many
-reports. Pull-request tests do not use this count or upload coverage.
+reports. Pull requests run no test shards and upload no coverage.
 
 Declared callers run `cargo llvm-cov nextest` in the same isolated environment
 with their opted-in tools. Only the numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including `Doctests`, to succeed on full runs. On pull requests it requires a
-successful declaration, successful `Doctests`, and either a skip for an empty
-selection or a successful selected-package test leg. On full runs it downloads
-all reports, counts each source line once (covered if any shard hits it), and
-enforces `coverage_min_lines` on the union. Missing reports or low coverage fail.
+successful declaration and skipped test and doctest jobs, regardless of package
+selection. On full runs it downloads all reports, counts each source line once
+(covered if any shard hits it), and enforces `coverage_min_lines` on the union.
+Missing reports or low coverage fail.
 Undeclared callers use nextest partitions but retain their single coverage job
 for merge groups and main pushes. Both coverage modes run tests through nextest,
 so caller setup scripts run in either mode (reusing prepared outputs in shards). Single-job coverage uses one partition
@@ -265,12 +265,13 @@ the coverage floor on the union of hits. PRs skip coverage for all callers.
 
 ### Build once, test many
 
-One `Build test archive` job compiles the selected unit and integration tests with
-`cargo nextest archive` (or `cargo llvm-cov nextest-archive` for declared coverage).
+On merge groups and main pushes, one `Build test archive` job compiles the
+workspace's unit and integration tests with `cargo nextest archive` (or
+`cargo llvm-cov nextest-archive` for declared coverage).
 Numeric shards download that archive and run `--archive-file`, keeping the same
 partitions, retries and coverage reports. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
-runs doctests once on every pull request, merge group and main push, without
+runs doctests once on every merge group and main push, without
 waiting for the archive build.
 Warm-cache runs keep their existing compile route and cache shape.
 
@@ -364,8 +365,9 @@ unreadable filters fail with the offset where parsing stopped. Errors name the
 nextest file, the setup and the reason. Every named package must belong to the
 workspace.
 
-When none of these packages is selected, `Prepare test setup` does not start,
-and the shards skip the download and restore. Selecting any of them keeps the
+Pull requests always skip preparation. On runs that test, when none of these
+packages is selected, `Prepare test setup` does not start, and the shards skip
+the download and restore. Selecting any of them keeps the
 command. Every merge group and main push selects the whole workspace, so it
 prepares whenever a consumer exists. An empty setup list disables preparation;
 without the key every run that tests prepares.
@@ -386,10 +388,10 @@ bundle on a hit and skips the `test_prepare` command. A warm build restores it
 in the same way, so it uses the bundle in place of building the files again;
 without the list a warm build does not prepare. Every numeric shard then
 downloads the restored directory as before. Only pushes to the default branch
-write the cache, so a pull request or a merge group reads what the last push
-saved. Declare every input the command reads: an unlisted input does not change
-the key and can leave a stale directory in place. Without the list nothing is
-cached.
+write the cache, so a merge group reads what the last push saved. Pull requests
+skip preparation. Declare every input the command reads: an unlisted input does
+not change the key and can leave a stale directory in place. Without the list
+nothing is cached.
 
 When the exact key misses, `Prepare test setup` restores the closest earlier
 bundle saved under the same compile cache identity, checkout path and
@@ -473,9 +475,9 @@ grep -RFn -- 'phase: waiting-for-child-exit' "$download/target/browser-author-di
 
 ### Pull-request selection and retries
 
-Pull requests run changed workspace crates, literal `include_str!`,
-`include_bytes!` or `#[path = "..."]` input readers and declared test-input
-readers, plus their direct or transitive workspace dependents. Normal, build,
+Pull-request host Clippy and Windows checks select changed workspace crates,
+literal `include_str!`, `include_bytes!` or `#[path = "..."]` input readers and
+declared test-input readers, plus their direct or transitive workspace dependents. Normal, build,
 development and target-specific dependency edges count. The deepest package root
 owns a changed source file. Including a package input adds its readers without
 dropping its owner or the owner's dependents. Non-root packages own their whole
@@ -487,19 +489,17 @@ select only their compile-input readers and explicit test-input routes when
 included.
 Root manifest and lockfile changes still follow the rules below.
 
-The selected tests run without coverage in one archived `slice:1/1` leg.
-Doctests cover the same packages in the parallel `Doctests` job. Host Clippy
-and the declared Windows target check lint those packages with `--all-targets`.
-Merge groups and main pushes lint the whole workspace. An empty PR selection
-performs no Clippy compilation; the named checks still report success. An empty
-selection skips the test archive, preparation and test leg; doctests succeed
-without running `cargo test`. An absent base selects every package in that
-single PR leg.
+Host Clippy and the declared Windows target check lint the selected packages
+with `--all-targets`. Merge groups and main pushes lint the whole workspace.
+An empty PR selection performs no Clippy compilation; the named checks still
+report success. An absent base selects every package for lint. Pull requests
+skip the test archive, preparation, test shards, doctests and wasm/browser
+builds regardless of package selection.
 
 A crate manifest selects its crate; lockfile changes compare the resolved transitive dependency identities
 and features at base and head, selecting affected crates. Root manifest,
 toolchain or CI workflow/schema changes select everything. Non-test declaration
-keys (such as spelling, wasm and foreign-target lists) select no extra tests;
+keys (such as spelling, wasm and foreign-target lists) select no extra packages;
 changes to test tools, coverage policy, additional locked manifests, declared
 test inputs or declaration presence select everything.
 For paths outside a crate, fallback selection skips undeclared Markdown files
@@ -702,7 +702,7 @@ Each value must name an existing `Cargo.toml` file by a relative path from the c
 
 Every test shard fetches each declared manifest with `cargo fetch --locked --manifest-path <path>` before starting its tests or declared coverage. Existing root-workspace fetching remains unchanged. The step is skipped when the list is omitted or empty. Cargo chooses the manifest's workspace and lockfile; a missing or stale lock fails provisioning with the manifest identified, Cargo's diagnostics visible and its nonzero status preserved. Provisioning may use the network and write Cargo's dependency cache; it does not generate, update or repair source manifests or lockfiles. Tests can subsequently build offline from the acquired sources, including by staging a temporary directory-source bundle; a cold, empty Cargo home alone does not contain that cache.
 
-Changes to this input select all workspace test packages in the declaration's pull-request selection mode, like other test-affecting declaration changes. Pull requests follow the [included-input rule](#pull-request-selection-and-retries); merge groups and main pushes run full tests and coverage. Adoption requires a release containing this input and the organization rules' version pin to that release.
+Changes to this input select all workspace packages for pull-request lint, like other test-affecting declaration changes. Pull requests follow the [included-input rule](#pull-request-selection-and-retries); merge groups and main pushes run full tests and coverage. Adoption requires a release containing this input and the organization rules' version pin to that release.
 
 ## Isolated tests
 
@@ -734,8 +734,7 @@ runner fails its test step, so coverage uploads run only after success; a missin
 report after success fails the upload separately. On full runs the required aggregate accepts
 only successful matrix legs, including `Doctests`, and requires one report per
 numeric shard when merging coverage. On pull requests the aggregate requires a
-successful declaration, successful `Doctests`, and either a skip for an empty
-selection or a successful selected-package test leg.
+successful declaration and skipped test and doctest jobs.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
@@ -778,7 +777,7 @@ Windows paths are published in native format for later steps.
 
 ## Wasm and browser builds
 
-On pull requests, merge groups and main pushes, Linux runs this command for
+On merge groups and main pushes, Linux runs this command for
 each listed package:
 
 ```bash
@@ -791,7 +790,7 @@ tools once before wasm compilation. The browser flag is independent: it does
 not enable tools in other jobs. With `browser_build = true`, the workflow runs
 `mise exec -- just browser-build` after successful wasm builds, including when
 the wasm array is empty. Both wasm builds and the browser recipe run on every
-pull request, merge group and main push. Advisory scans, fuzz scans and warm
+merge group and main push. Pull requests, advisory scans, fuzz scans and warm
 calls outside a default-branch push skip them. A failed wasm build prevents
 the recipe. False or omitted `browser_build` skips the recipe and its
 `just`-pin validation, even when tools are enabled for wasm compilation.
@@ -927,7 +926,7 @@ There is no Linux fallback for Apple/MSVC targets. These compile checks do not
 restore macOS/Windows runtime tests, which remain a before-first-release
 requirement. Merge groups and main pushes run every opted-in target check.
 Ordinary pull requests run only a declared `x86_64-pc-windows-msvc` check.
-PR Windows checks use the same selected packages as host lint and tests instead
+PR Windows checks use the same selected packages as host lint instead
 of `--workspace`; an empty selection keeps the check result without compiling.
 Declaration errors fail CI even when dependent jobs skip.
 
@@ -1361,6 +1360,11 @@ already reports it. The self-test checks every pinned name against `ci.yml`,
 and checks that this repository's ruleset checks, `Required repository quality`
 and `Required consumer tests`, still exist, so renaming a job fails there first.
 When you rename a job on purpose, change the pin and the ruleset in one change.
+
+Pull requests keep the same job names but skip test and build jobs. The
+required-checks guard enforces execution only on merge groups and main pushes,
+so these intentional PR skips do not file missing-check findings.
+
 ### Escalations
 
 Anything that stands out of the pattern is escalated explicitly: the guard files
