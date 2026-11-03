@@ -33,8 +33,8 @@ test_tools = false
 ## Test policy and caller permissions
 
 Pull requests run declaration validation, formatting, Clippy, docs,
-dependency/source checks and the declared Windows target check. Host Clippy and
-the Windows check select changed crates and their workspace dependents;
+dependency/source checks and declared macOS and Windows target checks. Host Clippy
+and these target checks select changed crates and their workspace dependents;
 formatting still checks the whole workspace. Pull requests skip the test archive,
 test setup, test shards, doctests and wasm/browser builds. Every required check
 name still reports; skipped jobs count as success. Merge groups and main pushes
@@ -134,10 +134,10 @@ connection that the kernel assigned that port. Without it nothing runs.
 
 An absent file runs the standard checks without isolation, search tool
 installation or optional jobs. After declaration validation, pull requests
-run formatting, Clippy, docs, dependency/source checks, declared Windows
-target checks in parallel. Merge groups and main pushes also run the test
+run formatting, Clippy, docs, dependency/source checks and declared macOS and
+Windows target checks in parallel. Merge groups and main pushes also run the test
 archive, test setup, full shard matrix, doctests, coverage, wasm/browser builds,
-Chromium tests and all declared foreign-target checks (including macOS).
+Chromium tests and all other declared foreign-target checks.
 Pull requests skip these jobs without removing their required check names.
 An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
@@ -468,7 +468,7 @@ grep -RFn -- 'phase: waiting-for-child-exit' "$download/target/browser-author-di
 
 ### Pull-request selection and retries
 
-Pull-request host Clippy and Windows checks select changed workspace crates,
+Pull-request host Clippy, macOS and Windows checks select changed workspace crates,
 literal `include_str!`, `include_bytes!` or `#[path = "..."]` input readers and
 declared test-input readers, plus their direct or transitive workspace dependents. Normal, build,
 development and target-specific dependency edges count. The deepest package root
@@ -482,7 +482,7 @@ select only their compile-input readers and explicit test-input routes when
 included.
 Root manifest and lockfile changes still follow the rules below.
 
-Host Clippy and the declared Windows target check lint the selected packages
+Host Clippy and declared macOS and Windows target checks lint the selected packages
 with `--all-targets`. Merge groups and main pushes lint the whole workspace.
 An empty PR selection performs no Clippy compilation; the named checks still
 report success. An absent base selects every package for lint. Pull requests
@@ -918,8 +918,9 @@ cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warning
 There is no Linux fallback for Apple/MSVC targets. These compile checks do not
 restore macOS/Windows runtime tests, which remain a before-first-release
 requirement. Merge groups and main pushes run every opted-in target check.
-Ordinary pull requests run only a declared `x86_64-pc-windows-msvc` check.
-PR Windows checks use the same selected packages as host lint instead
+Ordinary pull requests run declared `aarch64-apple-darwin`,
+`x86_64-apple-darwin` and `x86_64-pc-windows-msvc` checks in parallel.
+PR macOS and Windows checks use the same selected packages as host lint instead
 of `--workspace`; an empty selection keeps the check result without compiling.
 Declaration errors fail CI even when dependent jobs skip.
 
@@ -1354,9 +1355,14 @@ and checks that this repository's ruleset checks, `Required repository quality`
 and `Required consumer tests`, still exist, so renaming a job fails there first.
 When you rename a job on purpose, change the pin and the ruleset in one change.
 
-Pull requests keep the same job names but skip test and build jobs. The
-required-checks guard enforces execution only on merge groups and main pushes,
-so these intentional PR skips do not file missing-check findings.
+Pull requests require `Caller declaration`, `Format and lint`, `Docs`,
+`Dependency, source and coverage checks` and each declared native target result:
+`Check (aarch64-apple-darwin)`, `Check (x86_64-apple-darwin)` and
+`Check (x86_64-pc-windows-msvc)`. A failed target check fails the workflow.
+Undeclared targets do not create required results. Pull requests keep the test
+and build job names but skip their work. The required-checks guard enforces
+execution only on merge groups and main pushes, so intentional PR skips do not
+file missing-check findings.
 
 ### Escalations
 

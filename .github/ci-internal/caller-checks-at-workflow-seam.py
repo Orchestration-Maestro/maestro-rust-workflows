@@ -2436,13 +2436,13 @@ def event_policy_keeps_pull_requests_fast():
 event_policy_keeps_pull_requests_fast()
 print('PASS event_policy_keeps_pull_requests_fast')
 
-def windows_checks_run_on_every_pull_request_push():
+def native_checks_run_on_every_pull_request_push():
     import shutil
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     declaration_steps = document['jobs']['declaration']['steps']
     config = next(step for step in declaration_steps if step.get('id') == 'config')
     selection = next(step for step in declaration_steps if step.get('id') == 'selection')
-    assert document['jobs']['targets']['needs'] == 'declaration', 'Windows must not wait for other PR jobs'
+    assert document['jobs']['targets']['needs'] == 'declaration', 'Native checks must not wait for other PR jobs'
     declared = [
         {'target': 'aarch64-unknown-linux-gnu', 'runner': 'ubuntu-24.04-arm'},
         {'target': 'aarch64-apple-darwin', 'runner': 'macos-latest'},
@@ -2455,8 +2455,10 @@ def windows_checks_run_on_every_pull_request_push():
         (directory / '.github').mkdir()
         path = directory / '.github/ci.toml'
         for event in ['pull_request', 'merge_group', 'push']:
-            for targets, pr_targets in [([], []), (declared, [declared[-1]]),
-                                        (declared[:-1], []), (declared[-1:], [declared[-1]])]:
+            for targets, pr_targets in [([], []), (declared, declared[1:]),
+                                        (declared[:1], []), (declared[1:3], declared[1:3]),
+                                        (declared[1:2] * 2, declared[1:2] * 2),
+                                        (declared[-1:], [declared[-1]])]:
                 path.write_text('wasm_crates=[]\ncheck_targets=' + json.dumps([target['target'] for target in targets]), encoding='utf-8')
                 output = directory / 'output'
                 output.write_text('', encoding='utf-8')
@@ -2470,8 +2472,8 @@ def windows_checks_run_on_every_pull_request_push():
         assert result.returncode != 0 and 'unknown target' in result.stderr, result.stderr
     assert config['env']['TEST_EVENT'] == selection['env']['TEST_EVENT']
 
-windows_checks_run_on_every_pull_request_push()
-print('PASS windows_checks_run_on_every_pull_request_push')
+native_checks_run_on_every_pull_request_push()
+print('PASS native_checks_run_on_every_pull_request_push')
 
 def removed_shard_lists_fail_clearly():
     import shutil
@@ -3577,6 +3579,42 @@ def foreign_target_failures_are_detected():
 
 foreign_target_failures_are_detected()
 print('PASS foreign_target_failures_are_detected')
+
+def apple_type_errors_fail_pull_requests():
+    import shutil
+    target = os.environ.get('TARGET', '')
+    if not target.endswith('apple-darwin'):
+        return
+    targets_job = workflow.split('\n  targets:\n', 1)[1].split('\n  browser:', 1)[0]
+    assert 'continue-on-error:' not in targets_job.split('    steps:', 1)[0]
+    check = targets_job.split('      - name: Check target\n', 1)[1].split('      - name: ', 1)[0]
+    assert 'continue-on-error:' not in check and '        if:' not in check
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/macos-rejected', directory, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns('target'))
+        (directory / '.github').mkdir()
+        (directory / '.github/ci.toml').write_text(
+            'wasm_crates=[]\ncheck_targets=' + json.dumps([target]) + '\n', encoding='utf-8')
+        output = directory / 'output'
+        result = execute('Read caller declaration', directory,
+                         {'TEST_EVENT': 'pull_request', 'GITHUB_OUTPUT': str(output)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+        assert json.loads(values['targets']) == [{'target': target, 'runner': 'macos-latest'}], values['targets']
+        env = {'TARGET': target, 'TEST_PACKAGES': '["macos-rejected"]',
+               'COVERAGE_SCOPE': 'selected packages: macos-rejected'}
+        source = directory / 'src/lib.rs'
+        broken = source.read_text(encoding='utf-8').replace(
+            'compile_error!("fixture rejects macos");', 'const _: u16 = 0o644_u32;')
+        for text, expected in [(broken, False), (broken.replace('0o644_u32', '0o644_u16'), True)]:
+            source.write_text(text, encoding='utf-8')
+            result = execute('Check target', directory, env)
+            assert (result.returncode == 0) == expected, result.stdout + result.stderr
+            if not expected:
+                assert 'error[E0308]' in result.stderr and 'expected `u16`, found `u32`' in result.stderr, result.stderr
+            print(f'Apple PR target {target}: compiler exit {result.returncode}', flush=True)
+    print('PASS apple_type_errors_fail_pull_requests', flush=True)
 
 def browser_recipe_runs_after_wasm():
     import shutil

@@ -541,7 +541,7 @@ jobs:
                       raise SystemExit(f'{path}: check_targets contains unknown target {target!r}')
                   if target not in runners:
                       raise SystemExit(f'{path}: check_targets has no runner for {target!r}')
-                  if os.environ.get('TEST_EVENT') != 'pull_request' or target == 'x86_64-pc-windows-msvc':
+                  if os.environ.get('TEST_EVENT') != 'pull_request' or target in ('aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-pc-windows-msvc'):
                       targets.append(dict(target=target, runner=runners[target]))
               values.update(targets=json.dumps(targets))
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
