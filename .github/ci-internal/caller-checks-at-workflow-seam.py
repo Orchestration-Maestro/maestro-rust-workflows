@@ -3273,6 +3273,7 @@ def main_reuses_only_exact_successful_merge_queue_tests():
     assert check['env']['GH_TOKEN'] == '${{ github.token }}'
     assert check['env']['EVIDENCE_SCOPE'] == '${{ steps.evidence-scope.outputs.scope }}'
     assert document['jobs']['declaration']['permissions'] == {'contents': 'read', 'actions': 'read'}
+    assert document['jobs']['declaration']['outputs']['tests_reused'] == '${{ steps.queue.outputs.tests_reused }}'
     context = {'github.event_name': 'push', 'github.ref': 'refs/heads/main', default_ref: 'refs/heads/main',
                'inputs.warm-cache': False, 'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
                'inputs.checkout-repository': '', 'inputs.checkout-ref': '', 'inputs.test-event': ''}
@@ -3368,7 +3369,6 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 assert bool(evaluate(step.get('if', 'True'), conditions)) == (not reused), (name, upload)
             for job in ['tests', 'doctests', 'browser', 'browser-tests']:
                 assert bool(evaluate(document['jobs'][job]['if'], conditions)) == (not reused), (name, job)
-            assert document['jobs']['declaration']['outputs']['tests_reused'] == '${{ steps.queue.outputs.tests_reused }}'
             archive = document['jobs']['test-build']
             assert evaluate(archive['env']['COLLECT_COVERAGE'], conditions), 'main must build instrumented objects'
             identity = next(step for step in archive['steps'] if step['name'] == 'Compile cache identity')
