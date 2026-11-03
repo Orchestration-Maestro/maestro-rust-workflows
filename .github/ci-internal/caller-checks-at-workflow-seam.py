@@ -1306,7 +1306,7 @@ def warm_filter_failures_keep_job_red():
                 assert 'failed to parse filterset' in output, output
             elif status == 100:
                 assert 'intentional warm failure' in output and 'assertion `left == right` failed' in output, output
-                assert 'TRY 3 FAIL' in output, output
+                assert 'FAIL' in output and 'TRY 2' not in output, output
             else:
                 assert '0 tests run' in output, output
             assert not (directory / 'child-built').exists() and not (directory / 'unrelated-ran').exists()
@@ -1482,7 +1482,7 @@ def warm_cache_builds_without_tests_or_reports():
             assert commands[1]['tool'] == 'cargo-llvm-cov'
             assert commands[1]['args'] == [
                 'llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
-                '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
+                '--retries', '0', '--final-status-level', 'flaky',
                 '-E', 'none()', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--no-report']
             assert commands[1]['home'] != os.environ.get('HOME')
             assert not list(directory.glob('*.lcov'))
@@ -2271,15 +2271,15 @@ def locked_manifests_precede_all_test_routes():
                 expected = ['test', '--locked', '--doc', '-p', 'sample']
             elif threshold:
                 expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
-                            '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
+                            '--retries', '0', '--final-status-level', 'flaky',
                             '--partition', 'slice:1/1', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
             elif route == 'Isolated tests' and coverage == 'true':
                 expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
-                            '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky',
+                            '--retries', '0', '--final-status-level', 'flaky',
                             '--partition', f'slice:{shard}/16', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
             else:
                 expected = ['nextest', 'run', '--user-config-file', 'none', '--ignore-default-filter', '--locked',
-                            '-p', 'sample', '--retries', '2', '--flaky-result', 'pass', '--final-status-level', 'flaky']
+                            '-p', 'sample', '--retries', '0', '--final-status-level', 'flaky']
                 if route == 'Tests':
                     expected += ['--partition', f'slice:{shard}/16', '--no-tests', 'pass']
                 else:
@@ -3669,24 +3669,51 @@ declared_test_inputs_select_their_readers()
 print('PASS declared_test_inputs_select_their_readers')
 print('PASS browser_test_selection_reuses_package_scope')
 
-def retries_report_flaky_tests_and_keep_failures():
+def failed_tests_keep_every_runner_route_red():
+    routes = [('Tests', '1', 'false', ''), ('Isolated tests', '1', 'false', ''),
+              ('Isolated tests', '1', 'true', ''), ('Isolated tests', '', 'true', '0'),
+              ('Coverage', '', 'true', '0'), ('Isolated tests', 'warm', 'false', '')]
+    for name, shard, coverage, floor in routes:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            tools, log = install_recording_runner(directory, status=100)
+            result = execute(name, directory, {
+                'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                'RUNNER_TEMP': temporary, 'SHARD': shard, 'COLLECT_COVERAGE': coverage,
+                'CARGO_COVERAGE_MIN_LINES': floor, 'WARM_CACHE': str(shard == 'warm').lower()})
+            assert result.returncode == 100, result.stdout + result.stderr
+            commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+            runners = [command for command in commands if command['tool'] != 'cargo']
+            assert len(runners) == 1, commands
+            args = runners[0]['args']
+            assert '--flaky-result' not in args, args
+            assert 'runner stdout' in (directory / 'nextest.log').read_text(encoding='utf-8')
+            print(f'PASS failed_tests_keep_every_runner_route_red: {name}, shard={shard}', flush=True)
+
+failed_tests_keep_every_runner_route_red()
+
+def caller_retries_cannot_rescue_a_failed_first_attempt():
     import shutil
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
-        source = directory / 'src/lib.rs'
-        source.write_text('#[test] fn flaky_control() { assert_eq!(std::env::var("NEXTEST_ATTEMPT").unwrap(), "3"); }\n', encoding='utf-8')
-        result = execute('Isolated tests', directory, {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': 'false'})
-        assert result.returncode == 0 and 'FLAKY' in result.stdout, result.stdout + result.stderr
-        summary = directory / 'summary'
-        result = execute('Flaky test summary', directory, {'GITHUB_STEP_SUMMARY': str(summary)})
-        assert result.returncode == 0 and 'flaky_control' in summary.read_text(encoding='utf-8'), result.stderr
-        source.write_text('#[test] fn permanent_failure() { panic!("permanent"); }\n', encoding='utf-8')
-        result = execute('Isolated tests', directory, {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': 'false'})
-        assert result.returncode != 0 and 'permanent_failure' in result.stdout, result.stdout + result.stderr
+        (directory / '.config').mkdir()
+        (directory / '.config/nextest.toml').write_text(
+            '[profile.default]\nretries=2\n'
+            '[[profile.default.overrides]]\nfilter="all()"\nretries=2\n', encoding='utf-8')
+        (directory / 'src/lib.rs').write_text(
+            '#[test] fn fails_first_attempt() { assert_ne!(std::env::var("NEXTEST_ATTEMPT").unwrap(), "1"); }\n',
+            encoding='utf-8')
+        for name, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
+            result = execute(name, directory, {
+                'RUNNER_TEMP': temporary, 'SHARD': '1', 'TEST_SHARD_COUNT': '1',
+                'COLLECT_COVERAGE': coverage})
+            output = result.stdout + result.stderr
+            assert result.returncode == 100 and 'fails_first_attempt' in output, output
+            assert 'FAIL' in output and 'TRY 2' not in output and 'FLAKY' not in output, output
+            print(f'PASS caller_retries_cannot_rescue_a_failed_first_attempt: {name}, coverage={coverage}', flush=True)
 
-retries_report_flaky_tests_and_keep_failures()
-print('PASS retries_report_flaky_tests_and_keep_failures')
+caller_retries_cannot_rescue_a_failed_first_attempt()
 
 def declaration_types_are_checked():
     with tempfile.TemporaryDirectory() as temporary:

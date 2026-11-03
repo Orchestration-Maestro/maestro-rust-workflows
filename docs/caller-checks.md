@@ -308,7 +308,7 @@ On merge groups and main pushes, one `Build test archive` job compiles the
 workspace's unit and integration tests with `cargo nextest archive` (or
 `cargo llvm-cov nextest-archive` for declared coverage).
 Numeric shards download that archive and run `--archive-file`, keeping the same
-partitions, retries and coverage reports. Existing locked dependency fetches stay
+partitions and coverage reports. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
 runs doctests once on every merge group and on main pushes that do not reuse
 merge-queue tests, without waiting for the archive build.
@@ -570,10 +570,10 @@ and names must be workspace packages; anything else fails the declaration.
 test_inputs = { "packages/" = ["packages-crate"], "layers.json" = ["conventions"], "fuzz/" = [] }
 ```
 
-CI allows two retries for each nextest test. A pass on retry remains a flaky
-pass, named in the job summary; permanent failures fail the shard. Caller
-resource groups are retained, but default filters cannot suppress tests and
-caller retry counts cannot override this policy.
+CI does not retry tests. Every nextest run passes `--retries 0`, so caller
+retry settings, including per-test overrides, cannot enable retries. A failed
+test fails its job. Caller resource groups are retained, but default filters
+cannot suppress tests.
 
 ## Required dependency, source and coverage checks
 
