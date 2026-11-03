@@ -120,6 +120,7 @@ jobs:
       packages: ${{ steps.selection.outputs.packages }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
+      tests_reused: ${{ steps.queue.outputs.tests_reused }}
       coverage_scope: ${{ steps.selection.outputs.coverage_scope }}
       test_shard_count: ${{ steps.config.outputs.test_shard_count }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
@@ -642,7 +643,7 @@ jobs:
           PYTHON
       - name: Reuse merge queue tests
         if: steps.queue.outputs.tests_reused == 'true'
-        run: echo 'Exact commit already passed this workflow in the merge queue; test legs skipped. Cache warm-up remains independent.'
+        run: echo 'Exact commit already passed this workflow in the merge queue; tests skipped. Archive and preparation still seed compile caches. Cache warm-up remains independent.'
       - name: Select test packages
         id: selection
         env:
@@ -915,7 +916,7 @@ jobs:
           CACHE_INDEX: ${{ strategy.job-index || 0 }}
           CACHE_CALL: ${{ inputs.concurrency-key }}
           ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
-          CACHE_COVERAGE: ${{ needs.declaration.outputs.coverage }}
+          CACHE_COVERAGE: ${{ needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' }}
           CACHE_ENABLED: ${{ needs.declaration.outputs.enabled }}
           CACHE_WARM: ${{ inputs.warm-cache }}
           CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -1321,13 +1322,13 @@ jobs:
       contents: read
       actions: read
     name: Build test archive
-    if: ${{ !inputs.warm-cache && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
-      COLLECT_COVERAGE: ${{ needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true' }}
+      COLLECT_COVERAGE: ${{ needs.declaration.outputs.enabled == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') }}
     defaults:
       run:
         shell: bash
@@ -1502,7 +1503,7 @@ jobs:
       actions: read
     needs: declaration
     name: Prepare test setup
-    if: ${{ needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -1779,10 +1780,12 @@ jobs:
                   shutil.rmtree(destination / run_id, ignore_errors=True)
           PYTHON
       - name: Prepare test setup
-        if: steps.setup-cache.outputs.cache-hit != 'true'
+        # A bundle hit supplies prepared files, not the compiler objects the next build needs.
+        if: steps.setup-cache.outputs.cache-hit != 'true' || steps.cache-identity.outputs.writer == 'true'
         timeout-minutes: 45
         env:
           TEST_SETUP_CANDIDATE_RUNS: ${{ steps.candidates.outputs.runs }}
+          CACHE_WRITER: ${{ steps.cache-identity.outputs.writer }}
         run: |
           export TEST_PREPARE_OUTPUT="$PWD/target/test-setup"
           export CARGO_TARGET_DIR="$RUNNER_TEMP/maestro-test-prepare-build"
@@ -1799,14 +1802,17 @@ jobs:
               rm -rf "$2"
             fi
           }
-          if [ -f "$RUNNER_TEMP/test-setup.tar" ]; then
-            extract "$RUNNER_TEMP/test-setup.tar" "$RUNNER_TEMP/test-setup-base"
-          fi
-          for run in ${TEST_SETUP_CANDIDATE_RUNS-}; do
-            if [ -f "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" ]; then
-              extract "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" "$RUNNER_TEMP/test-setup-candidate-$run"
+          # Writers compile every input to seed objects; reusing prepared files would leave their cache cold.
+          if [ "${CACHE_WRITER:-false}" != true ]; then
+            if [ -f "$RUNNER_TEMP/test-setup.tar" ]; then
+              extract "$RUNNER_TEMP/test-setup.tar" "$RUNNER_TEMP/test-setup-base"
             fi
-          done
+            for run in ${TEST_SETUP_CANDIDATE_RUNS-}; do
+              if [ -f "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" ]; then
+                extract "$RUNNER_TEMP/test-setup-candidates/$run/test-setup.tar" "$RUNNER_TEMP/test-setup-candidate-$run"
+              fi
+            done
+          fi
           if [ "${#bases[@]}" -gt 0 ]; then
             export TEST_PREPARE_BASE
             TEST_PREPARE_BASE=$(IFS=:; echo "${bases[*]}")

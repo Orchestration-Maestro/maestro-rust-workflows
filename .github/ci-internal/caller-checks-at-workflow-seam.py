@@ -2448,6 +2448,7 @@ def event_policy_keeps_pull_requests_fast():
                            default_ref: 'refs/heads/main', 'github.ref': 'refs/heads/main',
                            'github.repository_id': 'caller', 'inputs.working-directory': '.',
                            'needs.declaration.outputs.coverage': values['coverage'],
+                           'needs.declaration.outputs.tests_reused': 'false',
                            'needs.declaration.outputs.targets': '[{}]',
                            'needs.declaration.outputs.wasm_crates': '["sample"]',
                            'needs.declaration.outputs.browser_build': 'true',
@@ -2896,7 +2897,8 @@ def changed_packages_include_reverse_dependencies():
                    'needs.test-prepare.result': 'skipped', 'inputs.warm-cache': False,
                    'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
                    'github.repository_id': 'caller', 'inputs.working-directory': '.',
-                   'needs.declaration.outputs.coverage': values['coverage']}
+                   'needs.declaration.outputs.coverage': values['coverage'],
+                   'needs.declaration.outputs.tests_reused': 'false'}
         for job in ['test-build', 'tests']:
             assert not evaluate(document['jobs'][job]['if'], context), job
         for selection in [values, select('merge_group'), values | {'packages': '[]'}]:
@@ -3354,13 +3356,21 @@ def main_reuses_only_exact_successful_merge_queue_tests():
             selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
             assert selected['coverage'] == str(not reused).lower(), (name, selected)
             conditions = context | {'needs.declaration.outputs.coverage': selected['coverage'],
+                'needs.declaration.outputs.tests_reused': values['tests_reused'],
                 'needs.declaration.outputs.enabled': 'true', 'needs.declaration.outputs.browser_tests': 'true',
                 'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.wasm_crates': '["web"]',
                 'needs.declaration.outputs.test_prepare_inputs': '[]', 'needs.declaration.outputs.test_prepare': '"prepare"',
                 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                 'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True}
-            for job in ['test-build', 'test-prepare', 'tests', 'doctests', 'browser', 'browser-tests']:
+            for job in ['test-build', 'test-prepare']:
+                assert evaluate(document['jobs'][job]['if'], conditions), (name, job, 'main must seed compiled objects')
+            for job in ['tests', 'doctests', 'browser', 'browser-tests']:
                 assert bool(evaluate(document['jobs'][job]['if'], conditions)) == (not reused), (name, job)
+            assert document['jobs']['declaration']['outputs']['tests_reused'] == '${{ steps.queue.outputs.tests_reused }}'
+            archive = document['jobs']['test-build']
+            assert evaluate(archive['env']['COLLECT_COVERAGE'], conditions), 'main must build instrumented objects'
+            identity = next(step for step in archive['steps'] if step['name'] == 'Compile cache identity')
+            assert evaluate(identity['env']['CACHE_COVERAGE'], conditions), 'main must seed the merge-group cache shape'
             for job in ['quality', 'docs', 'tests', 'doctests', 'browser', 'browser-tests', 'targets']:
                 warm = conditions | {'inputs.warm-cache': True, 'needs.declaration.outputs.coverage': 'true',
                                      'needs.declaration.outputs.targets': '["windows"]'}
@@ -3373,6 +3383,38 @@ def main_reuses_only_exact_successful_merge_queue_tests():
 
 main_reuses_only_exact_successful_merge_queue_tests()
 print('PASS main_reuses_only_exact_successful_merge_queue_tests')
+
+def main_setup_writers_prepare_even_with_exact_bundle():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    prepare = next(step for step in document['jobs']['test-prepare']['steps'] if step['name'] == 'Prepare test setup')
+    for writer, hit, expected in [('true', 'true', True), ('true', 'false', True),
+                                  ('false', 'true', False), ('false', 'false', True)]:
+        context = {'steps.setup-cache.outputs.cache-hit': hit, 'steps.cache-identity.outputs.writer': writer,
+                   'steps.candidates.outputs.runs': '7'}
+        assert bool(evaluate(prepare['if'], context)) == expected, (writer, hit, 'writer must populate compile objects')
+        if not expected:
+            continue
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            # A restored bundle is a base, not evidence that the compiler cache has its objects.
+            restored = directory / 'restored/test-setup'
+            restored.mkdir(parents=True)
+            (restored / 'kept').write_text('prepared', encoding='utf-8')
+            subprocess.run(['tar', '-C', str(restored.parent), '-cf', str(directory / 'test-setup.tar'), 'test-setup'], check=True)
+            candidate = directory / 'test-setup-candidates/7'
+            candidate.mkdir(parents=True)
+            (candidate / 'test-setup.tar').write_bytes((directory / 'test-setup.tar').read_bytes())
+            forwarded = {key: evaluate(value, context) for key, value in prepare['env'].items()}
+            result = execute('Prepare test setup', directory, {'RUNNER_TEMP': temporary,
+                'TEST_PREPARE_BASE': '/inherited', **forwarded,
+                'TEST_PREPARE': 'printf "%s" "${TEST_PREPARE_BASE-unset}" > "$TEST_PREPARE_OUTPUT/bases"'})
+            assert result.returncode == 0, result.stdout + result.stderr
+            bases = subprocess.check_output(['tar', '-xOf', str(directory / 'test-setup.tar'), 'test-setup/bases'], text=True)
+            expected_base = 'unset' if writer == 'true' else f'{directory}/test-setup-base/test-setup:{directory}/test-setup-candidate-7/test-setup'
+            assert bases == expected_base, (writer, hit, bases)
+
+main_setup_writers_prepare_even_with_exact_bundle()
+print('PASS main_setup_writers_prepare_even_with_exact_bundle')
 
 def pull_request_test_results_must_be_skipped():
     for status in ['success', 'failure', 'cancelled', 'skipped']:
