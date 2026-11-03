@@ -42,7 +42,7 @@ def routed_jobs(document, values):
         condition = job['if'].removeprefix('$' + '{{').removesuffix('}}')
         # GitHub adds success() to a job condition that calls no status function.
         if not re.search(r'\b(?:always|success|failure|cancelled)\(\)', condition):
-            condition = 'success() && ' + condition
+            condition = 'success() && (' + condition + ')'
         if evaluate(condition, gates | values):
             routed.add(name)
     return routed
@@ -2690,6 +2690,8 @@ def removed_shard_lists_fail_clearly():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     # Failed shards still reach the aggregate, which then fails the run.
     assert 'tests-result' in routed_jobs(document, {'success()': False, 'failure()': True})
+    # An implicit success() covers the whole condition, not only its first operand.
+    assert 'declaration' not in routed_jobs(document, {'success()': False, 'inputs.working-directory': 'sub'})
     for coverage, required in [('false', 'skipped'), ('true', 'success'), ('', None)]:
         for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
             for status in ['success', 'failure', 'cancelled', 'skipped']:
