@@ -1207,7 +1207,7 @@ jobs:
       contents: read
       actions: read
     name: Build test archive
-    if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.selected_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.warm-cache && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -1382,7 +1382,7 @@ jobs:
       actions: read
     needs: declaration
     name: Prepare test setup
-    if: ${{ needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.selected_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -1733,7 +1733,7 @@ jobs:
       contents: read
       actions: read
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.coverage == 'true' && needs.declaration.outputs.test_shard_count || '1') }}
-    if: ${{ !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.selected_tests == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -2118,7 +2118,7 @@ jobs:
       actions: read
     name: ${{ matrix.shard == 'doctests' && 'Doctests' }}
     needs: declaration
-    if: ${{ (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ needs.declaration.outputs.coverage == 'true' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     strategy:
       fail-fast: false
@@ -2151,9 +2151,9 @@ jobs:
           assert os.environ['DECLARATION_RESULT'] == 'success'
           expected = {'false': 'skipped', 'true': 'success'}
           assert os.environ['COLLECT_COVERAGE'] in expected
-          required = 'success' if os.environ.get('SELECTED_TESTS') == 'true' else expected[os.environ['COLLECT_COVERAGE']]
+          required = expected[os.environ['COLLECT_COVERAGE']]
           assert os.environ['RESULT'] == required
-          assert os.environ['DOCTEST_RESULT'] == 'success'
+          assert os.environ['DOCTEST_RESULT'] == required
       - name: Download shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -2754,7 +2754,7 @@ jobs:
       actions: read
     name: Wasm and browser build
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:

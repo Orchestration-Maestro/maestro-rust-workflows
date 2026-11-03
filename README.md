@@ -15,15 +15,17 @@ for now; macOS and Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
 
 After declaration validation, pull requests run formatting, Clippy, docs,
-dependency and source checks, declared Windows target checks, wasm/browser
-builds and doctests in parallel. Tests, host Clippy and the Windows check use
-one shared selection: changed crates, included-input readers and their workspace
-dependents. Including package source, build or manifest inputs keeps their owning
-crate selected too. Included external docs and fixtures route only to readers.
-See [package ownership](docs/caller-checks.md#pull-request-selection-and-retries)
-for root-package boundaries. PR tests use one non-coverage leg. Merge groups and
-main pushes run the full shard matrix, coverage and every declared foreign-target
-check.
+dependency and source checks, and declared Windows target checks in parallel.
+Host Clippy and the Windows check use one shared selection: changed crates,
+included-input readers and their workspace dependents. Including package source,
+build or manifest inputs keeps their owning crate selected too. Included external
+docs and fixtures route only to readers. See
+[package ownership](docs/caller-checks.md#pull-request-selection-and-retries)
+for root-package boundaries. Pull requests skip the test archive, test setup,
+test shards, doctests and wasm/browser builds. Their job names remain present;
+skipped jobs count as successful required checks. Merge groups and main pushes
+run the full shard matrix, coverage, doctests, wasm/browser builds and every
+declared foreign-target check.
 
 Merge groups and main pushes always run declared Chromium tests, regardless of
 changed paths. Ordinary pull requests skip Chromium runtime tests. See
@@ -33,16 +35,16 @@ Tests run with checksum-pinned cargo-nextest 0.9.148 on 16 Linux runners by
 default, using automatic count partitions rather than package lists. A caller
 can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
 [test shards](docs/caller-checks.md#test-shards). Doctests run in a
-parallel `Doctests` matrix leg on pull requests, merge groups and main pushes.
-The aggregate `Tests (ubuntu-latest)` always requires `Doctests` to succeed.
-It requires every shard to succeed on full runs. Pull requests require their
-selected test leg to succeed, or skip that leg when no packages are selected.
+parallel `Doctests` matrix leg on merge groups and main pushes.
+The aggregate `Tests (ubuntu-latest)` requires every shard and `Doctests` to
+succeed on full runs. Pull requests require a successful declaration and skipped
+test and doctest jobs.
 Declared callers can retain [per-test diagnostics](docs/caller-checks.md#test-diagnostics)
 and the reporter log after isolated tests fail or time out.
 
 Each nextest test can retry twice; flaky passes are named in job summaries,
-while permanent failures still fail. Pull requests select direct and transitive
-workspace dependents, including build, development and target-specific
+while permanent failures still fail. Pull-request lint selects direct and
+transitive workspace dependents, including build, development and target-specific
 dependencies. Merge groups and main pushes always test the full workspace.
 See [PR selection](docs/caller-checks.md#pull-request-selection-and-retries)
 for the declaration's package-selection rules and self-test event mode.

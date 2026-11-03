@@ -788,7 +788,7 @@ def doctests_run_independently_and_remain_required():
                                     env=os.environ | {'RESULT': tests, 'DOCTEST_RESULT': docs,
                                     'COLLECT_COVERAGE': coverage, 'DECLARATION_RESULT': 'success', 'SELECTED_TESTS': 'false'},
                                     capture_output=True, text=True)
-            assert (result.returncode == 0) == (docs == 'success'), (coverage, docs, result.stderr)
+            assert (result.returncode == 0) == (docs == tests), (coverage, docs, result.stderr)
 
 doctests_run_independently_and_remain_required()
 print('PASS doctests_run_independently_and_remain_required')
@@ -1564,8 +1564,8 @@ def diagnostic_upload_is_unconditional_and_scoped():
                                             env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': docs, 'COLLECT_COVERAGE': coverage,
                                                               'SELECTED_TESTS': included, 'DECLARATION_RESULT': 'success'},
                                             capture_output=True, text=True)
-                    expected = 'success' if 'true' in (coverage, included) else 'skipped'
-                    assert (result.returncode == 0) == (status == expected and docs == 'success'), (coverage, included, status, docs, result.stderr)
+                    expected = 'success' if coverage == 'true' else 'skipped'
+                    assert (result.returncode == 0) == (status == expected and docs == expected), (coverage, included, status, docs, result.stderr)
 
 diagnostic_upload_is_unconditional_and_scoped()
 print('PASS diagnostic_upload_is_unconditional_and_scoped')
@@ -2402,7 +2402,7 @@ print('PASS test_tools_follow_only_caller_pins')
 
 def event_policy_keeps_pull_requests_fast():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-    slow = {'test-build', 'test-prepare', 'tests', 'browser-tests'}
+    slow = {'test-build', 'test-prepare', 'tests', 'doctests', 'browser', 'browser-tests'}
     for event in ['pull_request', 'merge_group', 'push']:
         for warm, advisory, fuzz in [(False, False, False), (True, False, False),
                                       (False, True, False), (False, False, True)]:
@@ -2427,9 +2427,9 @@ def event_policy_keeps_pull_requests_fast():
                            'needs.declaration.outputs.browser_tests': 'true'}
                 expected = not advisory and not fuzz
                 if name in slow:
-                    expected &= name != 'browser-tests' or event != 'pull_request' or warm
+                    expected &= event != 'pull_request' or warm
                     expected &= not warm or name == 'tests' or (event == 'push' and name in ('doctests', 'browser', 'browser-tests'))
-                elif name in ('targets', 'doctests', 'browser'):
+                elif name == 'targets':
                     expected &= not warm or event == 'push'
                 else:
                     expected &= not warm or (event == 'push' and name in ('quality', 'docs'))
@@ -2489,13 +2489,13 @@ def removed_shard_lists_fail_clearly():
     aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
     assert 'name: Tests (ubuntu-latest)' in aggregate
     assert 'needs: [tests, doctests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
-    for coverage, selected, required in [('false', 'false', 'skipped'), ('false', 'true', 'success'),
+    for coverage, selected, required in [('false', 'false', 'skipped'), ('false', 'true', 'skipped'),
                                          ('true', 'false', 'success'), ('true', 'true', 'success'),
                                          ('', 'false', None), ('', 'true', None)]:
         for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
             for status in ['success', 'failure', 'cancelled', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'success', 'COLLECT_COVERAGE': coverage,
+                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': required or 'skipped', 'COLLECT_COVERAGE': coverage,
                                                           'SELECTED_TESTS': selected, 'DECLARATION_RESULT': declaration_status},
                                         capture_output=True, text=True)
                 expected = declaration_status == 'success' and required is not None and status == required
@@ -2873,7 +2873,7 @@ def changed_packages_include_reverse_dependencies():
                    'needs.declaration.outputs.coverage': values['coverage'],
                    'needs.declaration.outputs.selected_tests': values['selected_tests']}
         for job in ['test-build', 'tests']:
-            assert evaluate(document['jobs'][job]['if'], context), job
+            assert not evaluate(document['jobs'][job]['if'], context), job
         count = evaluate(document['jobs']['tests']['env']['TEST_SHARD_COUNT'], {
             'needs.declaration.outputs.coverage': values['coverage'],
             'needs.declaration.outputs.test_shard_count': '32'})
@@ -2930,7 +2930,7 @@ def changed_packages_include_reverse_dependencies():
             prepare_context = context | {
                 'needs.declaration.outputs.test_prepare_inputs': '[]',
                 'needs.declaration.outputs.test_prepare': prepared_values['test_prepare']}
-            assert bool(evaluate(document['jobs']['test-prepare']['if'], prepare_context)) == prepared
+            assert not evaluate(document['jobs']['test-prepare']['if'], prepare_context)
         declaration_path.write_text(declared, encoding='utf-8')
         nextest.unlink()
         nextest.parent.rmdir()
@@ -3058,11 +3058,11 @@ def included_docs_run_only_readers_and_reverse_dependencies():
             git('reset', '--hard', base)
         tests = workflow.split('  tests:\n', 1)[1].split('\n  checks:', 1)[0]
         condition = next(line for line in tests.splitlines() if line.startswith('    if:'))
-        assert "(needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.selected_tests == 'true')" in condition
+        assert "needs.declaration.outputs.coverage == 'true'" in condition
         assert 'selected_tests: $' + '{{ steps.selection.outputs.selected_tests }}' in workflow
         document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
         condition = document['jobs']['doctests']['if']
-        assert 'coverage' not in condition and 'selected_tests' not in condition
+        assert "needs.declaration.outputs.coverage == 'true'" in condition
         assert document['jobs']['doctests']['env']['TEST_PACKAGES'] == '$' + '{{ needs.declaration.outputs.packages }}'
 
 included_docs_run_only_readers_and_reverse_dependencies()
@@ -3185,10 +3185,10 @@ def included_test_failures_remain_required():
     for included in ['false', 'true']:
         for status in ['success', 'failure', 'cancelled', 'skipped']:
             result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                    env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'success', 'COLLECT_COVERAGE': 'false',
+                                    env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'skipped', 'COLLECT_COVERAGE': 'false',
                                                       'SELECTED_TESTS': included, 'DECLARATION_RESULT': 'success'},
                                     capture_output=True, text=True)
-            expected = status == ('success' if included == 'true' else 'skipped')
+            expected = status == 'skipped'
             assert (result.returncode == 0) == expected, (included, status, result.stderr)
     assert 'SELECTED_TESTS: $' + '{{ needs.declaration.outputs.selected_tests }}' in workflow
 
@@ -3827,7 +3827,8 @@ def workflow_failures_remain_required():
         section = workflow.split(f'  {name}:\n')[1]
         assert ('needs: [declaration, test-build, test-prepare]' if name == 'tests' else 'needs: declaration') in section
     assert 'pull_request:' in workflow and 'merge_group:' in workflow
-    assert "if: $" + "{{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}" in workflow
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    assert "needs.declaration.outputs.coverage == 'true'" in document['jobs']['browser']['if']
     # Each scan mode runs only the declaration and its own job.
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration']
