@@ -139,9 +139,10 @@ A valid filter matching no tests succeeds under the existing no-tests policy.
 Running tests adds execution time and compiler objects. Keep the filter narrow
 enough for the warm build to finish between default-branch pushes and for the
 native payload to stay within the coverage shape's 1 GiB cap. The existing
-writer and size rules still apply: only an eligible successful default-branch warm build saves a snapshot;
-a pull-request run cannot prove saving. More cached compiles are useful only
-when that save succeeds and later jobs restore the compatible snapshot.
+writer and size rules still apply: only an eligible successful default-branch
+warm build saves a snapshot; a pull-request run cannot prove saving. More cached
+compiles are useful only when that save succeeds and later jobs restore the
+compatible snapshot.
 
 ## Reusable-call concurrency
 
