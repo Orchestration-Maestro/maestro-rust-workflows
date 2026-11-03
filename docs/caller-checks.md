@@ -5,8 +5,10 @@ real search tools and optional builds. Organization calls use that root; the
 workflow's directory input exists only for its fixture self-test, pinned
 workspace proof, and advisory and fuzz scans. Optional `checkout-repository` and
 `checkout-ref` inputs serve the same four: when unset they check out the caller
-repository and commit. `checkout-base-ref` and `test-event` are overrides
-restricted to this workflow repository; they default to the real PR base and event.
+repository and commit. `checkout-ref` also selects the caller revision for a
+[manual browser proof](#manual-browser-red-and-green-proofs). `checkout-base-ref`
+and `test-event` are overrides restricted to this workflow repository; they
+default to the real PR base and event.
 
 The full and selected-package proof consumers use one immutable Maestro source
 snapshot. A warm build uses its parent commit; selected-package proof sets that
@@ -891,6 +893,97 @@ empty export selections, await each export and report completed/expected counts.
 Download, installation, missing just pin/recipe, version mismatch and nonzero
 recipe results fail the job and its required caller result.
 
+### Manual browser red and green proofs
+
+Run Chromium tests on a named caller branch, tag or commit without joining the
+merge queue. The dispatch calls this same reusable workflow with
+`browser-only: true` and `checkout-ref`; only declaration validation and the
+existing Chromium job run. Keep the caller's nonempty `browser_test_crates`
+declaration, pinned tools and `browser-test` recipe. No new declaration key or
+command hook is needed. Leave `warm-cache`, `advisory-scan` and `fuzz-scan` off.
+The declaration job fails if the proof cannot select browser tests or is
+combined with any of those modes.
+
+Add `.github/workflows/browser-proof.yml` to the caller's default branch. Replace
+`RELEASE_COMMIT` with the full commit SHA of a released workflow version that
+supports `browser-only`, using the same release as the caller's ordinary CI:
+
+```yaml
+name: Browser proof
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Caller branch, tag or commit to test
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  browser:
+    permissions:
+      contents: read
+      actions: read
+    uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@RELEASE_COMMIT
+    with:
+      browser-only: true
+      checkout-ref: ${{ inputs.ref }}
+      concurrency-key: browser-proof
+```
+
+This entry has no checkout, test commands or secrets of its own. The automatic
+job token has read-only contents and Actions access. Dispatch only caller refs
+you intend to execute; those refs supply the recipe and test code. Keep the
+workflow selection on `main` (or the caller's default branch) while the `ref`
+input selects the source under test. A dispatch does not cancel an in-progress
+proof. All dispatches share one concurrency group, so a newer dispatch replaces
+any queued proof.
+
+The caller's `browser-test` recipe must report every selected case even after a
+failure, and return a failing status if any case fails. For a nextest browser
+run, pass `--no-fail-fast`. Other browser drivers must collect all case results
+before returning. The shared workflow runs the recipe as written; it does not
+change the caller's test-runner settings. The caller-side recipe update and
+live red/green proof are tracked in
+[Orchestration-Maestro/maestro#4015](https://github.com/Orchestration-Maestro/maestro/issues/4015).
+
+The job captures both output streams from `just browser-test` in
+`browser-test.log`. After a passing or failing recipe, it uploads
+`browser-test-browser-proof-<attempt>`; without that concurrency key the middle
+part is `root`. Setup failures before the recipe have no recipe log. The log
+upload does not turn failing tests green. Manual proofs restore compatible
+compiled caches but never publish cache snapshots.
+
+To save a red and green pair:
+
+1. Push a throwaway caller branch with one deliberate assertion mutation. Keep
+   the test registered and keep its browser selection unchanged. Record the
+   mutated commit SHA and the test's name.
+2. Dispatch from the caller checkout and record the new run ID and URL:
+
+   ```bash
+   gh workflow run browser-proof.yml --ref main -f ref=ci/browser-red
+   gh run list --workflow browser-proof.yml --event workflow_dispatch --limit 5
+   ```
+
+3. Wait for that run to finish. It must fail at the mutated browser test, not
+   during compilation or setup. Download its artifact, replacing `RED_RUN` and
+   the attempt number with that run's values:
+
+   ```bash
+   gh run download RED_RUN --name browser-test-browser-proof-1 --dir proof/red
+   ```
+
+4. Restore the assertion on a green caller ref and dispatch again with the same
+   workflow release. Record the source SHA, run ID and URL. The browser job must
+   pass. Download `browser-test-browser-proof-1` from `GREEN_RUN` into
+   `proof/green` with the same command.
+5. Save `proof/red/browser-test.log` as `<test>-red.log` and
+   `proof/green/browser-test.log` as `<test>-green.log` with the change's test
+   evidence. Check that the red log names the expected assertion failure and
+   reports all selected cases, and that the green log passes the same test set.
+   Keep both run URLs, source SHAs and the shared release SHA beside the logs.
+
 ### Local build and runtime command
 
 From the consumer checkout on Linux, set `WORKFLOW_CHECKOUT` to a checkout of
@@ -1047,8 +1140,9 @@ NCSA in anything the caller ships.
 
 ## Adoption and verification
 
-Keep standard Rust files and the existing organization-managed workflow call;
-no extra workflow or ruleset is needed. The four original quality/docs/tests
+For ordinary CI, keep standard Rust files and the existing organization-managed
+workflow call; no extra workflow or ruleset is needed. Manual browser proofs use
+the thin dispatch entry above. The four original quality/docs/tests
 commands and the dependency, source and coverage job remain required. Self-tests exercise production step bodies,
 isolated positive/negative controls, real tools, wasm success/failure, caller
 pins, bootstrap verification and native platform diagnostics. Both existing

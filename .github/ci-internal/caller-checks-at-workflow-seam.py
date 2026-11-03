@@ -1,4 +1,5 @@
 import ast
+import itertools
 import json
 import os
 import pathlib
@@ -13,12 +14,38 @@ root = pathlib.Path.cwd()
 default_ref = "format('refs/heads/{0}', github.event.repository.default_branch)"
 
 def evaluate(condition, values):
+    values = {'inputs.browser-only': False} | values
     expression = condition.removeprefix('$' + '{{').removesuffix('}}').strip()
     for key, value in values.items():
         expression = expression.replace(key, repr(value))
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     expression = re.sub(r'!(?!=)', ' not ', expression).strip()
     return eval(expression, {'__builtins__': {}})
+
+def routed_jobs(document, values):
+    # Every gate is open except the two scans; values set the inputs a case proves.
+    gates = {
+        'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'inputs.warm-cache': False,
+        'github.event_name': 'push', 'github.ref': 'refs/heads/main', default_ref: 'refs/heads/main',
+        'github.repository_id': 'caller', 'inputs.working-directory': '.',
+        'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.tests_reused': 'false',
+        'needs.declaration.outputs.targets': '[{}]', 'needs.declaration.outputs.fuzz_targets': '["target"]',
+        'needs.declaration.outputs.wasm_crates': '["web"]',
+        'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.browser_tests': 'true',
+        # Longer names first: evaluate substitutes by prefix.
+        'needs.declaration.outputs.test_prepare_inputs': '[]',
+        'needs.declaration.outputs.test_prepare': json.dumps('echo ready'),
+        'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
+        'always()': True, 'cancelled()': False, 'success()': True, 'failure()': False}
+    routed = set()
+    for name, job in document['jobs'].items():
+        condition = job['if'].removeprefix('$' + '{{').removesuffix('}}')
+        # GitHub adds success() to a job condition that calls no status function.
+        if not re.search(r'\b(?:always|success|failure|cancelled)\(\)', condition):
+            condition = 'success() && (' + condition + ')'
+        if evaluate(condition, gates | values):
+            routed.add(name)
+    return routed
 
 def body(name, source=workflow):
     import json
@@ -373,9 +400,15 @@ print('PASS browser_test_declaration_checks_exact_packages')
 def browser_test_job_is_single_and_optional():
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     job = jobs['browser-tests']
-    assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true' }}" in job
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    assert 'browser-tests' in routed_jobs(document, {})
+    for closed in ({'needs.declaration.outputs.browser_tests': 'false'}, {'needs.declaration.outputs.coverage': 'false'},
+                   {'inputs.advisory-scan': True}, {'inputs.fuzz-scan': True},
+                   {'inputs.warm-cache': True, 'github.event_name': 'pull_request'},
+                   {'inputs.warm-cache': True, 'github.ref': 'refs/heads/feature'}):
+        assert 'browser-tests' not in routed_jobs(document, closed), closed
     assert 'runs-on: $' + '{{ fromJSON(needs.declaration.outputs.linux_runner) }}' in job and 'matrix:' not in job
-    assert body('Browser test recipe').strip() == 'just browser-test'
+    assert body('Browser test recipe').strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"')
     assert 'mise exec' not in body('Browser test recipe')
     assert 'if:' not in job.split('- name: Browser test caller tools', 1)[1].split('- name:', 1)[0]
     assert job.index('run: *caller-tools') < job.index('name: Browser runtime tools') < job.index('name: Browser test recipe')
@@ -383,6 +416,128 @@ def browser_test_job_is_single_and_optional():
 
 browser_test_job_is_single_and_optional()
 print('PASS browser_test_job_is_single_and_optional')
+
+def manual_browser_proof_selects_only_existing_chromium_job():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    inputs = document['on']['workflow_call']['inputs']
+    assert inputs['browser-only']['type'] == 'boolean' and inputs['browser-only']['default'] is False
+    values = {
+        'inputs.browser-only': True, 'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
+        'inputs.warm-cache': False, 'inputs.working-directory': '.',
+        'github.repository_id': 'caller', 'github.event_name': 'workflow_dispatch',
+        'github.ref': 'refs/heads/main',
+        "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
+        'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.browser_tests': 'true',
+        'always()': True, 'cancelled()': False,
+    }
+    for name, job in document['jobs'].items():
+        condition = job['if']
+        assert evaluate(condition, values) == (name in ('declaration', 'browser-tests')), name
+    for name in ('declaration', 'browser-tests'):
+        job = document['jobs'][name]
+        checkout = next(step for step in job['steps'] if step['name'] == 'Checkout')
+        assert checkout['with']['ref'] == '${{ inputs.checkout-ref || github.sha }}'
+        assert checkout['with']['persist-credentials'] is False
+        assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
+    job = document['jobs']['browser-tests']
+    assert 'matrix' not in job.get('strategy', {})
+    assert job['runs-on'] == '${{ fromJSON(needs.declaration.outputs.linux_runner) }}'
+    for event, coverage, declared, warm, expected in [
+        ('workflow_dispatch', 'true', 'true', False, True),
+        ('workflow_dispatch', 'true', 'false', False, False),
+        ('pull_request', 'false', 'true', False, False),
+        ('merge_group', 'true', 'true', False, True),
+        ('push', 'true', 'true', False, True),
+        ('workflow_dispatch', 'true', 'true', True, False),
+    ]:
+        scenario = values | {'github.event_name': event, 'inputs.browser-only': False,
+                             'inputs.warm-cache': warm, 'needs.declaration.outputs.coverage': coverage,
+                             'needs.declaration.outputs.browser_tests': declared}
+        assert evaluate(job['if'], scenario) == expected, scenario
+    print('PASS manual_browser_proof_selects_only_existing_chromium_job', flush=True)
+
+
+manual_browser_proof_selects_only_existing_chromium_job()
+
+def browser_only_rejects_requests_that_cannot_run_tests():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['declaration']['steps']
+    validation = next(step for step in steps if step['name'] == 'Validate browser-only request')
+    assert steps.index(validation) > next(i for i, step in enumerate(steps) if step.get('id') == 'selection')
+    assert evaluate(validation['if'], {'inputs.browser-only': True})
+    assert not evaluate(validation['if'], {'inputs.browser-only': False})
+    values = {'steps.selection.outputs.coverage': 'true', 'steps.selection.outputs.browser_tests': 'true',
+              'inputs.warm-cache': False, 'inputs.advisory-scan': False, 'inputs.fuzz-scan': False}
+    scenarios = [({}, True), ({'steps.selection.outputs.browser_tests': 'false'}, False),
+                 ({'steps.selection.outputs.browser_tests': ''}, False),
+                 ({'steps.selection.outputs.coverage': 'false'}, False)]
+    scenarios += [({mode: True}, False) for mode in ('inputs.warm-cache', 'inputs.advisory-scan', 'inputs.fuzz-scan')]
+    with tempfile.TemporaryDirectory() as temporary:
+        for overrides, expected in scenarios:
+            permitted = evaluate(validation['env']['CAN_RUN_BROWSER'], values | overrides)
+            result = execute('Validate browser-only request', temporary, {'CAN_RUN_BROWSER': str(permitted).lower()})
+            assert (result.returncode == 0) == expected, (overrides, result.stdout, result.stderr)
+            if not expected:
+                assert 'browser-only requires selected browser tests' in result.stderr
+    print('PASS browser_only_rejects_requests_that_cannot_run_tests', flush=True)
+
+
+browser_only_rejects_requests_that_cannot_run_tests()
+
+
+def browser_proof_recipe_preserves_failures_and_log():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        bin_dir = directory / 'bin'
+        bin_dir.mkdir()
+        just = bin_dir / 'just'
+        just.write_text('#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = browser-test ] || exit 23\nprintf "stdout evidence\\n"\nprintf "stderr evidence\\n" >&2\nexit "$RECIPE_STATUS"\n', encoding='utf-8')
+        just.chmod(0o755)
+        config = directory / '.config/nextest.toml'
+        original = '[profile.default]\nfail-fast = true\nslow-timeout = "30s"\n'
+        config.parent.mkdir()
+        config.write_text(original, encoding='utf-8')
+        for status in ['0', '17']:
+            result = execute('Browser test recipe', directory, {
+                'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
+                'RECIPE_STATUS': status})
+            assert result.returncode == int(status), result.stdout + result.stderr
+            log = directory / 'browser-test.log'
+            assert log.read_text(encoding='utf-8') == 'stdout evidence\nstderr evidence\n'
+            assert config.read_text(encoding='utf-8') == original
+    job = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))['jobs']['browser-tests']
+    upload = next(step for step in job['steps'] if step['name'] == 'Upload browser test log')
+    assert upload['if'] == "always() && (steps.browser-recipe.outcome == 'success' || steps.browser-recipe.outcome == 'failure')"
+    assert upload['with']['name'] == "browser-test-${{ inputs.concurrency-key || 'root' }}-${{ github.run_attempt }}"
+    assert upload['with']['path'] == '${{ runner.temp }}/browser-test.log'
+    assert upload['with']['if-no-files-found'] == 'error'
+    print('PASS browser_proof_recipe_preserves_failures_and_log', flush=True)
+
+
+browser_proof_recipe_preserves_failures_and_log()
+
+
+def browser_proof_dispatch_example_reuses_workflow():
+    guide = (root / 'docs/caller-checks.md').read_text(encoding='utf-8')
+    example = 'name: Browser proof\n' + guide.split('name: Browser proof\n', 1)[1].split('```', 1)[0]
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=example, text=True))
+    assert set(document['on']) == {'workflow_dispatch'}
+    ref = document['on']['workflow_dispatch']['inputs']['ref']
+    assert ref['required'] is True and ref['type'] == 'string'
+    assert document['permissions'] == {'contents': 'read'}
+    assert set(document['jobs']) == {'browser'}
+    job = document['jobs']['browser']
+    assert job['uses'] == 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@RELEASE_COMMIT'
+    assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
+    assert job['with'] == {'browser-only': True, 'checkout-ref': '${{ inputs.ref }}', 'concurrency-key': 'browser-proof'}
+    reusable = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    assert set(job['with']) <= set(reusable['on']['workflow_call']['inputs'])
+    assert 'secrets' not in job and 'steps' not in job
+    print('PASS browser_proof_dispatch_example_reuses_workflow', flush=True)
+
+
+browser_proof_dispatch_example_reuses_workflow()
+
 
 def browser_qualification_reuses_production_bodies():
     source = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
@@ -804,7 +959,8 @@ def preparation_runs_beside_host_compilation():
     assert jobs['test-build']['needs'] == jobs['test-prepare']['needs'] == 'declaration'
     assert set(jobs['tests']['needs']) == {'declaration', 'test-build', 'test-prepare'}
     assert 'TEST_PREPARE' not in jobs['test-build']['env']
-    assert 'needs.declaration.outputs.test_prepare' in jobs['test-prepare']['if']
+    assert 'test-prepare' in routed_jobs(document, {})
+    assert 'test-prepare' not in routed_jobs(document, {'needs.declaration.outputs.test_prepare': json.dumps('')})
     assert 'TEST_PREPARE_OUTPUT' in body('Prepare test setup')
     assert 'target/test-setup' in body('Prepare test setup')
     assert 'tar -C target' in body('Restore test setup')
@@ -1204,7 +1360,7 @@ def warm_push_seeds_non_test_shapes():
             'Free instrumented build space': True, 'Tests': False, 'Search tools': True, 'Isolated tests': True}, enabled
     assert doctests['steps'] == document['jobs']['tests']['steps']
     assert doctests['env']['SHARD'] == document['jobs']['tests']['env']['SHARD']
-    assert next(step for step in document['jobs']['browser-tests']['steps'] if step.get('name') == 'Browser test recipe')['run'].strip() == 'just browser-test'
+    assert next(step for step in document['jobs']['browser-tests']['steps'] if step.get('name') == 'Browser test recipe')['run'].strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"')
 
 warm_push_seeds_non_test_shapes()
 print('PASS warm_push_seeds_non_test_shapes')
@@ -1228,9 +1384,12 @@ def warm_cache_keeps_one_writer():
     assert "warm-cache:\n        description:" in workflow
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                            workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-    for name, job in jobs.items():
-        if name not in ('declaration', 'tests', 'targets', 'quality', 'docs', 'browser', 'browser-tests', 'doctests'):
-            assert '!inputs.warm-cache' in re.search(r'^    if: (.*)', job, re.MULTILINE)[1], name
+    # Warm calls run only the declaration and the shapes they seed, whatever the event or scan.
+    seeding = {'declaration', 'tests', 'targets', 'quality', 'docs', 'browser', 'browser-tests', 'doctests'}
+    for event in ('push', 'pull_request', 'merge_group', 'workflow_dispatch'):
+        for scan in ({}, {'inputs.advisory-scan': True}, {'inputs.fuzz-scan': True}):
+            routed = routed_jobs(document, {'inputs.warm-cache': True, 'github.event_name': event} | scan)
+            assert routed <= seeding, (event, scan, sorted(routed))
     condition = document['jobs']['targets']['if']
     for warm in (False, True):
         for event in ('push', 'pull_request', 'merge_group', 'workflow_dispatch'):
@@ -1894,8 +2053,17 @@ print('PASS scheduled_scans_follow_released_workflow')
 def fuzz_scan_runs_only_declaration_and_fuzz():
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     job = jobs['fuzz']
-    assert "    if: $" + "{{ !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}\n" in job
-    assert all('fuzz-scan' not in jobs[name].split('    steps:', 1)[0] for name in ['declaration', 'advisories'])
+    condition = re.search(r'^    if: (.+)$', job, re.MULTILINE)
+    assert condition is not None, 'Missing fuzz job condition'
+    for browser_only, warm_cache, fuzz_scan, has_targets in itertools.product([False, True], repeat=4):
+        values = {'inputs.browser-only': browser_only, 'inputs.warm-cache': warm_cache,
+                  'inputs.fuzz-scan': fuzz_scan,
+                  'needs.declaration.outputs.fuzz_targets': '["target"]' if has_targets else '[]'}
+        expected = not browser_only and not warm_cache and fuzz_scan and has_targets
+        assert evaluate(condition[1], values) == expected, values
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    routed = routed_jobs(document, {'inputs.fuzz-scan': True})
+    assert routed == {'declaration', 'fuzz'}, sorted(routed)
     assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: nightly-2026-09-15\n' in job
     assert workflow.count('nightly-') == 1 and workflow.count('/cargo-fuzz/') == 1
     assert '        env:\n          FUZZ_SCAN: true\n        run: *check-tools\n' in job
@@ -2518,7 +2686,12 @@ def removed_shard_lists_fail_clearly():
         assert result.returncode != 0 and not values and 'test_shards was removed' in result.stderr, result.stdout + result.stderr
     aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:', 1)[0]
     assert 'name: Tests (ubuntu-latest)' in aggregate
-    assert 'needs: [tests, doctests, declaration]' in aggregate and 'if: $' + '{{ always()' in aggregate
+    assert 'needs: [tests, doctests, declaration]' in aggregate
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    # Failed shards still reach the aggregate, which then fails the run.
+    assert 'tests-result' in routed_jobs(document, {'success()': False, 'failure()': True})
+    # An implicit success() covers the whole condition, not only its first operand.
+    assert 'declaration' not in routed_jobs(document, {'success()': False, 'inputs.working-directory': 'sub'})
     for coverage, required in [('false', 'skipped'), ('true', 'success'), ('', None)]:
         for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
             for status in ['success', 'failure', 'cancelled', 'skipped']:
@@ -4134,12 +4307,12 @@ def workflow_failures_remain_required():
         assert ('needs: [declaration, test-build, test-prepare]' if name == 'tests' else 'needs: declaration') in section
     assert 'pull_request:' in workflow and 'merge_group:' in workflow
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-    assert "needs.declaration.outputs.coverage == 'true'" in document['jobs']['browser']['if']
-    # Each scan mode runs only the declaration and its own job.
-    jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-    assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration'].split('    steps:', 1)[0]
-    assert all('!inputs.advisory-scan && !inputs.fuzz-scan' in job.split('\n    steps:', 1)[0]
-               for name, job in jobs.items() if name not in ('declaration', 'advisories', 'fuzz')), sorted(jobs)
+    routed = routed_jobs(document, {})
+    assert routed == set(document['jobs']) - {'advisories', 'fuzz'}, sorted(routed)
+    assert 'browser' not in routed_jobs(document, {'needs.declaration.outputs.coverage': 'false'})
+    # An advisory scan runs only the declaration and its own job.
+    routed = routed_jobs(document, {'inputs.advisory-scan': True})
+    assert routed == {'declaration', 'advisories'}, sorted(routed)
 
 def browser_test_result_stays_required():
     internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')

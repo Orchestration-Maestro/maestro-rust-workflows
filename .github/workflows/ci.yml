@@ -12,7 +12,7 @@ on:
         type: string
         default: ''
       checkout-ref:
-        description: Checkout ref (self-test, proof, and advisory and fuzz scans; defaults to caller)
+        description: Checkout ref (self-test, proof, browser-only, and advisory and fuzz scans; defaults to caller)
         type: string
         default: ''
       checkout-base-ref:
@@ -31,6 +31,10 @@ on:
         description: Stable key distinguishing multiple calls in one workflow
         type: string
         default: ''
+      browser-only:
+        description: Run only the declared Chromium browser tests (manual named-ref proof)
+        type: boolean
+        default: false
       warm-cache:
         description: Build the full coverage test graph with optional filtered test execution
         type: boolean
@@ -852,6 +856,15 @@ jobs:
               output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
+      - name: Validate browser-only request
+        if: inputs.browser-only
+        env:
+          CAN_RUN_BROWSER: ${{ steps.selection.outputs.browser_tests == 'true' && steps.selection.outputs.coverage == 'true' && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan }}
+        run: |
+          if [ "$CAN_RUN_BROWSER" != true ]; then
+            echo 'browser-only requires selected browser tests and cannot be combined with warm-cache, advisory-scan or fuzz-scan' >&2
+            exit 1
+          fi
       - name: Record merge queue evidence
         if: github.event_name == 'merge_group'
         env:
@@ -883,7 +896,7 @@ jobs:
     needs: declaration
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -1239,7 +1252,7 @@ jobs:
     needs: declaration
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -1322,7 +1335,7 @@ jobs:
       contents: read
       actions: read
     name: Build test archive
-    if: ${{ !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -1504,7 +1517,7 @@ jobs:
       actions: read
     needs: declaration
     name: Prepare test setup
-    if: ${{ needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -1858,7 +1871,7 @@ jobs:
       contents: read
       actions: read
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' || format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count) }}
-    if: ${{ !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -2229,7 +2242,7 @@ jobs:
       actions: read
     name: ${{ matrix.shard == 'doctests' && 'Doctests' }}
     needs: declaration
-    if: ${{ needs.declaration.outputs.coverage == 'true' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && needs.declaration.outputs.coverage == 'true' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     strategy:
       fail-fast: false
@@ -2242,7 +2255,7 @@ jobs:
   tests-result:
     name: Tests (ubuntu-latest)
     needs: [tests, doctests, declaration]
-    if: ${{ always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && always() && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     steps:
       - name: Runner hardware
@@ -2284,7 +2297,7 @@ jobs:
       actions: read
     name: Dependency, source and coverage checks
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -2584,7 +2597,7 @@ jobs:
   fuzz:
     name: Fuzz ${{ matrix.name }}
     needs: declaration
-    if: ${{ !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}
+    if: ${{ !inputs.browser-only && !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     strategy:
       fail-fast: false
@@ -2696,7 +2709,7 @@ jobs:
   advisories:
     name: Advisory scan
     needs: declaration
-    if: ${{ inputs.advisory-scan && !inputs.warm-cache }}
+    if: ${{ !inputs.browser-only && inputs.advisory-scan && !inputs.warm-cache }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -2762,7 +2775,7 @@ jobs:
       actions: read
     name: Check (${{ matrix.target }})
     needs: declaration
-    if: ${{ !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
+    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
     strategy:
       fail-fast: false
       matrix:
@@ -2861,7 +2874,7 @@ jobs:
       actions: read
     name: Wasm and browser build
     needs: declaration
-    if: ${{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ !inputs.browser-only && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -3050,8 +3063,16 @@ jobs:
           echo "PLAYWRIGHT_MODULE=$tools/node_modules/playwright" >> "$GITHUB_ENV"
           echo "CHROMIUM_PATH=$tools/chrome-linux64/chrome" >> "$GITHUB_ENV"
       - name: Browser test recipe
+        id: browser-recipe
         run: |
-          just browser-test
+          just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"
+      - name: Upload browser test log
+        if: always() && (steps.browser-recipe.outcome == 'success' || steps.browser-recipe.outcome == 'failure')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: browser-test-${{ inputs.concurrency-key || 'root' }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/browser-test.log
+          if-no-files-found: error
       - name: Compile cache statistics
         id: cache-statistics
         if: always()
