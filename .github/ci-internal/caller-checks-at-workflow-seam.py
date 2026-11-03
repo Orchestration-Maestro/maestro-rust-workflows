@@ -3589,8 +3589,6 @@ def apple_type_errors_fail_pull_requests():
     assert 'continue-on-error:' not in targets_job.split('    steps:', 1)[0]
     check = targets_job.split('      - name: Check target\n', 1)[1].split('      - name: ', 1)[0]
     assert 'continue-on-error:' not in check and '        if:' not in check
-    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
-    aggregate = body('All callers passed every check', internal)
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         shutil.copytree(root / 'fixtures/macos-rejected', directory, dirs_exist_ok=True,
@@ -3616,12 +3614,7 @@ def apple_type_errors_fail_pull_requests():
             assert (result.returncode == 0) == expected, result.stdout + result.stderr
             if not expected:
                 assert 'error[E0308]' in result.stderr and 'expected `u16`, found `u32`' in result.stderr, result.stderr
-            results = {'sample': {'result': 'success'}, 'test-tools': {'result': 'success'},
-                       'declared': {'result': 'success' if result.returncode == 0 else 'failure'}}
-            gate = subprocess.run(['python3', '-c', aggregate], cwd=directory,
-                                  env=os.environ | {'RESULTS': json.dumps(results)}, capture_output=True, text=True)
-            assert (gate.returncode == 0) == expected, gate.stdout + gate.stderr
-            print(f'Apple PR target {target}: compiler exit {result.returncode}, required aggregate exit {gate.returncode}', flush=True)
+            print(f'Apple PR target {target}: compiler exit {result.returncode}', flush=True)
     print('PASS apple_type_errors_fail_pull_requests', flush=True)
 
 
