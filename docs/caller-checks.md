@@ -138,8 +138,8 @@ A valid filter matching no tests succeeds under the existing no-tests policy.
 
 Running tests adds execution time and compiler objects. Keep the filter narrow
 enough for the warm build to finish between default-branch pushes and for the
-native payload to stay within 1 GiB. The existing writer and size rules still
-apply: only an eligible successful default-branch warm build saves a snapshot;
+native payload to stay within the coverage shape's 1 GiB cap. The existing
+writer and size rules still apply: only an eligible successful default-branch warm build saves a snapshot;
 a pull-request run cannot prove saving. More cached compiles are useful only
 when that save succeeds and later jobs restore the compatible snapshot.
 
@@ -225,9 +225,48 @@ these warm calls; the coverage warm build still uses its optional test filter.
 Other warm calls skip these additional jobs. No extra cache writer is enabled
 for pull requests, merge groups, feature branches or manual runs.
 
-The 1 GiB native-payload bound applies to each save, not the repository's
-10 GB cache allowance. Compressed snapshot sizes are measured separately;
-GitHub eviction can remove even the newest snapshot of a shape.
+### Snapshot size
+
+Each job shape has one cache cap. Compile cache identity sets it as the `size`
+output, Compile cache hands it to sccache as `SCCACHE_CACHE_SIZE`, and Seal
+compile cache reads that same variable:
+
+| Shape | Cap | Largest snapshot saved |
+| --- | --- | --- |
+| `test-prepare` (Prepare test setup) | 1,610,612,736 bytes (1.5 GiB) | 1,626,718,863 bytes |
+| Every other shape | 1,073,741,824 bytes (1 GiB) | 1,084,479,242 bytes |
+
+The seal skips a snapshot more than 1% above the cap. sccache keeps the
+preprocessor entries of C and assembler compiles in a separate directory that
+its own count leaves out; in Prepare test setup that directory held about 6 MB,
+0.6% of a 1 GiB cap. A snapshot grows toward its cap, because objects that later
+builds stop using stay until sccache evicts the least recently used ones, so a
+full cap alone is normal. A cap is too small when a build that starts from an
+empty cache fills it: the earliest objects are evicted, and every reader then
+misses the objects it needs first.
+
+Prepare test setup builds every wasm example extension as well as the setup
+tools, so its shape has the larger cap. Source: in seven Maestro default-branch
+pushes on 2026-11-03, the job started from an empty cache, filled its 1 GiB cap,
+evicted 32 to 38 of the roughly 2,080 entries it wrote, and left 1,076,511,005
+to 1,079,794,032 bytes on disk. The seal refused all seven, so the merge groups
+compiled that shape cold (2 cache hits and 1,673 misses), and Prepare test setup
+took a median 28.5 minutes across 15 of them. A merge-group run that reused the
+example extensions held 1,026,339,681 bytes with nothing evicted. The first
+default-branch push with the 1.5 GiB cap also starts from an empty cache, so its
+`Compile cache snapshot:` line gives the shape's whole working set, and that
+number sets the cap.
+
+The bound applies to each save, not the repository's 10 GB cache allowance.
+Compressed snapshot sizes are measured separately, and GitHub eviction can
+remove even the newest snapshot of a shape. On 2026-11-03 one Maestro
+generation held 5,606,616,026 bytes: the other compile snapshots, three Cargo
+git entries and one test setup bundle. The setup snapshot adds one entry of
+about 1.1 GB to each generation, 1.6 GB at most, so a generation stays at or
+below 7.2 GB, under the limit. GitHub evicts by last access, so the previous
+generation goes first: once a shape saves its new snapshot, no reader restores
+the old one. The extra entry makes those old snapshots leave sooner on each
+push.
 
 ### Cargo git dependency cache
 

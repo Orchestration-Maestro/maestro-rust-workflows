@@ -2103,7 +2103,7 @@ jobs:
               # One owner of the step: the other jobs only alias it, so no shape is judged by a copy.
               for name in holders[1:]:
                   assert steps[name].rstrip('\n') == '        if: *sccache-floor-condition\n        env: *sccache-floor-env\n        run: *sccache-floor', (name, steps[name])
-              assert "output.write(f'prefix={prefix}\\nkey={prefix}{suffix}\\nwriter={str(writer).lower()}\\nshape={shape}\\nnamespace={namespace}\\nseeder={seeder}\\n')" in workflow
+              assert "output.write(f'prefix={prefix}\\nkey={prefix}{suffix}\\nwriter={str(writer).lower()}\\nshape={shape}\\nnamespace={namespace}\\nseeder={seeder}\\nsize={size}\\n')" in workflow
               assert "seeder = r'-\\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\\d+-'" in workflow
               # The floor reads the key layout from the identity step's outputs, spells none of it, and judges every shape.
               assert 'maestro-compile-v1-' not in step and "'-tests-'" not in step and 'tests-coverage' not in step, step

@@ -134,14 +134,17 @@ policy failures still fail CI. No workflow retry, sleep or per-object fallback
 is added. Statistics print raw diagnostics with Actions command processing
 disabled; cache write errors retain their diagnostic artifact.
 
-After a successful job, the server stops before one inspection walk. Empty
-payloads, stop/inspection failures and native payloads above 1 GiB skip saving.
+Each shape has one cache cap, which sccache and the seal both read: 1.5 GiB
+for Prepare test setup and 1 GiB for every other shape. See
+[Snapshot size](docs/caller-checks.md#snapshot-size). After a successful job,
+the server stops before one inspection walk. Empty payloads, stop/inspection
+failures and native payloads more than 1% above the shape's cap skip saving.
 The archive contains compiler objects, never `target/`, registry sources,
 credentials or diagnostics. Compressed archive bytes are a separate measurement.
 This per-save bound does not bound the repository's 10 GB allowance: seven
-1-GiB entries total 7,516,192,768 bytes, and two generations total
-15,032,385,536 bytes before additional shapes or targets. GitHub evicts by
-last access, so even a shape's only seed can disappear and cause a cold build.
+1-GiB shapes and the setup shape allow 9,218,073,557 bytes, and two generations
+18,436,147,114 bytes, before targets. GitHub evicts by last access, so even a
+shape's only seed can disappear and cause a cold build.
 The optional warmer is not a required consumer check. Merging this workflow
 does not release it or change consumer pins.
 

@@ -361,6 +361,7 @@ jobs:
         env:
           CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
           CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+          CACHE_SIZE: ${{ steps.cache-identity.outputs.size }}
         timeout-minutes: 10
         run: bash -e -o pipefail "$PROOF_STEPS/Compile cache"
       - name: Browser test tool pin
