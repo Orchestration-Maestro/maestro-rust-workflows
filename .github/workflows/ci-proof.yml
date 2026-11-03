@@ -18,7 +18,7 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 397fd09960944a9bd7904fb257d74f51d184bb66
+      checkout-ref: cfc143d2c52ba603609f933ff17c2dacffb99f2d
       concurrency-key: maestro-warm
       warm-cache: true
 
@@ -33,7 +33,7 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: d80c95d456603fcf7dfa3866f808bf28eba79de0
+      checkout-ref: bd3ffcd687f0c3ff42ab4522ae51688ae16c9c24
       concurrency-key: maestro-proof
       test-event: merge_group
 
@@ -48,8 +48,8 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: d80c95d456603fcf7dfa3866f808bf28eba79de0
-      checkout-base-ref: 397fd09960944a9bd7904fb257d74f51d184bb66
+      checkout-ref: bd3ffcd687f0c3ff42ab4522ae51688ae16c9c24
+      checkout-base-ref: cfc143d2c52ba603609f933ff17c2dacffb99f2d
       concurrency-key: maestro-selected
       test-event: pull_request
 
@@ -67,7 +67,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Orchestration-Maestro/maestro
-          ref: d80c95d456603fcf7dfa3866f808bf28eba79de0
+          ref: bd3ffcd687f0c3ff42ab4522ae51688ae16c9c24
           path: maestro
       - name: Extract workflow steps
         run: python3 workflow/.github/extract-workflow-steps.py
