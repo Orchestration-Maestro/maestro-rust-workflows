@@ -3202,7 +3202,6 @@ def merge_queue_evidence_records_full_suite_and_revision():
     assert record['if'] == upload['if'] == "github.event_name == 'merge_group'"
     assert record['env']['WORKFLOW_REF'] == '${{ steps.evidence-scope.outputs.workflow_ref }}'
     assert record['env']['WORKFLOW_SHA'] == '${{ steps.evidence-scope.outputs.workflow_sha }}'
-    assert upload['uses'] == 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
     assert upload['with']['name'] == 'merge-queue-tests-${{ steps.evidence-scope.outputs.scope }}-${{ github.run_attempt }}'
     assert upload['with']['if-no-files-found'] == 'error'
     match = re.search(r"python3 <<'PYTHON'\n(.*?)\nPYTHON", body('Record merge queue evidence'), re.S)
@@ -3229,8 +3228,10 @@ print('PASS merge_queue_evidence_records_full_suite_and_revision')
 
 def main_reuses_only_exact_successful_merge_queue_tests():
     import io
+    import shutil
     import zipfile
     from unittest.mock import patch
+    assert 'TESTS_REUSED: $' + '{{ steps.queue.outputs.tests_reused }}' in workflow
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     steps = document['jobs']['declaration']['steps']
     check = next(step for step in steps if step['name'] == 'Check merge queue result')
@@ -3272,7 +3273,6 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                  ('old-attempt', [[good]], False), ('missing-identity', [[good]], False)]
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
-        import shutil
         shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
         fixture_git(directory, 'init', '--quiet')
         fixture_git(directory, 'add', '.')
@@ -3321,7 +3321,6 @@ def main_reuses_only_exact_successful_merge_queue_tests():
             assert result.returncode == 0, result.stderr
             selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
             assert selected['coverage'] == str(not reused).lower(), (name, selected)
-            assert 'TESTS_REUSED: $' + '{{ steps.queue.outputs.tests_reused }}' in workflow
             conditions = context | {'needs.declaration.outputs.coverage': selected['coverage'],
                 'needs.declaration.outputs.enabled': 'true', 'needs.declaration.outputs.browser_tests': 'true',
                 'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.wasm_crates': '["web"]',

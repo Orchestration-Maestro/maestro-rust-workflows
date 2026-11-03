@@ -67,14 +67,14 @@ qualifies only when it names this shared workflow's full repository path.
 Reusable callers resolve that same path from the current run's referenced
 workflows, with exactly one matching entry. Missing, conflicting or ambiguous
 identities, missing or expired artifacts, unreadable evidence and API errors all
-keep the full suite. Earlier releases without this evidence also keep the suite.
+keep the full suite. Runs whose merge group left no evidence keep the full suite.
 Fixture checkout/event overrides, scan calls and `warm-cache` calls do not use
 the result lookup.
 The independent `warm-cache` call still runs on every main push and seeds its
 existing cache shapes, including its normal doctest and browser commands.
 
-Below, main-push test and coverage behavior describes pushes without reusable
-merge-queue results; warm-cache behavior is unchanged.
+Below, main-push test and coverage behaviour describes pushes without a matching
+merge-queue result. The independent `warm-cache` call runs on every main push.
 
 See [Test shards](#test-shards) for the required test result and coverage rules.
 
@@ -1071,7 +1071,7 @@ A caller can run `ci.yml` on every push to `main`, without `warm-cache` or scan
 inputs. Checkout uses the push's exact commit. A completed successful merge-group
 run of the same shared workflow revision at that exact commit, with evidence
 that the full workspace was selected, lets the push skip the
-suite legs described in [Test policy](#test-policy-and-caller-permissions).
+test legs described in [Test policy](#test-policy-and-caller-permissions).
 Otherwise it runs every test shard, doctests and declared browser tests.
 Keep the independent cache warm-up on every main push. The landing suite and
 merge queue can use different calling workflows; their shared workflow revision
