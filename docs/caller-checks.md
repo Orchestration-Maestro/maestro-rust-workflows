@@ -933,7 +933,9 @@ The caller's `browser-test` recipe must report every selected case even after a
 failure, and return a failing status if any case fails. For a nextest browser
 run, pass `--no-fail-fast`. Other browser drivers must collect all case results
 before returning. The shared workflow runs the recipe as written; it does not
-change the caller's test-runner settings.
+change the caller's test-runner settings. The caller-side recipe update and
+live red/green proof are tracked in
+[Orchestration-Maestro/maestro#4015](https://github.com/Orchestration-Maestro/maestro/issues/4015).
 
 The job captures both output streams from `just browser-test` in
 `browser-test.log`. After a passing or failing recipe, it uploads
