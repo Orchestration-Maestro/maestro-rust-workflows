@@ -498,6 +498,8 @@ def browser_proof_dispatch_example_reuses_workflow():
     assert job['uses'] == 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@RELEASE_COMMIT'
     assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
     assert job['with'] == {'browser-only': True, 'checkout-ref': '${{ inputs.ref }}', 'concurrency-key': 'browser-proof'}
+    reusable = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    assert set(job['with']) <= set(reusable['on']['workflow_call']['inputs'])
     assert 'secrets' not in job and 'steps' not in job
     print('PASS browser_proof_dispatch_example_reuses_workflow', flush=True)
 

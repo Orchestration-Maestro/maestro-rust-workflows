@@ -6,8 +6,9 @@ workflow's directory input exists only for its fixture self-test, pinned
 workspace proof, and advisory and fuzz scans. Optional `checkout-repository` and
 `checkout-ref` inputs serve the same four: when unset they check out the caller
 repository and commit. `checkout-ref` also selects the caller revision for a
-[manual browser proof](#manual-browser-red-and-green-proofs). `checkout-base-ref` and `test-event` are overrides
-restricted to this workflow repository; they default to the real PR base and event.
+[manual browser proof](#manual-browser-red-and-green-proofs). `checkout-base-ref`
+and `test-event` are overrides restricted to this workflow repository; they
+default to the real PR base and event.
 
 The full and selected-package proof consumers use one immutable Maestro source
 snapshot. A warm build uses its parent commit; selected-package proof sets that
@@ -927,7 +928,8 @@ job token has read-only contents and Actions access. Dispatch only caller refs
 you intend to execute; those refs supply the recipe and test code. Keep the
 workflow selection on `main` (or the caller's default branch) while the `ref`
 input selects the source under test. A dispatch does not cancel an in-progress
-proof.
+proof. All dispatches share one concurrency group, so a newer dispatch replaces
+any queued proof.
 
 The caller's `browser-test` recipe must report every selected case even after a
 failure, and return a failing status if any case fails. For a nextest browser
