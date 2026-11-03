@@ -25,7 +25,14 @@ for root-package boundaries. Pull requests skip the test archive, test setup,
 test shards, doctests and wasm/browser builds. Their job names remain present;
 skipped jobs count as successful required checks. Merge groups and main pushes
 run the full shard matrix, coverage, doctests, wasm/browser builds and every
-declared foreign-target check.
+declared foreign-target check. A main push skips the suite legs when its exact
+commit already passed a completed merge-group run of the same shared workflow
+revision, with an identity artifact confirming full-workspace test selection.
+Missing evidence, including an unreadable API result, keeps the full suite.
+Formatting, lint, docs, dependency/source and target checks still run; the
+independent `warm-cache` call continues on every main push. See
+[test policy](docs/caller-checks.md#test-policy-and-caller-permissions).
+Main-push suite behavior below applies when no matching result exists.
 
 Merge groups and main pushes always run declared Chromium tests, regardless of
 changed paths. Ordinary pull requests skip Chromium runtime tests. See
