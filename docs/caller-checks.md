@@ -39,7 +39,42 @@ formatting still checks the whole workspace. Pull requests skip the test archive
 test setup, test shards, doctests and wasm/browser builds. Every required check
 name still reports; skipped jobs count as success. Merge groups and main pushes
 run every workspace test with the full shard matrix, doctests, coverage and all
-declared builds and foreign-target checks. No caller setting changes this policy.
+declared builds and foreign-target checks, except that a main push reuses tests
+when its exact commit already passed a completed merge-group run of the same
+shared workflow revision with the full workspace selected. That push skips the
+test archive, preparation, test shards, doctests, coverage and wasm/browser legs.
+Formatting, lint, docs, dependency/source checks and target checks still run.
+No caller setting changes this policy.
+
+Every merge-group declaration uploads a small identity artifact: the shared
+workflow's full repository path, exact revision and whether it declared the full
+workspace test set. The artifact is scoped to the caller repository, directory,
+call key and run attempt. A main push paginates successful merge-group runs for
+its exact commit and reads that evidence with the existing job token's
+`actions: read` permission. Different calling workflows can reuse the same
+shared revision; a successful PR run, a different revision or a selected subset
+cannot qualify.
+
+Only merge-group runs whose head repository is the caller repository can supply
+evidence; fork runs and runs without that repository identity do not qualify.
+The artifact is a self-report, not an independent attestation. This trust boundary
+accepts workflow authors in the same repository: a workflow forging evidence
+would have to be reviewed code at that exact commit, and its author could
+already edit the caller. The read-only job token gains no additional permissions.
+
+Writer and reader resolve the shared identity once. The raw workflow context
+qualifies only when it names this shared workflow's full repository path.
+Reusable callers resolve that same path from the current run's referenced
+workflows, with exactly one matching entry. Missing, conflicting or ambiguous
+identities, missing or expired artifacts, unreadable evidence and API errors all
+keep the full suite. Runs whose merge group left no evidence keep the full suite.
+Fixture checkout/event overrides, scan calls and `warm-cache` calls do not use
+the result lookup.
+The independent `warm-cache` call still runs on every main push and seeds its
+existing cache shapes, including its normal doctest and browser commands.
+
+Below, main-push test and coverage behaviour describes pushes without a matching
+merge-queue result. The independent `warm-cache` call runs on every main push.
 
 See [Test shards](#test-shards) for the required test result and coverage rules.
 
@@ -1041,8 +1076,14 @@ an already-selected job queued, not silently rerun on another host.
 ## Full suite after landing
 
 A caller can run `ci.yml` on every push to `main`, without `warm-cache` or scan
-inputs. Checkout uses the push's exact commit. This runs every test shard,
-doctests and declared browser tests, regardless of merge-group selection.
+inputs. Checkout uses the push's exact commit. A completed successful merge-group
+run of the same shared workflow revision at that exact commit, with evidence
+that the full workspace was selected, lets the push skip the
+test legs described in [Test policy](#test-policy-and-caller-permissions).
+Otherwise it runs every test shard, doctests and declared browser tests.
+Keep the independent cache warm-up on every main push. The landing suite and
+merge queue can use different calling workflows; their shared workflow revision
+and evidence scope must match.
 Push runs have separate concurrency groups by calling workflow and commit: later
 landings cannot cancel a run or replace a queued landing.
 
@@ -1361,6 +1402,12 @@ already reports it. The self-test checks every pinned name against `ci.yml`,
 and checks that this repository's ruleset checks, `Required repository quality`
 and `Required consumer tests`, still exist, so renaming a job fails there first.
 When you rename a job on purpose, change the pin and the ruleset in one change.
+
+On a main push that reuses merge-queue tests, the successful `Reuse merge queue
+tests` step in `Caller declaration` records the decision. The required-checks
+guard permits the archive, shard and doctest skips only with that marker; every
+other pinned check must still run. Job-shape comparisons keep reused runs
+separate from full-suite runs, so the deliberate skips do not report removals.
 
 Pull requests require `Caller declaration`, `Format and lint`, `Docs`,
 `Dependency, source and coverage checks` and each declared native target result:

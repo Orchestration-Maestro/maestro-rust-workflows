@@ -551,6 +551,98 @@ jobs:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
           PYTHON
+      - name: Test evidence identity
+        id: evidence-scope
+        if: github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_WORKFLOW_REF: ${{ github.workflow_ref }}
+          CURRENT_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          CALLER_DIRECTORY: ${{ inputs.working-directory || '.' }}
+          CALL_KEY: ${{ inputs.concurrency-key }}
+        run: |
+          python3 <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          identity = [os.environ['GITHUB_REPOSITORY'], os.environ['CALLER_DIRECTORY'], os.environ['CALL_KEY']]
+          scope = hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode('utf-8')).hexdigest()
+          path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
+          revision = ''
+          try:
+              current = json.loads(subprocess.check_output(['gh', 'api',
+                  f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"], text=True))
+              references = [item for item in current['referenced_workflows'] if item['path'].startswith(path + '@')]
+              if len(references) > 1:
+                  raise ValueError('Ambiguous reusable workflow identity')
+              revisions = {item['sha'] for item in references}
+              if os.environ['CURRENT_WORKFLOW_REF'].startswith(path + '@'):
+                  revisions.add(os.environ['CURRENT_WORKFLOW_SHA'])
+              if len(revisions) != 1 or not re.fullmatch('[0-9a-f]{40}', next(iter(revisions))):
+                  raise ValueError('Reusable workflow identity is unresolved or conflicting')
+              revision = revisions.pop()
+          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
+              print('Reusable workflow identity unavailable; merge queue tests cannot be reused')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'scope={scope}\nworkflow_sha={revision}\nworkflow_ref=' + (path + '@' + revision if revision else '') + '\n')
+          PYTHON
+      - name: Check merge queue result
+        id: queue
+        if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.checkout-repository && !inputs.checkout-ref && !inputs.test-event }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVIDENCE_SCOPE: ${{ steps.evidence-scope.outputs.scope }}
+          WORKFLOW_REF: ${{ steps.evidence-scope.outputs.workflow_ref }}
+          WORKFLOW_SHA: ${{ steps.evidence-scope.outputs.workflow_sha }}
+        run: |
+          python3 <<'PYTHON'
+          import io
+          import json
+          import os
+          import re
+          import subprocess
+          import zipfile
+          repository = os.environ['GITHUB_REPOSITORY']
+          workflow_path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
+          def api(path, paginate=False, binary=False):
+              flags = ['--paginate', '--slurp'] if paginate else []
+              result = subprocess.check_output(['gh', 'api', *flags, f'repos/{repository}/{path}'], text=not binary)
+              return result if binary else json.loads(result)
+          reused = False
+          try:
+              revision = os.environ['WORKFLOW_SHA']
+              if not re.fullmatch('[0-9a-f]{40}', revision) or os.environ['WORKFLOW_REF'].rsplit('@', 1)[0] != workflow_path:
+                  raise ValueError('Current reusable workflow revision is not verifiable')
+              pages = api(f"actions/runs?event=merge_group&status=success&head_sha={os.environ['GITHUB_SHA']}&per_page=100", True)
+              for run in (run for page in pages for run in page['workflow_runs']):
+                  if ((run.get('head_repository') or {}).get('full_name') != repository
+                          or run['head_sha'] != os.environ['GITHUB_SHA'] or run['event'] != 'merge_group'
+                          or run['status'] != 'completed' or run['conclusion'] != 'success'):
+                      continue
+                  name = f"merge-queue-tests-{os.environ['EVIDENCE_SCOPE']}-{run['run_attempt']}"
+                  listed = api(f"actions/runs/{run['id']}/artifacts?name={name}&per_page=100", True)
+                  artifacts = [item for page in listed for item in page['artifacts'] if item['name'] == name and not item['expired']]
+                  if len(artifacts) != 1:
+                      continue
+                  archive = api(f"actions/artifacts/{artifacts[0]['id']}/zip", binary=True)
+                  with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+                      if bundle.namelist() != ['merge-queue-tests.json'] or bundle.infolist()[0].file_size > 4096:
+                          raise ValueError('Invalid merge queue evidence archive')
+                      evidence = json.loads(bundle.read('merge-queue-tests.json'))
+                  if (evidence['workflow_ref'].rsplit('@', 1)[0] == workflow_path
+                          and evidence['workflow_sha'] == revision and evidence['full_test_set'] is True):
+                      reused = True
+                      break
+          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError, OSError, zipfile.BadZipFile):
+              print('Merge queue evidence unavailable; running the full suite')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('tests_reused=' + str(reused).lower() + '\n')
+          PYTHON
+      - name: Reuse merge queue tests
+        if: steps.queue.outputs.tests_reused == 'true'
+        run: echo 'Exact commit already passed this workflow in the merge queue; test legs skipped. Cache warm-up remains independent.'
       - name: Select test packages
         id: selection
         env:
@@ -558,6 +650,7 @@ jobs:
           BASE_REF: ${{ github.repository_id == '1404598722' && inputs.checkout-base-ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           TEST_SHARD_COUNT: ${{ steps.config.outputs.test_shard_count }}
           TEST_PREPARE_CONSUMERS: ${{ steps.config.outputs.test_prepare_consumers }}
+          TESTS_REUSED: ${{ steps.queue.outputs.tests_reused }}
         run: |
           python3 - <<'PYTHON'
           import ast
@@ -753,11 +846,34 @@ jobs:
               output.write('test_prepare=' + prepare + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
               output.write('coverage_scope=' + ('full workspace' if selected == members else 'selected packages: ' + ', '.join(names)) + '\n')
-              output.write('coverage=' + str(event != 'pull_request').lower() + '\n')
+              output.write('coverage=' + str(event != 'pull_request' and os.environ.get('TESTS_REUSED') != 'true').lower() + '\n')
               shards = list(range(1, int(os.environ['TEST_SHARD_COUNT']) + 1))
               output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
+      - name: Record merge queue evidence
+        if: github.event_name == 'merge_group'
+        env:
+          WORKFLOW_REF: ${{ steps.evidence-scope.outputs.workflow_ref }}
+          WORKFLOW_SHA: ${{ steps.evidence-scope.outputs.workflow_sha }}
+          FULL_TEST_SET: ${{ steps.selection.outputs.coverage_scope == 'full workspace' && steps.selection.outputs.coverage == 'true' && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.checkout-repository && !inputs.checkout-ref && !inputs.test-event }}
+        run: |
+          python3 <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          evidence = {'workflow_ref': os.environ['WORKFLOW_REF'], 'workflow_sha': os.environ['WORKFLOW_SHA'],
+                      'full_test_set': os.environ['FULL_TEST_SET'] == 'true'}
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'merge-queue-tests.json'
+          path.write_text(json.dumps(evidence) + '\n', encoding='utf-8')
+          PYTHON
+      - name: Upload merge queue evidence
+        if: github.event_name == 'merge_group'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: merge-queue-tests-${{ steps.evidence-scope.outputs.scope }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/merge-queue-tests.json
+          if-no-files-found: error
 
   quality:
     permissions:
