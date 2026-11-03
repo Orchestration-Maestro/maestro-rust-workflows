@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.19.12](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.11...v0.19.12) (2026-11-03)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#342](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/342)) ([a0f396f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/a0f396ff2d758bd43c4f92915acc2134e569a5e6))
+* move main scan pins to v0.19.11 ([#337](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/337)) ([a9241db](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/a9241db214221103a9923e45f1e2bf37328dce1e))
+
+
+### Bug Fixes
+
+* **ci:** seed test snapshots when main reuses queue results ([#341](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/341)) ([04f9eea](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/04f9eea17a07b018e7e87120aba1dfc4f37cc80e))
+
 ## [0.19.11](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.10...v0.19.11) (2026-11-03)
 
 
