@@ -15,8 +15,8 @@ for now; macOS and Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
 
 After declaration validation, pull requests run formatting, Clippy, docs,
-dependency and source checks, and declared Windows target checks in parallel.
-Host Clippy and the Windows check use one shared selection: changed crates,
+dependency and source checks, and declared macOS and Windows target checks in
+parallel. Host Clippy and these target checks share one selection: changed crates,
 included-input readers and their workspace dependents. Including package source,
 build or manifest inputs keeps their owning crate selected too. Included external
 docs and fixtures route only to readers. See
