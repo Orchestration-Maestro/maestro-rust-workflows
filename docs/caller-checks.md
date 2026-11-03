@@ -424,31 +424,28 @@ glob that matches no file fails the job. On reader runs, `Prepare test setup`
 restores the bundle on an exact hit and skips the `test_prepare` command.
 When preparation is enabled, default-branch pushes run the command even on an
 exact hit, including warm builds and pushes that reuse merge-queue tests.
-These writers pass no `TEST_PREPARE_BASE`, so
-preparation compiles the inputs and seeds its compiled-cache snapshot rather
-than copying prepared files. A cached bundle alone does not contain those
-compiler objects. Without the list a warm build does not prepare. Every numeric
-shard downloads the prepared directory as before. Only pushes to the default
-branch write the cache, so a merge group reads what the last push saved.
+These writers check whether the bundle is cached without downloading it and
+pass no `TEST_PREPARE_BASE`, so preparation compiles the inputs and seeds its
+compiled-cache snapshot rather than copying prepared files. A cached bundle
+alone does not contain those compiler objects. Without the list a warm build
+does not prepare. Every numeric shard downloads the prepared directory as before.
+Only pushes to the default branch write the cache, so a merge group reads what
+the last push saved.
 Pull requests skip preparation. Declare every input the command reads: an
 unlisted input does not change the key and can leave a stale directory in place.
 Without the list nothing is cached.
 
-When the exact key misses, `Prepare test setup` restores the closest earlier
-bundle saved under the same compile cache identity, checkout path and
-`test_prepare` command, which is the last push's bundle. A merge group and the
-push that lands it add bundles that earlier successful runs of this repository
-uploaded at the commit being merged, whichever workflow ran them: a workflow an
-organization ruleset requires runs pull requests and merge groups, while a push
-may run the caller's own workflow:
+On reader runs, when the exact key misses, `Prepare test setup` restores the
+closest earlier bundle saved under the same compile cache identity, checkout
+path and `test_prepare` command, which is the last push's bundle. A merge group
+adds bundles that earlier successful runs of this repository uploaded at the
+commit being merged, whichever workflow ran them:
 
 - A merge group adds, for each pull request that is not on the default branch
   yet, whether in this group or queued ahead of it (found from the `(#N)` that
   ends its commit subject), the bundle of that pull request's newest successful
   run at its head.
-- A push to the default branch can find the successful merge group's bundle,
-  but does not pass it as a preparation base: writers must populate compiler
-  objects.
+- Pushes add no candidates: writers must populate compiler objects.
 - A pull request run adds nothing, so every added bundle was built by the code
   being merged, starting from a bundle the default branch saved. Runs from forks
   are never added: a bundle holds executables that the run then starts.
@@ -466,7 +463,9 @@ The command may copy or reuse any file in a listed directory whose own inputs
 are unchanged, and must still write every file it needs to
 `TEST_PREPARE_OUTPUT`. When no bundle is available, `TEST_PREPARE_BASE` is
 unset. Reader runs still skip the command on an exact hit. Writers leave
-`TEST_PREPARE_BASE` unset even when restored or candidate bundles are available.
+`TEST_PREPARE_BASE` unset. Pushes that reuse merge-queue tests save compiled-cache
+snapshots without uploading the test archive or setup artifacts, since no test
+shard in those runs needs them.
 
 ```toml
 test_prepare = "sh .config/prepare-tests.sh"

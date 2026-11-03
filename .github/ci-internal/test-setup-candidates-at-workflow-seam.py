@@ -82,13 +82,10 @@ def a_fork_run_is_never_a_candidate():
     output, _, _ = selected(routes, GITHUB_EVENT_NAME='merge_group')
     assert output == 'runs=53\n', output
 
-def a_push_gets_the_bundle_its_merge_group_run_uploaded_under_another_workflow():
-    # The push runs the caller's own workflow (66), which never runs a merge group.
-    routes = {'actions/runs/100': {'workflow_id': 66},
-              'actions/workflows/66/runs?event=merge_group&head_sha=merged&status=success&per_page=100': {'workflow_runs': []},
-              at('merged', 'merge_group'): {'workflow_runs': [run(70, 'merged'), run(71, 'merged')]}} | bundle(70, expired=True) | bundle(71)
-    output, _, _ = selected(routes, GITHUB_EVENT_NAME='push', CACHE_WRITER='true')
-    assert output == 'runs=71\n', output
+def a_push_lists_no_candidates():
+    routes = {at('merged', 'merge_group'): {'workflow_runs': [run(71, 'merged')]}} | bundle(71)
+    output, asked, _ = selected(routes, GITHUB_EVENT_NAME='push', CACHE_WRITER='true')
+    assert output == 'runs=\n' and asked == '', (output, asked)
 
 def a_failed_lookup_warns_and_keeps_the_bundles_found():
     routes = group('feat: first (#7)', 'fix: second (#8)') | {
@@ -107,7 +104,7 @@ def other_events_get_no_candidates():
         assert output == 'runs=\n' and asked == '', (extra, output, asked)
 
 for check in [a_merge_group_gets_the_bundles_its_pull_request_runs_uploaded_under_a_required_workflow, a_fork_run_is_never_a_candidate,
-              a_push_gets_the_bundle_its_merge_group_run_uploaded_under_another_workflow, a_failed_lookup_warns_and_keeps_the_bundles_found,
+              a_push_lists_no_candidates, a_failed_lookup_warns_and_keeps_the_bundles_found,
               other_events_get_no_candidates]:
     check()
     print('PASS ' + check.__name__, flush=True)

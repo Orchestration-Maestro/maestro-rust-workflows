@@ -3362,8 +3362,10 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 'needs.declaration.outputs.test_prepare_inputs': '[]', 'needs.declaration.outputs.test_prepare': '"prepare"',
                 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                 'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True}
-            for job in ['test-build', 'test-prepare']:
+            for job, upload in [('test-build', 'Upload test archive'), ('test-prepare', 'Upload test setup')]:
                 assert evaluate(document['jobs'][job]['if'], conditions), (name, job, 'main must seed compiled objects')
+                step = next(step for step in document['jobs'][job]['steps'] if step['name'] == upload)
+                assert bool(evaluate(step.get('if', 'True'), conditions)) == (not reused), (name, upload)
             for job in ['tests', 'doctests', 'browser', 'browser-tests']:
                 assert bool(evaluate(document['jobs'][job]['if'], conditions)) == (not reused), (name, job)
             assert document['jobs']['declaration']['outputs']['tests_reused'] == '${{ steps.queue.outputs.tests_reused }}'
@@ -3386,11 +3388,18 @@ print('PASS main_reuses_only_exact_successful_merge_queue_tests')
 
 def main_setup_writers_prepare_even_with_exact_bundle():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-    prepare = next(step for step in document['jobs']['test-prepare']['steps'] if step['name'] == 'Prepare test setup')
+    steps = {step['name']: step for step in document['jobs']['test-prepare']['steps']}
+    prepare = steps['Prepare test setup']
     for writer, hit, expected in [('true', 'true', True), ('true', 'false', True),
                                   ('false', 'true', False), ('false', 'false', True)]:
         context = {'steps.setup-cache.outputs.cache-hit': hit, 'steps.cache-identity.outputs.writer': writer,
-                   'steps.candidates.outputs.runs': '7'}
+                   'steps.candidates.outputs.runs': '' if writer == 'true' else '7',
+                   'needs.declaration.outputs.test_prepare_inputs': '["inputs/**"]'}
+        restore = steps['Restore test setup cache']
+        assert bool(evaluate(restore['with'].get('lookup-only', 'False'), context)) == (writer == 'true'), (writer, hit, 'writers must not download bundles')
+        candidates = steps['Test setup candidates']
+        assert bool(evaluate(candidates['if'], context)) == (writer != 'true' and hit != 'true'), (writer, hit, 'writers must not fetch candidates')
+        assert not evaluate(candidates['if'], context | {'needs.declaration.outputs.test_prepare_inputs': '[]'})
         assert bool(evaluate(prepare['if'], context)) == expected, (writer, hit, 'writer must populate compile objects')
         if not expected:
             continue
@@ -3401,9 +3410,10 @@ def main_setup_writers_prepare_even_with_exact_bundle():
             restored.mkdir(parents=True)
             (restored / 'kept').write_text('prepared', encoding='utf-8')
             subprocess.run(['tar', '-C', str(restored.parent), '-cf', str(directory / 'test-setup.tar'), 'test-setup'], check=True)
-            candidate = directory / 'test-setup-candidates/7'
-            candidate.mkdir(parents=True)
-            (candidate / 'test-setup.tar').write_bytes((directory / 'test-setup.tar').read_bytes())
+            if writer != 'true':
+                candidate = directory / 'test-setup-candidates/7'
+                candidate.mkdir(parents=True)
+                (candidate / 'test-setup.tar').write_bytes((directory / 'test-setup.tar').read_bytes())
             forwarded = {key: evaluate(value, context) for key, value in prepare['env'].items()}
             result = execute('Prepare test setup', directory, {'RUNNER_TEMP': temporary,
                 'TEST_PREPARE_BASE': '/inherited', **forwarded,
