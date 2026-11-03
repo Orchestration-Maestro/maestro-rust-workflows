@@ -28,6 +28,8 @@ run the full shard matrix, coverage, doctests, wasm/browser builds and every
 declared foreign-target check. A main push skips the test legs when its exact
 commit already passed a completed merge-group run of the same shared workflow
 revision, with an identity artifact confirming full-workspace test selection.
+The archive and preparation jobs still run without artifact uploads to seed
+compiled-cache snapshots.
 Missing evidence, including an unreadable API result, keeps the full suite.
 Formatting, lint, docs, dependency/source and target checks still run; the
 independent `warm-cache` call continues on every main push. See
