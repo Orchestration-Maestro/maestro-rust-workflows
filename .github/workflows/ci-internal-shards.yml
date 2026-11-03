@@ -2063,7 +2063,7 @@ jobs:
           print('PASS the_shards_and_the_archive_build_report_their_work_units')
 
           def no_step_reports_flaky_passes_because_tests_never_retry():
-              assert 'FLAKY' not in workflow and '- name: Flaky test summary' not in workflow and '- name: Coverage flaky test summary' not in workflow
+              assert 'FLAKY' not in workflow and '- name: Flaky test summary' not in workflow and '- name: Coverage flaky test summary' not in workflow, 'a step parses FLAKY lines that no-retry runs never print'
 
           no_step_reports_flaky_passes_because_tests_never_retry()
           print('PASS no_step_reports_flaky_passes_because_tests_never_retry')
