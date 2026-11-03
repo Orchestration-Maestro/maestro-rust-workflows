@@ -13,6 +13,7 @@ root = pathlib.Path.cwd()
 default_ref = "format('refs/heads/{0}', github.event.repository.default_branch)"
 
 def evaluate(condition, values):
+    values = {'inputs.browser-only': False} | values
     expression = condition.removeprefix('$' + '{{').removesuffix('}}').strip()
     for key, value in values.items():
         expression = expression.replace(key, repr(value))
@@ -375,7 +376,7 @@ def browser_test_job_is_single_and_optional():
     job = jobs['browser-tests']
     assert "if: $" + "{{ needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true' }}" in job
     assert 'runs-on: $' + '{{ fromJSON(needs.declaration.outputs.linux_runner) }}' in job and 'matrix:' not in job
-    assert body('Browser test recipe').strip() == 'just browser-test'
+    assert body('Browser test recipe').strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-nextest.log"')
     assert 'mise exec' not in body('Browser test recipe')
     assert 'if:' not in job.split('- name: Browser test caller tools', 1)[1].split('- name:', 1)[0]
     assert job.index('run: *caller-tools') < job.index('name: Browser runtime tools') < job.index('name: Browser test recipe')
@@ -383,6 +384,123 @@ def browser_test_job_is_single_and_optional():
 
 browser_test_job_is_single_and_optional()
 print('PASS browser_test_job_is_single_and_optional')
+
+def manual_browser_proof_selects_only_existing_chromium_job():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    inputs = document['on']['workflow_call']['inputs']
+    assert inputs['browser-only']['type'] == 'boolean' and inputs['browser-only']['default'] is False
+    values = {
+        'inputs.browser-only': True, 'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
+        'inputs.warm-cache': False, 'inputs.working-directory': '.',
+        'github.repository_id': 'caller', 'github.event_name': 'workflow_dispatch',
+        'github.ref': 'refs/heads/main',
+        "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
+        'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.browser_tests': 'true',
+        'always()': True, 'cancelled()': False,
+    }
+    for name, job in document['jobs'].items():
+        condition = job['if']
+        assert evaluate(condition, values) == (name in ('declaration', 'browser-tests')), name
+    for name in ('declaration', 'browser-tests'):
+        job = document['jobs'][name]
+        checkout = next(step for step in job['steps'] if step['name'] == 'Checkout')
+        assert checkout['with']['ref'] == '${{ inputs.checkout-ref || github.sha }}'
+        assert checkout['with']['persist-credentials'] is False
+        assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
+    job = document['jobs']['browser-tests']
+    assert 'matrix' not in job.get('strategy', {})
+    assert job['runs-on'] == '${{ fromJSON(needs.declaration.outputs.linux_runner) }}'
+    for event, coverage, declared, warm, expected in [
+        ('workflow_dispatch', 'true', 'true', False, True),
+        ('workflow_dispatch', 'true', 'false', False, False),
+        ('pull_request', 'false', 'true', False, False),
+        ('merge_group', 'true', 'true', False, True),
+        ('push', 'true', 'true', False, True),
+        ('workflow_dispatch', 'true', 'true', True, False),
+    ]:
+        scenario = values | {'github.event_name': event, 'inputs.browser-only': False,
+                             'inputs.warm-cache': warm, 'needs.declaration.outputs.coverage': coverage,
+                             'needs.declaration.outputs.browser_tests': declared}
+        assert evaluate(job['if'], scenario) == expected, scenario
+    print('PASS manual_browser_proof_selects_only_existing_chromium_job', flush=True)
+
+
+manual_browser_proof_selects_only_existing_chromium_job()
+
+def browser_proof_recipe_preserves_failures_and_log():
+    import tomllib
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        bin_dir = directory / 'bin'
+        bin_dir.mkdir()
+        just = bin_dir / 'just'
+        just.write_text('#!/bin/sh\n[ "$#" = 1 ] && [ "$1" = browser-test ] || exit 23\nprintf "stdout evidence\\n"\nprintf "stderr evidence\\n" >&2\nprintf "%s" "${NEXTEST_PROFILE-unset}" > selected-profile\nexit "$RECIPE_STATUS"\n', encoding='utf-8')
+        just.chmod(0o755)
+        config = directory / '.config/nextest.toml'
+        original = '[profile.default]\nfail-fast = true\nslow-timeout = "30s"\n'
+        for manual, status in [('false', '0'), ('false', '17'), ('true', '0'), ('true', '17')]:
+            config.parent.mkdir(exist_ok=True)
+            config.write_text(original, encoding='utf-8')
+            result = execute('Browser test recipe', directory, {
+                'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
+                'BROWSER_ONLY': manual, 'RECIPE_STATUS': status, 'NEXTEST_PROFILE': None})
+            assert result.returncode == int(status), result.stdout + result.stderr
+            log = directory / 'browser-nextest.log'
+            assert log.read_text(encoding='utf-8') == 'stdout evidence\nstderr evidence\n'
+            selected = (directory / 'selected-profile').read_text(encoding='utf-8')
+            parsed = tomllib.loads(config.read_text(encoding='utf-8'))
+            assert parsed['profile']['default'] == {'fail-fast': True, 'slow-timeout': '30s'}
+            if manual == 'true':
+                assert parsed['profile'][selected]['fail-fast'] is False
+            else:
+                assert selected == 'unset' and config.read_text(encoding='utf-8') == original
+        config.unlink()
+        config.parent.rmdir()
+        result = execute('Browser test recipe', directory, {
+            'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
+            'BROWSER_ONLY': 'true', 'RECIPE_STATUS': '0', 'NEXTEST_PROFILE': None})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert tomllib.loads(config.read_text(encoding='utf-8'))['profile']['shared-ci-browser-proof']['fail-fast'] is False
+        for text in [config.read_text(encoding='utf-8'), 'broken [']:
+            config.write_text(text, encoding='utf-8')
+            (directory / 'selected-profile').unlink(missing_ok=True)
+            result = execute('Browser test recipe', directory, {
+                'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'RUNNER_TEMP': temporary,
+                'BROWSER_ONLY': 'true', 'RECIPE_STATUS': '0', 'NEXTEST_PROFILE': None})
+            assert result.returncode != 0 and not (directory / 'selected-profile').exists(), result.stderr
+            assert config.read_text(encoding='utf-8') == text
+    job = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))['jobs']['browser-tests']
+    recipe = next(step for step in job['steps'] if step['name'] == 'Browser test recipe')
+    assert recipe['env']['BROWSER_ONLY'] == '${{ inputs.browser-only }}'
+    upload = next(step for step in job['steps'] if step['name'] == 'Upload browser nextest log')
+    assert upload['if'] == "always() && (steps.browser-recipe.outcome == 'success' || steps.browser-recipe.outcome == 'failure')"
+    assert upload['with']['path'] == '${{ runner.temp }}/browser-nextest.log'
+    assert upload['with']['if-no-files-found'] == 'error'
+    print('PASS browser_proof_recipe_preserves_failures_and_log', flush=True)
+
+
+browser_proof_recipe_preserves_failures_and_log()
+
+
+def browser_proof_dispatch_example_reuses_workflow():
+    guide = (root / 'docs/caller-checks.md').read_text(encoding='utf-8')
+    example = 'name: Browser proof\n' + guide.split('name: Browser proof\n', 1)[1].split('```', 1)[0]
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=example, text=True))
+    assert set(document['on']) == {'workflow_dispatch'}
+    ref = document['on']['workflow_dispatch']['inputs']['ref']
+    assert ref['required'] is True and ref['type'] == 'string'
+    assert document['permissions'] == {'contents': 'read'}
+    assert set(document['jobs']) == {'browser'}
+    job = document['jobs']['browser']
+    assert job['uses'] == 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@RELEASE_COMMIT'
+    assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
+    assert job['with'] == {'browser-only': True, 'checkout-ref': '${{ inputs.ref }}', 'concurrency-key': 'browser-proof'}
+    assert 'secrets' not in job and 'steps' not in job
+    print('PASS browser_proof_dispatch_example_reuses_workflow', flush=True)
+
+
+browser_proof_dispatch_example_reuses_workflow()
+
 
 def browser_qualification_reuses_production_bodies():
     source = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
@@ -1204,7 +1322,7 @@ def warm_push_seeds_non_test_shapes():
             'Free instrumented build space': True, 'Tests': False, 'Search tools': True, 'Isolated tests': True}, enabled
     assert doctests['steps'] == document['jobs']['tests']['steps']
     assert doctests['env']['SHARD'] == document['jobs']['tests']['env']['SHARD']
-    assert next(step for step in document['jobs']['browser-tests']['steps'] if step.get('name') == 'Browser test recipe')['run'].strip() == 'just browser-test'
+    assert next(step for step in document['jobs']['browser-tests']['steps'] if step.get('name') == 'Browser test recipe')['run'].strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-nextest.log"')
 
 warm_push_seeds_non_test_shapes()
 print('PASS warm_push_seeds_non_test_shapes')
@@ -4058,7 +4176,7 @@ def workflow_failures_remain_required():
     assert "needs.declaration.outputs.coverage == 'true'" in document['jobs']['browser']['if']
     # Each scan mode runs only the declaration and its own job.
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-    assert "    if: $" + "{{ inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration'].split('    steps:', 1)[0]
+    assert "    if: $" + "{{ !inputs.browser-only && inputs.advisory-scan && !inputs.warm-cache }}\n" in jobs['advisories'] and 'advisory-scan' not in jobs['declaration'].split('    steps:', 1)[0]
     assert all('!inputs.advisory-scan && !inputs.fuzz-scan' in job.split('\n    steps:', 1)[0]
                for name, job in jobs.items() if name not in ('declaration', 'advisories', 'fuzz')), sorted(jobs)
 
