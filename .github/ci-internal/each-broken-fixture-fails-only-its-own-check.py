@@ -22,22 +22,30 @@ exec(compile(tree, 'workflow body resolver', 'exec'), resolver)
 body = cast(Callable[[str], str], resolver['body'])
 commands.insert(1, body('Lint'))
 
-def snapshot_only_transfers_fail_open():
-    count = 0
+def only_cache_housekeeping_fails_open():
+    transfers = ['Restore compile cache', 'Save compile cache', 'Restore test setup cache', 'Save test setup cache',
+                 'Test setup candidates', 'Download test setup candidates',
+                 'Restore Cargo git cache', 'Save Cargo git cache']
+    transferred = pruned = 0
     for step in re.split(r'^      - name: ', workflow, flags=re.M)[1:]:
-        if re.search(r'^        continue-on-error:', step, re.M):
-            assert step.splitlines()[0] in ['Restore compile cache', 'Save compile cache', 'Restore test setup cache', 'Save test setup cache',
-                                           'Test setup candidates', 'Download test setup candidates',
-                                           'Restore Cargo git cache', 'Save Cargo git cache']
+        if not re.search(r'^        continue-on-error:', step, re.M):
+            continue
+        name = step.splitlines()[0]
+        if name == 'Prune superseded caches':
+            # Pruning runs after the build, so a failed deletion costs a superseded entry and never a check.
+            pruned += 1
+        else:
+            assert name in transfers, name
             # The candidate steps are transfers of earlier runs' bundles; a failed lookup or download leaves the restored bundle as the only base.
-            assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M) or step.startswith(('Test setup candidates', 'Download test setup candidates'))
-            assert '        continue-on-error: true\n' in step
-            count += 1
-    assert count == 31
+            assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M) or name in ('Test setup candidates', 'Download test setup candidates'), name
+            transferred += 1
+        assert '        continue-on-error: true\n' in step
+    assert transferred == 31
+    assert pruned == 1
     assert not re.search(r'^    continue-on-error:', workflow, re.M)
 
-snapshot_only_transfers_fail_open()
-print('PASS snapshot_only_transfers_fail_open')
+only_cache_housekeeping_fails_open()
+print('PASS only_cache_housekeeping_fails_open')
 assert '|| true' not in workflow
 for step in workflow.split('      - name:')[1:]:
     if any(f'run: {command}\n' in step for command in commands[:3]):

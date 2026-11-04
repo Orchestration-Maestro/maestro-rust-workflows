@@ -1565,11 +1565,14 @@ jobs:
                   return [{'key': f'maestro-compile-v1-{n:064x}-{identifier}-1-docs-0-abc', 'ref': 'refs/heads/main', 'size_in_bytes': 1} for n in range(count)]
               run = run_of(7, 30, event='push')
               assert judging['snapshot_finding'](run, jobs, entries(3)) is None
-              # Entries of other runs are not this run's.
+              # Entries of earlier runs are not this run's.
               finding = judging['snapshot_finding'](run, jobs, entries(2) + entries(5, 6))
               assert finding['title'] == title and finding['comment'] and finding['labels'] == ['escalation'], finding
               assert 'Run: https://example.test/runs/7' in finding['body'], finding
-              assert '- 3 jobs reported a saved snapshot but the repository cache holds 2 for this run' in finding['body'], finding
+              assert '- 3 jobs reported a saved snapshot but the repository cache holds 2 for this run or a newer one' in finding['body'], finding
+              # A newer run's entry for the same job replaces this run's, and the pruning job deletes the older one.
+              assert judging['snapshot_finding'](run, jobs, entries(1) + entries(3, 8)) is None
+              assert judging['snapshot_finding'](run, jobs, entries(1) + entries(2, 8)) is not None
               # A run whose compile jobs all skipped the save step saved nothing at all.
               unsaved = [job(name, 5, identifier=index + 1, steps=statistics) for index, name in enumerate(saving)]
               finding = judging['snapshot_finding'](run, unsaved, [])

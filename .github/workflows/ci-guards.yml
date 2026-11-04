@@ -316,11 +316,16 @@ jobs:
               """A default-branch run that left compile snapshots unsaved: saves reported without a cache entry, none saved at all, or jobs cancelled before theirs."""
               measuring = [job for job in jobs if reached(job, 'Compile cache statistics')]
               saving = [job for job in jobs if reached(job, 'Save compile cache')]
-              stored = [cache for cache in caches if re.search(rf"-[0-9a-f]{{64}}-{run['id']}-\d+-", cache['key'])]
+              # A newer run's snapshot of the same shape and job replaces this run's, which the pruning job then deletes.
+              stored = set()
+              for cache in caches:
+                  held = re.fullmatch(r'(.*-[0-9a-f]{64}-)(\d+)-\d+-(.*)', cache['key'])
+                  if held and int(held[2]) >= run['id']:
+                      stored.add(held[1] + held[3])
               unfinished = [job['name'] for job in jobs if job.get('conclusion') == 'cancelled']
               lines = []
               if len(stored) < len(saving):
-                  lines.append(f'- {len(saving)} jobs reported a saved snapshot but the repository cache holds {len(stored)} for this run')
+                  lines.append(f'- {len(saving)} jobs reported a saved snapshot but the repository cache holds {len(stored)} for this run or a newer one')
               if measuring and not saving:
                   lines.append(f'- {len(measuring)} jobs measured their compile cache but none saved a snapshot')
               if unfinished:

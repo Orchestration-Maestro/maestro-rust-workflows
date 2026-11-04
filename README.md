@@ -143,9 +143,15 @@ cap skip saving. The archive contains compiler objects, never `target/`,
 registry sources, credentials or diagnostics. Compressed archive bytes are a
 separate measurement. This per-save bound does not bound the repository's 10 GB
 allowance: seven 1-GiB shapes and the setup shape allow 9,126,805,504 bytes of
-objects, and two generations 18,253,611,008 bytes, before targets and
-preprocessor entries. GitHub evicts by last access, so even a shape's only seed
-can disappear and cause a cold build.
+objects, before targets and preprocessor entries. After each job that saves a
+cache on a default-branch push, a pruning job keeps only the newest entry of each
+compile, Cargo git and test setup prefix, the entry a restore reads, so the
+repository holds one generation. Pruning jobs are the only jobs that hold
+`actions: write`, and they run no caller code; callers grant that permission to
+the reusable call. See
+[One entry per prefix](docs/caller-checks.md#one-entry-per-prefix). GitHub evicts by
+last access, so a shape's only seed can still disappear when other caches fill
+the allowance.
 The optional warmer is not a required consumer check. Merging this workflow
 does not release it or change consumer pins.
 
