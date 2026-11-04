@@ -16,7 +16,7 @@ jobs:
       contents: read
       actions: read
     name: Maestro main
-    uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@76b0ea5609eb332ca30e63e3aadddae810c39dfe # v0.19.14
+    uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@b664d8fac5bc97049cb9fcfbfe720f285bb534ec # v0.19.15
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
