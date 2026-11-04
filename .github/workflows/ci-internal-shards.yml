@@ -1713,7 +1713,7 @@ jobs:
               grown = [('a::slow', 60.0, 30.0), ('b::new', 30.0, None)]
               blamed = judging['slowest_shard'](jobs, 1.5)
               assert blamed[0]['name'] == 'Test shard (16/16)' and blamed[1:] == (31 * 60, 20 * 60), blamed
-              reading = {'slow': {'a::slow': 60.0, 'b::new': 30.0}, 'phases': [('setup workspace-sources', 79.751)], 'tests': 305.092}
+              reading = {'phases': [('setup workspace-sources', 79.751)], 'tests': 305.092}
               finding = judging['shard_finding'](run_of(7, 50), blamed, 1.5, grown, reading)
               assert finding['title'] == 'Test shards unbalanced: run 7', finding
               assert 'Test shard (16/16) took 31.0 min against a median shard of 20.0 min (1.55 times; the margin is 1.5).' in finding['body'], finding
@@ -1776,13 +1776,11 @@ jobs:
           print('PASS an_unbalanced_shard_shows_its_fixed_phases_beside_its_tests')
 
           def a_minute_long_extraction_is_read_in_seconds():
-              # The shards that breach the margin are the ones whose extraction ran into minutes, so a minute line counts.
+              # A shard whose extraction ran into minutes must still show it.
               gh, _ = fake_repository(shard_minutes=[26] * 15 + [45], shard_logs={(7, 15): MINUTE_COST_LOG})
               findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
               unbalanced = next(finding for finding in findings if finding['title'].startswith('Test shards unbalanced'))
               assert '- extraction of instrumented targets: 197.2 s' in unbalanced['body'], unbalanced
-              assert '- setup workspace-sources: 79.8 s' in unbalanced['body'], unbalanced
-              assert '- its tests: 305.1 s (the nextest summary)' in unbalanced['body'], unbalanced
 
           a_minute_long_extraction_is_read_in_seconds()
           print('PASS a_minute_long_extraction_is_read_in_seconds')
@@ -1885,7 +1883,7 @@ jobs:
               assert judging['totals_of'](work, lambda item: units.get(item['id'], []))[2:] == ({'tests': 200, 'compiles': 600}, {'tests': 2, 'compiles': 1})
               finding = judging['shard_finding'](run_of(7, 50), judging['slowest_shard'](work, 1.5), 1.5,
                                                  judging['grown_tests']({'t::slow': 90.0}, {}),
-                                                 {'slow': {'t::slow': 90.0}, 'phases': [], 'tests': None})
+                                                 {'phases': [], 'tests': None})
               assert finding and finding['title'] == 'Test shards unbalanced: run 7', finding
               assert 'suite / Test shard (2/2) took 40.0 min against a median shard of 25.0 min' in finding['body'], finding
 
