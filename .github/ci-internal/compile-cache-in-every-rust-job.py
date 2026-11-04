@@ -54,6 +54,17 @@ def snapshot_jobs_share_one_owner():
 snapshot_jobs_share_one_owner()
 print('PASS snapshot_jobs_share_one_owner')
 
+def prunes_on(condition, event, ref):
+    # GitHub's substitutions in one job condition, so the routing is read from behaviour, not from the text.
+    values = {'github.event_name': event, 'github.ref': ref, 'github.event.repository.default_branch': 'main'}
+    expression = condition.removeprefix('$' + '{{').removesuffix('}}').strip()
+    for key, value in values.items():
+        expression = expression.replace(key, repr(value))
+    expression = expression.replace("format('refs/heads/{0}', 'main')", repr('refs/heads/main'))
+    atoms = [atom.split(' == ') for atom in expression.split(' && ')]
+    assert all(len(atom) == 2 for atom in atoms), condition
+    return all(left.strip() == right.strip() for left, right in atoms)
+
 def every_cache_writer_has_one_pruner_without_caller_code():
     import json
     import subprocess
@@ -67,7 +78,12 @@ def every_cache_writer_has_one_pruner_without_caller_code():
     steps = next(iter(pruners.values()))['steps']
     for name, job in pruners.items():
         assert job['permissions'] == {'actions': 'write'}, name
-        assert job['if'] == "${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}", name
+        # Only a default-branch push prunes: the write grant never reaches a pull request, a merge group or another branch.
+        prunes = [(event, ref) for event, ref in [('push', 'refs/heads/main'), ('push', 'refs/heads/topic'),
+                                                 ('pull_request', 'refs/pull/363/merge'),
+                                                 ('merge_group', 'refs/heads/main')]
+                  if prunes_on(job['if'], event, ref)]
+        assert prunes == [('push', 'refs/heads/main')], (name, prunes)
         assert job['runs-on'] == 'ubuntu-latest', name
         # No checkout and no action: the job holding the write token never runs caller code.
         assert job['steps'] == steps and [step['name'] for step in steps] == ['Runner hardware', 'Prune superseded caches'], name

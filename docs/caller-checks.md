@@ -362,7 +362,9 @@ reports. Pull requests run no test shards and upload no coverage.
 Declared callers run `cargo llvm-cov nextest` in the same isolated environment
 with their opted-in tools. Only the numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
-including `Doctests`, to succeed on full runs. On pull requests it requires a
+including `Doctests`, to succeed on full runs. On a main push that reuses
+merge-queue tests it requires skipped test shards and a successful `Doctests`
+leg. On pull requests it requires a
 successful declaration and skipped test and doctest jobs, regardless of package
 selection. On full runs it downloads all reports, counts each source line once
 (covered if any shard hits it), and enforces `coverage_min_lines` on the union.
@@ -850,7 +852,9 @@ Explicit Bash run defaults preserve runner failures through log capture. A faile
 runner fails its test step, so coverage uploads run only after success; a missing
 report after success fails the upload separately. On full runs the required aggregate accepts
 only successful matrix legs, including `Doctests`, and requires one report per
-numeric shard when merging coverage. On pull requests the aggregate requires a
+numeric shard when merging coverage. On a main push that reuses merge-queue
+tests the shards are skipped and the aggregate still requires a successful
+`Doctests` leg. On pull requests the aggregate requires a
 successful declaration and skipped test and doctest jobs.
 
 The original home and auth file are never read, moved or modified. Only the
