@@ -1309,7 +1309,15 @@ jobs:
 
 The listener passes default-branch pushes as well as merge groups, because those
 runs save the compile snapshots every other run restores, and it passes a
-cancelled one too: a cancelled seeding run is a finding, not silence.
+cancelled one too: a cancelled seeding run is a finding, not silence. A
+default-branch push that calls the shared suite through one reusable job is
+judged too. GitHub titles its jobs `<calling job> / <shared job>`, and the
+guards match every job against a pinned name after the last ` / `, so
+`suite / Caller declaration` counts as `Caller declaration`. The reuse,
+required-checks, time-per-unit, shard-balance and slow-test guards read the
+prefixed names, and the run keeps the test legs it skipped when the `Reuse
+merge queue tests` step in `Caller declaration` succeeded, like a run without
+a prefix.
 
 Pin the reference to a reviewed commit and list the listener workflow in
 `privileged_trigger_workflows`, as for the post-landing reporter. Issues are
@@ -1542,8 +1550,11 @@ For a full merge-group or main run, `ci-guards.yml` pins the jobs that must run:
 `Caller declaration`, `Format and lint`, `Docs`, `Build test archive`, the
 `Test shard` jobs, `Doctests`, `Tests (ubuntu-latest)` and `Dependency, source
 and coverage checks`. A pinned job that is missing or skipped files "Required
-checks missing from run N" naming it. A failed job is not a missing one; the run
-already reports it. The self-test checks every pinned name against `ci.yml`,
+checks missing: the missing checks by name". The title carries the set of
+missing checks, never the run id, so a check set that stays missing across
+landings is one issue, not one per landing; each body names the judged run. A
+failed job is not a missing one; the run already reports it. The self-test
+checks every pinned name against `ci.yml`,
 and checks that this repository's ruleset checks, `Required repository quality`
 and `Required consumer tests`, still exist, so renaming a job fails there first.
 When you rename a job on purpose, change the pin and the ruleset in one change.

@@ -1708,14 +1708,15 @@ jobs:
               renamed = [item for item in ran if item['name'] != 'Docs'] + [job('Documentation', 5)]
               skipped = [dict(item, conclusion='skipped') if item['name'] == 'Format and lint' else item for item in renamed]
               finding = judging['required_finding'](run_of(7, 39), skipped, pinned)
-              assert finding['title'] == 'Required checks missing from run 7', finding
+              assert finding['title'] == 'Required checks missing: Format and lint, Docs', finding
               assert '`Docs`, `Format and lint`' in finding['body'] or '`Format and lint`, `Docs`' in finding['body'], finding
               assert 'Test shard' not in finding['body'], finding
               failing = [dict(item, conclusion='failure') for item in ran]
               assert judging['required_finding'](run_of(7, 39), failing, pinned) is None
               gh, _ = fake_repository(required=['Caller declaration', 'Docs'])
               titles = [item['title'] for item in judging['judge']('7', 'owner/repo', gh, SETTINGS)]
-              assert titles == ['Required checks missing from run 7'], titles
+              assert titles == ['Required checks missing: Format and lint, Build test archive, Doctests, '
+                                'Tests (ubuntu-latest), Dependency, source and coverage checks'], titles
               gh, _ = fake_repository(required=['Caller declaration', 'Docs'], event='pull_request')
               assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
 
@@ -1758,6 +1759,48 @@ jobs:
 
           reused_main_tests_keep_the_other_required_checks()
           print('PASS reused_main_tests_keep_the_other_required_checks')
+
+          def a_run_behind_one_reusable_caller_prefix_satisfies_every_pinned_check():
+              # Recorded shapes of one landing (merge group 41741422486, main push 41741421981): the merge group titles
+              # every job exactly as pinned, and the main push calls the suite through a reusable job, so every name is
+              # prefixed by the caller's `suite` job and a matrix-expression job keeps its raw `name:` text.
+              pinned = SETTINGS['required']
+              queue = [job(name, 5, identifier=index + 1) for index, name in enumerate(
+                  ['Caller declaration', 'Format and lint', 'Docs', 'Build test archive', 'Doctests',
+                   'Test shard (1/32)', 'Test shard (2/32)', 'Tests (ubuntu-latest)', 'Dependency, source and coverage checks'])]
+              assert judging['required_finding'](run_of(7, 39, event='merge_group'), queue, pinned) is None
+              sharded = ("suite / inputs.warm-cache && 'Warm coverage cache' || matrix.shard == 'doctests' && 'Doctests' "
+                         "|| format('Test shard ({0}/{1})', matrix.shard, needs.declaration.outputs.test_shard_count)")
+              doctests = "suite / matrix.shard == 'doctests' && 'Doctests'"
+              def suite(reused):
+                  saved = ['suite / Format and lint', 'suite / Docs', 'suite / Build test archive',
+                           'suite / Tests (ubuntu-latest)', 'suite / Dependency, source and coverage checks']
+                  return [job('suite / Caller declaration', 1, identifier=1, steps=[('Reuse merge queue tests', 1)] if reused else [])] \
+                      + [job(name, 5, identifier=index + 2) for index, name in enumerate(saved)] \
+                      + [job(sharded, 0, 'skipped', identifier=8), job(doctests, 0, 'skipped', identifier=9)]
+              pushed = run_of(7, 39, event='push')
+              assert judging['reuses_tests'](pushed, suite(True)) and not judging['reuses_tests'](pushed, suite(False))
+              assert judging['required_finding'](pushed, suite(True), pinned) is None
+              missing = judging['required_finding'](pushed, suite(False), pinned)
+              assert 'Test shard (*' in missing['title'] and 'Doctests' in missing['title'], missing
+              # The title is the set of missing checks, never the run id: a listener files one issue, not one per landing.
+              assert judging['required_finding'](run_of(9, 39, event='push'), suite(False), pinned)['title'] == missing['title']
+              # The time-per-unit, shard-balance and slow-test guards read prefixed job names too.
+              assert judging['kind_of']('suite / Test shard (1/16)') == 'tests' and judging['kind_of']('suite / Build test archive') == 'compiles'
+              assert judging['kind_of']('Docs') is None and judging['kind_of']('suite / Docs') is None
+              assert judging['rated']('suite / Build test archive') and judging['rated']('suite / Test shard (1/16)')
+              assert not judging['rated']('suite / Test shard (1/16) / Download archive') and not judging['rated']('suite / Docs')
+              work = [job('suite / Test shard (1/2)', 10, identifier=1, steps=[('Tests', 600)]),
+                      job('suite / Test shard (2/2)', 40, identifier=2, steps=[('Tests', 600)]),
+                      job('suite / Build test archive', 5, identifier=3)]
+              units = {1: work_units('tests: 100'), 2: work_units('tests: 100'), 3: work_units('compiles: 600; hit-rate: 99.5')}
+              assert judging['totals_of'](work, lambda item: units.get(item['id'], []))[2:] == ({'tests': 200, 'compiles': 600}, {'tests': 2, 'compiles': 1})
+              finding = judging['shard_finding'](run_of(7, 50), work, 1.5, judging['grown_tests']({'t::slow': 90.0}, {}))
+              assert finding and finding['title'] == 'Test shards unbalanced: run 7', finding
+              assert 'suite / Test shard (2/2) took 40.0 min against a median shard of 25.0 min' in finding['body'], finding
+
+          a_run_behind_one_reusable_caller_prefix_satisfies_every_pinned_check()
+          print('PASS a_run_behind_one_reusable_caller_prefix_satisfies_every_pinned_check')
 
           def selection_rows(*shares):
               return [(identifier, selected, 51, trigger) for identifier, (selected, trigger) in enumerate(shares, 1)]
@@ -2175,6 +2218,9 @@ jobs:
               budget = guide.split('Source: no rate is fixed in advance', 1)[1].split('### Compile-cache hit-rate floor', 1)[0]
               assert 'cache usage' in budget and 'storage limit' in budget and 'cache list' in budget and 'floor annotations' in budget, 'the call budget counts the cache reads'
               assert "github.event.workflow_run.event == 'push'" in guide and "github.event.workflow_run.event == 'merge_group'" in guide
+              # The missing-checks title is the set of checks, never the run id, and push runs behind one reusable caller's prefix stay judged.
+              assert '"Required checks missing: ' in guide and 'missing from run' not in guide, 'the title is the set, not the run'
+              assert '`suite / Caller declaration`' in guide and 'Reuse merge queue tests` step in `Caller declaration`' in guide, guide
 
           required_checks_and_documented_defaults_stay_pinned()
           print('PASS required_checks_and_documented_defaults_stay_pinned')

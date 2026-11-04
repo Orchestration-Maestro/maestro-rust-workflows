@@ -188,14 +188,22 @@ jobs:
           # The steps of a test shard that run the tests: the only seconds of a shard that count as test work.
           TEST_STEPS = ('Tests', 'Isolated tests')
 
+          def bare(name):
+              """A job name with one reusable caller's prefix removed (`suite / Docs` reads as `Docs`); the segment after the last ` / `."""
+              return name.rpartition(' / ')[2]
+
           def kind_of(name):
-              """The kind of work a job name measures, None for any other job."""
+              """The kind of work a job name measures, None for any other job; a reusable caller's prefix is not part of the name."""
+              name = bare(name)
               return next((kind for kind, (measuring, _, _) in WORK.items() if name.startswith(measuring)), None)
 
           def rated(name):
               """Whether the rate finding already judges the seconds of a timing: the archive build, a shard job and the step of a shard that runs its tests.
               Any other step of a shard is judged for growth like a step of any job; a download there is transfer, never test work."""
               job, _, step = name.partition(' / ')
+              if step and kind_of(job) is None and kind_of(step) is not None:
+                  # The first segments held a reusable caller's prefix, so the whole name is one job, never a job-step timing.
+                  job, step = bare(name), None
               return kind_of(job) == 'compiles' or (kind_of(job) == 'tests' and (not step or step in TEST_STEPS))
 
           RATCHET_TITLE = 'CI time ratchet'
@@ -527,18 +535,19 @@ jobs:
 
           def reuses_tests(run, jobs):
               """A main push whose declaration confirmed reuse of this exact commit's merge-queue tests."""
-              return seeds(run) and any(job['name'] == 'Caller declaration' and reached(job, 'Reuse merge queue tests') for job in jobs)
+              return seeds(run) and any(bare(job['name']) == 'Caller declaration' and reached(job, 'Reuse merge queue tests') for job in jobs)
 
           def required_finding(run, jobs, pinned):
-              """Pinned jobs that did not run at all, so a renamed or removed gate cannot pass silently."""
+              """Pinned jobs that did not run at all, so a renamed or removed gate cannot pass silently.
+              The title is the set of missing checks, never the run id, so a listener files one issue, not one per landing."""
               if reuses_tests(run, jobs):
                   pinned = [name for name in pinned if name not in ('Test shard (*', 'Doctests')]
-              ran = [job['name'] for job in jobs if job.get('conclusion') in ('success', 'failure')]
+              ran = [bare(job['name']) for job in jobs if job.get('conclusion') in ('success', 'failure')]
               missing = [name for name in pinned if not any(
                   job.startswith(name[:-1]) if name.endswith('*') else job == name for job in ran)]
               if not missing:
                   return None
-              return {'title': f"Required checks missing from run {run['id']}",
+              return {'title': 'Required checks missing: ' + ', '.join(missing),
                       'body': f"Run: {run['html_url']}\nThese pinned jobs did not run: " + ', '.join(f'`{name}`' for name in missing) +
                               '.\nA job was renamed, removed or skipped; restore it or update the pinned list.\n'}
 
