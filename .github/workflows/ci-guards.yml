@@ -27,6 +27,10 @@ on:
         description: Longest kill time a nextest override may declare without an open issue
         type: number
         default: 120
+      cache-storage-limit-gib:
+        description: The repository's Actions cache storage limit in GiB, as its Actions settings show it; the job token cannot read that setting
+        type: number
+        default: 10
       nextest-config:
         description: Path of the caller's nextest configuration
         type: string
@@ -146,6 +150,7 @@ jobs:
           SELECTION_CEILING: ${{ inputs.selection-share-ceiling-percent }}
           SHARD_MARGIN: ${{ inputs.shard-balance-margin }}
           SLOW_SECONDS: ${{ inputs.slow-test-seconds }}
+          CACHE_STORAGE_LIMIT_GIB: ${{ inputs.cache-storage-limit-gib }}
           # Jobs a full run must execute; a trailing * matches a name prefix.
           REQUIRED_CHECKS: >-
             ["Caller declaration", "Format and lint", "Docs", "Build test archive", "Test shard (*",
@@ -330,6 +335,13 @@ jobs:
               return {'title': 'Escalation: default-branch run did not seed its compile snapshots', 'comment': True, 'labels': ['escalation'],
                       'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
                               'What departed from one saved snapshot per seeded shape:\n' + '\n'.join(lines) + '\n'}
+
+          def storage_limit(declared):
+              """The declared cache storage limit in GiB; GitHub answers the job token's read of the setting with 403, so the caller states it."""
+              limit = float(declared or 0)
+              if not limit > 0:
+                  raise ValueError(f'cache-storage-limit-gib must be the repository cache storage limit in GiB, a positive number, not {declared!r}')
+              return limit
 
           def usage_finding(run, usage, limit_gb, caches):
               """The repository cache over 90% of its storage limit, with its largest entries by ref."""
@@ -617,7 +629,7 @@ jobs:
               if run['status'] != 'completed':
                   return []
               jobs = jobs_of(run['id'])
-              usage, limit = api('actions/cache/usage'), api('actions/cache/storage-limit')['max_cache_size_gb']
+              usage, limit = api('actions/cache/usage'), settings['cache_limit']
               findings = [usage_finding(run, usage, limit, [])]
               if findings[0]:
                   findings = [usage_finding(run, usage, limit, caches_of('sort=size_in_bytes&direction=desc&per_page=100'))]
@@ -689,11 +701,12 @@ jobs:
                   if result.returncode:
                       raise RuntimeError(f'gh {argv[0]} {argv[1]} failed: {result.stderr.strip()}')
                   return result.stdout
-              settings = {'window': int(float(os.environ['SELECTION_WINDOW'])),
-                          'ceiling': float(os.environ['SELECTION_CEILING']), 'margin': float(os.environ['SHARD_MARGIN']),
-                          'slow': float(os.environ['SLOW_SECONDS']), 'required': json.loads(os.environ['REQUIRED_CHECKS'])}
               repository = os.environ['REPOSITORY']
               try:
+                  settings = {'window': int(float(os.environ['SELECTION_WINDOW'])),
+                              'ceiling': float(os.environ['SELECTION_CEILING']), 'margin': float(os.environ['SHARD_MARGIN']),
+                              'slow': float(os.environ['SLOW_SECONDS']), 'cache_limit': storage_limit(os.environ['CACHE_STORAGE_LIMIT_GIB']),
+                              'required': json.loads(os.environ['REQUIRED_CHECKS'])}
                   findings = judge(os.environ['RUN_ID'], repository, gh, settings) if os.environ['RUN_ID'] else []
                   filed = file_issues(findings, repository, gh)
               except (RuntimeError, KeyError, ValueError, OSError) as error:
