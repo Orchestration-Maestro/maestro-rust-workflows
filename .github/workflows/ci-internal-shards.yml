@@ -1306,7 +1306,8 @@ jobs:
                       counts['usage'] += 1
                       return json.dumps({'active_caches_size_in_bytes': int(usage_gb * 1024**3), 'active_caches_count': len(stored)})
                   if re.search(r'actions/cache/storage-limit$', text):
-                      return json.dumps({'max_cache_size_gb': 10})
+                      # GitHub refuses the job token this read although it holds Actions read (Maestro run 41873062666).
+                      raise RuntimeError(f'gh {argv[0]} {argv[1]} failed: gh: Resource not accessible by integration (HTTP 403)')
                   if m := re.search(r'actions/caches\?(\S+)', text):
                       counts['caches'] += 1
                       listed = [item for item in stored if 'ref=' not in m[1] or f"ref={item['ref']}" in m[1]]
@@ -1345,7 +1346,7 @@ jobs:
           def stored_ratchet(levels):
               return {'body': 'The guards keep the lowest median rate of each level here.\n\n```json\n' + json.dumps({'levels': levels}) + '\n```\n'}
 
-          SETTINGS = {'window': 5, 'ceiling': 25.0, 'margin': 1.5, 'slow': 30.0, 'required': [
+          SETTINGS = {'window': 5, 'ceiling': 25.0, 'margin': 1.5, 'slow': 30.0, 'cache_limit': 10.0, 'required': [
               'Caller declaration', 'Format and lint', 'Docs', 'Build test archive', 'Test shard (*', 'Doctests',
               'Tests (ubuntu-latest)', 'Dependency, source and coverage checks']}
 
@@ -1632,6 +1633,38 @@ jobs:
 
           the_repository_cache_over_90_percent_of_its_limit_files_an_issue()
           print('PASS the_repository_cache_over_90_percent_of_its_limit_files_an_issue')
+
+          def the_cache_limit_is_the_declared_one_since_the_job_token_cannot_read_it():
+              # The fake repository answers the storage-limit read with the job token's 403, so a judge that reads it fails here.
+              gh, _ = fake_repository(usage_gb=11.66, ratchet={})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS | {'cache_limit': 12.0})
+              assert [item['title'] for item in findings] == ['Repository cache above 90% of its limit'], findings
+              assert 'against its 12 GiB limit (97.2%)' in findings[0]['body'], findings
+              gh, _ = fake_repository(usage_gb=11.66, ratchet={})
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS | {'cache_limit': 13.0}) == []
+
+          the_cache_limit_is_the_declared_one_since_the_job_token_cannot_read_it()
+          print('PASS the_cache_limit_is_the_declared_one_since_the_job_token_cannot_read_it')
+
+          def judging_fails_before_any_read_without_a_positive_cache_limit():
+              with tempfile.TemporaryDirectory() as temporary:
+                  directory = pathlib.Path(temporary)
+                  (directory / 'bin').mkdir()
+                  fake = directory / 'bin/gh'
+                  fake.write_text('#!/bin/sh\necho "gh called: $*" >&2\nexit 1\n', encoding='utf-8')
+                  fake.chmod(0o755)
+                  env = os.environ | {'PATH': f"{directory / 'bin'}:{os.environ['PATH']}", 'REPOSITORY': 'owner/repo', 'RUN_ID': '7',
+                                      'SELECTION_WINDOW': '10', 'SELECTION_CEILING': '25', 'SHARD_MARGIN': '1.5', 'SLOW_SECONDS': '30',
+                                      'REQUIRED_CHECKS': '[]'}
+                  for declared in ('', '0', '-10'):
+                      result = subprocess.run(['python3', '-c', body('Judge the run', guards)], env=env | {'CACHE_STORAGE_LIMIT_GIB': declared},
+                                              cwd=directory, capture_output=True, text=True)
+                      assert result.returncode == 1, (declared, result.stdout + result.stderr)
+                      assert ('CI guards failed: cache-storage-limit-gib must be the repository cache storage limit in GiB, '
+                              f'a positive number, not {declared!r}') in result.stderr, (declared, result.stderr)
+
+          judging_fails_before_any_read_without_a_positive_cache_limit()
+          print('PASS judging_fails_before_any_read_without_a_positive_cache_limit')
 
           SLOW_LOG = '\n'.join([
               '2026-10-30T02:48:22.6648967Z         SLOW [> 30.000s] (─────────) maestro-tooling::integration browser_author_build::repairs',
@@ -2213,12 +2246,12 @@ jobs:
                   assert cause in floor, cause
               snapshots = guide.split('### Compile snapshots and cache usage', 1)[1].split('### Selection check', 1)[0]
               for text in ['Escalation: default-branch run did not seed its compile snapshots', 'Repository cache above 90% of its limit', 'cancelled',
-                           '`actions/cache/usage`', 'storage-limit', '10,928,201,953 bytes', '10.18 GiB', '40369902252', '10 GiB', 'evicts the oldest snapshots']:
+                           '`actions/cache/usage`', '`cache-storage-limit-gib`', '10,928,201,953 bytes', '10.18 GiB', '40369902252', '10 GiB',
+                           'evicts the oldest snapshots']:
                   assert text in snapshots, text
               assert 'GB' not in snapshots.replace('GiB', ''), 'one unit, GiB, as the finding prints'
-              assert 'at 90% of the storage limit the API reports' in snapshots, 'the threshold and its reason'
               budget = guide.split('Source: no rate is fixed in advance', 1)[1].split('### Compile-cache hit-rate floor', 1)[0]
-              assert 'cache usage' in budget and 'storage limit' in budget and 'cache list' in budget and 'floor annotations' in budget, 'the call budget counts the cache reads'
+              assert 'cache usage' in budget and 'storage limit' not in budget and 'cache list' in budget and 'floor annotations' in budget, 'the call budget counts the cache reads'
               assert "github.event.workflow_run.event == 'push'" in guide and "github.event.workflow_run.event == 'merge_group'" in guide
 
           required_checks_and_documented_defaults_stay_pinned()
