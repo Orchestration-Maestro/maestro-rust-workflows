@@ -44,11 +44,11 @@ run every workspace test with the full shard matrix, doctests, coverage and all
 declared builds and foreign-target checks, except that a main push reuses tests
 when its exact commit already passed a completed merge-group run of the same
 shared workflow revision with the full workspace selected. That push skips the
-test shards, doctests, coverage and Chromium browser tests. The archive,
-preparation and Wasm and browser build jobs still compile and save their
-compiled-cache snapshots for the next merge group; the wasm and browser build
-runs no tests. The archive keeps the same instrumentation and cache shape as
-that group.
+test shards and coverage. The archive, preparation, Doctests, Wasm and browser
+build and Chromium browser tests jobs still run and save their compiled-cache
+snapshots for the next merge group, so doctests and browser tests run a second
+time on that commit. The archive keeps the same instrumentation and cache shape
+as that group.
 Formatting, lint, docs, dependency/source checks and target checks still run.
 No caller setting changes this policy.
 
@@ -382,8 +382,8 @@ workspace's unit and integration tests with `cargo nextest archive` (or
 Numeric shards download that archive and run `--archive-file`, keeping the same
 partitions and coverage reports. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
-runs doctests once on every merge group and on main pushes that do not reuse
-merge-queue tests, without waiting for the archive build.
+runs doctests once on every merge group and main push, without waiting for the
+archive build.
 Warm-cache runs keep their existing compile route and cache shape.
 
 Both archive commands pass `--timings` to Cargo. Download the

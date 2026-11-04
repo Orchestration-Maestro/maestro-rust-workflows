@@ -433,7 +433,7 @@ def manual_browser_proof_selects_only_existing_chromium_job():
         'github.ref': 'refs/heads/main',
         "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
         'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.browser_tests': 'true',
-        'always()': True, 'cancelled()': False,
+        'needs.declaration.outputs.tests_reused': '', 'always()': True, 'cancelled()': False,
     }
     for name, job in document['jobs'].items():
         condition = job['if']
@@ -3543,13 +3543,12 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 'needs.declaration.outputs.test_prepare_inputs': '[]', 'needs.declaration.outputs.test_prepare': '"prepare"',
                 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                 'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True}
-            for job in ['test-build', 'test-prepare', 'browser']:
+            for job in ['test-build', 'test-prepare', 'browser', 'doctests', 'browser-tests']:
                 assert evaluate(document['jobs'][job]['if'], conditions), (name, job, 'main must seed compiled objects')
             for job, upload in [('test-build', 'Upload test archive'), ('test-prepare', 'Upload test setup')]:
                 step = next(step for step in document['jobs'][job]['steps'] if step['name'] == upload)
                 assert bool(evaluate(step.get('if', 'True'), conditions)) == (not reused), (name, upload)
-            for job in ['tests', 'doctests', 'browser-tests']:
-                assert bool(evaluate(document['jobs'][job]['if'], conditions)) == (not reused), (name, job)
+            assert bool(evaluate(document['jobs']['tests']['if'], conditions)) == (not reused), name
             archive = document['jobs']['test-build']
             assert evaluate(archive['env']['COLLECT_COVERAGE'], conditions), 'main must build instrumented objects'
             identity = next(step for step in archive['steps'] if step['name'] == 'Compile cache identity')
@@ -3558,11 +3557,14 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 warm = conditions | {'inputs.warm-cache': True, 'needs.declaration.outputs.coverage': 'true',
                                      'needs.declaration.outputs.targets': '["windows"]'}
                 assert evaluate(document['jobs'][job]['if'], warm), job
-            result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                env=os.environ | {'DECLARATION_RESULT': 'success', 'COLLECT_COVERAGE': selected['coverage'],
-                                  'RESULT': 'skipped' if reused else 'success', 'DOCTEST_RESULT': 'skipped' if reused else 'success'},
-                capture_output=True, text=True)
-            assert result.returncode == 0, result.stderr
+            # Doctests run on every main push, so a failed or missing doctest leg fails the result even when shards reuse.
+            for doctests in ['success', 'failure', 'skipped']:
+                result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                    env=os.environ | {'DECLARATION_RESULT': 'success', 'COLLECT_COVERAGE': selected['coverage'],
+                                      'TESTS_REUSED': values['tests_reused'],
+                                      'RESULT': 'skipped' if reused else 'success', 'DOCTEST_RESULT': doctests},
+                    capture_output=True, text=True)
+                assert (result.returncode == 0) == (doctests == 'success'), (name, doctests, result.stderr)
 
 main_reuses_only_exact_successful_merge_queue_tests()
 print('PASS main_reuses_only_exact_successful_merge_queue_tests')
