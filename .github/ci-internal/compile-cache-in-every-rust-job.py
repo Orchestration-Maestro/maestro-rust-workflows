@@ -7,8 +7,8 @@ def snapshot_jobs_share_one_owner():
     import subprocess
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     assert document['permissions'] == {'contents': 'read'}
-    assert set(document['jobs']) == {'declaration', 'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'advisories',
-                                     'targets', 'browser', 'browser-tests', 'fuzz', 'doctests', 'tests-result'}
+    writers = {'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests', 'doctests'}
+    assert set(document['jobs']) == {'declaration', 'advisories', 'fuzz', 'tests-result'} | writers | {name + '-prune' for name in writers}
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                            workflow.split('\njobs:\n', 1)[1], re.M | re.S))
     owners = {'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
@@ -53,3 +53,26 @@ def snapshot_jobs_share_one_owner():
 
 snapshot_jobs_share_one_owner()
 print('PASS snapshot_jobs_share_one_owner')
+
+def every_cache_writer_has_one_pruner_without_caller_code():
+    import json
+    import subprocess
+    jobs = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))['jobs']
+    writers = {name for name, job in jobs.items()
+               if any(step.get('uses', '').startswith('actions/cache/save@') for step in job.get('steps', []))}
+    assert writers == {'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'doctests', 'checks', 'targets', 'browser', 'browser-tests'}
+    pruners = {name: job for name, job in jobs.items() if job.get('permissions', {}).get('actions') == 'write'}
+    # Each writer is followed by exactly one pruner, and only pruners may delete caches.
+    assert sorted(job['needs'] for job in pruners.values()) == sorted(writers), pruners.keys()
+    steps = next(iter(pruners.values()))['steps']
+    for name, job in pruners.items():
+        assert job['permissions'] == {'actions': 'write'}, name
+        assert job['if'] == "${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}", name
+        assert job['runs-on'] == 'ubuntu-latest', name
+        # No checkout and no action: the job holding the write token never runs caller code.
+        assert job['steps'] == steps and [step['name'] for step in steps] == ['Runner hardware', 'Prune superseded caches'], name
+        assert all('uses' not in step for step in steps) and steps[1]['continue-on-error'] is True
+        assert steps[1]['env'] == {'GH_TOKEN': '${{ github.token }}'}
+
+every_cache_writer_has_one_pruner_without_caller_code()
+print('PASS every_cache_writer_has_one_pruner_without_caller_code')

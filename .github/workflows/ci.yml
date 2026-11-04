@@ -2871,7 +2871,8 @@ jobs:
       actions: read
     name: Wasm and browser build
     needs: declaration
-    if: ${{ !inputs.browser-only && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    # A push that reuses merge-queue tests still builds, to seed this shape's snapshot.
+    if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ${{ fromJSON(needs.declaration.outputs.linux_runner) }}
     defaults:
       run:
@@ -3086,3 +3087,125 @@ jobs:
         if: *sccache-floor-condition
         env: *sccache-floor-env
         run: *sccache-floor
+
+  quality-prune:
+    # Cache entries are immutable, so every default-branch save adds one beside the entry it replaces.
+    # A pruner follows each saving job and keeps only the newest entry of each prefix, the one a restore
+    # reads, so the cache holds one snapshot per shape. It holds the only write grant and runs no caller code.
+    name: Prune superseded caches (quality)
+    needs: quality
+    if: &prune-condition ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    permissions: &prune-permissions
+      actions: write
+    runs-on: ubuntu-latest
+    steps: &prune-steps
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
+      - name: Prune superseded caches
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYTHON'
+          import datetime
+          import json
+          import os
+          import re
+          import subprocess
+          import sys
+          # The compile, Cargo git and test setup prefixes each end in their identity digest.
+          prefix = re.compile(r'(?:maestro-compile-v1|maestro-cargo-git-v1|maestro-test-setup-v2)-[0-9a-f]{64}-')
+          repository = os.environ['GITHUB_REPOSITORY']
+          pages = json.loads(subprocess.check_output(['gh', 'api', '--paginate', '--slurp',
+              f"repos/{repository}/actions/caches?ref={os.environ['GITHUB_REF']}&per_page=100"], text=True))
+          caches = sorted((cache for page in pages for cache in page['actions_caches']),
+                          key=lambda cache: datetime.datetime.fromisoformat(cache['created_at']), reverse=True)
+          newest, status = {}, 0
+          for cache in caches:
+              match = prefix.match(cache['key'])
+              if not match or newest.setdefault(match[0], cache) is cache:
+                  continue
+              deleted = subprocess.run(['gh', 'api', '--method', 'DELETE', f"repos/{repository}/actions/caches/{cache['id']}"],
+                                       capture_output=True, text=True)
+              # Another pruner of this or a later run may have deleted the entry first.
+              if deleted.returncode and 'HTTP 404' not in deleted.stderr:
+                  print(f"::warning title=Cache prune::{cache['key']} was not deleted: {' '.join(deleted.stderr.split())}")
+                  status = 1
+              else:
+                  print(f"Deleted {cache['key']}, replaced by {newest[match[0]]['key']}")
+          sys.exit(status)
+          PYTHON
+
+  docs-prune:
+    name: Prune superseded caches (docs)
+    needs: docs
+    if: *prune-condition
+    permissions: *prune-permissions
+    runs-on: ubuntu-latest
+    steps: *prune-steps
+
+  test-build-prune:
+    name: Prune superseded caches (test-build)
+    needs: test-build
+    if: *prune-condition
+    permissions: *prune-permissions
+    runs-on: ubuntu-latest
+    steps: *prune-steps
+
+  test-prepare-prune:
+    name: Prune superseded caches (test-prepare)
+    needs: test-prepare
+    if: *prune-condition
+    permissions: *prune-permissions
+    runs-on: ubuntu-latest
+    steps: *prune-steps
+
+  tests-prune:
+    name: Prune superseded caches (tests)
+    needs: tests
+    if: *prune-condition
+    permissions: *prune-permissions
+    runs-on: ubuntu-latest
+    steps: *prune-steps
+
+  doctests-prune:
+    name: Prune superseded caches (doctests)
+    needs: doctests
+    if: *prune-condition
+    permissions: *prune-permissions
+    runs-on: ubuntu-latest
+    steps: *prune-steps
+
+  checks-prune:
+    name: Prune superseded caches (checks)
+    needs: checks
+    if: *prune-condition
+    permissions: *prune-permissions
+    runs-on: ubuntu-latest
+    steps: *prune-steps
+
+  targets-prune:
+    name: Prune superseded caches (targets)
+    needs: targets
+    if: *prune-condition
+    permissions: *prune-permissions
+    runs-on: ubuntu-latest
+    steps: *prune-steps
+
+  browser-prune:
+    name: Prune superseded caches (browser)
+    needs: browser
+    if: *prune-condition
+    permissions: *prune-permissions
+    runs-on: ubuntu-latest
+    steps: *prune-steps
+
+  browser-tests-prune:
+    name: Prune superseded caches (browser-tests)
+    needs: browser-tests
+    if: *prune-condition
+    permissions: *prune-permissions
+    runs-on: ubuntu-latest
+    steps: *prune-steps

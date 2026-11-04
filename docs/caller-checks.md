@@ -44,9 +44,11 @@ run every workspace test with the full shard matrix, doctests, coverage and all
 declared builds and foreign-target checks, except that a main push reuses tests
 when its exact commit already passed a completed merge-group run of the same
 shared workflow revision with the full workspace selected. That push skips the
-test shards, doctests, coverage and wasm/browser legs. The archive and preparation
-jobs still compile and save their compiled-cache snapshots for the next merge
-group. The archive keeps the same instrumentation and cache shape as that group.
+test shards, doctests, coverage and Chromium browser tests. The archive,
+preparation and Wasm and browser build jobs still compile and save their
+compiled-cache snapshots for the next merge group; the wasm and browser build
+runs no tests. The archive keeps the same instrumentation and cache shape as
+that group.
 Formatting, lint, docs, dependency/source checks and target checks still run.
 No caller setting changes this policy.
 
@@ -82,10 +84,14 @@ merge-queue result. The independent `warm-cache` call runs on every main push.
 
 See [Test shards](#test-shards) for the required test result and coverage rules.
 
-Callers grant `actions: read` to the reusable-workflow call so the shared
-workflow can reuse prepared test bundles from earlier runs. Other jobs retain
-their existing permissions. Add this grant with the release-pin update; a
-missing grant can prevent the reusable workflow from starting.
+Callers grant `contents: read` and `actions: write` to the reusable-workflow
+call. Read access lets the shared workflow reuse prepared test bundles from
+earlier runs. Only the pruning jobs in
+[One entry per prefix](#one-entry-per-prefix) take write access; they run on
+default-branch pushes, check out nothing and run no caller code. Every other job
+declares `actions: read`. GitHub checks each job's permissions against the
+call's grant when the run starts, even for jobs that will skip, so a call that
+grants less cannot start. Add this grant before the release-pin update.
 
 The workspace coverage floor remains 80% (or the caller's higher floor).
 Declared callers collect fresh coverage for the full workspace on merge groups
@@ -269,8 +275,31 @@ and one test setup bundle. The setup snapshot adds one entry of about 1.1 GB to
 each generation: at most 1.6 GB of objects, plus about 6 MB of preprocessor
 entries. A generation then stays near 7.2 GB, under the limit. GitHub evicts by
 last access, so the previous generation goes first: once a shape saves its new
-snapshot, no reader restores the old one. The extra entry makes those old
-snapshots leave sooner on each push.
+snapshot, no reader restores the old one. The pruning jobs below delete that old
+generation after each shape saves, so it no longer waits for eviction.
+
+### One entry per prefix
+
+Cache entries cannot be overwritten, and every default-branch save uses a new
+key, so each push adds one entry per shape beside the one it replaces. A restore
+reads only the newest entry of a prefix. After each job that saves a cache, a
+pruning job named `Prune superseded caches (<job>)` lists the default branch's
+entries, keeps the newest entry of each compile, Cargo git and test setup prefix
+and deletes the others. It runs only on default-branch pushes after its saving
+job succeeds, holds only `actions: write` and checks out nothing. Another pruner
+may delete an entry first; that is not an error. Any other failed deletion
+prints a `Cache prune` warning, marks the step failed and leaves the job green,
+and the next pruner tries again. Entries under other names, such as a caller's
+own caches, are never touched.
+
+Measured from Maestro on 2026-11-04, one entry per shape holds about 8.4 GiB of
+its 10 GiB limit: compile snapshots of 0.24 GiB (`quality`), 0.32 GiB (`docs`),
+0.98 GiB (`tests-coverage`), 1.46 GiB (`test-prepare`), 0.23, 0.98 and 0.57 GiB
+(the aarch64 Linux, x86_64 macOS and arm64 macOS target checks), about 0.78 GiB
+(`tests-plain`), 0.65 GiB (`browser`) and 0.68 GiB (`browser-tests`), plus two
+0.40 GiB Cargo git entries and one 0.66 GiB test setup bundle. While a run
+saves, a shape's new entry and the one it replaces exist together until the
+pruner that follows its saving job runs.
 
 ### Cargo git dependency cache
 
@@ -966,7 +995,7 @@ jobs:
   browser:
     permissions:
       contents: read
-      actions: read
+      actions: write
     uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@RELEASE_COMMIT
     with:
       browser-only: true
@@ -974,13 +1003,14 @@ jobs:
       concurrency-key: browser-proof
 ```
 
-This entry has no checkout, test commands or secrets of its own. The automatic
-job token has read-only contents and Actions access. Dispatch only caller refs
-you intend to execute; those refs supply the recipe and test code. Keep the
-workflow selection on `main` (or the caller's default branch) while the `ref`
-input selects the source under test. A dispatch does not cancel an in-progress
-proof. All dispatches share one concurrency group, so a newer dispatch replaces
-any queued proof.
+This entry has no checkout, test commands or secrets of its own. The call grants
+Actions write access only so the shared workflow can start; the pruning jobs
+that use it skip on a manual dispatch, and the Chromium job keeps read-only
+contents and Actions access. Dispatch only caller refs you intend to execute;
+those refs supply the recipe and test code. Keep the workflow selection on
+`main` (or the caller's default branch) while the `ref` input selects the source
+under test. A dispatch does not cancel an in-progress proof. All dispatches
+share one concurrency group, so a newer dispatch replaces any queued proof.
 
 The caller's `browser-test` recipe must report every selected case even after a
 failure, and return a failing status if any case fails. For a nextest browser
@@ -1478,14 +1508,16 @@ repository cache they fill.
 
 - "Escalation: default-branch run did not seed its compile snapshots" is filed
   when the run's jobs reported more saved snapshots than the repository cache
-  holds for the run (the save step never fails the build, so a lost save shows
-  only here), when jobs measured their compile cache and none saved, or when the
-  run was cancelled with jobs unfinished. The cache list is read for the run's
-  default branch and matched by the run id in the snapshot key. Source: on
-  2026-10-26 between 16:13 and 21:00 UTC other caches filled the 10 GiB limit and
-  every default-branch snapshot was evicted, and eight merge groups
-  (40369902252 to 40395312817) compiled the test shape cold at 0% to 28.8%, their
-  test shards taking a median 17.4 min against 13.2 min afterwards.
+  holds for the run or a newer one (the save step never fails the build, so a
+  lost save shows only here; a newer run's snapshot of the same job replaces
+  this run's, and its pruner deletes the older one), when jobs measured their
+  compile cache and none saved, or when the run was cancelled with jobs
+  unfinished. The cache list is read for the run's default branch and matched by
+  the run id in the snapshot key. Source: on 2026-10-26 between 16:13 and 21:00
+  UTC other caches filled the 10 GiB limit and every default-branch snapshot was
+  evicted, and eight merge groups (40369902252 to 40395312817) compiled the test
+  shape cold at 0% to 28.8%, their test shards taking a median 17.4 min against
+  13.2 min afterwards.
 - "Repository cache above 90% of its limit" is filed when the cache in use
   (`actions/cache/usage`) is over 90% of the repository's storage limit
   (`actions/cache/storage-limit`, 10 GiB on Maestro), with the five largest

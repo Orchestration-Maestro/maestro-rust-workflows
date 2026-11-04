@@ -37,15 +37,20 @@ def routed_jobs(document, values):
         'needs.declaration.outputs.test_prepare': json.dumps('echo ready'),
         'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
         'always()': True, 'cancelled()': False, 'success()': True, 'failure()': False}
-    routed = set()
-    for name, job in document['jobs'].items():
-        condition = job['if'].removeprefix('$' + '{{').removesuffix('}}')
-        # GitHub adds success() to a job condition that calls no status function.
-        if not re.search(r'\b(?:always|success|failure|cancelled)\(\)', condition):
-            condition = 'success() && (' + condition + ')'
-        if evaluate(condition, gates | values):
-            routed.add(name)
-    return routed
+    decided = {}
+    def runs(name):
+        if name not in decided:
+            job = document['jobs'][name]
+            condition = job['if'].removeprefix('$' + '{{').removesuffix('}}')
+            needs = job.get('needs', [])
+            # GitHub adds success() to a job condition that calls no status function, and it fails when a needed job skipped.
+            if not re.search(r'\b(?:always|success|failure|cancelled)\(\)', condition):
+                condition = 'success() && (' + condition + ')'
+                if not all(runs(need) for need in ([needs] if isinstance(needs, str) else needs)):
+                    condition = 'False'
+            decided[name] = bool(evaluate(condition, gates | values))
+        return decided[name]
+    return {name for name in document['jobs'] if runs(name)}
 
 def body(name, source=workflow):
     import json
@@ -528,7 +533,7 @@ def browser_proof_dispatch_example_reuses_workflow():
     assert set(document['jobs']) == {'browser'}
     job = document['jobs']['browser']
     assert job['uses'] == 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@RELEASE_COMMIT'
-    assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
+    assert job['permissions'] == {'contents': 'read', 'actions': 'write'}
     assert job['with'] == {'browser-only': True, 'checkout-ref': '${{ inputs.ref }}', 'concurrency-key': 'browser-proof'}
     reusable = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     assert set(job['with']) <= set(reusable['on']['workflow_call']['inputs'])
@@ -1386,6 +1391,7 @@ def warm_cache_keeps_one_writer():
                            workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     # Warm calls run only the declaration and the shapes they seed, whatever the event or scan.
     seeding = {'declaration', 'tests', 'targets', 'quality', 'docs', 'browser', 'browser-tests', 'doctests'}
+    seeding |= {name + '-prune' for name in seeding - {'declaration'}}
     for event in ('push', 'pull_request', 'merge_group', 'workflow_dispatch'):
         for scan in ({}, {'inputs.advisory-scan': True}, {'inputs.fuzz-scan': True}):
             routed = routed_jobs(document, {'inputs.warm-cache': True, 'github.event_name': event} | scan)
@@ -2044,7 +2050,7 @@ def scheduled_scans_follow_released_workflow():
         references.add(reference)
         assert scan['with']['checkout-repository'] == 'Orchestration-Maestro/maestro', scan
         assert scan['with']['checkout-ref'] == 'main' and scan['with'][mode] is True, scan
-        assert scan['permissions'] == {'contents': 'read', 'actions': 'read'}, scan
+        assert scan['permissions'] == {'contents': 'read', 'actions': 'write'}, scan
     assert len(references) == 1, references
 
 scheduled_scans_follow_released_workflow()
@@ -2758,17 +2764,18 @@ def partitions_run_every_test_once_and_doctests():
 partitions_run_every_test_once_and_doctests()
 print('PASS partitions_run_every_test_once_and_doctests')
 
-def local_callers_grant_artifact_reads():
+def local_callers_grant_cache_pruning():
+    # Only the pruning jobs take the write grant; a call that lacks it cannot start.
     for path in sorted((root / '.github/workflows').glob('*.yml')):
         document = json.loads(subprocess.check_output(
             ['yq', '-o=json', '-'], input=path.read_text(encoding='utf-8'), text=True))
         for name, job in document.get('jobs', {}).items():
             if job.get('uses') == './.github/workflows/ci.yml':
-                assert job.get('permissions', {}).get('actions') == 'read', (path.name, name)
+                assert job.get('permissions') == {'contents': 'read', 'actions': 'write'}, (path.name, name)
         assert 'actions' not in document.get('permissions', {}), path.name
 
-local_callers_grant_artifact_reads()
-print('PASS local_callers_grant_artifact_reads')
+local_callers_grant_cache_pruning()
+print('PASS local_callers_grant_cache_pruning')
 
 def coverage_merge_uses_union_and_requires_all_reports():
     with tempfile.TemporaryDirectory() as temporary:
@@ -3536,11 +3543,12 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 'needs.declaration.outputs.test_prepare_inputs': '[]', 'needs.declaration.outputs.test_prepare': '"prepare"',
                 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                 'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True}
-            for job, upload in [('test-build', 'Upload test archive'), ('test-prepare', 'Upload test setup')]:
+            for job in ['test-build', 'test-prepare', 'browser']:
                 assert evaluate(document['jobs'][job]['if'], conditions), (name, job, 'main must seed compiled objects')
+            for job, upload in [('test-build', 'Upload test archive'), ('test-prepare', 'Upload test setup')]:
                 step = next(step for step in document['jobs'][job]['steps'] if step['name'] == upload)
                 assert bool(evaluate(step.get('if', 'True'), conditions)) == (not reused), (name, upload)
-            for job in ['tests', 'doctests', 'browser', 'browser-tests']:
+            for job in ['tests', 'doctests', 'browser-tests']:
                 assert bool(evaluate(document['jobs'][job]['if'], conditions)) == (not reused), (name, job)
             archive = document['jobs']['test-build']
             assert evaluate(archive['env']['COLLECT_COVERAGE'], conditions), 'main must build instrumented objects'

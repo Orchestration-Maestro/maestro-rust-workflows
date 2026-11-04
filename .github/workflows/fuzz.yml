@@ -12,7 +12,7 @@ jobs:
   scan:
     permissions:
       contents: read
-      actions: read
+      actions: write
     name: Maestro main
     uses: Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@b664d8fac5bc97049cb9fcfbfe720f285bb534ec # v0.19.15
     with:
