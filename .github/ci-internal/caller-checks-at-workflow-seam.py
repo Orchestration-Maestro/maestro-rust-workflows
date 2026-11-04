@@ -412,7 +412,7 @@ def browser_test_job_is_single_and_optional():
                    {'inputs.warm-cache': True, 'github.event_name': 'pull_request'},
                    {'inputs.warm-cache': True, 'github.ref': 'refs/heads/feature'}):
         assert 'browser-tests' not in routed_jobs(document, closed), closed
-    assert 'runs-on: $' + '{{ fromJSON(needs.declaration.outputs.linux_runner) }}' in job and 'matrix:' not in job
+    assert 'runs-on: ubuntu-latest\n' in job and 'matrix:' not in job
     assert body('Browser test recipe').strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"')
     assert 'mise exec' not in body('Browser test recipe')
     assert 'if:' not in job.split('- name: Browser test caller tools', 1)[1].split('- name:', 1)[0]
@@ -446,7 +446,7 @@ def manual_browser_proof_selects_only_existing_chromium_job():
         assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
     job = document['jobs']['browser-tests']
     assert 'matrix' not in job.get('strategy', {})
-    assert job['runs-on'] == '${{ fromJSON(needs.declaration.outputs.linux_runner) }}'
+    assert job['runs-on'] == 'ubuntu-latest'
     for event, coverage, declared, warm, expected in [
         ('workflow_dispatch', 'true', 'true', False, True),
         ('workflow_dispatch', 'true', 'false', False, False),
@@ -4000,7 +4000,7 @@ def supported_targets_use_native_runners():
     result, values = declaration(root / 'fixtures/declared')
     assert result.returncode == 0, result.stderr
     assert json.loads(values['targets']) == expected
-    assert 'runs-on: $' + "{{ matrix.runner == 'ubuntu-latest' && fromJSON(needs.declaration.outputs.linux_runner) || matrix.runner }}" in workflow
+    assert 'runs-on: $' + '{{ matrix.runner }}' in workflow
     assert 'rustup target add "$TARGET"' in body('Check target')
     assert 'rustup component add clippy' in body('Check target')
     assert body('Check target') == body('Lint')
@@ -4010,6 +4010,20 @@ def supported_targets_use_native_runners():
 
 supported_targets_use_native_runners()
 print('PASS supported_targets_use_native_runners')
+
+def linux_jobs_use_hosted_runners():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    declaration = document['jobs']['declaration']
+    assert 'linux_runner' not in declaration['outputs']
+    assert all(step.get('id') != 'runner' and step.get('name') != 'Select Linux runner'
+               for step in declaration['steps'])
+    for absent in ['self-hosted', 'maestro-aws', 'runner_policy', 'RUNNER_AVAILABILITY']:
+        assert absent not in workflow, absent
+    for name, job in document['jobs'].items():
+        assert job['runs-on'] in ('ubuntu-latest', '${{ matrix.runner }}'), (name, job['runs-on'])
+
+linux_jobs_use_hosted_runners()
+print('PASS linux_jobs_use_hosted_runners')
 
 def wasm_target_failure_is_detected():
     for fixture in ['declared', 'wasm-rejected']:

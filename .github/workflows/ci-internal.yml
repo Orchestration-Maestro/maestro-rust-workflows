@@ -100,8 +100,6 @@ jobs:
         run: python3 .github/extract-workflow-steps.py
       - name: Content checks at workflow seam
         run: python3 .github/ci-internal/content-checks-at-workflow-seam.py
-      - name: Ephemeral runner policy
-        run: python3 -m unittest discover -s .github -p runner_policy_test.py
       - name: Toolchain
         working-directory: fixtures/sample
         run: |
