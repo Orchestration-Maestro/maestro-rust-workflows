@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.19.16](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.15...v0.19.16) (2026-11-04)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#362](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/362)) ([61554dc](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/61554dccb5f6051b9fb9e5e49a507493a9171d7c))
+* move main scan pins to v0.19.15 ([#358](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/358)) ([cde2c5f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/cde2c5f796ca1f02221f16af1042fa56122578fd))
+
+
+### Bug Fixes
+
+* **ci-guards:** take the cache storage limit from the caller ([#361](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/361)) ([d7512dd](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/d7512ddcaf8aaf615b304665065aebf6fec5516c))
+
 ## [0.19.15](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.14...v0.19.15) (2026-11-04)
 
 
