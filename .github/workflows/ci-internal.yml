@@ -13,7 +13,7 @@ jobs:
   sample:
     permissions:
       contents: read
-      actions: read
+      actions: write
     name: Sample
     uses: ./.github/workflows/ci.yml
     with:
@@ -23,7 +23,7 @@ jobs:
   declared:
     permissions:
       contents: read
-      actions: read
+      actions: write
     name: Declared caller
     uses: ./.github/workflows/ci.yml
     with:
@@ -34,7 +34,7 @@ jobs:
   test-tools:
     permissions:
       contents: read
-      actions: read
+      actions: write
     name: Caller test tools
     uses: ./.github/workflows/ci.yml
     with:
@@ -45,7 +45,7 @@ jobs:
   fuzz:
     permissions:
       contents: read
-      actions: read
+      actions: write
     name: Fuzz caller
     uses: ./.github/workflows/ci.yml
     with:

@@ -219,6 +219,65 @@ def snapshot_save_keys_are_run_unique():
     identity = json.dumps(['example/caller', '.', 'Linux', 'X64', compiler, 'tests-coverage'], separators=(',', ':'), ensure_ascii=True)
     assert base['prefix'] == 'maestro-compile-v1-' + hashlib.sha256(identity.encode('utf-8')).hexdigest() + '-'
 
+def superseded_cache_entries_leave_the_newest_of_each_prefix():
+    def prefix(step, **values):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = pathlib.Path(temporary) / 'outputs'
+            result = shell(body(step), environment(pathlib.Path(temporary)) | {'GITHUB_OUTPUT': str(output)} | values)
+            assert result.returncode == 0, result.stderr
+            return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['prefix']
+    # Every prefix comes from the identity step that names its writer's entries.
+    tests, docs = snapshot_keys()['prefix'], snapshot_keys(CACHE_JOB='docs')['prefix']
+    git = prefix('Cargo git cache identity', CALLER_REPOSITORY='example/caller', CALLER_DIRECTORY='.', CACHE_CALL='',
+                 HOST_OS='Linux', ADDITIONAL_LOCKED_MANIFESTS='[]')
+    setup = prefix('Test setup cache identity', COMPILE_CACHE_PREFIX=tests, GITHUB_WORKSPACE=str(root), TEST_PREPARE='prepare',
+                   TEST_PREPARE_INPUTS='["README.md"]')
+    # The newest by creation time stays, as a restore reads it; an entry without fractional seconds is the oldest of its second.
+    entries = [(1, tests + '10-1-tests-0-call', '2026-11-04T17:00:00.000000Z'), (2, tests + '12-1-tests-0-call', '2026-11-04T17:20:27Z'),
+               (3, tests + '11-1-tests-0-call', '2026-11-04T17:20:27.180800Z'), (4, docs + '12-1-docs-0-call', '2026-11-04T17:04:21.211030Z'),
+               (5, git + 'a' * 64, '2026-11-04T15:28:56.574890Z'), (6, git + 'b' * 64, '2026-11-04T17:04:58.773156Z'),
+               (7, setup + 'c' * 64, '2026-11-04T17:06:35.679527Z'), (8, setup + 'd' * 64, '2026-11-04T16:06:35.679527Z'),
+               (9, 'maestro-compile-v0-' + tests[19:] + '9-1-tests-0-call', '2026-11-04T09:00:00.000000Z'),
+               (10, 'maestro-compile-v0-' + tests[19:] + '8-1-tests-0-call', '2026-11-04T08:00:00.000000Z'),
+               (11, 'Linux-cargo-' + 'e' * 64, '2026-11-04T07:00:00.000000Z'), (12, 'Linux-cargo-' + 'f' * 64, '2026-11-04T06:00:00.000000Z')]
+    caches = [{'id': identifier, 'key': key, 'created_at': created, 'ref': 'refs/heads/main', 'size_in_bytes': 1}
+              for identifier, key, created in entries]
+    for failures, status in [({}, 0), ({'1': 'HTTP 404'}, 0), ({'2': 'HTTP 502', '5': 'HTTP 404'}, 1)]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            (directory / 'pages.json').write_text(json.dumps([{'actions_caches': caches[:7]}, {'actions_caches': caches[7:]}]), encoding='utf-8')
+            (directory / 'failures.json').write_text(json.dumps(failures), encoding='utf-8')
+            source = directory / 'source'
+            source.write_text(textwrap.dedent('''\
+                #!/usr/bin/env python3
+                import json, os, pathlib, sys
+                state = pathlib.Path(os.environ['RUNNER_TEMP'])
+                with (state / 'calls').open('a', encoding='utf-8') as calls:
+                    calls.write(json.dumps(sys.argv[1:]) + '\\n')
+                if sys.argv[1:4] == ['api', '--method', 'DELETE']:
+                    failure = json.loads((state / 'failures.json').read_text()).get(sys.argv[4].rsplit('/', 1)[1])
+                    if failure:
+                        sys.exit(print('gh: request failed (' + failure + ')', file=sys.stderr) or 1)
+                else:
+                    print((state / 'pages.json').read_text())
+                '''), encoding='utf-8')
+            subprocess.run(['install', '-m', '0700', str(source), str(directory / 'gh')], check=True)
+            env = environment(directory) | {'PATH': str(directory) + os.pathsep + os.environ['PATH'], 'GH_TOKEN': 'write-token',
+                                            'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_REF': 'refs/heads/main'}
+            result = shell(body('Prune superseded caches'), env)
+            assert result.returncode == status, (failures, result.stdout, result.stderr)
+            calls = [json.loads(line) for line in (directory / 'calls').read_text(encoding='utf-8').splitlines()]
+            assert calls[0] == ['api', '--paginate', '--slurp', 'repos/owner/repo/actions/caches?ref=refs/heads/main&per_page=100'], calls
+            deleted = sorted(int(call[-1].rsplit('/', 1)[1]) for call in calls[1:])
+            assert all(call[:3] == ['api', '--method', 'DELETE'] for call in calls[1:]) and deleted == [1, 2, 5, 8], calls
+            for identifier in ['1', '2', '5', '8']:
+                key = entries[int(identifier) - 1][1]
+                # A concurrent pruner may have deleted an entry first; any other failure is reported and the rest still go.
+                if failures.get(identifier) == 'HTTP 502':
+                    assert f'::warning title=Cache prune::{key} was not deleted: gh: request failed (HTTP 502)' in result.stdout, result.stdout
+                else:
+                    assert f'Deleted {key}' in result.stdout, result.stdout
+
 def snapshot_cap_holds_each_shape_working_set():
     # Prepare test setup's cold snapshot measured 1,079,794,032 bytes, so only its shape gets the larger cap.
     assert snapshot_keys(CACHE_JOB='test-prepare', SHARD='')['size'] == '1610612736'
@@ -699,7 +758,8 @@ def cache_installation_failure_stays_fatal():
         assert not (directory / 'env').exists() and not (directory / 'paths').exists()
 
 for test in [snapshot_key_matches_consuming_shape, snapshot_key_preserves_caller_isolation,
-             snapshot_save_keys_are_run_unique, snapshot_only_default_branch_writers_save,
+             snapshot_save_keys_are_run_unique, superseded_cache_entries_leave_the_newest_of_each_prefix,
+             snapshot_only_default_branch_writers_save,
              snapshot_cap_holds_each_shape_working_set, cache_server_takes_the_shape_cap,
              snapshot_size_bound_skips_only_ineligible_saves,
              snapshot_seal_stops_before_measurement, cache_statistics_print_error_log,
