@@ -1675,6 +1675,18 @@ jobs:
               '2026-10-30T02:50:22.7069208Z   TRY 2 SLOW [> 30.000s] (─────────) maestro-wasmtime::integration guide::builds_from_a_clean_folder',
               '2026-10-30T02:53:23.4168865Z      Summary [1629.798s] 1010 tests run: 1010 passed (7 slow, 2 flaky), 14656 skipped', ''])
 
+          # A shard's log as the isolated step writes it: the extraction of the instrumented targets, one test setup, then its own tests.
+          SHARD_COST_LOG = '\n'.join([
+              '2026-10-30T02:40:00.1000000Z    Extracted 548 files to /home/runner/work/project/project/target/llvm-cov-target in 36.23s',
+              '2026-10-30T02:42:20.1000000Z   SETUP PASS [  79.751s] workspace-sources: target/test-setup/development nextest-setup workspace',
+              '2026-10-30T02:43:00.1000000Z      Summary [ 305.092s] 1064 tests run: 1064 passed, 16047 skipped', ''])
+
+          # A shard whose extraction ran into minutes, as the extraction step prints it.
+          MINUTE_COST_LOG = '\n'.join([
+              '2026-11-04T19:28:52.1659346Z    Extracted 548 files to /home/runner/work/project/project/target/llvm-cov-target in 3m 17.20s',
+              '2026-11-04T19:30:20.1000000Z   SETUP PASS [  79.751s] workspace-sources: target/test-setup/development nextest-setup workspace',
+              '2026-11-04T19:34:06.7952286Z      Summary [ 305.092s] 1064 tests run: 1064 passed, 16047 skipped', ''])
+
           def slow_marks_are_read_from_nextest_output():
               assert judging['slow_tests'](SLOW_LOG) == {
                   'maestro-tooling::integration browser_author_build::repairs': 60.0,
@@ -1702,15 +1714,20 @@ jobs:
           def shard_balance_breach_names_the_tests_that_grew():
               jobs = [job(f'Test shard ({n}/16)', 20) for n in range(1, 16)] + [job('Test shard (16/16)', 31), job('Docs', 90)]
               grown = [('a::slow', 60.0, 30.0), ('b::new', 30.0, None)]
-              finding = judging['shard_finding'](run_of(7, 50), jobs, 1.5, grown)
+              blamed = judging['slowest_shard'](jobs, 1.5)
+              assert blamed[0]['name'] == 'Test shard (16/16)' and blamed[1:] == (31 * 60, 20 * 60), blamed
+              reading = {'phases': [('setup workspace-sources', 79.751)], 'tests': 305.092}
+              finding = judging['shard_finding'](run_of(7, 50), blamed, 1.5, grown, reading)
               assert finding['title'] == 'Test shards unbalanced: run 7', finding
               assert 'Test shard (16/16) took 31.0 min against a median shard of 20.0 min (1.55 times; the margin is 1.5).' in finding['body'], finding
               assert '- `a::slow`: over 60 s now, over 30 s before' in finding['body'], finding
               assert '- `b::new`: over 30 s now, not slow before' in finding['body'], finding
+              # The shard's fixed phases sit beside its tests, so the issue names what took the time before them.
+              assert '- setup workspace-sources: 79.8 s' in finding['body'] and '- its tests: 305.1 s (the nextest summary)' in finding['body'], finding
               for slowest in (20, 30):
                   healthy = jobs[:15] + [job('Test shard (16/16)', slowest)]
-                  assert judging['shard_finding'](run_of(8, 50), healthy, 1.5, []) is None, slowest
-              assert judging['shard_finding'](run_of(8, 50), [job('Test shard (1/1)', 90)], 1.5, []) is None
+                  assert judging['slowest_shard'](healthy, 1.5) is None, slowest
+              assert judging['slowest_shard']([job('Test shard (1/1)', 90)], 1.5) is None
 
           shard_balance_breach_names_the_tests_that_grew()
           print('PASS shard_balance_breach_names_the_tests_that_grew')
@@ -1736,6 +1753,40 @@ jobs:
 
           judge_reports_an_unbalanced_shard_with_the_tests_that_grew()
           print('PASS judge_reports_an_unbalanced_shard_with_the_tests_that_grew')
+
+          def an_unbalanced_shard_names_only_the_slow_tests_that_ran_on_it():
+              # The slow marks of another shard are not this shard's cost: the blamed shard's own log is the only source.
+              gh, _ = fake_repository(shard_minutes=[26] * 15 + [45], shard_logs={(7, 0): SLOW_LOG})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              unbalanced = next(finding for finding in findings if finding['title'].startswith('Test shards unbalanced'))
+              assert 'Test shard (16/16) took 45.0 min' in unbalanced['body'], unbalanced
+              assert 'browser_author_build::repairs' not in unbalanced['body'], unbalanced
+              assert 'builds_from_a_clean_folder' not in unbalanced['body'], unbalanced
+              assert '- no test crossed a higher slow mark' in unbalanced['body'], unbalanced
+
+          an_unbalanced_shard_names_only_the_slow_tests_that_ran_on_it()
+          print('PASS an_unbalanced_shard_names_only_the_slow_tests_that_ran_on_it')
+
+          def an_unbalanced_shard_shows_its_fixed_phases_beside_its_tests():
+              gh, _ = fake_repository(shard_minutes=[26] * 15 + [45], shard_logs={(7, 15): SHARD_COST_LOG, (7, 0): SLOW_LOG})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              unbalanced = next(finding for finding in findings if finding['title'].startswith('Test shards unbalanced'))
+              assert '- extraction of instrumented targets: 36.2 s' in unbalanced['body'], unbalanced
+              assert '- setup workspace-sources: 79.8 s' in unbalanced['body'], unbalanced
+              assert '- its tests: 305.1 s (the nextest summary)' in unbalanced['body'], unbalanced
+
+          an_unbalanced_shard_shows_its_fixed_phases_beside_its_tests()
+          print('PASS an_unbalanced_shard_shows_its_fixed_phases_beside_its_tests')
+
+          def a_minute_long_extraction_is_read_in_seconds():
+              # A shard whose extraction ran into minutes must still show it.
+              gh, _ = fake_repository(shard_minutes=[26] * 15 + [45], shard_logs={(7, 15): MINUTE_COST_LOG})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              unbalanced = next(finding for finding in findings if finding['title'].startswith('Test shards unbalanced'))
+              assert '- extraction of instrumented targets: 197.2 s' in unbalanced['body'], unbalanced
+
+          a_minute_long_extraction_is_read_in_seconds()
+          print('PASS a_minute_long_extraction_is_read_in_seconds')
 
           def a_pinned_job_that_did_not_run_is_reported():
               pinned = SETTINGS['required']
@@ -1833,7 +1884,9 @@ jobs:
                       job('suite / Build test archive', 5, identifier=3)]
               units = {1: work_units('tests: 100'), 2: work_units('tests: 100'), 3: work_units('compiles: 600; hit-rate: 99.5')}
               assert judging['totals_of'](work, lambda item: units.get(item['id'], []))[2:] == ({'tests': 200, 'compiles': 600}, {'tests': 2, 'compiles': 1})
-              finding = judging['shard_finding'](run_of(7, 50), work, 1.5, judging['grown_tests']({'t::slow': 90.0}, {}))
+              finding = judging['shard_finding'](run_of(7, 50), judging['slowest_shard'](work, 1.5), 1.5,
+                                                 judging['grown_tests']({'t::slow': 90.0}, {}),
+                                                 {'phases': [], 'tests': None})
               assert finding and finding['title'] == 'Test shards unbalanced: run 7', finding
               assert 'suite / Test shard (2/2) took 40.0 min against a median shard of 25.0 min' in finding['body'], finding
 

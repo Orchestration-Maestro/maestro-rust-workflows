@@ -1562,13 +1562,22 @@ route. Source: of 14 measured PR runs, 11 selected 1 to 3 of 51 packages
 
 When the slowest `Test shard` job takes more than `shard-balance-margin` times
 the median shard, the guard files "Test shards unbalanced: run N". The issue
-names the slow tests in that shard that are new, or reached a higher slow mark,
-since the last green run of the same event. Nextest prints only slow marks, so
-growth shows as a higher mark rather than exact seconds. The default is 1.5.
-Source: the slowest shard was 1.18 and 1.20 times the median in runs 40990557025
-and 40990555729, and 1.32 times in the 32-shard proof run 40974924871. To
-respond, fix or split the named tests, then check priorities in the nextest
-configuration.
+reads the blamed shard's own log, so only tests that ran on that shard appear:
+the ones that are new, or reached a higher slow mark since the last green run of
+the same event. Nextest prints only slow marks, so growth shows as a higher mark
+rather than exact seconds.
+
+Beside the tests, the issue lists the fixed phases the same log times: the
+extraction of the instrumented targets, each test setup, and the tests' own
+seconds from the nextest summary. A shard past the margin is often slow from
+that fixed work before its first test runs, so read those lines before blaming a
+test.
+
+The default is 1.5. Source: the slowest shard was 1.18 and 1.20 times the median
+in runs 40990557025 and 40990555729, and 1.32 times in the 32-shard proof run
+40974924871. To respond, fix or split the named tests, then check priorities in
+the nextest configuration; when the fixed phases hold most of the shard's time,
+the cause is the shard's composition or its setups.
 
 ### Test-time limit
 
