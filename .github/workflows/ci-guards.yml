@@ -205,7 +205,7 @@ jobs:
               first = next((index for index, part in enumerate(parts) if kind_of(part) is not None), None)
               if first is None:
                   return False
-              job, step = parts[first], (' / '.join(parts[first + 1:]) if first + 1 < len(parts) else None)
+              job, step = parts[first], ' / '.join(parts[first + 1:]) or None
               kind = kind_of(job)
               return kind == 'compiles' or (kind == 'tests' and (not step or step in TEST_STEPS))
 
