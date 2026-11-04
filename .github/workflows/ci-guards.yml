@@ -523,8 +523,9 @@ jobs:
           def shard_phases(log):
               """The fixed phases a shard's log times before its tests: the extraction of its instrumented targets, then each test setup."""
               log = clean(log)
-              extracted = [('extraction of instrumented targets', float(took))
-                           for took in re.findall(r'(?m)^\s*Extracted \d+ files to \S+ in ([0-9.]+)s', log)]
+              # The extraction prints minutes once it runs past a minute, as `in 3m 17.20s`.
+              extracted = [('extraction of instrumented targets', int(minutes or 0) * 60 + float(took))
+                           for minutes, took in re.findall(r'(?m)^\s*Extracted \d+ files to \S+ in (?:(\d+)m )?([0-9.]+)s', log)]
               return extracted + [(f'setup {name}', float(took))
                                   for took, name in re.findall(r'(?m)^\s*SETUP PASS \[\s*([0-9.]+)s\] (\S+):', log)]
 
@@ -640,8 +641,12 @@ jobs:
                           found[job['name']] = {'slow': slow_tests(log), 'phases': shard_phases(log), 'tests': test_seconds(log)}
                   return found
               def slow_of(readings):
-                  # Every slow test of a run with its longest mark; a test runs in one shard, so no name repeats.
-                  return {test: mark for reading in readings.values() for test, mark in reading['slow'].items()}
+                  # Every slow test of a run with its longest mark, so the merge never drops a longer mark.
+                  found = {}
+                  for reading in readings.values():
+                      for test, mark in reading['slow'].items():
+                          found[test] = max(found.get(test, 0), mark)
+                  return found
               def caches_of(query):
                   pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repository}/actions/caches?{query}'))
                   return [cache for page in pages for cache in page['actions_caches']]

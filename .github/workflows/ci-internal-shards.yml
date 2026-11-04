@@ -1678,6 +1678,12 @@ jobs:
               '2026-10-30T02:42:20.1000000Z   SETUP PASS [  79.751s] workspace-sources: target/test-setup/development nextest-setup workspace',
               '2026-10-30T02:43:00.1000000Z      Summary [ 305.092s] 1064 tests run: 1064 passed, 16047 skipped', ''])
 
+          # A shard whose extraction ran into minutes, as the extraction step prints it.
+          MINUTE_COST_LOG = '\n'.join([
+              '2026-11-04T19:28:52.1659346Z    Extracted 548 files to /home/runner/work/project/project/target/llvm-cov-target in 3m 17.20s',
+              '2026-11-04T19:30:20.1000000Z   SETUP PASS [  79.751s] workspace-sources: target/test-setup/development nextest-setup workspace',
+              '2026-11-04T19:34:06.7952286Z      Summary [ 305.092s] 1064 tests run: 1064 passed, 16047 skipped', ''])
+
           def slow_marks_are_read_from_nextest_output():
               assert judging['slow_tests'](SLOW_LOG) == {
                   'maestro-tooling::integration browser_author_build::repairs': 60.0,
@@ -1768,6 +1774,18 @@ jobs:
 
           an_unbalanced_shard_shows_its_fixed_phases_beside_its_tests()
           print('PASS an_unbalanced_shard_shows_its_fixed_phases_beside_its_tests')
+
+          def a_minute_long_extraction_is_read_in_seconds():
+              # The shards that breach the margin are the ones whose extraction ran into minutes, so a minute line counts.
+              gh, _ = fake_repository(shard_minutes=[26] * 15 + [45], shard_logs={(7, 15): MINUTE_COST_LOG})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              unbalanced = next(finding for finding in findings if finding['title'].startswith('Test shards unbalanced'))
+              assert '- extraction of instrumented targets: 197.2 s' in unbalanced['body'], unbalanced
+              assert '- setup workspace-sources: 79.8 s' in unbalanced['body'], unbalanced
+              assert '- its tests: 305.1 s (the nextest summary)' in unbalanced['body'], unbalanced
+
+          a_minute_long_extraction_is_read_in_seconds()
+          print('PASS a_minute_long_extraction_is_read_in_seconds')
 
           def a_pinned_job_that_did_not_run_is_reported():
               pinned = SETTINGS['required']
