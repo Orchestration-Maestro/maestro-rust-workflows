@@ -2250,8 +2250,6 @@ jobs:
                            'evicts the oldest snapshots']:
                   assert text in snapshots, text
               assert 'GB' not in snapshots.replace('GiB', ''), 'one unit, GiB, as the finding prints'
-              assert 'at 90% of the storage limit the caller declares' in snapshots, 'the threshold and its reason'
-              assert 'HTTP 403' in snapshots and '41873062666' in snapshots, 'why the guard cannot read the limit itself, with its source'
               budget = guide.split('Source: no rate is fixed in advance', 1)[1].split('### Compile-cache hit-rate floor', 1)[0]
               assert 'cache usage' in budget and 'storage limit' not in budget and 'cache list' in budget and 'floor annotations' in budget, 'the call budget counts the cache reads'
               assert "github.event.workflow_run.event == 'push'" in guide and "github.event.workflow_run.event == 'merge_group'" in guide

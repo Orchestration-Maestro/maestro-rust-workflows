@@ -1426,11 +1426,11 @@ baseline runs, and shard logs only on a merge group or main push, or when the
 shards are unbalanced. With 32 shards and the default window that is at most
 about 285 calls for the time guards and about 315 when the shards are
 unbalanced, against the job token's 1,000 calls an hour for the whole
-repository. The cache reads add one call (cache usage),
-up to six pages of the cache list (the largest entries past 90%, and the
-snapshots of a default-branch run), and the floor annotations of the other
-jobs that ran a floor step, about 15, so about 310 and 340. To respond, open the run
-link and fix the cause of the kind that regressed.
+repository. The cache reads add one call (cache usage), up to six pages of the
+cache list (the largest entries past 90%, and the snapshots of a default-branch
+run), and the floor annotations of the other jobs that ran a floor step, about
+15, so about 310 and 340. To respond, open the run link and fix the cause of the
+kind that regressed.
 
 ### Compile-cache hit-rate floor
 
@@ -1493,14 +1493,13 @@ repository cache they fill.
   input, 10 GiB by default: the platform default, and Maestro's limit. A caller
   that raised its limit in the repository's Actions settings passes the new
   value. The guard can't read the setting itself. GitHub refuses the job
-  token's read of `actions/cache/storage-limit` with HTTP 403 even with Actions
-  read (Maestro run 41873062666); the setting belongs to repository
-  administrators, and no job token can hold administration. A value that is
-  not a positive number fails the job before any read. The guard fires at 90%
-  of the storage limit the caller declares, because over the limit GitHub
-  evicts the oldest snapshots, which is how the 2026-10-26 cold groups
-  happened, and the margin gives the guard time to file before that. The usage
-  is read for every judged run.
+  token's read of `actions/cache/storage-limit` with HTTP 403 (Maestro run
+  41873062666): the read needs administration read, and no job token can hold
+  administration. A value that is not a positive number fails the job before
+  any read. The guard fires at 90% of the storage limit the caller declares,
+  because over the limit GitHub evicts the oldest snapshots, which is how the
+  2026-10-26 cold groups happened, and the margin gives the guard time to file
+  before that. The usage is read for every judged run.
   Source: Maestro held 10,928,201,953 bytes (10.18 GiB) in 22 entries on
   2026-10-30 against its 10 GiB limit. The guide and the finding use GiB. To respond, delete the pull-request entries the issue lists, or
   shrink what the snapshots hold.
