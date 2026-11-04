@@ -972,8 +972,10 @@ jobs:
           if os.environ['CACHE_JOB'] in ('tests', 'doctests') and not (os.environ['CACHE_JOB'] == 'doctests' and os.environ['CACHE_WARM'] == 'true'):
               shard = os.environ.get('SHARD', '')
               writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['HOST_OS'] == 'Linux' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
+          # Prepare test setup also builds every wasm example extension; its working set passed 1 GiB.
+          size = 1610612736 if shape == 'test-prepare' else 1073741824
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\nshape={shape}\nnamespace={namespace}\nseeder={seeder}\n')
+              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\nshape={shape}\nnamespace={namespace}\nseeder={seeder}\nsize={size}\n')
           PYTHON
       - name: Restore compile cache
         id: cache-restore
@@ -986,9 +988,10 @@ jobs:
           enableCrossOsArchive: false
           fail-on-cache-miss: false
       - name: Compile cache
-        env:
+        env: &sccache-install-env
           CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
           CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+          CACHE_SIZE: ${{ steps.cache-identity.outputs.size }}
         timeout-minutes: 10
         run: &sccache-install |
           version=0.18.0
@@ -1016,7 +1019,7 @@ jobs:
             rm -rf "$RUNNER_TEMP/maestro-sccache"
             echo 'Compile cache snapshot restore failed; using an empty local cache'
           fi
-          export SCCACHE_DIR="$RUNNER_TEMP/maestro-sccache" SCCACHE_CACHE_SIZE=1073741824
+          export SCCACHE_DIR="$RUNNER_TEMP/maestro-sccache" SCCACHE_CACHE_SIZE="${CACHE_SIZE:?}"
           export SCCACHE_LOCAL_RW_MODE=READ_WRITE SCCACHE_GHA_ENABLED=false CARGO_INCREMENTAL=0
           export SCCACHE_SKIP_CACHE_CHECK=true SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-error.log" SCCACHE_LOG=debug
           { echo CARGO_BUILD_RUSTC_WRAPPER=sccache; env | grep -E '^(SCCACHE_(DIR|CACHE_SIZE|LOCAL_RW_MODE|GHA_ENABLED|SKIP_CACHE_CHECK|ERROR_LOG|LOG)|CARGO_INCREMENTAL)='; } >> "$GITHUB_ENV"
@@ -1174,24 +1177,30 @@ jobs:
           import os
           import pathlib
           import stat
-          files = size = 0
+          files = 0
+          sizes = {'object': 0, 'preprocessor': 0}
+          # sccache caps its objects and its preprocessor directory separately, each at this size.
+          limit = int(os.environ['SCCACHE_CACHE_SIZE'])
+          root = os.environ['SCCACHE_DIR']
           try:
               def failed(error):
                   raise error
-              for directory, _, names in os.walk(os.environ['SCCACHE_DIR'], onerror=failed):
+              for directory, _, names in os.walk(root, onerror=failed):
+                  part = 'preprocessor' if pathlib.Path(directory).relative_to(root).parts[:1] == ('preprocessor',) else 'object'
                   for name in names:
                       metadata = pathlib.Path(directory, name).lstat()
                       if stat.S_ISREG(metadata.st_mode):
                           files += 1
-                          size += metadata.st_size
+                          sizes[part] += metadata.st_size
           except OSError:
               print('Compile cache snapshot save skipped: cache inspection failed')
           else:
-              print(f'Compile cache snapshot: {files} files, {size} bytes')
-              if not files or not size:
+              print(f"Compile cache snapshot: {files} files, {sizes['object']} object bytes, {sizes['preprocessor']} preprocessor bytes")
+              over = [part for part, size in sizes.items() if size > limit]
+              if not files or not any(sizes.values()):
                   print('Compile cache snapshot save skipped: empty cache')
-              elif size > 1073741824:
-                  print('Compile cache snapshot save skipped: exceeds 1073741824 bytes')
+              elif over:
+                  print(f'Compile cache snapshot save skipped: {over[0]} bytes exceed {limit}')
               else:
                   with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
                       output.write('eligible=true\n')
@@ -1296,9 +1305,7 @@ jobs:
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-restore
       - name: Compile cache
-        env:
-          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
-          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        env: *sccache-install-env
         timeout-minutes: 10
         run: *sccache-install
       - name: Mise bootstrap
@@ -1399,9 +1406,7 @@ jobs:
         with: *sccache-restore
       - name: Compile cache
         if: *sccache-target-host
-        env:
-          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
-          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        env: *sccache-install-env
         timeout-minutes: 10
         run: *sccache-install
       - name: Coverage tools
@@ -1650,9 +1655,7 @@ jobs:
         with: *sccache-restore
       - name: Compile cache
         if: *sccache-target-host
-        env:
-          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
-          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        env: *sccache-install-env
         timeout-minutes: 10
         run: *sccache-install
       - name: Cargo git cache identity
@@ -2020,9 +2023,7 @@ jobs:
         with: *sccache-restore
       - name: Compile cache
         if: runner.os != 'Windows' && (inputs.warm-cache || matrix.shard == 'doctests')
-        env:
-          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
-          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        env: *sccache-install-env
         timeout-minutes: 10
         run: *sccache-install
       - name: Coverage tools
@@ -2686,9 +2687,7 @@ jobs:
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-restore
       - name: Compile cache
-        env:
-          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
-          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        env: *sccache-install-env
         if: needs.declaration.outputs.enabled != 'true'
         timeout-minutes: 10
         run: *sccache-install
@@ -2947,9 +2946,7 @@ jobs:
         with: *sccache-restore
       - name: Compile cache
         if: *sccache-target-host
-        env:
-          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
-          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        env: *sccache-install-env
         timeout-minutes: 10
         run: *sccache-install
       - name: Cargo git cache identity
@@ -3038,9 +3035,7 @@ jobs:
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-restore
       - name: Compile cache
-        env:
-          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
-          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        env: *sccache-install-env
         timeout-minutes: 10
         run: *sccache-install
       - name: Browser tool pin
@@ -3137,9 +3132,7 @@ jobs:
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-restore
       - name: Compile cache
-        env:
-          CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
-          CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
+        env: *sccache-install-env
         timeout-minutes: 10
         run: *sccache-install
       - name: Browser test tool pin

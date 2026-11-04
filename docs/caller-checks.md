@@ -16,10 +16,10 @@ parent as its PR base. The warmer is non-required, and consumers still run if it
 fails. See [Compile cache](../README.md#compile-cache) for snapshot shapes,
 fail-open transfers and storage limits.
 Advance all proof checkout references together after checking locked dependencies.
-The proof uses `65aae5e5263d8bfcefc8677977f38700cf383b0a`, the Maestro main
+The proof uses `db6abdacad086b984bcfc1a21780e1a721e922a4`, the Maestro main
 revision that qualifies the current release, and it still includes the native
 residency-helper compilation repair. Its first parent,
-`e9d368643602539eea18eb965e7063d0644f8c72`, supplies the warm build and
+`470f0a159ec60dc77ffc7e394bbe9b8766eceb04`, supplies the warm build and
 selected-package base.
 The coverage proof runs only on pushes to `ci/228-merge-proof`, not on pull requests.
 Check its results before landing.
@@ -138,10 +138,11 @@ A valid filter matching no tests succeeds under the existing no-tests policy.
 
 Running tests adds execution time and compiler objects. Keep the filter narrow
 enough for the warm build to finish between default-branch pushes and for the
-native payload to stay within 1 GiB. The existing writer and size rules still
-apply: only an eligible successful default-branch warm build saves a snapshot;
-a pull-request run cannot prove saving. More cached compiles are useful only
-when that save succeeds and later jobs restore the compatible snapshot.
+native payload to stay within the coverage shape's 1 GiB cap. The existing
+writer and size rules still apply: only an eligible successful default-branch
+warm build saves a snapshot; a pull-request run cannot prove saving. More cached
+compiles are useful only when that save succeeds and later jobs restore the
+compatible snapshot.
 
 ## Reusable-call concurrency
 
@@ -231,9 +232,51 @@ these warm calls; the coverage warm build still uses its optional test filter.
 Other warm calls skip these additional jobs. No extra cache writer is enabled
 for pull requests, merge groups, feature branches or manual runs.
 
-The 1 GiB native-payload bound applies to each save, not the repository's
-10 GB cache allowance. Compressed snapshot sizes are measured separately;
-GitHub eviction can remove even the newest snapshot of a shape.
+### Snapshot size
+
+Each job shape has one cache cap. Compile cache identity sets it as the `size`
+output, Compile cache hands it to sccache as `SCCACHE_CACHE_SIZE`, and Seal
+compile cache reads that same variable:
+
+| Shape | Cap |
+| --- | --- |
+| `test-prepare` (Prepare test setup) | 1,610,612,736 bytes (1.5 GiB) |
+| Every other shape | 1,073,741,824 bytes (1 GiB) |
+
+sccache applies the cap twice. Its compiled objects stay within the cap, and so
+do the preprocessor entries of C and assembler compiles, which it keeps in a
+separate `preprocessor` directory and leaves out of its reported cache size. The
+seal measures each part and skips the snapshot when either one exceeds the cap,
+so it refuses only a cache that sccache would not have left. The
+`Compile cache snapshot:` line prints both parts; in Prepare test setup the
+preprocessor directory held about 6 MB. A snapshot grows toward its cap, because
+objects that later builds stop using stay until sccache evicts the least
+recently used ones, so a full cap alone is normal. A cap is too small when a
+build that starts from an empty cache fills it: the earliest objects are
+evicted, and every reader then misses the objects it needs first.
+
+Prepare test setup builds every wasm example extension as well as the setup
+tools, so its shape has the larger cap. Source: in seven Maestro default-branch
+pushes on 2026-11-03, the job started from an empty cache, filled its 1 GiB cap,
+evicted 32 to 38 of the roughly 2,080 entries it wrote, and left 1,076,511,005
+to 1,079,794,032 bytes on disk. The seal refused all seven, so the merge groups
+compiled that shape cold (2 cache hits and 1,673 misses), and Prepare test setup
+took a median 28.5 minutes across 15 of them. A merge-group run that reused the
+example extensions held 1,026,339,681 bytes with nothing evicted. The first
+default-branch push with the 1.5 GiB cap also starts from an empty cache, so its
+`Compile cache snapshot:` line gives the shape's whole working set, and that
+number sets the cap.
+
+The bound applies to each save, not the repository's 10 GB cache allowance.
+Compressed snapshot sizes are measured separately, and GitHub eviction can
+remove even the newest snapshot of a shape. On 2026-11-03 one Maestro generation
+held 5,606,616,026 bytes: the other compile snapshots, three Cargo git entries
+and one test setup bundle. The setup snapshot adds one entry of about 1.1 GB to
+each generation: at most 1.6 GB of objects, plus about 6 MB of preprocessor
+entries. A generation then stays near 7.2 GB, under the limit. GitHub evicts by
+last access, so the previous generation goes first: once a shape saves its new
+snapshot, no reader restores the old one. The extra entry makes those old
+snapshots leave sooner on each push.
 
 ### Cargo git dependency cache
 
@@ -1297,7 +1340,15 @@ jobs:
 
 The listener passes default-branch pushes as well as merge groups, because those
 runs save the compile snapshots every other run restores, and it passes a
-cancelled one too: a cancelled seeding run is a finding, not silence.
+cancelled one too: a cancelled seeding run is a finding, not silence. A
+default-branch push that calls the shared suite through one reusable job is
+judged too. GitHub titles its jobs `<calling job> / <shared job>`, and every
+guard matches a job against a pinned name after the last ` / `, so
+`suite / Caller declaration` counts as `Caller declaration`. The reuse,
+required-checks, time-per-unit, shard-balance and slow-test guards read those
+names. When the `Reuse merge queue tests` step in `Caller declaration`
+succeeded, the skipped test shards and doctests leave the pinned list, exactly
+as they do in a run with no prefix.
 
 Pin the reference to a reviewed commit and list the listener workflow in
 `privileged_trigger_workflows`, as for the post-landing reporter. Issues are
@@ -1530,11 +1581,15 @@ needs 208 seconds.
 For a full merge-group or main run, `ci-guards.yml` pins the jobs that must run:
 `Caller declaration`, `Format and lint`, `Docs`, `Build test archive`, the
 `Test shard` jobs, `Doctests`, `Tests (ubuntu-latest)` and `Dependency, source
-and coverage checks`. A pinned job that is missing or skipped files "Required
-checks missing from run N" naming it. A failed job is not a missing one; the run
-already reports it. The pinned `Test shard (*` prefix includes native shard
-names, and `Tests (ubuntu-latest)` requires every native shard and doctest leg
-to succeed; a failure, cancellation or unexpected skip fails the aggregate. The self-test checks every pinned name against `ci.yml`,
+and coverage checks`. A pinned job that is missing or skipped files an issue
+titled `Required checks missing: Docs, Doctests`, with the missing set filled
+in: `Test shard (*` stands for any shard, native shard names included, and
+`Dependency, source and coverage checks` is one check despite its comma. The
+title never carries the run id, so a set that stays missing across landings
+keeps one issue; each body names the judged run. A failed job is not a missing
+one; the run already reports it. `Tests (ubuntu-latest)` requires every native
+shard and doctest leg to succeed; a failure, cancellation or unexpected skip
+fails the aggregate. The self-test checks every pinned name against `ci.yml`,
 and checks that this repository's ruleset checks, `Required repository quality`
 and `Required consumer tests`, still exist, so renaming a job fails there first.
 When you rename a job on purpose, change the pin and the ruleset in one change.

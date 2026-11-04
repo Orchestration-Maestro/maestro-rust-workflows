@@ -43,7 +43,7 @@ def snapshot_jobs_share_one_owner():
                 assert 'if' not in check
     for name in owners - {'quality'}:
         assert 'env: *sccache-identity-env' in jobs[name]
-        for alias in ['sccache-identity', 'sccache-restore', 'sccache-install', 'sccache-stats', 'sccache-seal', 'sccache-save']:
+        for alias in ['sccache-identity', 'sccache-restore', 'sccache-install-env', 'sccache-install', 'sccache-stats', 'sccache-seal', 'sccache-save']:
             assert '*' + alias in jobs[name], (name, alias)
     assert 'CACHE_TARGET: $' + '{{ matrix.target }}' in jobs['targets']
     assert jobs['checks'].index('- name: Secrets\n') < jobs['checks'].index('- name: Restore compile cache\n')
