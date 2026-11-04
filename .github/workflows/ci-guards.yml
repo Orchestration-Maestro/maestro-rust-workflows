@@ -520,26 +520,47 @@ jobs:
                   found[test] = max(found.get(test, 0), float(mark))
               return found
 
+          def shard_phases(log):
+              """The fixed phases a shard's log times before its tests: the extraction of its instrumented targets, then each test setup."""
+              log = clean(log)
+              extracted = [('extraction of instrumented targets', float(took))
+                           for took in re.findall(r'(?m)^\s*Extracted \d+ files to \S+ in ([0-9.]+)s', log)]
+              return extracted + [(f'setup {name}', float(took))
+                                  for took, name in re.findall(r'(?m)^\s*SETUP PASS \[\s*([0-9.]+)s\] (\S+):', log)]
+
+          def test_seconds(log):
+              """The seconds nextest reports for the shard's tests themselves, None without its summary."""
+              found = re.search(r'(?m)^\s*Summary \[\s*([0-9.]+)s\]', clean(log))
+              return float(found[1]) if found else None
+
           def grown_tests(current, previous):
               """The five slow tests that grew most: new, or past a higher slow mark than before."""
               grown = [(test, now, previous.get(test)) for test, now in current.items() if now > previous.get(test, 0)]
               return sorted(grown, key=lambda item: item[1] - (item[2] or 0), reverse=True)[:5]
 
-          def shard_finding(run, jobs, margin, grown):
-              """The slowest test shard is beyond the margin over the median; names the tests that grew."""
-              took = sorted((seconds(job), job['name']) for job in jobs
-                            if kind_of(job['name']) == 'tests' and seconds(job) is not None)
-              if len(took) < 2:
+          def slowest_shard(jobs, margin):
+              """The test shard past the margin over the median shard, as its job, its seconds and that median; None when the shards are balanced."""
+              ran = [job for job in jobs if kind_of(job['name']) == 'tests' and seconds(job) is not None]
+              if len(ran) < 2:
                   return None
-              median = statistics.median(value for value, _ in took)
-              slowest, name = took[-1]
-              if slowest <= margin * median:
-                  return None
+              median = statistics.median(seconds(job) for job in ran)
+              slowest = max(ran, key=seconds)
+              return None if seconds(slowest) <= margin * median else (slowest, seconds(slowest), median)
+
+          def shard_finding(run, blamed, margin, grown, reading):
+              """The finding for a shard past the margin: the slow tests that grew on that shard, then the fixed phases it paid before them.
+              Only that shard's own log names its tests and its phases, so neither is another shard's work."""
+              job, slowest, median = blamed
               lines = '\n'.join(f"- `{test}`: over {now:g} s now, " + (f'over {before:g} s before' if before else 'not slow before')
                                 for test, now, before in grown) or '- no test crossed a higher slow mark'
-              return {'title': f"Test shards unbalanced: run {run['id']}",
-                      'body': f"Run: {run['html_url']}\n{name} took {slowest / 60:.1f} min against a median shard of {median / 60:.1f} min "
-                              f"({slowest / median:.2f} times; the margin is {margin:g}).\n\nSlow tests in that shard that grew:\n{lines}\n"}
+              phases = [f'- {name}: {took:.1f} s' for name, took in reading['phases']]
+              if reading['tests'] is not None:
+                  phases.append(f"- its tests: {reading['tests']:.1f} s (the nextest summary)")
+              body = (f"Run: {run['html_url']}\n{job['name']} took {slowest / 60:.1f} min against a median shard of {median / 60:.1f} min "
+                      f"({slowest / median:.2f} times; the margin is {margin:g}).\n\nSlow tests in that shard that grew:\n{lines}\n")
+              if phases:
+                  body += '\nFixed phases of that shard:\n' + '\n'.join(phases) + '\n'
+              return {'title': f"Test shards unbalanced: run {run['id']}", 'body': body}
 
           def slow_findings(slow, limit, run):
               """One issue per test that ran past the slow mark."""
@@ -610,13 +631,17 @@ jobs:
                   return noted[job['id']]
               def log_of(job):
                   return gh('api', '--allow-escape-sequences', f"repos/{repository}/actions/jobs/{job['id']}/logs")
-              def shard_slow(jobs):
+              def shard_readings(jobs):
+                  # What each test shard's own log measures: the slow tests it printed, the fixed phases it names, its tests' seconds.
                   found = {}
                   for job in jobs:
                       if kind_of(job['name']) == 'tests':
-                          for test, mark in slow_tests(log_of(job)).items():
-                              found[test] = max(found.get(test, 0), mark)
+                          log = log_of(job)
+                          found[job['name']] = {'slow': slow_tests(log), 'phases': shard_phases(log), 'tests': test_seconds(log)}
                   return found
+              def slow_of(readings):
+                  # Every slow test of a run with its longest mark; a test runs in one shard, so no name repeats.
+                  return {test: mark for reading in readings.values() for test, mark in reading['slow'].items()}
               def caches_of(query):
                   pages = json.loads(gh('api', '--paginate', '--slurp', f'repos/{repository}/actions/caches?{query}'))
                   return [cache for page in pages for cache in page['actions_caches']]
@@ -670,14 +695,17 @@ jobs:
               on_main = run['event'] in ('merge_group', 'push')
               if on_main:
                   findings.append(required_finding(run, jobs, settings['required']))
-              unbalanced = shard_finding(run, jobs, settings['margin'], [])
-              slow = shard_slow(jobs) if unbalanced or on_main else {}
-              if unbalanced:
-                  previous = shard_slow(jobs_of(earlier[0]['id'])) if earlier else {}
-                  unbalanced = shard_finding(run, jobs, settings['margin'], grown_tests(slow, previous))
+              blamed = slowest_shard(jobs, settings['margin'])
+              readings = shard_readings(jobs) if blamed or on_main else {}
+              unbalanced = None
+              if blamed:
+                  # Only the blamed shard's own log names its slow tests and its fixed phases; the earlier marks come from the whole run, where a test may sit elsewhere.
+                  reading = readings[blamed[0]['name']]
+                  previous = slow_of(shard_readings(jobs_of(earlier[0]['id']))) if earlier else {}
+                  unbalanced = shard_finding(run, blamed, settings['margin'], grown_tests(reading['slow'], previous), reading)
               findings.append(unbalanced)
               if on_main:
-                  findings.extend(slow_findings(slow, settings['slow'], run))
+                  findings.extend(slow_findings(slow_of(readings), settings['slow'], run))
               if run['event'] == 'pull_request':
                   rows = []
                   for other in ([run] + [other for other in runs_like(run, 'completed') if other['conclusion'] in ('success', 'failure')])[:window]:
