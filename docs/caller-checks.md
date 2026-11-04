@@ -688,7 +688,7 @@ never become tools. Existing installation deadlines still apply.
   scan without opening issues.
 - The cargo-deny license allowlist is MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, Zlib,
   Apache-2.0 WITH LLVM-exception, Unicode-DFS-2016, Unicode-3.0, CC0-1.0,
-  CDLA-Permissive-2.0, MPL-2.0, MIT-0 and BSL-1.0. BSL-1.0 is the Boost Software
+  CDLA-Permissive-2.0, MPL-2.0, MIT-0, BSL-1.0 and 0BSD. BSL-1.0 is the Boost Software
   License; the Business Source License (BUSL-1.1) is absent from this default list.
   Callers can allow it for an exact package version through `license_exceptions`.
 - cargo-machete fails on unused dependencies. Nonempty `ignored` or `renamed`
@@ -731,7 +731,7 @@ spelling_words = ["Maestro"]
 git_sources = ["https://github.com/example/library"]
 privileged_trigger_workflows = [".github/workflows/review-gate.yml"]
 license_exceptions = [
-  { package = "specific-library", version = "1.2.3", licenses = ["0BSD"] },
+  { package = "specific-library", version = "1.2.3", licenses = ["Unlicense"] },
 ]
 advisory_exceptions = [
   { id = "RUSTSEC-2025-0141", package = "bincode", version = "1.3.3", reason = "Packaged syntax and theme dumps; reviewed exception" },
@@ -904,6 +904,17 @@ each listed package:
 ```bash
 cargo build --locked --target wasm32-unknown-unknown -p "$CRATE"
 ```
+
+Each listed package is then documented for the same target with
+`RUSTDOCFLAGS="-D warnings -D missing_docs"`:
+
+```bash
+cargo doc --locked --no-deps --target wasm32-unknown-unknown -p "$CRATE"
+```
+
+That covers the code that only a WebAssembly build compiles, which the host Docs
+job never sees. Missing documentation or a documentation warning fails the job
+before the browser recipe runs.
 
 The caller toolchain installs wasm support only when there are listed
 packages. Either `test_tools = true` or `browser_build = true` installs caller

@@ -4413,6 +4413,40 @@ def caller_name_stays_in_the_concurrency_group():
 caller_name_stays_in_the_concurrency_group()
 print('PASS caller_name_stays_in_the_concurrency_group')
 
+def docs_deny_missing_docs_for_non_default_features():
+    steps = workflow[workflow.index('  browser:\n'):]
+    document = next(s for s in steps.split('      - name: ')[1:] if s.splitlines()[0] == 'Docs for every feature')
+    assert 'RUSTDOCFLAGS: -D warnings -D missing_docs' in document
+    assert 'cargo doc --workspace --no-deps --locked --all-features\n' in document
+    assert 'if:' not in document
+    assert steps.index('name: Document wasm crates') < steps.index('name: Docs for every feature') < steps.index('name: Browser recipe')
+    # The browser job runs on merge groups and main pushes only, so pull requests keep the fast Docs job.
+    browser = workflow.split('\n  browser:\n', 1)[1]
+    assert "needs.declaration.outputs.coverage == 'true'" in browser.split('    steps:', 1)[0]
+    assert "coverage=' + str(event != 'pull_request'" in workflow
+    result = execute('Docs for every feature', root / 'fixtures/feature-gated', {'RUSTDOCFLAGS': '-D warnings -D missing_docs'})
+    output = result.stdout + result.stderr
+    assert result.returncode != 0 and 'missing documentation' in output, 'a non-default feature must be documented\n' + output
+    # Default features pass on the same crate, so the failure comes from the feature, not the fixture.
+    result = execute('Docs', root / 'fixtures/feature-gated', {'RUSTDOCFLAGS': '-D warnings -D missing_docs'})
+    assert result.returncode == 0, 'default features must pass\n' + result.stdout + result.stderr
+
+docs_deny_missing_docs_for_non_default_features()
+print('PASS docs_deny_missing_docs_for_non_default_features', flush=True)
+
+def wasm_rustdoc_denies_missing_docs():
+    steps = workflow[workflow.index('  browser:\n'):]
+    document = next(s for s in steps.split('      - name: ')[1:] if s.splitlines()[0] == 'Document wasm crates')
+    assert 'RUSTDOCFLAGS: -D warnings -D missing_docs' in document
+    assert "'cargo', 'doc', '--locked', '--no-deps', '--target', 'wasm32-unknown-unknown', '-p', crate" in document
+    assert steps.index('name: Build wasm crates') < steps.index('name: Document wasm crates') < steps.index('name: Browser recipe')
+    for step in steps.split('      - name: ')[1:]:
+        if step.splitlines()[0] in ('Build wasm crates', 'Document wasm crates'):
+            assert "needs.declaration.outputs.wasm_crates" in step and 'if:' not in step
+
+wasm_rustdoc_denies_missing_docs()
+print('PASS wasm_rustdoc_denies_missing_docs', flush=True)
+
 def workflow_safety_is_unchanged():
     assert re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + ['cargo test --workspace --locked'] == [
         'cargo fmt --all --check',

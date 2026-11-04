@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import textwrap
 import time
+
 import tomllib
 
 workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding="utf-8")
@@ -60,6 +61,15 @@ def boost_license_is_allowed_and_business_source_is_not(env, temporary):
             assert result.returncode == 0, output
         else:
             assert result.returncode != 0 and 'error[rejected]' in output and license in output, output
+
+def zero_bsd_license_needs_no_caller_exception(env, temporary):
+    directory = pathlib.Path(temporary) / 'zero-bsd-license'
+    shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+    manifest = (root / 'fixtures/sample/Cargo.toml').read_text(encoding='utf-8')
+    assert 'license = "MIT"\n' in manifest
+    (directory / 'Cargo.toml').write_text(manifest.replace('license = "MIT"', 'license = "0BSD"'), encoding='utf-8')
+    result = execute('Licenses and dependencies', directory, env | {'CHECK_ADVISORIES': 'false'})
+    assert result.returncode == 0, 'a 0BSD crate must pass without a caller exception\n' + result.stdout + result.stderr
 
 def secrets_scan_before_restored_build_output(env, temporary):
     directory = pathlib.Path(temporary) / 'source-only'
@@ -448,7 +458,9 @@ def fake_tool(directory, name):
 def advisory_issues_open_once(temporary):
     source = pathlib.Path('.github/workflows/advisories.yml').read_text(encoding='utf-8')
     step = next(s for s in source.split('      - name: ')[1:] if s.splitlines()[0] == 'Open advisory issues')
-    code = textwrap.dedent(re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE).group(1))
+    run = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
+    assert run, 'the advisory issue step needs an inline script'
+    code = textwrap.dedent(run.group(1))
     fake, recorded = fake_tool(pathlib.Path(temporary) / 'fake-gh', 'gh')
     findings = [{'id': 'RUSTSEC-2025-0141', 'title': 'Bincode is unmaintained', 'crates': ['bincode 1.3.3']},
                 {'id': 'yanked once_cell 0.0.1', 'title': 'detected yanked crate', 'crates': ['once_cell 0.0.1']}]
@@ -462,7 +474,7 @@ def advisory_issues_open_once(temporary):
     assert result.returncode != 0 and '2 undeclared advisories on main' in result.stderr, result.stdout + result.stderr
     created = [call for call in made if call[:2] == ['issue', 'create']]
     assert len(created) == 1 and created[0][created[0].index('--title') + 1] == 'Priority: yanked once_cell 0.0.1 on main: once_cell 0.0.1', made
-    assert ['--label', 'bug', '--label', 'needs-triage'] == created[0][-6:-2] and created[0][-2:] == ['-R', 'owner/repo'], made
+    assert created[0][-6:-2] == ['--label', 'bug', '--label', 'needs-triage'] and created[0][-2:] == ['-R', 'owner/repo'], made
     result, made = report(found=[])
     assert result.returncode == 0 and made == [], result.stdout + result.stderr
     result, made = report(scan='failure')
@@ -600,6 +612,8 @@ with tempfile.TemporaryDirectory() as temporary:
     print('PASS fuzz_licences_allow_ncsa_only_for_libfuzzer_sys', flush=True)
     boost_license_is_allowed_and_business_source_is_not(env, temporary)
     print('PASS boost_license_is_allowed_and_business_source_is_not', flush=True)
+    zero_bsd_license_needs_no_caller_exception(env, temporary)
+    print('PASS zero_bsd_license_needs_no_caller_exception', flush=True)
     for name in checks:
         result = execute(name, root / 'fixtures/sample', env)
         assert result.returncode == 0, name + '\n' + result.stdout + result.stderr
