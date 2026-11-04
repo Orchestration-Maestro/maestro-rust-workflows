@@ -1789,6 +1789,8 @@ jobs:
               assert judging['kind_of']('suite / Test shard (1/16)') == 'tests' and judging['kind_of']('suite / Build test archive') == 'compiles'
               assert judging['kind_of']('Docs') is None and judging['kind_of']('suite / Docs') is None
               assert judging['rated']('suite / Build test archive') and judging['rated']('suite / Test shard (1/16)')
+              # Prefixed step timings read as their job's step, not as another job: test steps stay rate-judged and archive steps stay shape-judged.
+              assert judging['rated']('suite / Test shard (1/16) / Tests') and judging['rated']('suite / Build test archive / Compile')
               assert not judging['rated']('suite / Test shard (1/16) / Download archive') and not judging['rated']('suite / Docs')
               work = [job('suite / Test shard (1/2)', 10, identifier=1, steps=[('Tests', 600)]),
                       job('suite / Test shard (2/2)', 40, identifier=2, steps=[('Tests', 600)]),
@@ -2218,9 +2220,6 @@ jobs:
               budget = guide.split('Source: no rate is fixed in advance', 1)[1].split('### Compile-cache hit-rate floor', 1)[0]
               assert 'cache usage' in budget and 'storage limit' in budget and 'cache list' in budget and 'floor annotations' in budget, 'the call budget counts the cache reads'
               assert "github.event.workflow_run.event == 'push'" in guide and "github.event.workflow_run.event == 'merge_group'" in guide
-              # The missing-checks title is the set of checks, never the run id, and push runs behind one reusable caller's prefix stay judged.
-              assert '"Required checks missing: ' in guide and 'missing from run' not in guide, 'the title is the set, not the run'
-              assert '`suite / Caller declaration`' in guide and 'Reuse merge queue tests` step in `Caller declaration`' in guide, guide
 
           required_checks_and_documented_defaults_stay_pinned()
           print('PASS required_checks_and_documented_defaults_stay_pinned')

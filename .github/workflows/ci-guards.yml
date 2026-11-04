@@ -200,11 +200,14 @@ jobs:
           def rated(name):
               """Whether the rate finding already judges the seconds of a timing: the archive build, a shard job and the step of a shard that runs its tests.
               Any other step of a shard is judged for growth like a step of any job; a download there is transfer, never test work."""
-              job, _, step = name.partition(' / ')
-              if step and kind_of(job) is None and kind_of(step) is not None:
-                  # The first segments held a reusable caller's prefix, so the whole name is one job, never a job-step timing.
-                  job, step = bare(name), None
-              return kind_of(job) == 'compiles' or (kind_of(job) == 'tests' and (not step or step in TEST_STEPS))
+              # Behind one reusable caller's prefix the timing reads `caller / job / step`: the job is the first segment a kind recognises.
+              parts = name.split(' / ')
+              first = next((index for index, part in enumerate(parts) if kind_of(part) is not None), None)
+              if first is None:
+                  return False
+              job, step = parts[first], (' / '.join(parts[first + 1:]) if first + 1 < len(parts) else None)
+              kind = kind_of(job)
+              return kind == 'compiles' or (kind == 'tests' and (not step or step in TEST_STEPS))
 
           RATCHET_TITLE = 'CI time ratchet'
 
