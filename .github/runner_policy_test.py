@@ -50,7 +50,7 @@ class RunnerPolicyTests(unittest.TestCase):
     def select(self, availability, source='permissions: {contents: read}', corrupt=False, offline=False, moved=False, missing_yaml=False, provider=False, event="push", head="Orchestration-Maestro/maestro"):
         workflow = WORKFLOW.read_text()
         step = workflow.split('      - name: Select Linux runner\n', 1)[1].split('      - name: ', 1)[0]
-        body = re.search(r"          python3 - <<'PYTHON'\n(.*?)          PYTHON", step, re.DOTALL)[1]
+        body = re.search(r"          python3 -I - <<'PYTHON'\n(.*?)          PYTHON", step, re.DOTALL)[1]
         code = '\n'.join(line[10:] for line in body.splitlines())
         requests = []
 

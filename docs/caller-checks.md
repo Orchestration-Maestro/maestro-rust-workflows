@@ -68,6 +68,16 @@ accepts workflow authors in the same repository: a workflow forging evidence
 would have to be reviewed code at that exact commit, and its author could
 already edit the caller. The read-only job token gains no additional permissions.
 
+Every step that holds the job token or a caller secret starts Python in isolated
+mode, `python3 -I`, so the current directory stays off `sys.path`. A module at
+the caller's checkout root, such as `json.py` or `subprocess.py`, is not imported
+while the step holds that token. Runner selection, merge-queue evidence, the
+compile-cache floor, test setup and archive downloads, and cache pruning run this
+way. A seam proof reads every step in `.github/workflows/` that holds a token and
+fails on any Python start without `-I`. It also plants a `json.py` in a scratch
+checkout: the compile-cache floor step ignores it, and the same body without `-I`
+does not.
+
 Writer and reader resolve the shared identity once. The raw workflow context
 qualifies only when it names this shared workflow's full repository path.
 Reusable callers resolve that same path from the current run's referenced

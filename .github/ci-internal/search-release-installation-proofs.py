@@ -108,13 +108,16 @@ def collect(files):
                             continue
                         words = command.get('Args', [])
                         argv = [shlex.split(spelling(word))[0] for word in words]
-                        if argv[:2] in (['python', '-'], ['python3', '-']):
+                        # Isolation flags leave the interpreter, not the script, so they are skipped before both checks.
+                        isolated = argv[1:2] == ['-I']
+                        script = argv[2:] if isolated else argv[1:]
+                        if argv[:1] in (['python'], ['python3']) and script[:1] == ['-']:
                             for redirect in node.get('Redirs', []):
                                 if 'Hdoc' in redirect and redirect.get('N', {}).get('Value', '0') == '0':
                                     python_sources.append(''.join(part['Value'] if part['Type'] == 'Lit' else spelling(part)
                                                                   for part in redirect['Hdoc'].get('Parts', [])))
-                        elif argv[:1] == ['python3'] and any(argument.startswith('.github/ci-internal/') for argument in argv[1:2]):
-                            python_sources.append(pathlib.Path(argv[1]).read_text(encoding='utf-8'))
+                        elif argv[:1] == ['python3'] and script[:1] and script[0].startswith('.github/ci-internal/'):
+                            python_sources.append(pathlib.Path(script[0]).read_text(encoding='utf-8'))
                         prefix = []
                         for word, argument in zip(words, argv, strict=True):
                             if argument.startswith('--'):
@@ -541,23 +544,27 @@ class SearchReleases(unittest.TestCase):
         self.assertEqual(collect({'example.yml': source}), [('example.yml', 'new', 'Example', 'sleep', 1, '6')])
 
     def test_python_heredoc_uses_own_language(self):
-        command = "python3 - <<'PYTHON'\nimport subprocess\nexpected = ['--retries', '9']\nsubprocess.run(['true'], timeout=60)\nPYTHON\n"
-        source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        run: |\n' + textwrap.indent(command, '          ')
-        self.assertEqual(collect({'example.yml': source}), [('example.yml', 'new', 'Example', 'python timeout', 1, '60')])
+        for invocation in ['python3 -', 'python3 -I -']:
+            with self.subTest(invocation=invocation):
+                command = invocation + " <<'PYTHON'\nimport subprocess\nexpected = ['--retries', '9']\nsubprocess.run(['true'], timeout=60)\nPYTHON\n"
+                source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        run: |\n' + textwrap.indent(command, '          ')
+                self.assertEqual(collect({'example.yml': source}), [('example.yml', 'new', 'Example', 'python timeout', 1, '60')])
 
     def test_script_file_uses_own_language(self):
-        source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        run: python3 .github/ci-internal/probe.py\n'
-        with tempfile.TemporaryDirectory() as directory:
-            probe = pathlib.Path(directory, '.github/ci-internal/probe.py')
-            probe.parent.mkdir(parents=True)
-            probe.write_text("import subprocess\nsubprocess.run(['true'], timeout=60)\n", encoding='utf-8')
-            previous = os.getcwd()
-            os.chdir(directory)
-            try:
-                rows = collect({'example.yml': source})
-            finally:
-                os.chdir(previous)
-        self.assertEqual(rows, [('example.yml', 'new', 'Example', 'python timeout', 1, '60')])
+        for invocation in ['python3', 'python3 -I']:
+            with self.subTest(invocation=invocation):
+                source = 'jobs:\n  new:\n    steps:\n      - name: Example\n        run: ' + invocation + ' .github/ci-internal/probe.py\n'
+                with tempfile.TemporaryDirectory() as directory:
+                    probe = pathlib.Path(directory, '.github/ci-internal/probe.py')
+                    probe.parent.mkdir(parents=True)
+                    probe.write_text("import subprocess\nsubprocess.run(['true'], timeout=60)\n", encoding='utf-8')
+                    previous = os.getcwd()
+                    os.chdir(directory)
+                    try:
+                        rows = collect({'example.yml': source})
+                    finally:
+                        os.chdir(previous)
+                self.assertEqual(rows, [('example.yml', 'new', 'Example', 'python timeout', 1, '60')])
 
     def test_workflow_reader_fails_closed(self):
         for source, message in [('jobs: [', 'yq failed to parse'),

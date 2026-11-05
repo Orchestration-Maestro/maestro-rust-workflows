@@ -184,7 +184,7 @@ jobs:
           PULL_REQUEST_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 - <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import base64
           import json
           import re
@@ -566,7 +566,7 @@ jobs:
           CALLER_DIRECTORY: ${{ inputs.working-directory || '.' }}
           CALL_KEY: ${{ inputs.concurrency-key }}
         run: |
-          python3 <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import hashlib
           import json
           import os
@@ -602,7 +602,7 @@ jobs:
           WORKFLOW_REF: ${{ steps.evidence-scope.outputs.workflow_ref }}
           WORKFLOW_SHA: ${{ steps.evidence-scope.outputs.workflow_sha }}
         run: |
-          python3 <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import io
           import json
           import os
@@ -1208,7 +1208,7 @@ jobs:
           CACHE_SEEDER: ${{ steps.cache-identity.outputs.seeder }}
           GH_TOKEN: ${{ github.token }}
         run: &sccache-floor |
-          python3 - <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import json
           import os
           import pathlib
@@ -1634,7 +1634,7 @@ jobs:
           ARTIFACT_NAME: test-setup-${{ inputs.concurrency-key || 'root' }}
           CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          python3 - <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import json
           import os
           import re
@@ -1673,7 +1673,7 @@ jobs:
           ARTIFACT_PATH: ${{ runner.temp }}/test-setup-candidates
           ARTIFACT_RUN_IDS: ${{ steps.candidates.outputs.runs }}
         run: &download-artifact |
-          python3 - <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import hashlib
           import http.client
           import json
@@ -3111,7 +3111,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 - <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import datetime
           import json
           import os
