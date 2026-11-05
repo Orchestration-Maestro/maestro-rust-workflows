@@ -1108,6 +1108,7 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
                                          ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
                                          test_prepare_output=os.environ.get('TEST_PREPARE_OUTPUT'),
                                          test_archive=os.environ.get('TEST_ARCHIVE'),
+                                         coverage_env={{name: value for name, value in os.environ.items() if name.startswith('CARGO_LLVM_COV')}},
                                          diagnostics=os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'))) + '\\n')
         if args[:1] != ['fetch'] and os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'):
             (pathlib.Path(os.environ['MAESTRO_TEST_DIAGNOSTICS_DIR']) / 'runner.txt').write_text(
@@ -1118,6 +1119,8 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
             subprocess.run([{real_cargo!r}, 'metadata', '--offline', '--locked', '--format-version', '1',
                             '--manifest-path', {manifest!r}], check=True, stdout=subprocess.DEVNULL)
         if args[:2] == ['llvm-cov', 'show-env']:
+            print('export CARGO_LLVM_COV=1\\nexport CARGO_LLVM_COV_SHOW_ENV=1\\nexport CARGO_LLVM_COV_TARGET_DIR=/elsewhere/target\\n'
+                  'export CARGO_LLVM_COV_BUILD_DIR=/elsewhere/target')
             sys.exit(0)
         if args[:2] == ['nextest', 'list']:
             print(json.dumps({{'rust-suites': {{}}}}))
@@ -1177,12 +1180,18 @@ def archive_build_publishes_cargo_timings():
                 'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
                 'COLLECT_COVERAGE': coverage, 'TEST_PACKAGES': '["sample"]'})
             assert result.returncode == 0, result.stdout + result.stderr
-            commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()][1:]
+            logged = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()][1:]
+            commands = [command['args'] for command in logged]
             # Only the compiling list times the build; each shard's archive then finds the binaries fresh.
             assert commands[0] == ['llvm-cov', 'show-env', '--sh'] if coverage == 'true' else commands[0][:2] == ['nextest', 'list'], commands
             listing, archives = commands[coverage == 'true'], commands[1 + (coverage == 'true'):]
             assert listing[:2] == ['nextest', 'list'] and listing.count('--timings') == 1, listing
-            assert ('--target-dir' in listing) == (coverage == 'true'), listing
+            if coverage == 'true':
+                # The archive route's own target directory and environment: shards extract there, and the compile cache keys match.
+                assert listing[listing.index('--target-dir') + 1].endswith('/target/llvm-cov-target'), listing
+                assert all(command['coverage_env'] == {'CARGO_LLVM_COV': '1'} for command in logged[1:]), logged
+            else:
+                assert '--target-dir' not in listing and all(command['coverage_env'] == {} for command in logged), logged
             assert len(archives) == 16 and all(args[:2] == ['nextest', 'archive'] and '--timings' not in args for args in archives), archives
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     steps = document['jobs']['test-build']['steps']

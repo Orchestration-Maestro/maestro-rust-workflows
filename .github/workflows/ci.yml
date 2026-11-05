@@ -1468,9 +1468,12 @@ jobs:
           if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           build=(--user-config-file none --locked "${packages[@]}")
           if [ "${COLLECT_COVERAGE:-false}" = true ]; then
-            # cargo llvm-cov's instrumentation, built where cargo llvm-cov builds: shards extract there and report from it.
-            eval "$("$TOOLS/cargo-llvm-cov" llvm-cov show-env --sh)"
-            build+=(--target-dir "$PWD/target/llvm-cov-target")
+            # The environment and target directory cargo llvm-cov nextest-archive builds with: shards extract there and report from it.
+            target_dir="$PWD/target/llvm-cov-target"
+            eval "$(CARGO_LLVM_COV_TARGET_DIR="$target_dir" "$TOOLS/cargo-llvm-cov" llvm-cov show-env --sh)"
+            # Only show-env sets these; the compile cache hashes every CARGO_ variable, so they would miss every cached compilation.
+            unset CARGO_LLVM_COV_SHOW_ENV CARGO_LLVM_COV_TARGET_DIR CARGO_LLVM_COV_BUILD_DIR
+            build+=(--target-dir "$target_dir")
           fi
           mkdir -p target
           rm -rf test-archives
