@@ -4478,8 +4478,8 @@ def workflow_safety_is_unchanged():
         section = workflow.split(f'  {job}:\n', 1)[1]
         assert 'run: rustup show' in section or 'rustup show\n' in section
     internal = (root / '.github/ci-internal/each-broken-fixture-fails-only-its-own-check.py').read_text(encoding="utf-8")
-    assert "('unformatted', 0), ('clippy-warning', 1)" in internal
-    assert "('failing-test', 3), ('undocumented', 2), ('broken-doc-link', 2)" in internal
+    assert "('unformatted', (0,)), ('clippy-warning', (1,))" in internal
+    assert "('failing-test', (4,)), ('undocumented', (2, 3)), ('broken-doc-link', (2, 3))" in internal
     # Only the base-vs-isolated tests branch may condition an original command.
     for step in workflow.split('      - name: ')[1:]:
         if any(f'run: {command}\n' in step for command in [

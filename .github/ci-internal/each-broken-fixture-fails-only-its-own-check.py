@@ -11,6 +11,7 @@ commands = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + ['
 expected = [
     'cargo fmt --all --check',
     'cargo doc --workspace --no-deps --locked',
+    'cargo doc --workspace --no-deps --locked --all-features',
     'cargo test --workspace --locked',
 ]
 assert commands == expected, f'Unexpected check commands: {commands}'
@@ -73,11 +74,11 @@ assert cancellation and cancellation.group(1) == "$" + "{{ github.event_name == 
     'Cancellation must be limited to pull requests'
 
 failures = []
-for fixture, broken in [('unformatted', 0), ('clippy-warning', 1),
-                        ('failing-test', 3), ('undocumented', 2), ('broken-doc-link', 2)]:
+for fixture, broken in [('unformatted', (0,)), ('clippy-warning', (1,)),
+                        ('failing-test', (4,)), ('undocumented', (2, 3)), ('broken-doc-link', (2, 3))]:
     for check, command in enumerate(commands):
         env = os.environ.copy()
-        if check == 2:
+        if check in (2, 3):
             env['RUSTDOCFLAGS'] = flags.group(1)
         argv = ['bash', '-e', '-o', 'pipefail', '-c', command]
         if os.environ.get('MAESTRO_LOCAL_CAPPED'):
@@ -86,7 +87,7 @@ for fixture, broken in [('unformatted', 0), ('clippy-warning', 1),
         started = time.perf_counter()
         result = subprocess.run(argv, cwd=f'fixtures/{fixture}', env=env)
         elapsed = time.perf_counter() - started
-        expected_failure = check == broken
+        expected_failure = check in broken
         print(f'{fixture}: {command}: exit {result.returncode}; '
               f'expected {"failure" if expected_failure else "success"}; elapsed {elapsed:.2f} s', flush=True)
         if (result.returncode != 0) != expected_failure:

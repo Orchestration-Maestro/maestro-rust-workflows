@@ -123,7 +123,8 @@ jobs:
       - name: Test setup candidates at workflow seam
         run: python3 .github/ci-internal/test-setup-candidates-at-workflow-seam.py
       # Reusable workflow calls cannot use continue-on-error. The broken
-      # fixtures run the workflow's own commands and assert all twenty outcomes.
+      # fixtures run the workflow's own commands and assert all twenty-five
+      # outcomes.
       - name: Each broken fixture fails only its own check
         run: python3 .github/ci-internal/each-broken-fixture-fails-only-its-own-check.py
       - name: Added checks at workflow seam
