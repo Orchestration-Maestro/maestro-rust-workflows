@@ -1464,8 +1464,9 @@ jobs:
       - name: Earlier test seconds
         env:
           GH_TOKEN: ${{ github.token }}
+        # Isolated mode keeps the caller's checkout off the import path while the token is set.
         run: |
-          python3 - <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import concurrent.futures
           import json
           import os
@@ -1505,7 +1506,7 @@ jobs:
                       seconds[binary] = seconds.get(binary, 0) + float(took)
               print(f"Test seconds from run {run['id']} ({run['event']} on {run['head_branch']} at {run['head_sha']}, {run['created_at']}): "
                     f'{len(seconds)} test binaries')
-          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, StopIteration, LookupError) as error:
+          except (subprocess.CalledProcessError, ValueError, TypeError, StopIteration, LookupError) as error:
               seconds = {}
               print(f'Test seconds unavailable ({error}); test binaries are grouped by test count.')
           pathlib.Path('target').mkdir(exist_ok=True)
@@ -1552,7 +1553,7 @@ jobs:
               min(groups, key=load).append(binary)
           groups.sort(key=load, reverse=True)
           for shard, group in enumerate(groups, 1):
-              print(f'Shard {shard}: ' + (f'{load(group)[0]:.0f} s, ' if known else '') + f'{load(group)[1]} tests in {len(group)} binaries: {" ".join(group)}')
+              print(f'Shard {shard}: ' + (f'{load(group)[0]:.0f} s, ' if known else '') + f'{load(group)[1]} tests in {len(group)} {"binary" if len(group) == 1 else "binaries"}: {" ".join(group)}')
           pathlib.Path('target/test-filters.txt').write_text(
               ''.join((' | '.join(f'binary_id(={binary})' for binary in group) or 'none()') + '\n' for group in groups), encoding='utf-8')
           # How many test binaries each shard's archive holds: a shard with none has nothing to run.

@@ -31,10 +31,13 @@ CURRENT = {'actions/runs/100': run(100, '2026-11-05T10:00:00Z'),
 def shard_log(*lines):
     return ''.join(f'2026-11-05T09:00:00.0000000Z {line}\n' for line in lines)
 
-def read(routes):
-    """Run the step against a gh that answers only the given routes, a None route as GitHub's 404; return the seconds it wrote and its log."""
+def read(routes, checkout=None):
+    """Run the step in a checkout holding the given files, against a gh that answers only the given routes, a None route as GitHub's 404;
+    return the seconds it wrote and its log."""
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
+        for name, text in (checkout or {}).items():
+            (directory / name).write_text(text, encoding='utf-8')
         (directory / 'routes.json').write_text(json.dumps(routes), encoding='utf-8')
         (directory / 'bin').mkdir()
         gh = directory / 'bin/gh'
@@ -91,7 +94,12 @@ def without_earlier_timing_the_binaries_go_by_test_count():
         assert seconds == {}, seconds
         assert 'Test seconds unavailable' in log and 'test binaries are grouped by test count' in log, log
 
+def the_caller_checkout_never_runs_with_the_token():
+    # The step runs in the caller's checkout with the token, so a module there must never shadow the one the step imports.
+    seconds, log = read({}, {'json.py': "raise SystemExit('the caller checkout ran with the token')\n"})
+    assert seconds == {}, seconds
+
 for check in [the_newest_earlier_run_of_this_caller_supplies_seconds_per_test_binary, a_failed_shard_keeps_its_run_out,
-              without_earlier_timing_the_binaries_go_by_test_count]:
+              without_earlier_timing_the_binaries_go_by_test_count, the_caller_checkout_never_runs_with_the_token]:
     check()
     print('PASS ' + check.__name__, flush=True)

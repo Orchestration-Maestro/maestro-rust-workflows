@@ -1216,7 +1216,7 @@ def archive_groups_follow_earlier_test_seconds():
             # Unmeasured `new` weighs its ten tests at the measured 8.25 seconds per test.
             ({'heavy::integration': 600, 'broad::integration': 30, 'wide::integration': 30, 'gone::integration': 5},
              ['binary_id(=heavy::integration)', 'binary_id(=new::integration) | binary_id(=broad::integration) | binary_id(=wide::integration)'],
-             'Shard 1: 600 s, 20 tests in 1 binaries: heavy::integration\n'),
+             'Shard 1: 600 s, 20 tests in 1 binary: heavy::integration\n'),
             # Without earlier seconds every test weighs the same.
             (None, ['binary_id(=broad::integration) | binary_id(=heavy::integration)', 'binary_id(=wide::integration) | binary_id(=new::integration)'],
              'Shard 1: 50 tests in 2 binaries: broad::integration heavy::integration\n')]:
