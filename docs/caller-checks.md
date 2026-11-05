@@ -203,7 +203,7 @@ install a newer shell.
 
 ## Compile cache
 
-Cached Linux compiling jobs export `CARGO_BUILD_RUSTC_WRAPPER=sccache`, so callers do not
+Cached compiling jobs export `CARGO_BUILD_RUSTC_WRAPPER=sccache`, so callers do not
 need to set `RUSTC_WRAPPER` for caching. A build that a test starts after removing
 `RUSTC_WRAPPER` keeps the cache without coverage instrumentation. Coverage runs
 still instrument workspace builds and send their compiles through the cache.
