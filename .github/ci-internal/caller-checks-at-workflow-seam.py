@@ -3481,7 +3481,7 @@ def merge_queue_identity_is_exact_and_shared():
         step = next(step for step in steps if step['name'] == name)
         for key in ['WORKFLOW_REF', 'WORKFLOW_SHA']:
             assert step['env'][key] == '${{ steps.evidence-scope.outputs.' + key.lower() + ' }}'
-    match = re.search(r"python3 <<'PYTHON'\n(.*?)\nPYTHON", body('Test evidence identity'), re.S)
+    match = re.search(r"python3 -I - <<'PYTHON'\n(.*?)\nPYTHON", body('Test evidence identity'), re.S)
     assert match
     path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
     reference = {'path': path + '@v1', 'sha': 'c' * 40}
@@ -3569,7 +3569,7 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                        ('inputs.checkout-repository', 'owner/fixture'), ('inputs.checkout-ref', 'other'),
                        ('inputs.test-event', 'push')]:
         assert not evaluate(check['if'], context | {key: value}), key
-    match = re.search(r"python3 <<'PYTHON'\n(.*?)\nPYTHON", body('Check merge queue result'), re.S)
+    match = re.search(r"python3 -I - <<'PYTHON'\n(.*?)\nPYTHON", body('Check merge queue result'), re.S)
     assert match
     script = match[1]
     path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
