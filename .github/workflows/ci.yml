@@ -1286,6 +1286,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
+      TEST_SHARD_COUNT: ${{ needs.declaration.outputs.test_shard_count }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.enabled == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') }}
@@ -1399,19 +1400,110 @@ jobs:
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: *caller-tools
+      # Seconds only steer which shard gets each test binary, never which tests run; the token stays out of the step that compiles the caller.
+      - name: Earlier test seconds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Isolated mode keeps the caller's checkout off the import path while the token is set.
+        run: |
+          python3 -I - <<'PYTHON'
+          import concurrent.futures
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          repository = os.environ['GITHUB_REPOSITORY']
+          def gh(*argv):
+              return subprocess.check_output(['gh', 'api', *argv[:-1], f'repos/{repository}/{argv[-1]}'], text=True)
+          def jobs_of(path):
+              return [job for page in json.loads(gh('--paginate', '--slurp', path)) for job in page['jobs']]
+          def log_of(job):
+              return gh('--allow-escape-sequences', f"actions/jobs/{job['id']}/logs")
+          seconds = {}
+          try:
+              current = json.loads(gh(f"actions/runs/{os.environ['GITHUB_RUN_ID']}"))
+              built = next(job for job in jobs_of(f"actions/runs/{current['id']}/attempts/{os.environ['GITHUB_RUN_ATTEMPT']}/jobs?per_page=100")
+                           if job['status'] == 'in_progress' and job['runner_name'] == os.environ['RUNNER_NAME'])
+              # This caller's shards carry the same prefix as this job (`suite / Build test archive`).
+              shard = re.compile(re.escape(built['name'].removesuffix('Build test archive')) + r'Test shard \(\d+/\d+\)')
+              earlier = sorted((run for event in ('merge_group', 'push')
+                                for run in json.loads(gh(f'actions/runs?event={event}&status=success&per_page=100'))['workflow_runs']
+                                if run['workflow_id'] == current['workflow_id'] and run['created_at'] < current['created_at']
+                                and (run['head_repository'] or {}).get('full_name') == repository),
+                               key=lambda run: run['created_at'], reverse=True)
+              for run in earlier:
+                  shards = [job for job in jobs_of(f"actions/runs/{run['id']}/jobs?per_page=100") if shard.fullmatch(job['name'])]
+                  if shards and all(job['conclusion'] == 'success' for job in shards):
+                      break
+              else:
+                  raise LookupError('no earlier successful run of this workflow ran these test shards')
+              with concurrent.futures.ThreadPoolExecutor() as pool:
+                  logs = list(pool.map(log_of, shards))
+              for log in logs:
+                  log = re.sub(r'\x1b\[[0-9;]*m', '', log)
+                  for took, binary in re.findall(r'(?m)^\S+Z\s+PASS \[\s*([0-9.]+)s\]\s+(?:\([^)]*\)\s+)?(\S+)\s', log):
+                      seconds[binary] = seconds.get(binary, 0) + float(took)
+              print(f"Test seconds from run {run['id']} ({run['event']} on {run['head_branch']} at {run['head_sha']}, {run['created_at']}): "
+                    f'{len(seconds)} test binaries')
+          except (subprocess.CalledProcessError, ValueError, TypeError, StopIteration, LookupError) as error:
+              seconds = {}
+              print(f'Test seconds unavailable ({error}); test binaries are grouped by test count.')
+          pathlib.Path('target').mkdir(exist_ok=True)
+          pathlib.Path('target/test-seconds.json').write_text(json.dumps(seconds), encoding='utf-8')
+          PYTHON
       - name: Build test archive
         timeout-minutes: 45
         run: |
           cargo fetch --locked
           mapfile -d '' -t packages < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
           if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
+          build=(--user-config-file none --locked "${packages[@]}")
           if [ "${COLLECT_COVERAGE:-false}" = true ]; then
-            "$TOOLS/cargo-llvm-cov" llvm-cov nextest-archive --user-config-file none \
-              --locked "${packages[@]}" --timings --archive-file test-binaries.tar.zst
-          else
-            "$TOOLS/cargo-nextest" nextest archive --user-config-file none \
-              --locked "${packages[@]}" --timings --archive-file test-binaries.tar.zst
+            # The environment and target directory cargo llvm-cov nextest-archive builds with: shards extract there and report from it.
+            target_dir="$PWD/target/llvm-cov-target"
+            eval "$(CARGO_LLVM_COV_TARGET_DIR="$target_dir" "$TOOLS/cargo-llvm-cov" llvm-cov show-env --sh)"
+            # Only show-env sets these; the compile cache hashes every CARGO_ variable, so they would miss every cached compilation.
+            unset CARGO_LLVM_COV_SHOW_ENV CARGO_LLVM_COV_TARGET_DIR CARGO_LLVM_COV_BUILD_DIR
+            build+=(--target-dir "$target_dir")
           fi
+          mkdir -p target
+          rm -rf test-archives
+          mkdir test-archives
+          # The one compilation: every later archive call finds the binaries fresh.
+          "$TOOLS/cargo-nextest" nextest list "${build[@]}" --timings --ignore-default-filter --message-format json > target/test-list.json
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          suites = json.loads(pathlib.Path('target/test-list.json').read_text(encoding='utf-8'))['rust-suites']
+          tests = {binary: sum(case['filter-match']['status'] == 'matches' for case in suite['testcases'].values())
+                   for binary, suite in suites.items()}
+          timed = pathlib.Path('target/test-seconds.json')
+          measured = json.loads(timed.read_text(encoding='utf-8')) if timed.exists() else {}
+          known = [binary for binary in tests if binary in measured]
+          # A binary the earlier run did not time weighs its tests at the timed binaries' seconds per test; with none timed, every test weighs one.
+          rate = sum(measured[binary] for binary in known) / (sum(tests[binary] for binary in known) or 1) if known else 1
+          weight = {binary: measured.get(binary, tests[binary] * rate) for binary in tests}
+          def load(group):
+              return sum(weight[member] for member in group), sum(tests[member] for member in group)
+          # Each test binary goes whole to one shard: the slowest first, each to the shard with the fewest seconds so far.
+          groups = [[] for _ in range(int(os.environ['TEST_SHARD_COUNT']))]
+          for binary in sorted(tests, key=lambda binary: (-weight[binary], -tests[binary], binary)):
+              min(groups, key=load).append(binary)
+          groups.sort(key=load, reverse=True)
+          for shard, group in enumerate(groups, 1):
+              print(f'Shard {shard}: ' + (f'{load(group)[0]:.0f} s, ' if known else '') + f'{load(group)[1]} tests in {len(group)} {"binary" if len(group) == 1 else "binaries"}: {" ".join(group)}')
+          pathlib.Path('target/test-filters.txt').write_text(
+              ''.join((' | '.join(f'binary_id(={binary})' for binary in group) or 'none()') + '\n' for group in groups), encoding='utf-8')
+          # How many test binaries each shard's archive holds: a shard with none has nothing to run.
+          pathlib.Path('test-archives/test-binaries.json').write_text(
+              json.dumps({f'shard-{shard}.tar.zst': len(group) for shard, group in enumerate(groups, 1)}), encoding='utf-8')
+          PYTHON
+          mapfile -t filters < target/test-filters.txt
+          for shard in "${!filters[@]}"; do
+            "$TOOLS/cargo-nextest" nextest archive "${build[@]}" -E "${filters[$shard]}" --archive-file "test-archives/shard-$((shard + 1)).tar.zst"
+          done
       - name: Save Cargo git cache
         if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
         continue-on-error: true
@@ -1426,7 +1518,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: test-archive-${{ inputs.concurrency-key || 'root' }}
-          path: ${{ inputs.working-directory || '.' }}/test-binaries.tar.zst
+          path: ${{ inputs.working-directory || '.' }}/test-archives/
           compression-level: 0
           if-no-files-found: error
       - name: Upload archive build timings
@@ -1616,24 +1708,28 @@ jobs:
           python3 - <<'PYTHON'
           import hashlib
           import http.client
+          import io
           import json
           import os
           import pathlib
           import shutil
+          import struct
           import sys
           import time
           import urllib.error
           import urllib.parse
           import urllib.request
           import zipfile
+          import zlib
           from concurrent.futures import ThreadPoolExecutor
 
           # The artifact is a zip in blob storage. One stream is slow in some regions, so fetch it in parallel ranges,
-          # check its size and digest, then extract. An unusable listing or any failed range hands the whole download
-          # over to the single-stream action.
+          # check its size and digest, then extract. Named members are fetched alone, each checked against the zip's own
+          # size and checksum. An unusable listing or any failed range hands the whole download over to the single-stream action.
           STREAMS, MINIMUM_RANGE = 16, 1 << 20
           TRANSPORT = (OSError, http.client.HTTPException)
           name, destination = os.environ['ARTIFACT_NAME'], pathlib.Path(os.environ['ARTIFACT_PATH'])
+          members = os.environ.get('ARTIFACT_MEMBERS', '').split()
           api = f"{os.environ['GITHUB_API_URL']}/repos/{os.environ['GITHUB_REPOSITORY']}/actions"
           partial = pathlib.Path(os.environ['RUNNER_TEMP']) / f'{name}.zip'
 
@@ -1659,14 +1755,26 @@ jobs:
                   raise
               raise OSError('artifact download did not redirect to storage')
 
-          def fetch(url, start, end):
-              with get(url, {'Range': f'bytes={start}-{end}'}) as response, open(partial, 'r+b') as target:
+          def fetch(url, start, end, path, base):
+              with get(url, {'Range': f'bytes={start}-{end}'}) as response, open(path, 'r+b') as target:
                   if response.status != 206:
                       raise OSError('storage ignored the range')
-                  target.seek(start)
+                  target.seek(start - base)
                   shutil.copyfileobj(response, target, 1 << 20)
-                  if target.tell() != end + 1:
+                  if target.tell() != end + 1 - base:
                       raise OSError('short range')
+
+          def fetch_ranges(url, base, size, path):
+              with open(path, 'wb') as target:
+                  target.truncate(size)
+              streams = max(1, min(STREAMS, size // MINIMUM_RANGE))
+              step = max(1, -(-size // streams))
+              # All ranges start together, within the signed URL's roughly one-minute lifetime.
+              with ThreadPoolExecutor(streams) as pool:
+                  for future in [pool.submit(fetch, url, start, min(start + step, base + size) - 1, path, base)
+                                 for start in range(base, base + size, step)]:
+                      future.result()
+              return streams
 
           def download(artifact):
               size = artifact['size_in_bytes']
@@ -1675,14 +1783,60 @@ jobs:
                   if probe.status != 206:
                       shutil.copyfileobj(probe, target, 1 << 20)
                       return 1
-                  target.truncate(size)
-              streams = max(1, min(STREAMS, size // MINIMUM_RANGE))
-              step = -(-size // streams)
-              # All ranges start together, within the signed URL's roughly one-minute lifetime.
-              with ThreadPoolExecutor(streams) as pool:
-                  for future in [pool.submit(fetch, url, start, min(start + step, size) - 1) for start in range(0, size, step)]:
-                      future.result()
-              return streams
+              return fetch_ranges(url, 0, size, partial)
+
+          class Stored(io.RawIOBase):
+              # The artifact zip as a file whose reads are range requests, so the zip reader fetches only its directory.
+              def __init__(self, url, size):
+                  self.url, self.size, self.position = url, size, 0
+
+              def readable(self):
+                  return True
+
+              def seekable(self):
+                  return True
+
+              def seek(self, offset, whence=io.SEEK_SET):
+                  self.position = {io.SEEK_SET: 0, io.SEEK_CUR: self.position, io.SEEK_END: self.size}[whence] + offset
+                  return self.position
+
+              def readinto(self, buffer):
+                  end = min(self.position + len(buffer), self.size)
+                  if end <= self.position:
+                      return 0
+                  with get(self.url, {'Range': f'bytes={self.position}-{end - 1}'}) as response:
+                      if response.status != 206:
+                          raise OSError('storage ignored the range')
+                      data = response.read()
+                  buffer[:len(data)] = data
+                  self.position += len(data)
+                  return len(data)
+
+          def download_members(artifact, destination):
+              url = storage_url(artifact)
+              stored = Stored(url, artifact['size_in_bytes'])
+              with zipfile.ZipFile(stored) as bundle:
+                  entries = [bundle.getinfo(member) for member in members]
+              destination.mkdir(parents=True, exist_ok=True)
+              streams = 0
+              for entry in entries:
+                  if entry.compress_type != zipfile.ZIP_STORED:
+                      raise ValueError(f'{entry.filename} is compressed in the artifact')
+                  stored.seek(entry.header_offset)
+                  header = stored.read(zipfile.sizeFileHeader)
+                  if len(header) != zipfile.sizeFileHeader or header[:4] != zipfile.stringFileHeader:
+                      raise zipfile.BadZipFile(f'{entry.filename} has no local header')
+                  # The local header ends with the name and extra field lengths; the stored bytes follow both.
+                  start = entry.header_offset + zipfile.sizeFileHeader + sum(struct.unpack_from('<HH', header, 26))
+                  path = destination / entry.filename
+                  streams = max(streams, fetch_ranges(url, start, entry.file_size, path))
+                  checksum = 0
+                  with open(path, 'rb') as source:
+                      for block in iter(lambda: source.read(1 << 20), b''):
+                          checksum = zlib.crc32(block, checksum)
+                  if path.stat().st_size != entry.file_size or checksum != entry.CRC:
+                      raise SystemExit(f'{name}: {entry.filename} does not match the size and checksum the artifact records')
+              return streams, sum(entry.file_size for entry in entries)
 
           run_ids = os.environ.get('ARTIFACT_RUN_IDS', '').split()
 
@@ -1702,25 +1856,29 @@ jobs:
                   if not expected.startswith('sha256:'):
                       raise OSError('artifact has no sha256 digest')
                   started = time.monotonic()
-                  streams = download(artifact)
+                  if members:
+                      streams, size = download_members(artifact, destination)
+                  else:
+                      streams = download(artifact)
                   seconds = time.monotonic() - started
-              except (*TRANSPORT, KeyError, ValueError) as error:
+              except (*TRANSPORT, KeyError, ValueError, zipfile.BadZipFile) as error:
                   partial.unlink(missing_ok=True)
                   fall_back(f'{type(error).__name__}: {error}', started)
                   return
-              try:
-                  size, hasher = partial.stat().st_size, hashlib.sha256()
-                  with open(partial, 'rb') as source:
-                      for block in iter(lambda: source.read(1 << 20), b''):
-                          hasher.update(block)
-                  if size != artifact['size_in_bytes']:
-                      raise SystemExit(f"{name}: size mismatch, expected {artifact['size_in_bytes']} bytes, got {size}")
-                  if 'sha256:' + hasher.hexdigest() != expected:
-                      raise SystemExit(f'{name}: digest mismatch, expected {expected}, got sha256:{hasher.hexdigest()}')
-                  with zipfile.ZipFile(partial) as bundle:
-                      bundle.extractall(destination)
-              finally:
-                  partial.unlink(missing_ok=True)
+              if not members:
+                  try:
+                      size, hasher = partial.stat().st_size, hashlib.sha256()
+                      with open(partial, 'rb') as source:
+                          for block in iter(lambda: source.read(1 << 20), b''):
+                              hasher.update(block)
+                      if size != artifact['size_in_bytes']:
+                          raise SystemExit(f"{name}: size mismatch, expected {artifact['size_in_bytes']} bytes, got {size}")
+                      if 'sha256:' + hasher.hexdigest() != expected:
+                          raise SystemExit(f'{name}: digest mismatch, expected {expected}, got sha256:{hasher.hexdigest()}')
+                      with zipfile.ZipFile(partial) as bundle:
+                          bundle.extractall(destination)
+                  finally:
+                      partial.unlink(missing_ok=True)
               print(f"artifact-download name={name} bytes={size} seconds={seconds:.2f} mb_per_second={size / 1e6 / seconds:.2f} streams={streams}")
 
           # One run's artifact goes straight to the path; a list of runs puts each in a directory named for its run, and a run whose bundle is missing, fails its checks or cannot be read is skipped.
@@ -1827,7 +1985,7 @@ jobs:
       WARM_TEST_FILTER: ${{ fromJSON(needs.declaration.outputs.warm_test_filter) }}
       SHARD: ${{ matrix.shard }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
-      TEST_ARCHIVE: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && format('{0}/{1}/test-binaries.tar.zst', github.workspace, inputs.working-directory || '.') || '' }}
+      TEST_ARCHIVE: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && format('{0}/{1}/shard-{2}.tar.zst', github.workspace, inputs.working-directory || '.', matrix.shard) || '' }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
       COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
     defaults: &test-defaults
@@ -1888,6 +2046,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ARTIFACT_NAME: test-archive-${{ inputs.concurrency-key || 'root' }}
+          ARTIFACT_MEMBERS: shard-${{ matrix.shard }}.tar.zst test-binaries.json
           ARTIFACT_PATH: .
         run: *download-artifact
       - name: Download test archive in one stream
@@ -1928,7 +2087,10 @@ jobs:
             build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
           fi
           if [ "${SHARD:-}" != doctests ]; then
-            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${build_args[@]}" --retries 0 --final-status-level flaky --partition "slice:$SHARD/$TEST_SHARD_COUNT" --no-tests pass 2>&1 | tee nextest.log
+            # A shard's own archive holds exactly its tests.
+            partition=()
+            if [ -z "${TEST_ARCHIVE:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); fi
+            "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${build_args[@]}" --retries 0 --final-status-level flaky "${partition[@]}" --no-tests pass 2>&1 | tee nextest.log
           fi
           if [[ "$SHARD" == doctests || ( -z "${TEST_ARCHIVE:-}" && "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
             cargo test --locked --doc "${packages[@]}"
@@ -2076,21 +2238,29 @@ jobs:
                 report=(--lcov --output-path "$PWD/target/single-coverage/shard-1.lcov")
               fi
               coverage_build_args=("${packages[@]}" --locked)
+              archived_binaries=''
               if [ -n "${TEST_ARCHIVE:-}" ]; then
                 # Keep compile-time Cargo executable paths valid after archive extraction.
                 mkdir -p target/llvm-cov-target
                 ln -sfn target/debug target/llvm-cov-target/debug
                 coverage_build_args=(--no-clean --archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
+                partition=()
+                archived_binaries=$(python3 -c 'import json, os, pathlib; archive = pathlib.Path(os.environ["TEST_ARCHIVE"]); print(json.loads((archive.parent / "test-binaries.json").read_text(encoding="utf-8"))[archive.name])')
               fi
-              run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-                --retries 0 --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" \
-                --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee nextest.log
+              if [ "$archived_binaries" = 0 ]; then
+                # More shards than test binaries: this shard has none, so it runs nothing and covers no line.
+                : > "$PWD/shard-$SHARD.lcov"
+              else
+                run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
+                  --retries 0 --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" \
+                  --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee nextest.log
+              fi
               if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] && [ "${WARM_CACHE:-false}" != true ]; then
                 COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
               fi
             else
               partition=()
-              if [ -n "${SHARD:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); fi
+              if [ -n "${SHARD:-}" ] && [ -z "${TEST_ARCHIVE:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); fi
               run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
                 "${build_args[@]}" --retries 0 --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi

@@ -335,11 +335,15 @@ can remove an entry before the next reader runs.
 
 ## Test shards
 
-Tests use checksum-pinned cargo-nextest 0.9.148 with automatic
-`--partition slice:N/COUNT` partitions, where `COUNT` is the declared
-`test_shard_count`. The caller's `.config/nextest.toml` supplies
+Tests use checksum-pinned cargo-nextest 0.9.148. Each of the declared
+`test_shard_count` shards runs whole test binaries, balanced by the seconds
+their tests took on an earlier run when the tests are built (see
+[Build once, test many](#build-once-test-many)). The `warm-cache` call is
+the exception: one job compiles the tests and runs its warm test filter with
+no archive. The
+caller's `.config/nextest.toml` supplies
 test-suite runner metadata such as resource groups for fixed-port tests. Shared
-CI controls partitioning and coverage; profile default filters are ignored so
+CI controls shard grouping and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
 run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
@@ -355,7 +359,7 @@ test_shard_count = 32
 ```
 
 More shards spread the tests over more runners, and each shard repeats its own
-setup. The shard matrix, the partitions, the job names and the coverage union
+setup. The shard matrix, the binary groups, the job names and the coverage union
 all use the declared count on full runs, so the union expects exactly that many
 reports. Pull requests run no test shards and upload no coverage.
 
@@ -369,7 +373,7 @@ successful declaration and skipped test and doctest jobs, regardless of package
 selection. On full runs it downloads all reports, counts each source line once
 (covered if any shard hits it), and enforces `coverage_min_lines` on the union.
 Missing reports or low coverage fail.
-Undeclared callers use nextest partitions but retain their single coverage job
+Undeclared callers use the same test shards but retain their single coverage job
 for merge groups and main pushes. Both coverage modes run tests through nextest,
 so caller setup scripts run in either mode (reusing prepared outputs in shards). Single-job coverage uses one partition
 (`slice:1/1`); declared callers combine one report per shard. Both modes use the same
@@ -379,28 +383,59 @@ the coverage floor on the union of hits. PRs skip coverage for all callers.
 ### Build once, test many
 
 On merge groups and main pushes, one `Build test archive` job compiles the
-workspace's unit and integration tests with `cargo nextest archive` (or
-`cargo llvm-cov nextest-archive` for declared coverage).
-Numeric shards download that archive and run `--archive-file`, keeping the same
-partitions and coverage reports. Existing locked dependency fetches stay
+workspace's unit and integration tests once, with `cargo nextest list`. Declared
+coverage builds in `target/llvm-cov-target` with the environment
+`cargo llvm-cov show-env` reports, less show-env's own `CARGO_LLVM_COV_SHOW_ENV`,
+`CARGO_LLVM_COV_TARGET_DIR` and `CARGO_LLVM_COV_BUILD_DIR`. That is the
+instrumentation, directory and compile-cache key set `cargo llvm-cov` builds
+with, so shards report coverage from the paths it reads. The job then splits the test binaries into one group per
+shard by the seconds their tests took before. The slowest binary goes first, and
+each binary goes whole to the group with the fewest seconds so far. Shard 1 gets
+the slowest group. The job log prints each shard's tests and binaries, with its
+seconds when an earlier run timed them, and `cargo nextest archive -E` writes
+one archive per group from the binaries already built.
+
+The seconds come from the `Earlier test seconds` step, before the build. It takes
+the newest earlier successful merge group or push run of the same workflow in
+which every test shard of this caller succeeded, adds up the `PASS` seconds
+those shards' logs print for each test binary, and logs the run it read with its
+branch, commit and date. A binary that run did not time weighs its tests at the
+timed binaries' seconds per test. With no such run, or when the lookup fails, the
+step says so and every test weighs the same: the binaries go by test count. The
+timing decides only which shard runs each binary, never which tests run. This
+step holds the run's token, and its Python runs isolated, so no module in the
+caller's checkout is imported while it holds the token.
+
+Each numeric shard downloads only its own archive and runs every test in it with
+`--archive-file`. No partition flag applies, so every test runs on exactly one
+shard. When a caller has fewer test binaries than shards, the extra shards hold
+no binary: they run nothing and upload an empty coverage report, so the union
+still receives one report per shard. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
 runs doctests once on every merge group and main push, without waiting for the
 archive build.
 Warm-cache runs keep their existing compile route and cache shape.
 
-Both archive commands pass `--timings` to Cargo. Download the
+The compiling `cargo nextest list` passes `--timings` to Cargo. Download the
 `test-build-timings-<concurrency-key>` artifact (`test-build-timings-root` when no
 key is set) and open `cargo-timing.html` to inspect per-crate build times.
 The artifact includes the report from `target/cargo-timings/` for plain builds or
 `target/llvm-cov-target/cargo-timings/` for coverage builds. A successful archive
 build must produce a timing report; a missing report fails the upload.
 
-Each shard fetches the archive and the test setup bundle in up to 16 parallel byte ranges
-from artifact storage, checks the size and SHA-256 digest the Actions API reports, then
-extracts. Storage without range support supplies one stream. A digest or size mismatch
-fails the step before anything is extracted. If the listing has no digest or the transfer
-fails, the step hands over to the single-stream `download-artifact` action without retrying
+Each shard fetches the test setup bundle in up to 16 parallel byte ranges from artifact
+storage, checks the size and SHA-256 digest the Actions API reports, then extracts.
+Storage without range support supplies one stream. A digest or size mismatch fails the
+step before anything is extracted. If the listing has no digest or the transfer fails,
+the step hands over to the single-stream `download-artifact` action without retrying
 individual ranges.
+
+The test archive artifact holds every shard's archive and `test-binaries.json`, the
+number of test binaries in each. A shard reads the artifact's zip directory, then
+fetches only `shard-<n>.tar.zst` and `test-binaries.json` in parallel ranges and checks
+each against the size and CRC-32 the zip records. A mismatch fails the step. A
+compressed member, an unreadable directory or a failed range hands over to the
+single-stream action, which downloads every shard's archive.
 
 Each download prints one line, `artifact-download name=<artifact> bytes=<n> seconds=<s>
 mb_per_second=<rate> streams=<n>`. The rate uses decimal MB (1,000,000 bytes) and measures
@@ -554,7 +589,7 @@ test_prepare_inputs = [".config/prepare-tests.sh", "tools/**/*.toml"]
 Declared callers receive `MAESTRO_TEST_DIAGNOSTICS_DIR`, an absolute path to
 `target/browser-author-diagnostics` under the caller's working directory. The
 workflow creates it outside disposable HOME/TMP isolation and forwards it to
-partition runners and the doctest owner described in [Test shards](#test-shards).
+test shards and the doctest owner described in [Test shards](#test-shards).
 An inherited value is not used.
 
 Caller tests own transcript production: write regular files there, flush each
@@ -708,7 +743,7 @@ never become tools. Existing installation deadlines still apply.
   its built-in correctness checks remain active.
 
 Undeclared coverage runs `cargo llvm-cov --workspace --locked
---fail-under-lines 80`. Declared coverage runs within the test partitions and
+--fail-under-lines 80`. Declared coverage runs within the test shards and
 its threshold is enforced by `Tests (ubuntu-latest)`, not by the dependency job.
 Neither accepts consumer coverage exclusions or external LLVM overrides.
 The Tests, Isolated tests and undeclared Coverage steps retain their 45-minute
@@ -843,7 +878,7 @@ locations, plus `MAESTRO_NO_LOCAL_LLM=1` and the workflow-computed
 `MAESTRO_TEST_DIAGNOSTICS_DIR` described in [Test diagnostics](#test-diagnostics). `TMP` and `TEMP` equal `TMPDIR`; the
 other locations are separate, initially empty directories beneath a unique
 runner-temp parent. Unrelated CI state, proxy settings and application/provider
-overrides are not inherited. The partition argv uses `cargo llvm-cov nextest`; doctests use
+overrides are not inherited. The test shard argv uses `cargo llvm-cov nextest`; doctests use
 `cargo test --workspace --locked --doc`.
 
 The test setup exports Rustup's active toolchain before compilation; both test
@@ -873,7 +908,7 @@ of the test command, whether it passed or failed.
 ## Caller-pinned build and test tools
 
 With `test_tools = true`, every enabled caller-compiling job installs the
-caller's `mise.toml` tools before lint, documentation, test/coverage partitions,
+caller's `mise.toml` tools before lint, documentation, test/coverage shards,
 foreign-target checks and wasm builds, including their build scripts. The shared
 checksum-verified mise 2026.10.2 bootstrap selects the actual runner host: Linux
 x64/ARM64, macOS x64/ARM64 or Windows x64, independently of the Rust target.
@@ -891,7 +926,7 @@ Build-tool versions come from the caller. The optional
 supply undeclared build tools. False or omitted `test_tools` skips this opt-in;
 a `mise.toml` alone does not enable it. Noncompiling jobs install no caller tools.
 An absent declaration still runs the original unisolated tests.
-The nextest partition and doctest argv, credential guards,
+The nextest shard and doctest argv, credential guards,
 fresh directories and the child environment allowlist are unchanged. Only the
 installed tools' executable paths are added, not mise's environment settings.
 Windows paths are published in native format for later steps.
