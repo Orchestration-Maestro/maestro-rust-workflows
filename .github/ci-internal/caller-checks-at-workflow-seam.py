@@ -637,7 +637,7 @@ def archived_shards_reuse_build_and_prepared_outputs():
                 '#[test] fn archived_binary_still_runs() {\n'
                 'assert!(std::process::Command::new(env!("CARGO_BIN_EXE_sample")).status().unwrap().success());\n}\n', encoding='utf-8')
             command = 'printf "#!/bin/sh\\nexit 0\\n" > "$TEST_PREPARE_OUTPUT/prepared"; chmod +x "$TEST_PREPARE_OUTPUT/prepared"; echo once >> prepare-count'
-            env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage,
+            env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage, 'TEST_SHARD_COUNT': '2',
                    'TEST_PREPARE': command, 'TEST_PACKAGES': '["sample"]',
                    'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0]}
             result = execute('Prepare test setup', directory, env)
@@ -646,7 +646,8 @@ def archived_shards_reuse_build_and_prepared_outputs():
             assert result.returncode == 0, result.stdout + result.stderr
             assert (result.stdout + result.stderr).count('Compiling sample ') == 1, result.stdout + result.stderr
             assert list(directory.glob(timing_glob)), f'No uploaded Cargo timings for coverage={coverage}: {timing_glob}'
-            assert sorted(path.name for path in (directory / 'test-archives').iterdir()) == ['shard-1.tar.zst', 'shard-2.tar.zst', 'test-binaries.json']
+            archives = sorted(path.name for path in (directory / 'test-archives').iterdir())
+            assert archives == ['shard-1.tar.zst', 'shard-2.tar.zst', 'test-binaries.json'], archives
             assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
             shutil.rmtree(directory / 'target')
             downloaded = pathlib.Path(temporary) / 'maestro-test-setup'
