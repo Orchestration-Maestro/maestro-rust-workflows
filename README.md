@@ -7,7 +7,7 @@ One shared Rust CI. The original checks remain required:
 | Format | `cargo fmt --all --check` | Linux |
 | Lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Linux |
 | Docs | `cargo doc --workspace --no-deps --locked` | Linux |
-| Tests | `cargo nextest run` partitions and `cargo test --doc` | Linux |
+| Tests | `cargo nextest run` shards and `cargo test --doc` | Linux |
 
 Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
 be documented, and documentation warnings fail the check. Tests run on Linux
@@ -43,6 +43,7 @@ changed paths. Ordinary pull requests skip Chromium runtime tests. See
 Tests run with checksum-pinned cargo-nextest 0.9.148 on 16 Linux runners by
 default. Each shard runs whole test binaries, balanced by the seconds their
 tests took on an earlier run, or by test count when no earlier run timed them.
+The `warm-cache` call instead compiles and runs its warm test filter in one job.
 A caller can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
 [test shards](docs/caller-checks.md#test-shards). Doctests run in a
 parallel `Doctests` matrix leg on merge groups and main pushes.

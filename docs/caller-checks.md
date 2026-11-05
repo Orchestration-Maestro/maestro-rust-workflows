@@ -338,10 +338,12 @@ can remove an entry before the next reader runs.
 Tests use checksum-pinned cargo-nextest 0.9.148. Each of the declared
 `test_shard_count` shards runs whole test binaries, balanced by the seconds
 their tests took on an earlier run when the tests are built (see
-[Build once, test many](#build-once-test-many)). The
+[Build once, test many](#build-once-test-many)). The `warm-cache` call is
+the exception: one job compiles the tests and runs its warm test filter with
+no archive. The
 caller's `.config/nextest.toml` supplies
 test-suite runner metadata such as resource groups for fixed-port tests. Shared
-CI controls partitioning and coverage; profile default filters are ignored so
+CI controls shard grouping and coverage; profile default filters are ignored so
 they cannot omit tests. Runner user configuration is not loaded. `test_shards` was removed; setting it fails
 with a clear diagnostic. Unit and integration tests run exactly once; doctests
 run once with `cargo test --locked --doc` in a parallel `Doctests` matrix leg
@@ -400,9 +402,9 @@ those shards' logs print for each test binary, and logs the run it read with its
 branch, commit and date. A binary that run did not time weighs its tests at the
 timed binaries' seconds per test. With no such run, or when the lookup fails, the
 step says so and every test weighs the same: the binaries go by test count. The
-timing decides only which shard runs each binary, never which tests run. This is
-the only build step that holds the run's token, and its Python runs isolated, so
-no module in the caller's checkout is ever imported there.
+timing decides only which shard runs each binary, never which tests run. This
+step holds the run's token, and its Python runs isolated, so no module in the
+caller's checkout is imported while it holds the token.
 
 Each numeric shard downloads only its own archive and runs every test in it with
 `--archive-file`. No partition flag applies, so every test runs on exactly one
@@ -587,7 +589,7 @@ test_prepare_inputs = [".config/prepare-tests.sh", "tools/**/*.toml"]
 Declared callers receive `MAESTRO_TEST_DIAGNOSTICS_DIR`, an absolute path to
 `target/browser-author-diagnostics` under the caller's working directory. The
 workflow creates it outside disposable HOME/TMP isolation and forwards it to
-partition runners and the doctest owner described in [Test shards](#test-shards).
+test shards and the doctest owner described in [Test shards](#test-shards).
 An inherited value is not used.
 
 Caller tests own transcript production: write regular files there, flush each
@@ -741,7 +743,7 @@ never become tools. Existing installation deadlines still apply.
   its built-in correctness checks remain active.
 
 Undeclared coverage runs `cargo llvm-cov --workspace --locked
---fail-under-lines 80`. Declared coverage runs within the test partitions and
+--fail-under-lines 80`. Declared coverage runs within the test shards and
 its threshold is enforced by `Tests (ubuntu-latest)`, not by the dependency job.
 Neither accepts consumer coverage exclusions or external LLVM overrides.
 The Tests, Isolated tests and undeclared Coverage steps retain their 45-minute
@@ -876,7 +878,7 @@ locations, plus `MAESTRO_NO_LOCAL_LLM=1` and the workflow-computed
 `MAESTRO_TEST_DIAGNOSTICS_DIR` described in [Test diagnostics](#test-diagnostics). `TMP` and `TEMP` equal `TMPDIR`; the
 other locations are separate, initially empty directories beneath a unique
 runner-temp parent. Unrelated CI state, proxy settings and application/provider
-overrides are not inherited. The partition argv uses `cargo llvm-cov nextest`; doctests use
+overrides are not inherited. The test shard argv uses `cargo llvm-cov nextest`; doctests use
 `cargo test --workspace --locked --doc`.
 
 The test setup exports Rustup's active toolchain before compilation; both test
@@ -906,7 +908,7 @@ of the test command, whether it passed or failed.
 ## Caller-pinned build and test tools
 
 With `test_tools = true`, every enabled caller-compiling job installs the
-caller's `mise.toml` tools before lint, documentation, test/coverage partitions,
+caller's `mise.toml` tools before lint, documentation, test/coverage shards,
 foreign-target checks and wasm builds, including their build scripts. The shared
 checksum-verified mise 2026.10.2 bootstrap selects the actual runner host: Linux
 x64/ARM64, macOS x64/ARM64 or Windows x64, independently of the Rust target.
@@ -924,7 +926,7 @@ Build-tool versions come from the caller. The optional
 supply undeclared build tools. False or omitted `test_tools` skips this opt-in;
 a `mise.toml` alone does not enable it. Noncompiling jobs install no caller tools.
 An absent declaration still runs the original unisolated tests.
-The nextest partition and doctest argv, credential guards,
+The nextest shard and doctest argv, credential guards,
 fresh directories and the child environment allowlist are unchanged. Only the
 installed tools' executable paths are added, not mise's environment settings.
 Windows paths are published in native format for later steps.

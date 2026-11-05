@@ -96,7 +96,7 @@ def without_earlier_timing_the_binaries_go_by_test_count():
 
 def the_caller_checkout_never_runs_with_the_token():
     # The step runs in the caller's checkout with the token, so a module there must never shadow the one the step imports.
-    seconds, log = read({}, {'json.py': "raise SystemExit('the caller checkout ran with the token')\n"})
+    seconds, _ = read({}, {'json.py': "raise SystemExit('the caller checkout ran with the token')\n"})
     assert seconds == {}, seconds
 
 for check in [the_newest_earlier_run_of_this_caller_supplies_seconds_per_test_binary, a_failed_shard_keeps_its_run_out,

@@ -698,10 +698,11 @@ def per_shard_archives_run_every_test_once():
             (crate / 'tests/proof.rs').write_text('#[test] #[ignore] fn ignored() {}\n' + ''.join(
                 f'#[test] fn integration_{index}() {{ assert_eq!({name}::value(), 1); }}\n' for index in range(2 * size)), encoding='utf-8')
         subprocess.run(['cargo', 'generate-lockfile'], cwd=source, check=True)
-        # Four shards hold every binary; sixteen leave six shards without one.
+        # Four shards hold every binary; sixteen leave six shards without one. One build per mode serves both counts.
         for (coverage, route), count in itertools.product([('false', 'Tests'), ('true', 'Isolated tests')], [4, 16]):
-            directory = pathlib.Path(temporary) / f'caller-{coverage}-{count}'
-            shutil.copytree(source, directory)
+            directory = pathlib.Path(temporary) / f'caller-{coverage}'
+            if not directory.exists():
+                shutil.copytree(source, directory)
             env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage, 'TEST_SHARD_COUNT': str(count),
                    'TEST_PACKAGES': '["a", "b", "c", "d", "e"]', 'CARGO_COVERAGE_MIN_LINES': ''}
             result = execute('Build test archive', directory, env)
@@ -711,14 +712,16 @@ def per_shard_archives_run_every_test_once():
                       if case['filter-match']['status'] == 'matches'}
             assert len(suites) == 10 and len(listed) == 75, (suites.keys(), listed)
             ran = collections.Counter()
+            built = pathlib.Path(temporary) / 'built'
+            shutil.move(directory / 'target', built)
             for shard in range(1, count + 1):
                 # Each shard is a fresh machine with only its own archive.
-                shutil.rmtree(directory / 'target')
                 result = execute(route, directory, env | {'SHARD': str(shard), 'TEST_ARCHIVE': str(directory / f'test-archives/shard-{shard}.tar.zst')})
                 assert result.returncode == 0, result.stdout + result.stderr
                 assert 'Compiling' not in result.stdout + result.stderr, result.stdout + result.stderr
                 ran.update(re.findall(r'(?m)^\s*PASS \[[^\]]*\] (?:\([^)]*\) )?(\S+) (\S+)$', result.stdout + result.stderr))
-                (directory / 'target').mkdir(exist_ok=True)
+                shutil.rmtree(directory / 'target', ignore_errors=True)
+            shutil.move(built, directory / 'target')
             assert set(ran) == listed and set(ran.values()) == {1}, (coverage, count, ran)
             if coverage == 'true':
                 merged = subprocess.run(['python3', '-c', os.environ['COVERAGE_MERGE']], cwd=directory, capture_output=True, text=True,
