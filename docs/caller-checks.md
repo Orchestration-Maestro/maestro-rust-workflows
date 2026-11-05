@@ -381,9 +381,11 @@ the coverage floor on the union of hits. PRs skip coverage for all callers.
 
 On merge groups and main pushes, one `Build test archive` job compiles the
 workspace's unit and integration tests once, with `cargo nextest list`. Declared
-coverage builds with the instrumentation and target directory that
-`cargo llvm-cov show-env` reports, so shards report coverage from the paths
-`cargo llvm-cov` reads. The job then splits the test binaries into one group per
+coverage builds in `target/llvm-cov-target` with the environment
+`cargo llvm-cov show-env` reports, less show-env's own `CARGO_LLVM_COV_SHOW_ENV`,
+`CARGO_LLVM_COV_TARGET_DIR` and `CARGO_LLVM_COV_BUILD_DIR`. That is the
+instrumentation, directory and compile-cache key set `cargo llvm-cov` builds
+with, so shards report coverage from the paths it reads. The job then splits the test binaries into one group per
 shard: the binary with the most tests goes first, and each binary goes whole to
 the group with the fewest tests so far. Shard 1 gets the largest group. The job
 log prints each shard's tests and binaries, and `cargo nextest archive -E`
