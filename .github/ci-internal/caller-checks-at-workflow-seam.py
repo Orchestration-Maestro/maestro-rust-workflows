@@ -4442,9 +4442,10 @@ def wasm_rustdoc_denies_missing_docs():
     names = [step.get('name') for step in steps]
     document_step = next(step for step in steps if step.get('name') == 'Document wasm crates')
     assert document_step['env']['RUSTDOCFLAGS'] == '-D warnings -D missing_docs'
-    assert 'wasm_crates' in document_step['env']['WASM_CRATES'], 'every declared crate is documented'
+    assert document_step['env']['WASM_CRATES'] == '${{ needs.declaration.outputs.wasm_crates }}', \
+        'every declared crate is documented'
     assert names.index('Build wasm crates') < names.index('Document wasm crates') < names.index('Browser recipe')
-    assert 'if' not in document_step, 'the wasm job builds a crate before it documents it'
+    assert 'if' not in document_step, 'every declared crate is documented on each run of the job'
     flags = {'WASM_CRATES': '["wasm-undocumented"]', 'RUSTDOCFLAGS': '-D warnings -D missing_docs'}
     result = execute('Document wasm crates', root / 'fixtures/wasm-undocumented', flags)
     output = result.stdout + result.stderr

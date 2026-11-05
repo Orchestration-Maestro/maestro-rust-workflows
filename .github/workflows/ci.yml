@@ -1316,7 +1316,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings -D missing_docs
         run: cargo doc --workspace --no-deps --locked
       - name: Docs for every feature
-        # Every event that runs the job may declare non-default features; pull requests stay fast.
+        # Merge groups and main pushes document every feature; pull requests stay fast.
         if: needs.declaration.outputs.coverage == 'true'
         env:
           RUSTDOCFLAGS: -D warnings -D missing_docs

@@ -7,7 +7,6 @@ import subprocess
 import tempfile
 import textwrap
 import time
-
 import tomllib
 
 workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding="utf-8")
@@ -458,9 +457,7 @@ def fake_tool(directory, name):
 def advisory_issues_open_once(temporary):
     source = pathlib.Path('.github/workflows/advisories.yml').read_text(encoding='utf-8')
     step = next(s for s in source.split('      - name: ')[1:] if s.splitlines()[0] == 'Open advisory issues')
-    run = re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE)
-    assert run, 'the advisory issue step needs an inline script'
-    code = textwrap.dedent(run.group(1))
+    code = textwrap.dedent(re.search(r'^        run: \|\n((?:          .*\n|\n)+)', step, re.MULTILINE).group(1))
     fake, recorded = fake_tool(pathlib.Path(temporary) / 'fake-gh', 'gh')
     findings = [{'id': 'RUSTSEC-2025-0141', 'title': 'Bincode is unmaintained', 'crates': ['bincode 1.3.3']},
                 {'id': 'yanked once_cell 0.0.1', 'title': 'detected yanked crate', 'crates': ['once_cell 0.0.1']}]
@@ -474,7 +471,7 @@ def advisory_issues_open_once(temporary):
     assert result.returncode != 0 and '2 undeclared advisories on main' in result.stderr, result.stdout + result.stderr
     created = [call for call in made if call[:2] == ['issue', 'create']]
     assert len(created) == 1 and created[0][created[0].index('--title') + 1] == 'Priority: yanked once_cell 0.0.1 on main: once_cell 0.0.1', made
-    assert created[0][-6:-2] == ['--label', 'bug', '--label', 'needs-triage'] and created[0][-2:] == ['-R', 'owner/repo'], made
+    assert ['--label', 'bug', '--label', 'needs-triage'] == created[0][-6:-2] and created[0][-2:] == ['-R', 'owner/repo'], made
     result, made = report(found=[])
     assert result.returncode == 0 and made == [], result.stdout + result.stderr
     result, made = report(scan='failure')
