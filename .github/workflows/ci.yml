@@ -1468,10 +1468,9 @@ jobs:
           if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
           build=(--user-config-file none --locked "${packages[@]}")
           if [ "${COLLECT_COVERAGE:-false}" = true ]; then
-            # cargo llvm-cov's own instrumentation and target directory, so shards report from the paths it reads.
-            export CARGO_LLVM_COV_TARGET_DIR="$PWD/target/llvm-cov-target"
+            # cargo llvm-cov's instrumentation, built where cargo llvm-cov builds: shards extract there and report from it.
             eval "$("$TOOLS/cargo-llvm-cov" llvm-cov show-env --sh)"
-            build+=(--target-dir "$CARGO_LLVM_COV_TARGET_DIR")
+            build+=(--target-dir "$PWD/target/llvm-cov-target")
           fi
           mkdir -p target
           rm -rf test-archives
