@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.19.17](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.16...v0.19.17) (2026-11-04)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#370](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/370)) ([25cb691](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/25cb691636a9f568f56861d4ff0f60f65e549150))
+* keep one cache entry per snapshot shape and seed the reuse-push shapes ([#364](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/364)) ([1e69608](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/1e69608e5d81c65efda35a039f56ac7223548a73))
+* move main scan pins to v0.19.16 ([#366](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/366)) ([54ce604](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/54ce604995b01d3d5657aad397d6ca5dde63554d))
+
+
+### Bug Fixes
+
+* **ci-guards:** name slow tests from the blamed shard only ([#371](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/371)) ([933e29e](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/933e29e40081c67eecfa34dd5792540c0f3344f9))
+
 ## [0.19.16](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.15...v0.19.16) (2026-11-04)
 
 
