@@ -412,7 +412,7 @@ def browser_test_job_is_single_and_optional():
                    {'inputs.warm-cache': True, 'github.event_name': 'pull_request'},
                    {'inputs.warm-cache': True, 'github.ref': 'refs/heads/feature'}):
         assert 'browser-tests' not in routed_jobs(document, closed), closed
-    assert 'runs-on: $' + '{{ fromJSON(needs.declaration.outputs.linux_runner) }}' in job and 'matrix:' not in job
+    assert 'runs-on: ubuntu-latest\n' in job and 'matrix:' not in job
     assert body('Browser test recipe').strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"')
     assert 'mise exec' not in body('Browser test recipe')
     assert 'if:' not in job.split('- name: Browser test caller tools', 1)[1].split('- name:', 1)[0]
@@ -446,7 +446,7 @@ def manual_browser_proof_selects_only_existing_chromium_job():
         assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
     job = document['jobs']['browser-tests']
     assert 'matrix' not in job.get('strategy', {})
-    assert job['runs-on'] == '${{ fromJSON(needs.declaration.outputs.linux_runner) }}'
+    assert job['runs-on'] == 'ubuntu-latest'
     for event, coverage, declared, warm, expected in [
         ('workflow_dispatch', 'true', 'true', False, True),
         ('workflow_dispatch', 'true', 'false', False, False),
@@ -637,7 +637,7 @@ def archived_shards_reuse_build_and_prepared_outputs():
                 '#[test] fn archived_binary_still_runs() {\n'
                 'assert!(std::process::Command::new(env!("CARGO_BIN_EXE_sample")).status().unwrap().success());\n}\n', encoding='utf-8')
             command = 'printf "#!/bin/sh\\nexit 0\\n" > "$TEST_PREPARE_OUTPUT/prepared"; chmod +x "$TEST_PREPARE_OUTPUT/prepared"; echo once >> prepare-count'
-            env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage,
+            env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage, 'TEST_SHARD_COUNT': '2',
                    'TEST_PREPARE': command, 'TEST_PACKAGES': '["sample"]',
                    'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0]}
             result = execute('Prepare test setup', directory, env)
@@ -646,7 +646,8 @@ def archived_shards_reuse_build_and_prepared_outputs():
             assert result.returncode == 0, result.stdout + result.stderr
             assert (result.stdout + result.stderr).count('Compiling sample ') == 1, result.stdout + result.stderr
             assert list(directory.glob(timing_glob)), f'No uploaded Cargo timings for coverage={coverage}: {timing_glob}'
-            assert (directory / 'test-binaries.tar.zst').is_file()
+            archives = sorted(path.name for path in (directory / 'test-archives').iterdir())
+            assert archives == ['shard-1.tar.zst', 'shard-2.tar.zst', 'test-binaries.json'], archives
             assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
             shutil.rmtree(directory / 'target')
             downloaded = pathlib.Path(temporary) / 'maestro-test-setup'
@@ -658,7 +659,7 @@ def archived_shards_reuse_build_and_prepared_outputs():
             (directory / 'src/lib.rs').write_text('compile_error!("shards must not compile");\n', encoding='utf-8')
             for shard in ['1', '2']:
                 result = execute(route, directory, env | {'SHARD': shard, 'TEST_SHARD_COUNT': '2',
-                                 'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+                                 'TEST_ARCHIVE': str(directory / f'test-archives/shard-{shard}.tar.zst'),
                                  'CARGO_COVERAGE_MIN_LINES': ''})
                 assert result.returncode == 0, result.stdout + result.stderr
                 assert 'Compiling' not in result.stdout + result.stderr
@@ -679,13 +680,62 @@ def archived_shards_reuse_build_and_prepared_outputs():
     assert 'needs: declaration' in jobs['test-prepare']
     assert "matrix.shard != 'doctests'" in jobs['tests']
 
+def per_shard_archives_run_every_test_once():
+    import collections
+    import shutil
+    with tempfile.TemporaryDirectory() as temporary:
+        source = pathlib.Path(temporary) / 'source'
+        source.mkdir()
+        (source / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c","d","e"]\n', encoding='utf-8')
+        # Ten test binaries of different sizes, each with an ignored test that no shard runs.
+        for size, name in enumerate('abcde', 1):
+            crate = source / name
+            (crate / 'src').mkdir(parents=True)
+            (crate / 'tests').mkdir()
+            (crate / 'Cargo.toml').write_text(f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+            (crate / 'src/lib.rs').write_text('pub fn value() -> u8 { 1 }\n' + ''.join(
+                f'#[test] fn unit_{index}() {{ assert_eq!(value(), 1); }}\n' for index in range(3 * size)), encoding='utf-8')
+            (crate / 'tests/proof.rs').write_text('#[test] #[ignore] fn ignored() {}\n' + ''.join(
+                f'#[test] fn integration_{index}() {{ assert_eq!({name}::value(), 1); }}\n' for index in range(2 * size)), encoding='utf-8')
+        subprocess.run(['cargo', 'generate-lockfile'], cwd=source, check=True)
+        # Four shards hold every binary; sixteen leave six shards without one. One build per mode serves both counts.
+        for (coverage, route), count in itertools.product([('false', 'Tests'), ('true', 'Isolated tests')], [4, 16]):
+            directory = pathlib.Path(temporary) / f'caller-{coverage}'
+            if not directory.exists():
+                shutil.copytree(source, directory)
+            env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage, 'TEST_SHARD_COUNT': str(count),
+                   'TEST_PACKAGES': '["a", "b", "c", "d", "e"]', 'CARGO_COVERAGE_MIN_LINES': ''}
+            result = execute('Build test archive', directory, env)
+            assert result.returncode == 0, result.stdout + result.stderr
+            suites = json.loads((directory / 'target/test-list.json').read_text(encoding='utf-8'))['rust-suites']
+            listed = {(binary, test) for binary, suite in suites.items() for test, case in suite['testcases'].items()
+                      if case['filter-match']['status'] == 'matches'}
+            assert len(suites) == 10 and len(listed) == 75, (suites.keys(), listed)
+            ran = collections.Counter()
+            built = pathlib.Path(temporary) / 'built'
+            shutil.move(directory / 'target', built)
+            for shard in range(1, count + 1):
+                # Each shard is a fresh machine with only its own archive.
+                result = execute(route, directory, env | {'SHARD': str(shard), 'TEST_ARCHIVE': str(directory / f'test-archives/shard-{shard}.tar.zst')})
+                assert result.returncode == 0, result.stdout + result.stderr
+                assert 'Compiling' not in result.stdout + result.stderr, result.stdout + result.stderr
+                ran.update(re.findall(r'(?m)^\s*PASS \[[^\]]*\] (?:\([^)]*\) )?(\S+) (\S+)$', result.stdout + result.stderr))
+                shutil.rmtree(directory / 'target', ignore_errors=True)
+            shutil.move(built, directory / 'target')
+            assert set(ran) == listed and set(ran.values()) == {1}, (coverage, count, ran)
+            if coverage == 'true':
+                merged = subprocess.run(['python3', '-c', os.environ['COVERAGE_MERGE']], cwd=directory, capture_output=True, text=True,
+                                        env=os.environ | {'COVERAGE_REPORT_DIR': '.', 'TEST_SHARD_COUNT': str(count)})
+                assert merged.returncode == 0 and 'Merged line coverage: 100.00%' in merged.stdout, merged.stdout + merged.stderr
+
 def archived_shards_provision_child_build_dependencies():
     for route, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory)
+            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": 1}', encoding='utf-8')
             env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
-                   'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+                   'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': str(directory / 'shard-1.tar.zst'),
                    'TEST_PREPARE_OUTPUT': str(directory / 'untrusted-inherited-output'),
                    'TEST_PACKAGES': '["sample"]', 'SHARD': '1', 'COLLECT_COVERAGE': coverage,
                    'CARGO_COVERAGE_MIN_LINES': '', 'ADDITIONAL_LOCKED_MANIFESTS': '["fixture/Cargo.toml"]'}
@@ -698,6 +748,8 @@ def archived_shards_provision_child_build_dependencies():
             assert len(commands) == 3, commands
             assert '--archive-file' in commands[2]['args']
             assert '--workspace' not in commands[2]['args'] and '--locked' not in commands[2]['args']
+            # The shard's own archive holds exactly its tests, so nothing partitions them again.
+            assert '--partition' not in commands[2]['args'], commands[2]
             if route == 'Isolated tests':
                 assert commands[2]['test_prepare_output'] == str(directory / 'target/test-setup'), commands[2]
     tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
@@ -719,7 +771,7 @@ def cargo_git_transport_reaches_every_job_and_isolated_child():
         result = execute('Isolated tests', directory, {
             setting: document['env'][setting], 'PATH': str(tools) + os.pathsep + os.environ['PATH'],
             'TOOLS': str(tools), 'RUNNER_TEMP': temporary, 'TEST_PACKAGES': '["sample"]',
-            'SHARD': '1', 'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+            'SHARD': '1', 'TEST_ARCHIVE': str(directory / 'shard-1.tar.zst'),
             'COLLECT_COVERAGE': 'false', 'CARGO_COVERAGE_MIN_LINES': '',
             'UNRELATED_AMBIENT_CANARY': 'must-not-leak'})
         assert result.returncode == 0, result.stdout + result.stderr
@@ -906,8 +958,8 @@ def cargo_git_cache_reuses_exact_locked_sources():
 
 def archive_signal_reaches_only_archived_shards():
     for shard, warm, coverage, archive, expected in [
-        ('1', 'false', 'false', 'test-binaries.tar.zst', '1'),
-        ('2', 'false', 'true', 'test-binaries.tar.zst', '1'),
+        ('1', 'false', 'false', 'shard-1.tar.zst', '1'),
+        ('2', 'false', 'true', 'shard-2.tar.zst', '1'),
         ('warm', 'true', 'false', '', None),
         ('2', 'false', 'false', '', None),
         ('2', 'false', 'true', '', None),
@@ -916,6 +968,7 @@ def archive_signal_reaches_only_archived_shards():
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory)
+            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": 1, "shard-2.tar.zst": 1}', encoding='utf-8')
             result = execute('Isolated tests', directory, {
                 'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
                 'RUNNER_TEMP': temporary, 'SHARD': shard, 'WARM_CACHE': warm,
@@ -1043,7 +1096,7 @@ def warm_filter_declaration_rejects_non_strings():
 warm_filter_declaration_rejects_non_strings()
 print('PASS warm_filter_declaration_rejects_non_strings')
 
-def install_recording_runner(directory, real_cargo=None, manifest=None, status=0):
+def install_recording_runner(directory, real_cargo=None, manifest=None, status=0, suites=None):
     tools = directory / 'runner-tools'
     tools.mkdir()
     log = directory / 'commands.jsonl'
@@ -1058,6 +1111,7 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
                                          ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
                                          test_prepare_output=os.environ.get('TEST_PREPARE_OUTPUT'),
                                          test_archive=os.environ.get('TEST_ARCHIVE'),
+                                         coverage_env={{name: value for name, value in os.environ.items() if name.startswith('CARGO_LLVM_COV')}},
                                          diagnostics=os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'))) + '\\n')
         if args[:1] != ['fetch'] and os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'):
             (pathlib.Path(os.environ['MAESTRO_TEST_DIAGNOSTICS_DIR']) / 'runner.txt').write_text(
@@ -1067,6 +1121,13 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
         if args[:1] != ['fetch'] and {manifest!r}:
             subprocess.run([{real_cargo!r}, 'metadata', '--offline', '--locked', '--format-version', '1',
                             '--manifest-path', {manifest!r}], check=True, stdout=subprocess.DEVNULL)
+        if args[:2] == ['llvm-cov', 'show-env']:
+            print('export CARGO_LLVM_COV=1\\nexport CARGO_LLVM_COV_SHOW_ENV=1\\nexport CARGO_LLVM_COV_TARGET_DIR=/elsewhere/target\\n'
+                  'export CARGO_LLVM_COV_BUILD_DIR=/elsewhere/target')
+            sys.exit(0)
+        if args[:2] == ['nextest', 'list']:
+            print(json.dumps({{'rust-suites': {suites or {}!r}}}))
+            sys.exit({status})
         if pathlib.Path(sys.argv[0]).name != 'cargo':
             if '--output-path' in args:
                 pathlib.Path(args[args.index('--output-path') + 1]).write_text(
@@ -1114,7 +1175,7 @@ clippy_selection_works_without_mapfile()
 print('PASS clippy_selection_works_without_mapfile')
 
 def archive_build_publishes_cargo_timings():
-    for coverage, command in [('false', ['nextest', 'archive']), ('true', ['llvm-cov', 'nextest-archive'])]:
+    for coverage in ['false', 'true']:
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory)
@@ -1122,8 +1183,19 @@ def archive_build_publishes_cargo_timings():
                 'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
                 'COLLECT_COVERAGE': coverage, 'TEST_PACKAGES': '["sample"]'})
             assert result.returncode == 0, result.stdout + result.stderr
-            args = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])['args']
-            assert args[:2] == command and args.count('--timings') == 1, args
+            logged = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()][1:]
+            commands = [command['args'] for command in logged]
+            # Only the compiling list times the build; each shard's archive then finds the binaries fresh.
+            assert commands[0] == ['llvm-cov', 'show-env', '--sh'] if coverage == 'true' else commands[0][:2] == ['nextest', 'list'], commands
+            listing, archives = commands[coverage == 'true'], commands[1 + (coverage == 'true'):]
+            assert listing[:2] == ['nextest', 'list'] and listing.count('--timings') == 1, listing
+            if coverage == 'true':
+                # The archive route's own target directory and environment: shards extract there, and the compile cache keys match.
+                assert listing[listing.index('--target-dir') + 1].endswith('/target/llvm-cov-target'), listing
+                assert all(command['coverage_env'] == {'CARGO_LLVM_COV': '1'} for command in logged[1:]), logged
+            else:
+                assert '--target-dir' not in listing and all(command['coverage_env'] == {} for command in logged), logged
+            assert len(archives) == 16 and all(args[:2] == ['nextest', 'archive'] and '--timings' not in args for args in archives), archives
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     steps = document['jobs']['test-build']['steps']
     upload = next(step for step in steps if step.get('name') == 'Upload archive build timings')
@@ -1136,6 +1208,40 @@ def archive_build_publishes_cargo_timings():
 
 archive_build_publishes_cargo_timings()
 print('PASS archive_build_publishes_cargo_timings')
+
+def archive_groups_follow_earlier_test_seconds():
+    def case(*names):
+        return {name: {'filter-match': {'status': 'matches'}} for name in names} | {'ignored': {'filter-match': {'status': 'mismatch'}}}
+    # Test counts 20, 30, 30 and 10; only the earlier run's seconds show that the first binary is the slow one.
+    suites = {f'{name}::integration': {'testcases': case(*(f'test_{index}' for index in range(count)))}
+              for name, count in [('heavy', 20), ('broad', 30), ('wide', 30), ('new', 10)]}
+    for seconds, expected, logged in [
+            # Unmeasured `new` weighs its ten tests at the measured 8.25 seconds per test.
+            ({'heavy::integration': 600, 'broad::integration': 30, 'wide::integration': 30, 'gone::integration': 5},
+             ['binary_id(=heavy::integration)', 'binary_id(=new::integration) | binary_id(=broad::integration) | binary_id(=wide::integration)'],
+             'Shard 1: 600 s, 20 tests in 1 binary: heavy::integration\n'),
+            # Without earlier seconds every test weighs the same.
+            (None, ['binary_id(=broad::integration) | binary_id(=heavy::integration)', 'binary_id(=wide::integration) | binary_id(=new::integration)'],
+             'Shard 1: 50 tests in 2 binaries: broad::integration heavy::integration\n')]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            tools, log = install_recording_runner(directory, suites=suites)
+            if seconds is not None:
+                (directory / 'target').mkdir()
+                (directory / 'target/test-seconds.json').write_text(json.dumps(seconds), encoding='utf-8')
+            result = execute('Build test archive', directory, {
+                'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                'COLLECT_COVERAGE': 'false', 'TEST_PACKAGES': '["sample"]', 'TEST_SHARD_COUNT': '2'})
+            assert result.returncode == 0, result.stdout + result.stderr
+            archives = [command['args'] for command in map(json.loads, log.read_text(encoding='utf-8').splitlines())
+                        if command['args'][:2] == ['nextest', 'archive']]
+            assert [args[args.index('-E') + 1] for args in archives] == expected, (seconds, archives)
+            assert logged in result.stdout, result.stdout
+            assert json.loads((directory / 'test-archives/test-binaries.json').read_text(encoding='utf-8')) == {
+                'shard-1.tar.zst': len(expected[0].split(' | ')), 'shard-2.tar.zst': len(expected[1].split(' | '))}
+
+archive_groups_follow_earlier_test_seconds()
+print('PASS archive_groups_follow_earlier_test_seconds')
 
 def selected_archive_build_compiles_only_selected_packages():
     with tempfile.TemporaryDirectory() as temporary:
@@ -1352,7 +1458,7 @@ def warm_push_seeds_non_test_shapes():
     def test_steps_run(job, warm, enabled):
         shard = 'warm' if job == 'tests' else document['jobs'][job]['strategy']['matrix']['shard'][0]
         values = {'inputs.warm-cache': warm, 'matrix.shard': shard,
-                  'needs.declaration.outputs.enabled': enabled, 'runner.environment': 'github-hosted'}
+                  'needs.declaration.outputs.enabled': enabled}
         values['env.WARM_CACHE'] = str(evaluate(document['jobs'][job]['env']['WARM_CACHE'], values)).lower()
         steps = {step['name']: step for step in document['jobs'][job]['steps']}
         return {name: evaluate(steps[name]['if'], values) for name in
@@ -2523,7 +2629,7 @@ def reserved_ports_are_validated_and_applied_only_when_set():
             assert result.returncode != 0 and 'reserved_ports' in result.stderr, bad + result.stderr
     tests = workflow.split('  tests:\n', 1)[1].split('  targets:', 1)[0]
     step = next(s for s in tests.split('      - name: ')[1:] if s.splitlines()[0] == 'Reserved ports')
-    assert "if: runner.environment == 'github-hosted' && needs.declaration.outputs.reserved_ports != ''" in step
+    assert "if: needs.declaration.outputs.reserved_ports != ''" in step
     assert 'sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"' in step
     assert tests.index('- name: Reserved ports') < tests.index('- name: Isolated tests')
 
@@ -4000,7 +4106,7 @@ def supported_targets_use_native_runners():
     result, values = declaration(root / 'fixtures/declared')
     assert result.returncode == 0, result.stderr
     assert json.loads(values['targets']) == expected
-    assert 'runs-on: $' + "{{ matrix.runner == 'ubuntu-latest' && fromJSON(needs.declaration.outputs.linux_runner) || matrix.runner }}" in workflow
+    assert 'runs-on: $' + '{{ matrix.runner }}' in workflow
     assert 'rustup target add "$TARGET"' in body('Check target')
     assert 'rustup component add clippy' in body('Check target')
     assert body('Check target') == body('Lint')
@@ -4010,6 +4116,17 @@ def supported_targets_use_native_runners():
 
 supported_targets_use_native_runners()
 print('PASS supported_targets_use_native_runners')
+
+def linux_jobs_use_hosted_runners():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    for absent in ['self-hosted', 'maestro-aws', 'runner_policy', 'RUNNER_AVAILABILITY',
+                   'runner.environment', 'RUNNER_ENVIRONMENT']:
+        assert absent not in workflow, absent
+    for name, job in document['jobs'].items():
+        assert job['runs-on'] in ('ubuntu-latest', '${{ matrix.runner }}'), (name, job['runs-on'])
+
+linux_jobs_use_hosted_runners()
+print('PASS linux_jobs_use_hosted_runners')
 
 def wasm_target_failure_is_detected():
     for fixture in ['declared', 'wasm-rejected']:
@@ -4309,7 +4426,8 @@ def workflow_failures_remain_required():
     assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
     assert 'needs: [sample, declared, test-tools]' in internal
     assert 'working-directory: fixtures/test-tools' in internal
-    assert 'needs: [seams, native, fuzz-issues, browser-qualification, shard-seams]' in internal
+    consumers = internal.split('  consumers:\n', 1)[1]
+    assert 'needs: [seams, native, fuzz-issues, browser-qualification, shard-seams]' in consumers
     assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
     assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
     for name in ['targets', 'browser', 'tests']:

@@ -10,3 +10,5 @@ tree.body = [node for node in tree.body if isinstance(node, (ast.Import, ast.Imp
 exec(compile(tree, 'archive workflow seam', 'exec'))
 archived_shards_reuse_build_and_prepared_outputs()
 print('PASS archived_shards_reuse_build_and_prepared_outputs', flush=True)
+per_shard_archives_run_every_test_once()
+print('PASS per_shard_archives_run_every_test_once', flush=True)

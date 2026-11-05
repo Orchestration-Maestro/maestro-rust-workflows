@@ -601,6 +601,24 @@ jobs:
                   bundle.writestr('test-binaries.tar.zst', payload)
               return buffer.getvalue()
 
+          # The test archive artifact: one archive per shard and the count of test binaries in each.
+          shard_payload, manifest = os.urandom(3 * 1024 * 1024), b'{"shard-1.tar.zst": 3, "shard-2.tar.zst": 2}'
+
+          def sharded(compression=zipfile.ZIP_STORED):
+              buffer = io.BytesIO()
+              with zipfile.ZipFile(buffer, 'w', compression) as bundle:
+                  bundle.writestr('shard-1.tar.zst', payload)
+                  bundle.writestr('shard-2.tar.zst', shard_payload)
+                  bundle.writestr('test-binaries.json', manifest)
+              return buffer.getvalue()
+
+          def stored_bytes(blob, member):
+              # Where the member's bytes sit in the zip: after its local header, its name and its extra field.
+              with zipfile.ZipFile(io.BytesIO(blob)) as bundle:
+                  entry = bundle.getinfo(member)
+              start = entry.header_offset + 30 + len(entry.filename.encode()) + int.from_bytes(blob[entry.header_offset + 28:entry.header_offset + 30], 'little')
+              return start, start + entry.compress_size
+
           class Storage(http.server.BaseHTTPRequestHandler):
               def log_message(self, *args):
                   pass
@@ -630,6 +648,8 @@ jobs:
                       body = bytearray(server.blob[start:end + 1])
                       if (server.corrupt or int(re.search(r'run=(\d+)', self.path)[1]) in server.corrupt_runs) and start > 0:
                           body[0] ^= 0xff
+                      if server.corrupt_at is not None and start <= server.corrupt_at <= end:
+                          body[server.corrupt_at - start] ^= 0xff
                       if server.fault == 'fail' and start > 0:
                           return self.send_error(500)
                       if server.fault == 'ignored' and start > 0:
@@ -647,9 +667,10 @@ jobs:
                   self.end_headers()
                   self.wfile.write(body)
 
-          def download(ranges=True, corrupt=False, digest=True, listing_fails=False, fault=None, run_ids='', without_artifact=(), corrupt_runs=()):
+          def download(ranges=True, corrupt=False, digest=True, listing_fails=False, fault=None, run_ids='', without_artifact=(), corrupt_runs=(),
+                       blob=None, members='', corrupt_at=None):
               server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Storage)
-              server.blob, server.requests = archive(), []
+              server.blob, server.requests, server.corrupt_at = blob or archive(), [], corrupt_at
               server.handle_error = lambda *arguments: None  # a client that gave up on a range resets its connection
               server.ranges, server.corrupt, server.digest, server.listing_fails, server.fault = ranges, corrupt, digest, listing_fails, fault
               server.without_artifact, server.corrupt_runs = without_artifact, corrupt_runs
@@ -662,7 +683,7 @@ jobs:
                       env = {**os.environ, 'GH_TOKEN': 'secret-token', 'GITHUB_API_URL': f'http://127.0.0.1:{server.server_port}',
                              'GITHUB_REPOSITORY': 'o/r', 'GITHUB_RUN_ID': '7', 'ARTIFACT_NAME': 'test-archive-root',
                              'ARTIFACT_PATH': str(base / 'out'), 'RUNNER_TEMP': str(base / 'runner'), 'GITHUB_OUTPUT': str(base / 'output'),
-                             'ARTIFACT_RUN_IDS': run_ids}
+                             'ARTIFACT_RUN_IDS': run_ids, 'ARTIFACT_MEMBERS': members}
                       (base / 'output').write_text('', encoding='utf-8')
                       result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', steps['Download test archive']['run']],
                                               env=env, capture_output=True, text=True)
@@ -752,6 +773,31 @@ jobs:
               assert files == ['7/test-binaries.tar.zst', '9/test-binaries.tar.zst'] and leftovers == [], (files, leftovers)
               assert 'digest mismatch' in result.stderr and '::warning::' in result.stderr and 'single-stream' not in result.stderr, result.stderr
 
+          def a_shard_fetches_only_its_own_archive_and_the_binary_counts():
+              blob = sharded()
+              result, server, files, extracted, outputs, leftovers = download(blob=blob, members='shard-2.tar.zst test-binaries.json')
+              assert result.returncode == 0, result.stderr
+              assert files == ['shard-2.tar.zst', 'test-binaries.json'] and 'fallback=true' not in outputs and leftovers == [], (files, outputs)
+              name, size, _, streams = line(result)
+              assert int(size) == len(shard_payload) + len(manifest) and int(streams) > 1, result.stdout
+              # No range touches another shard's archive.
+              other = stored_bytes(blob, 'shard-1.tar.zst')
+              fetched = [tuple(map(int, request[1].split('=')[1].split('-'))) for request in server.requests if request[0] == '/blob' and request[1]]
+              assert fetched and all(end < other[0] or start >= other[1] for start, end in fetched), (other, fetched)
+              assert len([request for request in server.requests if request[0].endswith('/zip')]) == 1, server.requests
+
+          def a_corrupted_member_fails_on_its_checksum_and_never_hands_over():
+              blob = sharded()
+              start, end = stored_bytes(blob, 'shard-2.tar.zst')
+              result, server, files, extracted, outputs, leftovers = download(blob=blob, members='shard-2.tar.zst test-binaries.json', corrupt_at=(start + end) // 2)
+              assert result.returncode != 0 and 'checksum' in result.stderr, (result.stdout, result.stderr)
+              assert 'fallback=true' not in outputs and leftovers == [], outputs
+
+          def a_compressed_member_hands_the_whole_download_over():
+              result, server, files, extracted, outputs, leftovers = download(blob=sharded(zipfile.ZIP_DEFLATED), members='shard-2.tar.zst test-binaries.json')
+              assert result.returncode == 0, result.stderr
+              assert files == [] and 'fallback=true' in outputs and leftovers == [], (files, outputs)
+
           def both_downloads_share_one_script_and_keep_the_single_stream_action():
               pin = 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'
               names = list(steps)
@@ -760,6 +806,8 @@ jobs:
                   assert step['run'] == steps['Download test archive']['run'] and 'uses' not in step, name
                   assert step['env']['ARTIFACT_NAME'].startswith(artifact), name
                   assert step['env']['GH_TOKEN'] == '$' + '{{ github.token }}'
+                  # A shard downloads only its own archive and the binary counts; the setup is one whole bundle.
+                  assert step['env'].get('ARTIFACT_MEMBERS') == ('shard-$' + '{{ matrix.shard }}.tar.zst test-binaries.json' if artifact == 'test-archive-' else None), name
                   assert single['uses'].startswith(pin), name
                   # A skipped download sets no output, so the fallback output alone carries the download step's gate.
                   assert single['if'] == '$' + "{{ steps.%s.outputs.fallback == 'true' }}" % step['id'], name
@@ -775,6 +823,8 @@ jobs:
                         a_failing_range_hands_the_whole_download_over_without_a_retry,
                         several_runs_land_in_a_directory_each_and_a_run_without_a_bundle_is_skipped,
                         a_run_with_a_corrupt_bundle_is_left_out_and_the_later_runs_still_download,
+                        a_shard_fetches_only_its_own_archive_and_the_binary_counts, a_corrupted_member_fails_on_its_checksum_and_never_hands_over,
+                        a_compressed_member_hands_the_whole_download_over,
                         both_downloads_share_one_script_and_keep_the_single_stream_action]:
               check()
               print('PASS', check.__name__)
