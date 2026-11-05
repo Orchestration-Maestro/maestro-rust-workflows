@@ -108,7 +108,7 @@ def collect(files):
                             continue
                         words = command.get('Args', [])
                         argv = [shlex.split(spelling(word))[0] for word in words]
-                        # Isolation flags leave the interpreter, not the script, so they are skipped before both checks.
+                        # Interpreter flags such as -I come before the script, so skip them before matching.
                         isolated = argv[1:2] == ['-I']
                         script = argv[2:] if isolated else argv[1:]
                         if argv[:1] in (['python'], ['python3']) and script[:1] == ['-']:
