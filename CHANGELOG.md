@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.19.18](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.17...v0.19.18) (2026-11-05)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#383](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/383)) ([92798c0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/92798c0d8094b77f2d061ef8040ccd0783f5f607))
+* drop the unused self-hosted Linux runner selection ([#377](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/377)) ([009499d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/009499d3a7dbbe97fdf42c1f8f6edc81190648f0))
+* move main scan pins to v0.19.17 ([#375](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/375)) ([ace4058](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/ace4058b640f2fc10301b97402d4a5cf92d61abc))
+
+
+### Bug Fixes
+
+* **ci:** run token-bearing Python steps in isolated mode ([#382](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/382)) ([40d7090](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/40d70905a5a35d8ed27fca36b537e0a5a2645050))
+
+
+### Performance
+
+* **ci:** give each test shard its own archive of whole test binaries ([#380](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/380)) ([f5ea67b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/f5ea67bcc5f156f82cd82b6dde14f658fa9f4af2))
+
 ## [0.19.17](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.16...v0.19.17) (2026-11-04)
 
 
