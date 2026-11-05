@@ -1231,11 +1231,11 @@ release, pin/ruleset read-back and required checks after repinning.
 
 ## Runners
 
-Every x64 Linux job states `runs-on: ubuntu-latest` and runs on GitHub-hosted
-runners. Native ARM Linux, Windows, macOS and CodeQL run on GitHub-hosted
-runners too. The declaration job reads the caller's settings, test selection and
-coverage scope; it selects no runner labels, so each job states its own host.
-Adopting the workflow needs no runner group and no repository variable.
+Every x64 Linux job states `runs-on: ubuntu-latest`. Native ARM Linux,
+Windows, macOS and CodeQL run on GitHub-hosted runners too. The declaration job
+reads the caller's settings, test selection and coverage scope; it selects no
+runner labels, so each job states its own host. Adopting the workflow needs no
+runner group and no repository variable.
 
 ## Full suite after landing
 

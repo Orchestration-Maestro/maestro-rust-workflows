@@ -1306,7 +1306,7 @@ jobs:
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
-        if: runner.environment == 'github-hosted' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
+        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         run: &free-build-space |
           # The deletion overlaps the toolchain, tools and compilation; the build needs the space minutes later.
           sudo nohup rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc >/dev/null 2>&1 &
@@ -1484,7 +1484,7 @@ jobs:
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
-        if: runner.environment == 'github-hosted' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
+        if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         run: *free-build-space
       - name: Test toolchain
         run: *test-toolchain
@@ -1847,7 +1847,7 @@ jobs:
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
-        if: runner.environment == 'github-hosted' && (env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true')
+        if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'
         run: *free-build-space
       - name: Test toolchain
         run: *test-toolchain
@@ -1946,7 +1946,7 @@ jobs:
         if: needs.declaration.outputs.test_tools == 'true'
         run: *caller-tools
       - name: Reserved ports
-        if: runner.environment == 'github-hosted' && needs.declaration.outputs.reserved_ports != ''
+        if: needs.declaration.outputs.reserved_ports != ''
         env:
           RESERVED_PORTS: ${{ needs.declaration.outputs.reserved_ports }}
         run: sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"
@@ -2262,7 +2262,7 @@ jobs:
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
       - name: Free instrumented build space
-        if: runner.environment == 'github-hosted' && needs.declaration.outputs.enabled != 'true'
+        if: needs.declaration.outputs.enabled != 'true'
         run: *free-build-space
       - name: Toolchain
         run: |
@@ -2990,9 +2990,7 @@ jobs:
           assert.deepEqual(driver.optionalDependencies || {}, {});
           console.log(process.version);
           JAVASCRIPT
-          if [ "$RUNNER_ENVIRONMENT" = github-hosted ]; then
-            node node_modules/playwright/cli.js install-deps chromium
-          fi
+          node node_modules/playwright/cli.js install-deps chromium
           node node_modules/playwright/cli.js --version
           "$tools/chrome-linux64/chrome" --version
           "$tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl/wasm-bindgen" --version

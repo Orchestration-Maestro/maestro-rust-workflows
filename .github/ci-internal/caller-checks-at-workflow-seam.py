@@ -1352,7 +1352,7 @@ def warm_push_seeds_non_test_shapes():
     def test_steps_run(job, warm, enabled):
         shard = 'warm' if job == 'tests' else document['jobs'][job]['strategy']['matrix']['shard'][0]
         values = {'inputs.warm-cache': warm, 'matrix.shard': shard,
-                  'needs.declaration.outputs.enabled': enabled, 'runner.environment': 'github-hosted'}
+                  'needs.declaration.outputs.enabled': enabled}
         values['env.WARM_CACHE'] = str(evaluate(document['jobs'][job]['env']['WARM_CACHE'], values)).lower()
         steps = {step['name']: step for step in document['jobs'][job]['steps']}
         return {name: evaluate(steps[name]['if'], values) for name in
@@ -2523,7 +2523,7 @@ def reserved_ports_are_validated_and_applied_only_when_set():
             assert result.returncode != 0 and 'reserved_ports' in result.stderr, bad + result.stderr
     tests = workflow.split('  tests:\n', 1)[1].split('  targets:', 1)[0]
     step = next(s for s in tests.split('      - name: ')[1:] if s.splitlines()[0] == 'Reserved ports')
-    assert "if: runner.environment == 'github-hosted' && needs.declaration.outputs.reserved_ports != ''" in step
+    assert "if: needs.declaration.outputs.reserved_ports != ''" in step
     assert 'sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"' in step
     assert tests.index('- name: Reserved ports') < tests.index('- name: Isolated tests')
 
@@ -4017,7 +4017,8 @@ def linux_jobs_use_hosted_runners():
     assert 'linux_runner' not in declaration['outputs']
     assert all(step.get('id') != 'runner' and step.get('name') != 'Select Linux runner'
                for step in declaration['steps'])
-    for absent in ['self-hosted', 'maestro-aws', 'runner_policy', 'RUNNER_AVAILABILITY']:
+    for absent in ['self-hosted', 'maestro-aws', 'runner_policy', 'RUNNER_AVAILABILITY',
+                   'runner.environment', 'RUNNER_ENVIRONMENT']:
         assert absent not in workflow, absent
     for name, job in document['jobs'].items():
         assert job['runs-on'] in ('ubuntu-latest', '${{ matrix.runner }}'), (name, job['runs-on'])
