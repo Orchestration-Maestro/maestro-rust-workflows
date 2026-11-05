@@ -28,7 +28,7 @@ jobs:
           persist-credentials: false
       - name: Caller check files
         run: |
-          python3 - <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import pathlib
           import re
           import tomllib

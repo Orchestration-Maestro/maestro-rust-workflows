@@ -7,23 +7,28 @@ import tempfile
 
 root = pathlib.Path.cwd()
 interpreter = re.compile(r'python3((?:\s+-\S+)*)')
-secret = re.compile(r'\$\{\{\s*secrets\.')
+# Any interpolation that names a token, whatever its environment key, is treated as one.
+token_value = re.compile(r'\$\{\{\s*(?:secrets\.|[^}]*\btoken\b)')
 
-def documents():
+def read_workflows():
+    workflows = []
     for path in sorted((root / '.github/workflows').glob('*.yml')):
         parsed = subprocess.run(['yq', '-o=json', '-I=0', '.'], input=path.read_text(encoding='utf-8'),
                                 text=True, capture_output=True)
         assert parsed.returncode == 0, f'yq failed to parse {path.name}: {parsed.stderr}'
         document = json.loads(parsed.stdout)
         assert document.get('jobs'), f'{path.name}: no jobs to check'
-        yield path, document
+        workflows.append((path, document))
+    return workflows
+
+workflows = read_workflows()
 
 def holds_token(*environments):
     for environment in environments:
         for key, value in (environment or {}).items():
             if key in ('GH_TOKEN', 'GITHUB_TOKEN'):
                 return True
-            if isinstance(value, str) and secret.search(value):
+            if isinstance(value, str) and token_value.search(value):
                 return True
     return False
 
@@ -36,12 +41,12 @@ def token_steps(document):
             run = step.get('run')
             if not isinstance(run, str):
                 continue
-            if holds_token(document.get('env'), spec.get('env'), step.get('env')) or secret.search(run):
+            if holds_token(document.get('env'), spec.get('env'), step.get('env')) or token_value.search(run):
                 yield job, step.get('name', ''), run
 
 def no_token_bearing_step_starts_python_without_isolation():
     offenders, inspected = [], 0
-    for path, document in documents():
+    for path, document in workflows:
         for job, name, run in token_steps(document):
             for match in interpreter.finditer(run):
                 inspected += 1
@@ -49,12 +54,12 @@ def no_token_bearing_step_starts_python_without_isolation():
                     continue
                 line = run[:match.start()].rsplit('\n', 1)[-1] + match[0]
                 offenders.append(f'{path.name}: {job} / {name}: {line.strip()}')
-    assert inspected >= 30, f'Read {inspected} token-bearing Python invocations; the sweep lost its steps'
+    assert inspected >= 31, f'Read {inspected} token-bearing Python invocations; the sweep lost its steps'
     assert not offenders, (f'{len(offenders)} token-bearing steps start Python without isolation:\n'
                            + '\n'.join(offenders))
 
 def floor_body():
-    workflow = next(document for path, document in documents() if path.name == 'ci.yml')
+    workflow = next(document for path, document in workflows if path.name == 'ci.yml')
     steps = workflow['jobs']['quality']['steps']
     return next(step['run'] for step in steps if step.get('name') == 'Compile cache hit-rate floor')
 
