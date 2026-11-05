@@ -41,8 +41,9 @@ changed paths. Ordinary pull requests skip Chromium runtime tests. See
 [browser selection](docs/caller-checks.md#chromium-browser-tests).
 
 Tests run with checksum-pinned cargo-nextest 0.9.148 on 16 Linux runners by
-default. Each shard runs whole test binaries, grouped by test count. A caller
-can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
+default. Each shard runs whole test binaries, balanced by the seconds their
+tests took on an earlier run, or by test count when no earlier run timed them.
+A caller can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
 [test shards](docs/caller-checks.md#test-shards). Doctests run in a
 parallel `Doctests` matrix leg on merge groups and main pushes.
 The aggregate `Tests (ubuntu-latest)` requires every shard and `Doctests` to

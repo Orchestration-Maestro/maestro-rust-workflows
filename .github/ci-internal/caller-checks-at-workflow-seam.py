@@ -1093,7 +1093,7 @@ def warm_filter_declaration_rejects_non_strings():
 warm_filter_declaration_rejects_non_strings()
 print('PASS warm_filter_declaration_rejects_non_strings')
 
-def install_recording_runner(directory, real_cargo=None, manifest=None, status=0):
+def install_recording_runner(directory, real_cargo=None, manifest=None, status=0, suites=None):
     tools = directory / 'runner-tools'
     tools.mkdir()
     log = directory / 'commands.jsonl'
@@ -1123,7 +1123,7 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
                   'export CARGO_LLVM_COV_BUILD_DIR=/elsewhere/target')
             sys.exit(0)
         if args[:2] == ['nextest', 'list']:
-            print(json.dumps({{'rust-suites': {{}}}}))
+            print(json.dumps({{'rust-suites': {suites or {}!r}}}))
             sys.exit({status})
         if pathlib.Path(sys.argv[0]).name != 'cargo':
             if '--output-path' in args:
@@ -1205,6 +1205,37 @@ def archive_build_publishes_cargo_timings():
 
 archive_build_publishes_cargo_timings()
 print('PASS archive_build_publishes_cargo_timings')
+
+def archive_groups_follow_earlier_test_seconds():
+    def case(*names):
+        return {name: {'filter-match': {'status': 'matches'}} for name in names} | {'ignored': {'filter-match': {'status': 'mismatch'}}}
+    # Test counts 20, 30, 30 and 10; only the earlier run's seconds show that the first binary is the slow one.
+    suites = {f'{name}::integration': {'testcases': case(*(f'test_{index}' for index in range(count)))}
+              for name, count in [('heavy', 20), ('broad', 30), ('wide', 30), ('new', 10)]}
+    for seconds, expected in [
+            # Unmeasured `new` weighs its ten tests at the measured 8.25 seconds per test.
+            ({'heavy::integration': 600, 'broad::integration': 30, 'wide::integration': 30, 'gone::integration': 5},
+             ['binary_id(=heavy::integration)', 'binary_id(=new::integration) | binary_id(=broad::integration) | binary_id(=wide::integration)']),
+            # Without earlier seconds every test weighs the same.
+            (None, ['binary_id(=broad::integration) | binary_id(=heavy::integration)', 'binary_id(=wide::integration) | binary_id(=new::integration)'])]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            tools, log = install_recording_runner(directory, suites=suites)
+            if seconds is not None:
+                (directory / 'target').mkdir()
+                (directory / 'target/test-seconds.json').write_text(json.dumps(seconds), encoding='utf-8')
+            result = execute('Build test archive', directory, {
+                'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                'COLLECT_COVERAGE': 'false', 'TEST_PACKAGES': '["sample"]', 'TEST_SHARD_COUNT': '2'})
+            assert result.returncode == 0, result.stdout + result.stderr
+            archives = [command['args'] for command in map(json.loads, log.read_text(encoding='utf-8').splitlines())
+                        if command['args'][:2] == ['nextest', 'archive']]
+            assert [args[args.index('-E') + 1] for args in archives] == expected, (seconds, archives)
+            assert json.loads((directory / 'test-archives/test-binaries.json').read_text(encoding='utf-8')) == {
+                'shard-1.tar.zst': len(expected[0].split(' | ')), 'shard-2.tar.zst': len(expected[1].split(' | '))}
+
+archive_groups_follow_earlier_test_seconds()
+print('PASS archive_groups_follow_earlier_test_seconds')
 
 def selected_archive_build_compiles_only_selected_packages():
     with tempfile.TemporaryDirectory() as temporary:

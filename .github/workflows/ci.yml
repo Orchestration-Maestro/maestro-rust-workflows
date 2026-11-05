@@ -1460,6 +1460,57 @@ jobs:
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
         run: *caller-tools
+      # Seconds only steer which shard gets each test binary, never which tests run; the token stays out of the step that compiles the caller.
+      - name: Earlier test seconds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYTHON'
+          import concurrent.futures
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          repository = os.environ['GITHUB_REPOSITORY']
+          def gh(*argv):
+              return subprocess.check_output(['gh', 'api', *argv[:-1], f'repos/{repository}/{argv[-1]}'], text=True)
+          def jobs_of(path):
+              return [job for page in json.loads(gh('--paginate', '--slurp', path)) for job in page['jobs']]
+          def log_of(job):
+              return gh('--allow-escape-sequences', f"actions/jobs/{job['id']}/logs")
+          seconds = {}
+          try:
+              current = json.loads(gh(f"actions/runs/{os.environ['GITHUB_RUN_ID']}"))
+              built = next(job for job in jobs_of(f"actions/runs/{current['id']}/attempts/{os.environ['GITHUB_RUN_ATTEMPT']}/jobs?per_page=100")
+                           if job['status'] == 'in_progress' and job['runner_name'] == os.environ['RUNNER_NAME'])
+              # This caller's shards carry the same prefix as this job (`suite / Build test archive`).
+              shard = re.compile(re.escape(built['name'].removesuffix('Build test archive')) + r'Test shard \(\d+/\d+\)')
+              earlier = sorted((run for event in ('merge_group', 'push')
+                                for run in json.loads(gh(f'actions/runs?event={event}&status=success&per_page=100'))['workflow_runs']
+                                if run['workflow_id'] == current['workflow_id'] and run['created_at'] < current['created_at']
+                                and (run['head_repository'] or {}).get('full_name') == repository),
+                               key=lambda run: run['created_at'], reverse=True)
+              for run in earlier:
+                  shards = [job for job in jobs_of(f"actions/runs/{run['id']}/jobs?per_page=100") if shard.fullmatch(job['name'])]
+                  if shards and all(job['conclusion'] == 'success' for job in shards):
+                      break
+              else:
+                  raise LookupError('no earlier successful run of this workflow ran these test shards')
+              with concurrent.futures.ThreadPoolExecutor() as pool:
+                  logs = list(pool.map(log_of, shards))
+              for log in logs:
+                  log = re.sub(r'\x1b\[[0-9;]*m', '', log)
+                  for took, binary in re.findall(r'(?m)^\S+Z\s+PASS \[\s*([0-9.]+)s\]\s+(?:\([^)]*\)\s+)?(\S+)\s', log):
+                      seconds[binary] = seconds.get(binary, 0) + float(took)
+              print(f"Test seconds from run {run['id']} ({run['event']} on {run['head_branch']} at {run['head_sha']}, {run['created_at']}): "
+                    f'{len(seconds)} test binaries')
+          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, StopIteration, LookupError) as error:
+              seconds = {}
+              print(f'Test seconds unavailable ({error}); test binaries are grouped by test count.')
+          pathlib.Path('target').mkdir(exist_ok=True)
+          pathlib.Path('target/test-seconds.json').write_text(json.dumps(seconds), encoding='utf-8')
+          PYTHON
       - name: Build test archive
         timeout-minutes: 45
         run: |
@@ -1487,13 +1538,21 @@ jobs:
           suites = json.loads(pathlib.Path('target/test-list.json').read_text(encoding='utf-8'))['rust-suites']
           tests = {binary: sum(case['filter-match']['status'] == 'matches' for case in suite['testcases'].values())
                    for binary, suite in suites.items()}
-          # Each test binary goes whole to one shard: the largest first, each to the shard with the fewest tests so far.
+          timed = pathlib.Path('target/test-seconds.json')
+          measured = json.loads(timed.read_text(encoding='utf-8')) if timed.exists() else {}
+          known = [binary for binary in tests if binary in measured]
+          # A binary the earlier run did not time weighs its tests at the timed binaries' seconds per test; with none timed, every test weighs one.
+          rate = sum(measured[binary] for binary in known) / (sum(tests[binary] for binary in known) or 1) if known else 1
+          weight = {binary: measured.get(binary, tests[binary] * rate) for binary in tests}
+          def load(group):
+              return sum(weight[member] for member in group), sum(tests[member] for member in group)
+          # Each test binary goes whole to one shard: the slowest first, each to the shard with the fewest seconds so far.
           groups = [[] for _ in range(int(os.environ['TEST_SHARD_COUNT']))]
-          for binary in sorted(tests, key=lambda binary: (-tests[binary], binary)):
-              min(groups, key=lambda group: sum(tests[member] for member in group)).append(binary)
-          groups.sort(key=lambda group: -sum(tests[member] for member in group))
+          for binary in sorted(tests, key=lambda binary: (-weight[binary], -tests[binary], binary)):
+              min(groups, key=load).append(binary)
+          groups.sort(key=load, reverse=True)
           for shard, group in enumerate(groups, 1):
-              print(f'Shard {shard}: {sum(tests[member] for member in group)} tests in {len(group)} binaries: {" ".join(group)}')
+              print(f'Shard {shard}: {load(group)[0]:.0f} s, {load(group)[1]} tests in {len(group)} binaries: {" ".join(group)}')
           pathlib.Path('target/test-filters.txt').write_text(
               ''.join((' | '.join(f'binary_id(={binary})' for binary in group) or 'none()') + '\n' for group in groups), encoding='utf-8')
           # How many test binaries each shard's archive holds: a shard with none has nothing to run.

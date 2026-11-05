@@ -336,8 +336,9 @@ can remove an entry before the next reader runs.
 ## Test shards
 
 Tests use checksum-pinned cargo-nextest 0.9.148. Each of the declared
-`test_shard_count` shards runs whole test binaries, grouped by test count when
-the tests are built (see [Build once, test many](#build-once-test-many)). The
+`test_shard_count` shards runs whole test binaries, balanced by the seconds
+their tests took on an earlier run when the tests are built (see
+[Build once, test many](#build-once-test-many)). The
 caller's `.config/nextest.toml` supplies
 test-suite runner metadata such as resource groups for fixed-port tests. Shared
 CI controls partitioning and coverage; profile default filters are ignored so
@@ -386,10 +387,20 @@ coverage builds in `target/llvm-cov-target` with the environment
 `CARGO_LLVM_COV_TARGET_DIR` and `CARGO_LLVM_COV_BUILD_DIR`. That is the
 instrumentation, directory and compile-cache key set `cargo llvm-cov` builds
 with, so shards report coverage from the paths it reads. The job then splits the test binaries into one group per
-shard: the binary with the most tests goes first, and each binary goes whole to
-the group with the fewest tests so far. Shard 1 gets the largest group. The job
-log prints each shard's tests and binaries, and `cargo nextest archive -E`
-writes one archive per group from the binaries already built.
+shard by the seconds their tests took before. The slowest binary goes first, and
+each binary goes whole to the group with the fewest seconds so far. Shard 1 gets
+the slowest group. The job log prints each shard's seconds, tests and binaries,
+and `cargo nextest archive -E` writes one archive per group from the binaries
+already built.
+
+The seconds come from the `Earlier test seconds` step, before the build. It takes
+the newest earlier successful merge group or push run of the same workflow in
+which every test shard of this caller succeeded, adds up the `PASS` seconds
+those shards' logs print for each test binary, and logs the run it read with its
+branch, commit and date. A binary that run did not time weighs its tests at the
+timed binaries' seconds per test. With no such run, or when the lookup fails, the
+step says so and every test weighs the same: the binaries go by test count. The
+timing decides only which shard runs each binary, never which tests run.
 
 Each numeric shard downloads only its own archive and runs every test in it with
 `--archive-file`. No partition flag applies, so every test runs on exactly one
