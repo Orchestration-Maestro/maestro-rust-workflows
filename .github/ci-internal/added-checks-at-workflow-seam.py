@@ -582,7 +582,7 @@ def privileged_trigger_workflows_ignore_only_declared_audit(env, temporary):
 
 checks = ['Licenses and dependencies', 'Unused dependencies', 'Spelling', 'Secrets', 'Workflows', 'Coverage']
 base = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + [body('Lint'), 'cargo test --workspace --locked']
-assert len(base) == 4
+assert len(base) == 5
 with tempfile.TemporaryDirectory() as temporary:
     env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/paths',
                         'GITHUB_ENV': temporary + '/environment', 'QUALITY_CONFIG': '{}'}
