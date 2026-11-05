@@ -1552,7 +1552,7 @@ jobs:
               min(groups, key=load).append(binary)
           groups.sort(key=load, reverse=True)
           for shard, group in enumerate(groups, 1):
-              print(f'Shard {shard}: {load(group)[0]:.0f} s, {load(group)[1]} tests in {len(group)} binaries: {" ".join(group)}')
+              print(f'Shard {shard}: ' + (f'{load(group)[0]:.0f} s, ' if known else '') + f'{load(group)[1]} tests in {len(group)} binaries: {" ".join(group)}')
           pathlib.Path('target/test-filters.txt').write_text(
               ''.join((' | '.join(f'binary_id(={binary})' for binary in group) or 'none()') + '\n' for group in groups), encoding='utf-8')
           # How many test binaries each shard's archive holds: a shard with none has nothing to run.

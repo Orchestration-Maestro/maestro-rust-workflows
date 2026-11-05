@@ -1212,12 +1212,14 @@ def archive_groups_follow_earlier_test_seconds():
     # Test counts 20, 30, 30 and 10; only the earlier run's seconds show that the first binary is the slow one.
     suites = {f'{name}::integration': {'testcases': case(*(f'test_{index}' for index in range(count)))}
               for name, count in [('heavy', 20), ('broad', 30), ('wide', 30), ('new', 10)]}
-    for seconds, expected in [
+    for seconds, expected, logged in [
             # Unmeasured `new` weighs its ten tests at the measured 8.25 seconds per test.
             ({'heavy::integration': 600, 'broad::integration': 30, 'wide::integration': 30, 'gone::integration': 5},
-             ['binary_id(=heavy::integration)', 'binary_id(=new::integration) | binary_id(=broad::integration) | binary_id(=wide::integration)']),
+             ['binary_id(=heavy::integration)', 'binary_id(=new::integration) | binary_id(=broad::integration) | binary_id(=wide::integration)'],
+             'Shard 1: 600 s, 20 tests in 1 binaries: heavy::integration\n'),
             # Without earlier seconds every test weighs the same.
-            (None, ['binary_id(=broad::integration) | binary_id(=heavy::integration)', 'binary_id(=wide::integration) | binary_id(=new::integration)'])]:
+            (None, ['binary_id(=broad::integration) | binary_id(=heavy::integration)', 'binary_id(=wide::integration) | binary_id(=new::integration)'],
+             'Shard 1: 50 tests in 2 binaries: broad::integration heavy::integration\n')]:
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory, suites=suites)
@@ -1231,6 +1233,7 @@ def archive_groups_follow_earlier_test_seconds():
             archives = [command['args'] for command in map(json.loads, log.read_text(encoding='utf-8').splitlines())
                         if command['args'][:2] == ['nextest', 'archive']]
             assert [args[args.index('-E') + 1] for args in archives] == expected, (seconds, archives)
+            assert logged in result.stdout, result.stdout
             assert json.loads((directory / 'test-archives/test-binaries.json').read_text(encoding='utf-8')) == {
                 'shard-1.tar.zst': len(expected[0].split(' | ')), 'shard-2.tar.zst': len(expected[1].split(' | '))}
 

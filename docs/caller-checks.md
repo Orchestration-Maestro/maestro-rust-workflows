@@ -389,9 +389,9 @@ instrumentation, directory and compile-cache key set `cargo llvm-cov` builds
 with, so shards report coverage from the paths it reads. The job then splits the test binaries into one group per
 shard by the seconds their tests took before. The slowest binary goes first, and
 each binary goes whole to the group with the fewest seconds so far. Shard 1 gets
-the slowest group. The job log prints each shard's seconds, tests and binaries,
-and `cargo nextest archive -E` writes one archive per group from the binaries
-already built.
+the slowest group. The job log prints each shard's tests and binaries, with its
+seconds when an earlier run timed them, and `cargo nextest archive -E` writes
+one archive per group from the binaries already built.
 
 The seconds come from the `Earlier test seconds` step, before the build. It takes
 the newest earlier successful merge group or push run of the same workflow in
