@@ -649,7 +649,7 @@ def builds_without_the_coverage_wrapper_keep_the_cache():
                 shutil.rmtree(directory / 'target', ignore_errors=True)
                 result = compile_sample(build)
                 assert result.returncode == 0, result.stderr
-                rlib = next((directory / 'target/debug/deps').glob('libsample-*.rlib')).read_bytes()
+                rlib = artifact(build)
                 assert (b'__llvm_covfun' in rlib) == instrumented, instrumented
                 stats(env, '0', misses)
 
