@@ -220,8 +220,8 @@ tracks the upstream fix.
 
 A push with `warm-cache: true`, including a feature-branch push, also runs the
 declared target checks; warm calls for other events skip them. Only
-default-branch pushes save those snapshots. Host-specific, checksum-pinned assets
-are listed in [Compile cache](../README.md#compile-cache).
+default-branch pushes save those compiled-cache snapshots. Host-specific,
+checksum-pinned assets are listed in [Compile cache](../README.md#compile-cache).
 
 Only a default-branch push warm call also runs Format and lint, Docs,
 Doctests, Wasm and browser build, and declared Chromium browser tests.

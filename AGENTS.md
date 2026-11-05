@@ -13,8 +13,9 @@ disagree, Maestro's file wins.
   resource groups), not shared-CI settings. Shared-CI partitioning and coverage
   policy stay in the workflow; default test filters are ignored.
   CI does not retry tests; a failed attempt fails its job.
-- Test changes at the workflow seam in `.github/workflows/ci-internal.yml`; its
-  seam steps run the scripts in `.github/ci-internal/`.
+- Test changes at the workflow seam in `.github/workflows/ci-internal.yml` and
+  `.github/workflows/ci-internal-shards.yml`; their seam steps run the scripts in
+  `.github/ci-internal/`.
   Keep the broken fixtures broken, and outside any root workspace.
 - Pin actions by full commit SHA. Do not add a gate program or checks beyond
   [the shared CI specification](https://github.com/Orchestration-Maestro/.github/blob/main/docs/specs/2026-10-04-shared-rust-ci.md).

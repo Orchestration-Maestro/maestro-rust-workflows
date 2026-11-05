@@ -241,7 +241,8 @@ stays under the size GitHub accepts. The self-test fails any workflow file over
 ## Self-test
 
 `ci-internal.yml` calls the shared workflow on `fixtures/sample`, which must
-pass every check on Linux. The eleven broken copies are independent packages,
+pass every check on Linux. It also calls `ci-internal-shards.yml` to prove the
+declared test shard count. The eleven broken copies are independent packages,
 not members of a root workspace. Each fails only its intended command:
 format, lint, tests, an undocumented public item or a broken documentation link.
 The self-test reads the commands and documentation flags from `ci.yml` and
