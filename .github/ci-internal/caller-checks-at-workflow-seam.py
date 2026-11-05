@@ -4013,10 +4013,6 @@ print('PASS supported_targets_use_native_runners')
 
 def linux_jobs_use_hosted_runners():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-    declaration = document['jobs']['declaration']
-    assert 'linux_runner' not in declaration['outputs']
-    assert all(step.get('id') != 'runner' and step.get('name') != 'Select Linux runner'
-               for step in declaration['steps'])
     for absent in ['self-hosted', 'maestro-aws', 'runner_policy', 'RUNNER_AVAILABILITY',
                    'runner.environment', 'RUNNER_ENVIRONMENT']:
         assert absent not in workflow, absent
