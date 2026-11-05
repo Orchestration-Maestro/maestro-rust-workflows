@@ -30,7 +30,7 @@ _Avoid_: Version pin; consumer pin, when it means a caller's workflow release se
 
 _Avoid_: Test isolation, when it names this execution mode.
 
-**Test shard**: One numbered partition of the caller's unit and integration tests; doctests have a separate execution route.
+**Test shard**: One numbered group of the caller's unit and integration test binaries, run from its own archive; doctests have a separate execution route.
 
 _Avoid_: Partition, when it names a numbered CI test shard.
 

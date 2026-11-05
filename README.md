@@ -41,7 +41,7 @@ changed paths. Ordinary pull requests skip Chromium runtime tests. See
 [browser selection](docs/caller-checks.md#chromium-browser-tests).
 
 Tests run with checksum-pinned cargo-nextest 0.9.148 on 16 Linux runners by
-default, using automatic count partitions rather than package lists. A caller
+default. Each shard runs whole test binaries, grouped by test count. A caller
 can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
 [test shards](docs/caller-checks.md#test-shards). Doctests run in a
 parallel `Doctests` matrix leg on merge groups and main pushes.
@@ -58,7 +58,7 @@ workspace.
 See [PR selection](docs/caller-checks.md#pull-request-selection-and-retries)
 for the declaration's package-selection rules and self-test event mode.
 
-Declared callers measure coverage in those partitions with `cargo llvm-cov
+Declared callers measure coverage in those shards with `cargo llvm-cov
 nextest`. Only the numeric shards upload LCOV; the aggregate counts a
 source line as covered if any shard covers it and enforces the workspace union's
 80% floor (or caller's higher threshold). Missing shard reports fail. Undeclared
@@ -185,7 +185,7 @@ cargo-hakari (`cargo hakari verify` when `.config/hakari.toml` exists),
 typos (spelling), gitleaks (checked-out source, before build-cache restore),
 zizmor and actionlint (workflow
 security and correctness when workflows exist), plus at least 80% line coverage on merge groups and main pushes
-(measured in isolated nextest partitions, or in the single undeclared coverage
+(measured in isolated nextest shards, or in the single undeclared coverage
 job). Coverage measures library, binary and example sources exercised by those
 tests. It excludes `tests/` and `benches/` when their next path component is
 not `..`, so examples imported from a `src/tests/` module through parent paths
