@@ -896,6 +896,21 @@ fresh directories and the child environment allowlist are unchanged. Only the
 installed tools' executable paths are added, not mise's environment settings.
 Windows paths are published in native format for later steps.
 
+## Documentation
+
+Every call that runs the Docs job builds the workspace documentation with
+`RUSTDOCFLAGS="-D warnings -D missing_docs"`:
+
+```bash
+cargo doc --workspace --no-deps --locked
+```
+
+An undocumented public item or a documentation warning fails the job. Merge
+groups and default-branch pushes that build the tests also document every
+feature, so an item that only a non-default feature compiles is documented
+before it merges. A pull request documents the default features only, which
+keeps its Docs job as fast as before.
+
 ## Wasm and browser builds
 
 On merge groups and main pushes, Linux runs this command for

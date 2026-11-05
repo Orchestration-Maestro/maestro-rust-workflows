@@ -1315,6 +1315,12 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings -D missing_docs
         run: cargo doc --workspace --no-deps --locked
+      - name: Docs for every feature
+        # Every event that runs the job may declare non-default features; pull requests stay fast.
+        if: needs.declaration.outputs.coverage == 'true'
+        env:
+          RUSTDOCFLAGS: -D warnings -D missing_docs
+        run: cargo doc --workspace --no-deps --locked --all-features
       - name: Compile cache statistics
         id: cache-statistics
         if: always()
@@ -2955,11 +2961,6 @@ jobs:
           for crate in crates:
               subprocess.run(['cargo', 'doc', '--locked', '--no-deps', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
           PYTHON
-      - name: Docs for every feature
-        env:
-          RUSTDOCFLAGS: -D warnings -D missing_docs
-        run: |
-          cargo doc --workspace --no-deps --locked --all-features
       - name: Browser recipe
         if: needs.declaration.outputs.browser_build == 'true'
         run: |
