@@ -1049,7 +1049,9 @@ Acquire::Retries "3";
 A stalled connection then fails over in seconds. The step also carries
 `timeout-minutes: 5`, so a mirror that streams too slowly to trip those timeouts
 still fails the job with the step's name instead of adding minutes to the group.
-Apt still chooses the versions each job installs.
+Apt still chooses the versions each job installs. The step needs sudo, and the
+drop-in it writes stays on the machine after the run: delete
+`/etc/apt/apt.conf.d/99-maestro-browser-packages` to restore the defaults.
 
 The recipe receives absolute `PLAYWRIGHT_MODULE` and `CHROMIUM_PATH` values.
 The verified binding CLI directory precedes caller tools on PATH. The job runs
@@ -1180,7 +1182,8 @@ with tempfile.TemporaryDirectory() as temporary:
     env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths), 'GITHUB_ENV': str(values)}
     for command in commands:
         subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command], env=env, check=True)
-    env.update(line.split('=', 1) for line in values.read_text(encoding='utf-8').splitlines())
+        # Each step exports its own environment for the steps after it.
+        env.update(line.split('=', 1) for line in values.read_text(encoding='utf-8').splitlines())
     env['PATH'] = os.pathsep.join(reversed(paths.read_text(encoding='utf-8').splitlines())) + os.pathsep + env['PATH']
     env['CARGO_BUILD_JOBS'] = '3'
     subprocess.run(['capped', 'just', 'browser-test'], env=env, check=True)

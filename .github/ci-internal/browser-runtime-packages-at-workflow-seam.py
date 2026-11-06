@@ -64,13 +64,11 @@ def sandbox(directory):
 
 
 def installed():
-    directory = pathlib.Path(tempfile.mkdtemp())
-    try:
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
         result = execute(PACKAGES, directory, sandbox(directory))
         trace = directory / 'trace'
         return result, trace.read_text(encoding='utf-8') if trace.exists() else ''
-    finally:
-        subprocess.run(['rm', '-rf', str(directory)], check=True)
 
 def install_deps_runs_only_after_apt_reads_its_settings():
     result, trace = installed()
@@ -97,9 +95,8 @@ def the_step_fails_when_the_apt_settings_go_missing_or_late():
             assert 'the apt settings were written' in result.stderr, result.stderr
 
 def the_step_is_bounded_and_sits_after_the_tools_step():
-    for bound in [step.get('timeout-minutes') for step in job['steps'] if step['name'] == PACKAGES]:
-        assert bound == 5, bound
-    # The packages follow the tools that name their driver, and the step owns the only bound.
+    assert steps[PACKAGES].get('timeout-minutes') == 5, steps[PACKAGES]
+    # The packages follow the tools that name their driver, and nothing skips the install.
     order = [step['name'] for step in job['steps']]
     assert order.index('Browser runtime tools') < order.index(PACKAGES) < order.index('Browser test recipe'), order
     assert 'if' not in steps[PACKAGES] and 'continue-on-error' not in steps[PACKAGES], steps[PACKAGES]
