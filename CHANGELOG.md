@@ -1,5 +1,93 @@
 # Changelog
 
+## [0.19.20](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.19...v0.19.20) (2026-11-06)
+
+
+### Continuous Integration
+
+* bound the Chromium apt install with a timeout, retries and a step limit ([#391](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/391)) ([55c5a5e](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/55c5a5edd1f8a74e56931e47e9c80af50e5453d8))
+* **guards:** keep one open issue per guard identity ([#393](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/393)) ([bbe683b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/bbe683b1737073ea6a67f7fccf7eb51dcf8a2b07))
+* move main scan pins to v0.19.19 ([#388](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/388)) ([4ace062](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/4ace062c738802b3f53dcb6bce8a1f09654c0ac2))
+
+## [0.19.19](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.18...v0.19.19) (2026-11-06)
+
+
+### Continuous Integration
+
+* document every feature and every wasm crate before merge ([#378](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/378)) ([2b4379d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/2b4379d7ae80f643a30bbcaa3f0b353bad246b97))
+* move main scan pins to v0.19.18 ([#385](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/385)) ([8549314](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/854931462a0a8032d84ae609a75f0a05ab9f5147))
+
+## [0.19.18](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.17...v0.19.18) (2026-11-05)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#383](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/383)) ([92798c0](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/92798c0d8094b77f2d061ef8040ccd0783f5f607))
+* drop the unused self-hosted Linux runner selection ([#377](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/377)) ([009499d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/009499d3a7dbbe97fdf42c1f8f6edc81190648f0))
+* move main scan pins to v0.19.17 ([#375](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/375)) ([ace4058](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/ace4058b640f2fc10301b97402d4a5cf92d61abc))
+
+
+### Bug Fixes
+
+* **ci:** run token-bearing Python steps in isolated mode ([#382](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/382)) ([40d7090](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/40d70905a5a35d8ed27fca36b537e0a5a2645050))
+
+
+### Performance
+
+* **ci:** give each test shard its own archive of whole test binaries ([#380](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/380)) ([f5ea67b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/f5ea67bcc5f156f82cd82b6dde14f658fa9f4af2))
+
+## [0.19.17](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.16...v0.19.17) (2026-11-04)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#370](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/370)) ([25cb691](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/25cb691636a9f568f56861d4ff0f60f65e549150))
+* keep one cache entry per snapshot shape and seed the reuse-push shapes ([#364](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/364)) ([1e69608](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/1e69608e5d81c65efda35a039f56ac7223548a73))
+* move main scan pins to v0.19.16 ([#366](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/366)) ([54ce604](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/54ce604995b01d3d5657aad397d6ca5dde63554d))
+
+
+### Bug Fixes
+
+* **ci-guards:** name slow tests from the blamed shard only ([#371](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/371)) ([933e29e](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/933e29e40081c67eecfa34dd5792540c0f3344f9))
+
+## [0.19.16](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.15...v0.19.16) (2026-11-04)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#362](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/362)) ([61554dc](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/61554dccb5f6051b9fb9e5e49a507493a9171d7c))
+* move main scan pins to v0.19.15 ([#358](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/358)) ([cde2c5f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/cde2c5f796ca1f02221f16af1042fa56122578fd))
+
+
+### Bug Fixes
+
+* **ci-guards:** take the cache storage limit from the caller ([#361](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/361)) ([d7512dd](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/d7512ddcaf8aaf615b304665065aebf6fec5516c))
+
+## [0.19.15](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.14...v0.19.15) (2026-11-04)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot ([#356](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/356)) ([b48ea8a](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/b48ea8a164b02373cedc6a6dc2c9d5c92ba842ba))
+* move main scan pins to v0.19.14 ([#352](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/352)) ([89b5d7e](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/89b5d7e375d3ce2c347534c4a23bb57d86a2e646))
+
+
+### Bug Fixes
+
+* **ci:** judge runs whose jobs carry a reusable caller's prefix ([#355](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/355)) ([15faa25](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/15faa25858d791d35ae775656f74a5dd2d25141b))
+
+## [0.19.14](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.13...v0.19.14) (2026-11-03)
+
+
+### Continuous Integration
+
+* move main scan pins to v0.19.13 ([#348](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/348)) ([b165146](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/b165146debbaa34950cd65ba058bf013b44ce89c))
+
+
+### Bug Fixes
+
+* **ci:** size the test-setup compile cache to its working set ([#350](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/350)) ([1a46d31](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/1a46d31f14fd2a3a233002ed9471d3a2807ab310))
+
 ## [0.19.13](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.12...v0.19.13) (2026-11-03)
 
 

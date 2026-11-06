@@ -83,7 +83,7 @@ jobs:
               *) echo "Unexpected SBOM response: $status" >&2; exit 1 ;;
             esac
           done
-          python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["spdxVersion"].startswith("SPDX-")' "$ASSETS/sbom.spdx.json"
+          python3 -I -c 'import json, sys; assert json.load(open(sys.argv[1]))["spdxVersion"].startswith("SPDX-")' "$ASSETS/sbom.spdx.json"
       - name: Archive the tag and checksum the assets
         shell: bash
         run: |

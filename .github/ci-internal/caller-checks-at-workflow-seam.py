@@ -37,15 +37,20 @@ def routed_jobs(document, values):
         'needs.declaration.outputs.test_prepare': json.dumps('echo ready'),
         'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
         'always()': True, 'cancelled()': False, 'success()': True, 'failure()': False}
-    routed = set()
-    for name, job in document['jobs'].items():
-        condition = job['if'].removeprefix('$' + '{{').removesuffix('}}')
-        # GitHub adds success() to a job condition that calls no status function.
-        if not re.search(r'\b(?:always|success|failure|cancelled)\(\)', condition):
-            condition = 'success() && (' + condition + ')'
-        if evaluate(condition, gates | values):
-            routed.add(name)
-    return routed
+    decided = {}
+    def runs(name):
+        if name not in decided:
+            job = document['jobs'][name]
+            condition = job['if'].removeprefix('$' + '{{').removesuffix('}}')
+            needs = job.get('needs', [])
+            # GitHub adds success() to a job condition that calls no status function, and it fails when a needed job skipped.
+            if not re.search(r'\b(?:always|success|failure|cancelled)\(\)', condition):
+                condition = 'success() && (' + condition + ')'
+                if not all(runs(need) for need in ([needs] if isinstance(needs, str) else needs)):
+                    condition = 'False'
+            decided[name] = bool(evaluate(condition, gates | values))
+        return decided[name]
+    return {name for name in document['jobs'] if runs(name)}
 
 def body(name, source=workflow):
     import json
@@ -414,7 +419,7 @@ def browser_test_job_is_single_and_optional():
                    {'inputs.warm-cache': True, 'github.event_name': 'pull_request'},
                    {'inputs.warm-cache': True, 'github.ref': 'refs/heads/feature'}):
         assert 'browser-tests' not in routed_jobs(document, closed), closed
-    assert 'runs-on: $' + '{{ fromJSON(needs.declaration.outputs.linux_runner) }}' in job and 'matrix:' not in job
+    assert 'runs-on: ubuntu-latest\n' in job and 'matrix:' not in job
     assert body('Browser test recipe').strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"')
     assert 'mise exec' not in body('Browser test recipe')
     assert 'if:' not in job.split('- name: Browser test caller tools', 1)[1].split('- name:', 1)[0]
@@ -435,7 +440,7 @@ def manual_browser_proof_selects_only_existing_chromium_job():
         'github.ref': 'refs/heads/main',
         "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
         'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.browser_tests': 'true',
-        'always()': True, 'cancelled()': False,
+        'needs.declaration.outputs.tests_reused': '', 'always()': True, 'cancelled()': False,
     }
     for name, job in document['jobs'].items():
         condition = job['if']
@@ -448,7 +453,7 @@ def manual_browser_proof_selects_only_existing_chromium_job():
         assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
     job = document['jobs']['browser-tests']
     assert 'matrix' not in job.get('strategy', {})
-    assert job['runs-on'] == '${{ fromJSON(needs.declaration.outputs.linux_runner) }}'
+    assert job['runs-on'] == 'ubuntu-latest'
     for event, coverage, declared, warm, expected in [
         ('workflow_dispatch', 'true', 'true', False, True),
         ('workflow_dispatch', 'true', 'false', False, False),
@@ -535,7 +540,7 @@ def browser_proof_dispatch_example_reuses_workflow():
     assert set(document['jobs']) == {'browser'}
     job = document['jobs']['browser']
     assert job['uses'] == 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml@RELEASE_COMMIT'
-    assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
+    assert job['permissions'] == {'contents': 'read', 'actions': 'write'}
     assert job['with'] == {'browser-only': True, 'checkout-ref': '${{ inputs.ref }}', 'concurrency-key': 'browser-proof'}
     reusable = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     assert set(job['with']) <= set(reusable['on']['workflow_call']['inputs'])
@@ -551,6 +556,7 @@ def browser_qualification_reuses_production_bodies():
     job = source.split('  browser-qualification:\n', 1)[1].split('\n  consumers:', 1)[0]
     names = ['Toolchain', 'Compile cache identity', 'Compile cache', 'Browser test tool pin',
              'Browser test mise bootstrap', 'Browser test caller tools', 'Browser runtime tools',
+             'Browser runtime packages',
              'Compile cache statistics', 'Seal compile cache']
     def require_extracted(candidate):
         for name in names:
@@ -639,7 +645,7 @@ def archived_shards_reuse_build_and_prepared_outputs():
                 '#[test] fn archived_binary_still_runs() {\n'
                 'assert!(std::process::Command::new(env!("CARGO_BIN_EXE_sample")).status().unwrap().success());\n}\n', encoding='utf-8')
             command = 'printf "#!/bin/sh\\nexit 0\\n" > "$TEST_PREPARE_OUTPUT/prepared"; chmod +x "$TEST_PREPARE_OUTPUT/prepared"; echo once >> prepare-count'
-            env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage,
+            env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage, 'TEST_SHARD_COUNT': '2',
                    'TEST_PREPARE': command, 'TEST_PACKAGES': '["sample"]',
                    'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0]}
             result = execute('Prepare test setup', directory, env)
@@ -648,7 +654,8 @@ def archived_shards_reuse_build_and_prepared_outputs():
             assert result.returncode == 0, result.stdout + result.stderr
             assert (result.stdout + result.stderr).count('Compiling sample ') == 1, result.stdout + result.stderr
             assert list(directory.glob(timing_glob)), f'No uploaded Cargo timings for coverage={coverage}: {timing_glob}'
-            assert (directory / 'test-binaries.tar.zst').is_file()
+            archives = sorted(path.name for path in (directory / 'test-archives').iterdir())
+            assert archives == ['shard-1.tar.zst', 'shard-2.tar.zst', 'test-binaries.json'], archives
             assert (directory / 'prepare-count').read_text(encoding='utf-8') == 'once\n'
             shutil.rmtree(directory / 'target')
             downloaded = pathlib.Path(temporary) / 'maestro-test-setup'
@@ -660,7 +667,7 @@ def archived_shards_reuse_build_and_prepared_outputs():
             (directory / 'src/lib.rs').write_text('compile_error!("shards must not compile");\n', encoding='utf-8')
             for shard in ['1', '2']:
                 result = execute(route, directory, env | {'SHARD': shard, 'TEST_SHARD_COUNT': '2',
-                                 'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+                                 'TEST_ARCHIVE': str(directory / f'test-archives/shard-{shard}.tar.zst'),
                                  'CARGO_COVERAGE_MIN_LINES': ''})
                 assert result.returncode == 0, result.stdout + result.stderr
                 assert 'Compiling' not in result.stdout + result.stderr
@@ -681,13 +688,62 @@ def archived_shards_reuse_build_and_prepared_outputs():
     assert 'needs: declaration' in jobs['test-prepare']
     assert "matrix.shard != 'doctests'" in jobs['tests']
 
+def per_shard_archives_run_every_test_once():
+    import collections
+    import shutil
+    with tempfile.TemporaryDirectory() as temporary:
+        source = pathlib.Path(temporary) / 'source'
+        source.mkdir()
+        (source / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c","d","e"]\n', encoding='utf-8')
+        # Ten test binaries of different sizes, each with an ignored test that no shard runs.
+        for size, name in enumerate('abcde', 1):
+            crate = source / name
+            (crate / 'src').mkdir(parents=True)
+            (crate / 'tests').mkdir()
+            (crate / 'Cargo.toml').write_text(f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+            (crate / 'src/lib.rs').write_text('pub fn value() -> u8 { 1 }\n' + ''.join(
+                f'#[test] fn unit_{index}() {{ assert_eq!(value(), 1); }}\n' for index in range(3 * size)), encoding='utf-8')
+            (crate / 'tests/proof.rs').write_text('#[test] #[ignore] fn ignored() {}\n' + ''.join(
+                f'#[test] fn integration_{index}() {{ assert_eq!({name}::value(), 1); }}\n' for index in range(2 * size)), encoding='utf-8')
+        subprocess.run(['cargo', 'generate-lockfile'], cwd=source, check=True)
+        # Four shards hold every binary; sixteen leave six shards without one. One build per mode serves both counts.
+        for (coverage, route), count in itertools.product([('false', 'Tests'), ('true', 'Isolated tests')], [4, 16]):
+            directory = pathlib.Path(temporary) / f'caller-{coverage}'
+            if not directory.exists():
+                shutil.copytree(source, directory)
+            env = {'RUNNER_TEMP': temporary, 'COLLECT_COVERAGE': coverage, 'TEST_SHARD_COUNT': str(count),
+                   'TEST_PACKAGES': '["a", "b", "c", "d", "e"]', 'CARGO_COVERAGE_MIN_LINES': ''}
+            result = execute('Build test archive', directory, env)
+            assert result.returncode == 0, result.stdout + result.stderr
+            suites = json.loads((directory / 'target/test-list.json').read_text(encoding='utf-8'))['rust-suites']
+            listed = {(binary, test) for binary, suite in suites.items() for test, case in suite['testcases'].items()
+                      if case['filter-match']['status'] == 'matches'}
+            assert len(suites) == 10 and len(listed) == 75, (suites.keys(), listed)
+            ran = collections.Counter()
+            built = pathlib.Path(temporary) / 'built'
+            shutil.move(directory / 'target', built)
+            for shard in range(1, count + 1):
+                # Each shard is a fresh machine with only its own archive.
+                result = execute(route, directory, env | {'SHARD': str(shard), 'TEST_ARCHIVE': str(directory / f'test-archives/shard-{shard}.tar.zst')})
+                assert result.returncode == 0, result.stdout + result.stderr
+                assert 'Compiling' not in result.stdout + result.stderr, result.stdout + result.stderr
+                ran.update(re.findall(r'(?m)^\s*PASS \[[^\]]*\] (?:\([^)]*\) )?(\S+) (\S+)$', result.stdout + result.stderr))
+                shutil.rmtree(directory / 'target', ignore_errors=True)
+            shutil.move(built, directory / 'target')
+            assert set(ran) == listed and set(ran.values()) == {1}, (coverage, count, ran)
+            if coverage == 'true':
+                merged = subprocess.run(['python3', '-c', os.environ['COVERAGE_MERGE']], cwd=directory, capture_output=True, text=True,
+                                        env=os.environ | {'COVERAGE_REPORT_DIR': '.', 'TEST_SHARD_COUNT': str(count)})
+                assert merged.returncode == 0 and 'Merged line coverage: 100.00%' in merged.stdout, merged.stdout + merged.stderr
+
 def archived_shards_provision_child_build_dependencies():
     for route, coverage in [('Tests', 'false'), ('Isolated tests', 'false'), ('Isolated tests', 'true')]:
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory)
+            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": 1}', encoding='utf-8')
             env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
-                   'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+                   'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': str(directory / 'shard-1.tar.zst'),
                    'TEST_PREPARE_OUTPUT': str(directory / 'untrusted-inherited-output'),
                    'TEST_PACKAGES': '["sample"]', 'SHARD': '1', 'COLLECT_COVERAGE': coverage,
                    'CARGO_COVERAGE_MIN_LINES': '', 'ADDITIONAL_LOCKED_MANIFESTS': '["fixture/Cargo.toml"]'}
@@ -700,6 +756,8 @@ def archived_shards_provision_child_build_dependencies():
             assert len(commands) == 3, commands
             assert '--archive-file' in commands[2]['args']
             assert '--workspace' not in commands[2]['args'] and '--locked' not in commands[2]['args']
+            # The shard's own archive holds exactly its tests, so nothing partitions them again.
+            assert '--partition' not in commands[2]['args'], commands[2]
             if route == 'Isolated tests':
                 assert commands[2]['test_prepare_output'] == str(directory / 'target/test-setup'), commands[2]
     tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
@@ -721,7 +779,7 @@ def cargo_git_transport_reaches_every_job_and_isolated_child():
         result = execute('Isolated tests', directory, {
             setting: document['env'][setting], 'PATH': str(tools) + os.pathsep + os.environ['PATH'],
             'TOOLS': str(tools), 'RUNNER_TEMP': temporary, 'TEST_PACKAGES': '["sample"]',
-            'SHARD': '1', 'TEST_ARCHIVE': str(directory / 'test-binaries.tar.zst'),
+            'SHARD': '1', 'TEST_ARCHIVE': str(directory / 'shard-1.tar.zst'),
             'COLLECT_COVERAGE': 'false', 'CARGO_COVERAGE_MIN_LINES': '',
             'UNRELATED_AMBIENT_CANARY': 'must-not-leak'})
         assert result.returncode == 0, result.stdout + result.stderr
@@ -908,8 +966,8 @@ def cargo_git_cache_reuses_exact_locked_sources():
 
 def archive_signal_reaches_only_archived_shards():
     for shard, warm, coverage, archive, expected in [
-        ('1', 'false', 'false', 'test-binaries.tar.zst', '1'),
-        ('2', 'false', 'true', 'test-binaries.tar.zst', '1'),
+        ('1', 'false', 'false', 'shard-1.tar.zst', '1'),
+        ('2', 'false', 'true', 'shard-2.tar.zst', '1'),
         ('warm', 'true', 'false', '', None),
         ('2', 'false', 'false', '', None),
         ('2', 'false', 'true', '', None),
@@ -918,6 +976,7 @@ def archive_signal_reaches_only_archived_shards():
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory)
+            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": 1, "shard-2.tar.zst": 1}', encoding='utf-8')
             result = execute('Isolated tests', directory, {
                 'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
                 'RUNNER_TEMP': temporary, 'SHARD': shard, 'WARM_CACHE': warm,
@@ -1054,7 +1113,7 @@ def warm_filter_declaration_rejects_non_strings():
 warm_filter_declaration_rejects_non_strings()
 print('PASS warm_filter_declaration_rejects_non_strings')
 
-def install_recording_runner(directory, real_cargo=None, manifest=None, status=0):
+def install_recording_runner(directory, real_cargo=None, manifest=None, status=0, suites=None):
     tools = directory / 'runner-tools'
     tools.mkdir()
     log = directory / 'commands.jsonl'
@@ -1069,6 +1128,7 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
                                          ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
                                          test_prepare_output=os.environ.get('TEST_PREPARE_OUTPUT'),
                                          test_archive=os.environ.get('TEST_ARCHIVE'),
+                                         coverage_env={{name: value for name, value in os.environ.items() if name.startswith('CARGO_LLVM_COV')}},
                                          diagnostics=os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'))) + '\\n')
         if args[:1] != ['fetch'] and os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'):
             (pathlib.Path(os.environ['MAESTRO_TEST_DIAGNOSTICS_DIR']) / 'runner.txt').write_text(
@@ -1078,6 +1138,13 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
         if args[:1] != ['fetch'] and {manifest!r}:
             subprocess.run([{real_cargo!r}, 'metadata', '--offline', '--locked', '--format-version', '1',
                             '--manifest-path', {manifest!r}], check=True, stdout=subprocess.DEVNULL)
+        if args[:2] == ['llvm-cov', 'show-env']:
+            print('export CARGO_LLVM_COV=1\\nexport CARGO_LLVM_COV_SHOW_ENV=1\\nexport CARGO_LLVM_COV_TARGET_DIR=/elsewhere/target\\n'
+                  'export CARGO_LLVM_COV_BUILD_DIR=/elsewhere/target')
+            sys.exit(0)
+        if args[:2] == ['nextest', 'list']:
+            print(json.dumps({{'rust-suites': {suites or {}!r}}}))
+            sys.exit({status})
         if pathlib.Path(sys.argv[0]).name != 'cargo':
             if '--output-path' in args:
                 pathlib.Path(args[args.index('--output-path') + 1]).write_text(
@@ -1125,7 +1192,7 @@ clippy_selection_works_without_mapfile()
 print('PASS clippy_selection_works_without_mapfile')
 
 def archive_build_publishes_cargo_timings():
-    for coverage, command in [('false', ['nextest', 'archive']), ('true', ['llvm-cov', 'nextest-archive'])]:
+    for coverage in ['false', 'true']:
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory)
@@ -1133,8 +1200,19 @@ def archive_build_publishes_cargo_timings():
                 'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
                 'COLLECT_COVERAGE': coverage, 'TEST_PACKAGES': '["sample"]'})
             assert result.returncode == 0, result.stdout + result.stderr
-            args = json.loads(log.read_text(encoding='utf-8').splitlines()[-1])['args']
-            assert args[:2] == command and args.count('--timings') == 1, args
+            logged = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()][1:]
+            commands = [command['args'] for command in logged]
+            # Only the compiling list times the build; each shard's archive then finds the binaries fresh.
+            assert commands[0] == ['llvm-cov', 'show-env', '--sh'] if coverage == 'true' else commands[0][:2] == ['nextest', 'list'], commands
+            listing, archives = commands[coverage == 'true'], commands[1 + (coverage == 'true'):]
+            assert listing[:2] == ['nextest', 'list'] and listing.count('--timings') == 1, listing
+            if coverage == 'true':
+                # The archive route's own target directory and environment: shards extract there, and the compile cache keys match.
+                assert listing[listing.index('--target-dir') + 1].endswith('/target/llvm-cov-target'), listing
+                assert all(command['coverage_env'] == {'CARGO_LLVM_COV': '1'} for command in logged[1:]), logged
+            else:
+                assert '--target-dir' not in listing and all(command['coverage_env'] == {} for command in logged), logged
+            assert len(archives) == 16 and all(args[:2] == ['nextest', 'archive'] and '--timings' not in args for args in archives), archives
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     steps = document['jobs']['test-build']['steps']
     upload = next(step for step in steps if step.get('name') == 'Upload archive build timings')
@@ -1147,6 +1225,40 @@ def archive_build_publishes_cargo_timings():
 
 archive_build_publishes_cargo_timings()
 print('PASS archive_build_publishes_cargo_timings')
+
+def archive_groups_follow_earlier_test_seconds():
+    def case(*names):
+        return {name: {'filter-match': {'status': 'matches'}} for name in names} | {'ignored': {'filter-match': {'status': 'mismatch'}}}
+    # Test counts 20, 30, 30 and 10; only the earlier run's seconds show that the first binary is the slow one.
+    suites = {f'{name}::integration': {'testcases': case(*(f'test_{index}' for index in range(count)))}
+              for name, count in [('heavy', 20), ('broad', 30), ('wide', 30), ('new', 10)]}
+    for seconds, expected, logged in [
+            # Unmeasured `new` weighs its ten tests at the measured 8.25 seconds per test.
+            ({'heavy::integration': 600, 'broad::integration': 30, 'wide::integration': 30, 'gone::integration': 5},
+             ['binary_id(=heavy::integration)', 'binary_id(=new::integration) | binary_id(=broad::integration) | binary_id(=wide::integration)'],
+             'Shard 1: 600 s, 20 tests in 1 binary: heavy::integration\n'),
+            # Without earlier seconds every test weighs the same.
+            (None, ['binary_id(=broad::integration) | binary_id(=heavy::integration)', 'binary_id(=wide::integration) | binary_id(=new::integration)'],
+             'Shard 1: 50 tests in 2 binaries: broad::integration heavy::integration\n')]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            tools, log = install_recording_runner(directory, suites=suites)
+            if seconds is not None:
+                (directory / 'target').mkdir()
+                (directory / 'target/test-seconds.json').write_text(json.dumps(seconds), encoding='utf-8')
+            result = execute('Build test archive', directory, {
+                'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+                'COLLECT_COVERAGE': 'false', 'TEST_PACKAGES': '["sample"]', 'TEST_SHARD_COUNT': '2'})
+            assert result.returncode == 0, result.stdout + result.stderr
+            archives = [command['args'] for command in map(json.loads, log.read_text(encoding='utf-8').splitlines())
+                        if command['args'][:2] == ['nextest', 'archive']]
+            assert [args[args.index('-E') + 1] for args in archives] == expected, (seconds, archives)
+            assert logged in result.stdout, result.stdout
+            assert json.loads((directory / 'test-archives/test-binaries.json').read_text(encoding='utf-8')) == {
+                'shard-1.tar.zst': len(expected[0].split(' | ')), 'shard-2.tar.zst': len(expected[1].split(' | '))}
+
+archive_groups_follow_earlier_test_seconds()
+print('PASS archive_groups_follow_earlier_test_seconds')
 
 def selected_archive_build_compiles_only_selected_packages():
     with tempfile.TemporaryDirectory() as temporary:
@@ -1365,7 +1477,7 @@ def warm_push_seeds_non_test_shapes():
     def test_steps_run(job, warm, enabled):
         shard = 'warm' if job == 'tests' else document['jobs'][job]['strategy']['matrix']['shard'][0]
         values = {'inputs.warm-cache': warm, 'matrix.shard': shard,
-                  'needs.declaration.outputs.enabled': enabled, 'runner.environment': 'github-hosted', 'runner.os': 'Linux'}
+                  'needs.declaration.outputs.enabled': enabled, 'runner.os': 'Linux'}
         values['env.WARM_CACHE'] = str(evaluate(document['jobs'][job]['env']['WARM_CACHE'], values)).lower()
         steps = {step['name']: step for step in document['jobs'][job]['steps']}
         return {name: evaluate(steps[name]['if'], values) for name in
@@ -1404,6 +1516,7 @@ def warm_cache_keeps_one_writer():
                            workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
     # Warm calls run only the declaration and the shapes they seed, whatever the event or scan.
     seeding = {'declaration', 'tests', 'targets', 'quality', 'docs', 'browser', 'browser-tests', 'doctests'}
+    seeding |= {name + '-prune' for name in seeding - {'declaration'}}
     for event in ('push', 'pull_request', 'merge_group', 'workflow_dispatch'):
         for scan in ({}, {'inputs.advisory-scan': True}, {'inputs.fuzz-scan': True}):
             routed = routed_jobs(document, {'inputs.warm-cache': True, 'github.event_name': event} | scan)
@@ -2069,7 +2182,7 @@ def scheduled_scans_follow_released_workflow():
         references.add(reference)
         assert scan['with']['checkout-repository'] == 'Orchestration-Maestro/maestro', scan
         assert scan['with']['checkout-ref'] == 'main' and scan['with'][mode] is True, scan
-        assert scan['permissions'] == {'contents': 'read', 'actions': 'read'}, scan
+        assert scan['permissions'] == {'contents': 'read', 'actions': 'write'}, scan
     assert len(references) == 1, references
 
 scheduled_scans_follow_released_workflow()
@@ -2544,12 +2657,9 @@ def reserved_ports_are_validated_and_applied_only_when_set():
     step = next(s for s in tests.split('      - name: ')[1:] if s.splitlines()[0] == 'Reserved ports')
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     condition = next(item for item in document['jobs']['tests']['steps'] if item['name'] == 'Reserved ports')['if']
-    for host, environment, ports, expected in [('Linux', 'github-hosted', '1455', True),
-                                               ('Linux', 'self-hosted', '1455', False),
-                                               ('macOS', 'github-hosted', '1455', False),
-                                               ('Windows', 'github-hosted', '1455', False),
-                                               ('Linux', 'github-hosted', '', False)]:
-        assert bool(evaluate(condition, {'runner.os': host, 'runner.environment': environment,
+    for host, ports, expected in [('Linux', '1455', True), ('macOS', '1455', False),
+                                  ('Windows', '1455', False), ('Linux', '', False)]:
+        assert bool(evaluate(condition, {'runner.os': host,
                                         'needs.declaration.outputs.reserved_ports': ports})) == expected
     assert 'sudo sysctl -w net.ipv4.ip_local_reserved_ports="$RESERVED_PORTS"' in step
     assert tests.index('- name: Reserved ports') < tests.index('- name: Isolated tests')
@@ -2791,17 +2901,18 @@ def partitions_run_every_test_once_and_doctests():
 partitions_run_every_test_once_and_doctests()
 print('PASS partitions_run_every_test_once_and_doctests')
 
-def local_callers_grant_artifact_reads():
+def local_callers_grant_cache_pruning():
+    # Only the pruning jobs take the write grant; a call that lacks it cannot start.
     for path in sorted((root / '.github/workflows').glob('*.yml')):
         document = json.loads(subprocess.check_output(
             ['yq', '-o=json', '-'], input=path.read_text(encoding='utf-8'), text=True))
         for name, job in document.get('jobs', {}).items():
             if job.get('uses') == './.github/workflows/ci.yml':
-                assert job.get('permissions', {}).get('actions') == 'read', (path.name, name)
+                assert job.get('permissions') == {'contents': 'read', 'actions': 'write'}, (path.name, name)
         assert 'actions' not in document.get('permissions', {}), path.name
 
-local_callers_grant_artifact_reads()
-print('PASS local_callers_grant_artifact_reads')
+local_callers_grant_cache_pruning()
+print('PASS local_callers_grant_cache_pruning')
 
 def coverage_merge_uses_union_and_requires_all_reports():
     with tempfile.TemporaryDirectory() as temporary:
@@ -3402,7 +3513,7 @@ def merge_queue_identity_is_exact_and_shared():
         step = next(step for step in steps if step['name'] == name)
         for key in ['WORKFLOW_REF', 'WORKFLOW_SHA']:
             assert step['env'][key] == '${{ steps.evidence-scope.outputs.' + key.lower() + ' }}'
-    match = re.search(r"python3 <<'PYTHON'\n(.*?)\nPYTHON", body('Test evidence identity'), re.S)
+    match = re.search(r"python3 -I - <<'PYTHON'\n(.*?)\nPYTHON", body('Test evidence identity'), re.S)
     assert match
     path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
     reference = {'path': path + '@v1', 'sha': 'c' * 40}
@@ -3490,7 +3601,7 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                        ('inputs.checkout-repository', 'owner/fixture'), ('inputs.checkout-ref', 'other'),
                        ('inputs.test-event', 'push')]:
         assert not evaluate(check['if'], context | {key: value}), key
-    match = re.search(r"python3 <<'PYTHON'\n(.*?)\nPYTHON", body('Check merge queue result'), re.S)
+    match = re.search(r"python3 -I - <<'PYTHON'\n(.*?)\nPYTHON", body('Check merge queue result'), re.S)
     assert match
     script = match[1]
     path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
@@ -3571,12 +3682,12 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                 'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True,
                 'matrix.runner': 'ubuntu-latest'}
-            for job, upload in [('test-build', 'Upload test archive'), ('test-prepare', 'Upload test setup')]:
+            for job in ['test-build', 'test-prepare', 'browser', 'doctests', 'browser-tests']:
                 assert evaluate(document['jobs'][job]['if'], conditions), (name, job, 'main must seed compiled objects')
+            for job, upload in [('test-build', 'Upload test archive'), ('test-prepare', 'Upload test setup')]:
                 step = next(step for step in document['jobs'][job]['steps'] if step['name'] == upload)
                 assert bool(evaluate(step.get('if', 'True'), conditions)) == (not reused), (name, upload)
-            for job in ['tests', 'doctests', 'browser', 'browser-tests']:
-                assert bool(evaluate(document['jobs'][job]['if'], conditions)) == (not reused), (name, job)
+            assert bool(evaluate(document['jobs']['tests']['if'], conditions)) == (not reused), name
             archive = document['jobs']['test-build']
             assert evaluate(archive['env']['COLLECT_COVERAGE'], conditions), 'main must build instrumented objects'
             identity = next(step for step in archive['steps'] if step['name'] == 'Compile cache identity')
@@ -3585,11 +3696,14 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 warm = conditions | {'inputs.warm-cache': True, 'needs.declaration.outputs.coverage': 'true',
                                      'needs.declaration.outputs.targets': '["windows"]'}
                 assert evaluate(document['jobs'][job]['if'], warm), job
-            result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                env=os.environ | {'DECLARATION_RESULT': 'success', 'COLLECT_COVERAGE': selected['coverage'],
-                                  'RESULT': 'skipped' if reused else 'success', 'DOCTEST_RESULT': 'skipped' if reused else 'success'},
-                capture_output=True, text=True)
-            assert result.returncode == 0, result.stderr
+            # Doctests run on every main push, so a failed or missing doctest leg fails the result even when shards reuse.
+            for doctests in ['success', 'failure', 'skipped']:
+                result = subprocess.run(['python3', '-c', body('All test shards passed')],
+                    env=os.environ | {'DECLARATION_RESULT': 'success', 'COLLECT_COVERAGE': selected['coverage'],
+                                      'TESTS_REUSED': values['tests_reused'],
+                                      'RESULT': 'skipped' if reused else 'success', 'DOCTEST_RESULT': doctests},
+                    capture_output=True, text=True)
+                assert (result.returncode == 0) == (doctests == 'success'), (name, doctests, result.stderr)
 
 main_reuses_only_exact_successful_merge_queue_tests()
 print('PASS main_reuses_only_exact_successful_merge_queue_tests')
@@ -4077,7 +4191,7 @@ def supported_targets_use_native_runners():
     result, values = declaration(root / 'fixtures/declared')
     assert result.returncode == 0, result.stderr
     assert json.loads(values['targets']) == expected
-    assert 'runs-on: $' + "{{ matrix.runner == 'ubuntu-latest' && fromJSON(needs.declaration.outputs.linux_runner) || matrix.runner }}" in workflow
+    assert 'runs-on: $' + '{{ matrix.runner }}' in workflow
     assert 'rustup target add "$TARGET"' in body('Check target')
     assert 'rustup component add clippy' in body('Check target')
     assert body('Check target') == body('Lint')
@@ -4087,6 +4201,17 @@ def supported_targets_use_native_runners():
 
 supported_targets_use_native_runners()
 print('PASS supported_targets_use_native_runners')
+
+def linux_jobs_use_hosted_runners():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    for absent in ['self-hosted', 'maestro-aws', 'runner_policy', 'RUNNER_AVAILABILITY',
+                   'runner.environment', 'RUNNER_ENVIRONMENT']:
+        assert absent not in workflow, absent
+    for name, job in document['jobs'].items():
+        assert job['runs-on'] in ('ubuntu-latest', '${{ matrix.runner }}'), (name, job['runs-on'])
+
+linux_jobs_use_hosted_runners()
+print('PASS linux_jobs_use_hosted_runners')
 
 def wasm_target_failure_is_detected():
     for fixture in ['declared', 'wasm-rejected']:
@@ -4522,7 +4647,8 @@ def workflow_failures_remain_required():
     assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
     assert 'needs: [sample, declared, test-tools]' in internal
     assert 'working-directory: fixtures/test-tools' in internal
-    assert 'needs: [seams, native, fuzz-issues, browser-qualification, shard-seams]' in internal
+    consumers = internal.split('  consumers:\n', 1)[1]
+    assert 'needs: [seams, native, fuzz-issues, browser-qualification, shard-seams]' in consumers
     assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
     assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
     for name in ['targets', 'browser', 'tests']:
@@ -4630,10 +4756,55 @@ def caller_name_stays_in_the_concurrency_group():
 caller_name_stays_in_the_concurrency_group()
 print('PASS caller_name_stays_in_the_concurrency_group')
 
+def docs_deny_missing_docs_for_non_default_features():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['docs']['steps']
+    names = [step.get('name') for step in steps]
+    every_feature = next(step for step in steps if step.get('name') == 'Docs for every feature')
+    assert every_feature['env']['RUSTDOCFLAGS'] == '-D warnings -D missing_docs'
+    assert every_feature['run'].strip() == 'cargo doc --workspace --no-deps --locked --all-features'
+    assert names.index('Docs') < names.index('Docs for every feature'), 'every feature is documented after the defaults'
+    # Pull requests keep the fast Docs job, so only merge groups and main pushes build every feature.
+    assert not evaluate(every_feature['if'], {'needs.declaration.outputs.coverage': 'false'})
+    assert evaluate(every_feature['if'], {'needs.declaration.outputs.coverage': 'true'})
+    assert 'Docs for every feature' not in [step.get('name') for step in document['jobs']['browser']['steps']], \
+        'a caller without wasm crates must still document every feature'
+    result = execute('Docs for every feature', root / 'fixtures/feature-gated', {'RUSTDOCFLAGS': '-D warnings -D missing_docs'})
+    output = result.stdout + result.stderr
+    assert result.returncode != 0 and 'missing documentation' in output, 'a non-default feature must be documented\n' + output
+    # Default features pass on the same crate, so the failure comes from the feature, not the fixture.
+    result = execute('Docs', root / 'fixtures/feature-gated', {'RUSTDOCFLAGS': '-D warnings -D missing_docs'})
+    assert result.returncode == 0, 'default features must pass\n' + result.stdout + result.stderr
+
+docs_deny_missing_docs_for_non_default_features()
+print('PASS docs_deny_missing_docs_for_non_default_features', flush=True)
+
+def wasm_rustdoc_denies_missing_docs():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['browser']['steps']
+    names = [step.get('name') for step in steps]
+    document_step = next(step for step in steps if step.get('name') == 'Document wasm crates')
+    assert document_step['env']['RUSTDOCFLAGS'] == '-D warnings -D missing_docs'
+    assert document_step['env']['WASM_CRATES'] == '${{ needs.declaration.outputs.wasm_crates }}', \
+        'every declared crate is documented'
+    assert names.index('Build wasm crates') < names.index('Document wasm crates') < names.index('Browser recipe')
+    assert 'if' not in document_step, 'every declared crate is documented on each run of the job'
+    flags = {'WASM_CRATES': '["wasm-undocumented"]', 'RUSTDOCFLAGS': '-D warnings -D missing_docs'}
+    result = execute('Document wasm crates', root / 'fixtures/wasm-undocumented', flags)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0 and 'missing documentation' in output, 'a wasm-only item must be documented\n' + output
+    # The host Docs step passes on the same crate, so only the wasm target sees the item.
+    result = execute('Docs', root / 'fixtures/wasm-undocumented', flags)
+    assert result.returncode == 0, 'the host target has no undocumented item\n' + result.stdout + result.stderr
+
+wasm_rustdoc_denies_missing_docs()
+print('PASS wasm_rustdoc_denies_missing_docs', flush=True)
+
 def workflow_safety_is_unchanged():
     assert re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + ['cargo test --workspace --locked'] == [
         'cargo fmt --all --check',
         'cargo doc --workspace --no-deps --locked',
+        'cargo doc --workspace --no-deps --locked --all-features',
         'cargo test --workspace --locked',
     ]
     assert not re.search(r'^    continue-on-error:', workflow, re.MULTILINE) and '|| true' not in workflow
@@ -4650,8 +4821,8 @@ def workflow_safety_is_unchanged():
         section = workflow.split(f'  {job}:\n', 1)[1]
         assert 'run: rustup show' in section or 'rustup show\n' in section
     internal = (root / '.github/ci-internal/each-broken-fixture-fails-only-its-own-check.py').read_text(encoding="utf-8")
-    assert "('unformatted', 0), ('clippy-warning', 1)" in internal
-    assert "('failing-test', 3), ('undocumented', 2), ('broken-doc-link', 2)" in internal
+    assert "('unformatted', (0,)), ('clippy-warning', (1,))" in internal
+    assert "('failing-test', (4,)), ('undocumented', (2, 3)), ('broken-doc-link', (2, 3))" in internal
     # Only the base-vs-isolated tests branch may condition an original command.
     for step in workflow.split('      - name: ')[1:]:
         if any(f'run: {command}\n' in step for command in [

@@ -7,12 +7,16 @@ One shared Rust CI. The original checks remain required:
 | Format | `cargo fmt --all --check` | Linux |
 | Lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Linux |
 | Docs | `cargo doc --workspace --no-deps --locked` | Linux |
-| Tests | `cargo nextest run` partitions and `cargo test --doc` | Linux, declared macOS and Windows |
+| Tests | `cargo nextest run` shards and `cargo test --doc` | Linux, declared macOS and Windows |
 
 Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
 be documented, and documentation warnings fail the check. Callers claiming
 `aarch64-apple-darwin` or `x86_64-pc-windows-msvc` in `check_targets` also run
-tests on those native hosts on merge groups and main pushes.
+tests on those native hosts on merge groups and main pushes. Pull requests build
+the default features. Merge groups and main pushes also build every feature in
+the Docs job, so an item behind a non-default feature is documented before it
+merges, and the Wasm and browser build job documents each declared wasm crate
+for its own target with the same flags.
 A new push to a pull request cancels that pull request's older run.
 
 After declaration validation, pull requests run formatting, Clippy, docs,
@@ -44,8 +48,10 @@ changed paths. Ordinary pull requests skip Chromium runtime tests. See
 [browser selection](docs/caller-checks.md#chromium-browser-tests).
 
 Tests run with checksum-pinned cargo-nextest 0.9.148 on 16 Linux runners by
-default, using automatic count partitions rather than package lists. A caller
-can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
+default. Each shard runs whole test binaries, balanced by the seconds their
+tests took on an earlier run, or by test count when no earlier run timed them.
+The `warm-cache` call instead compiles and runs its warm test filter in one job.
+A caller can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
 [test shards](docs/caller-checks.md#test-shards). Doctests run in a
 parallel `Doctests` matrix leg on merge groups and main pushes.
 Each claimed native host gets up to four shards, capped at `test_shard_count`,
@@ -64,8 +70,8 @@ workspace.
 See [PR selection](docs/caller-checks.md#pull-request-selection-and-retries)
 for the declaration's package-selection rules and self-test event mode.
 
-Declared callers measure coverage in those partitions with `cargo llvm-cov
-nextest`. Only the Linux numeric shards upload LCOV; the aggregate counts a
+Declared callers measure coverage in those shards with `cargo llvm-cov
+nextest`. Only the numeric shards upload LCOV; the aggregate counts a
 source line as covered if any shard covers it and enforces the workspace union's
 80% floor (or caller's higher threshold). Missing shard reports fail. Undeclared
 callers retain single-job coverage in `Dependency, source and coverage checks`.
@@ -140,14 +146,24 @@ policy failures still fail CI. No workflow retry, sleep or per-object fallback
 is added. Statistics print raw diagnostics with Actions command processing
 disabled; cache write errors retain their diagnostic artifact.
 
-After a successful job, the server stops before one inspection walk. Empty
-payloads, stop/inspection failures and native payloads above 1 GiB skip saving.
-The archive contains compiler objects, never `target/`, registry sources,
-credentials or diagnostics. Compressed archive bytes are a separate measurement.
-This per-save bound does not bound the repository's 10 GB allowance: seven
-1-GiB entries total 7,516,192,768 bytes, and two generations total
-15,032,385,536 bytes before additional shapes or targets. GitHub evicts by
-last access, so even a shape's only seed can disappear and cause a cold build.
+Each shape has one cache cap, which sccache and the seal both read: 1.5 GiB
+for Prepare test setup and 1 GiB for every other shape. See
+[Snapshot size](docs/caller-checks.md#snapshot-size). After a successful job,
+the server stops before one inspection walk. Empty payloads, stop/inspection
+failures and payloads whose objects or preprocessor entries exceed the shape's
+cap skip saving. The archive contains compiler objects, never `target/`,
+registry sources, credentials or diagnostics. Compressed archive bytes are a
+separate measurement. This per-save bound does not bound the repository's 10 GB
+allowance: seven 1-GiB shapes and the setup shape allow 9,126,805,504 bytes of
+objects, before targets and preprocessor entries. After each job that saves a
+cache on a default-branch push, a pruning job keeps only the newest entry of each
+compile, Cargo git and test setup prefix, the entry a restore reads, so the
+repository holds one generation. Pruning jobs are the only jobs that hold
+`actions: write`, and they run no caller code; callers grant that permission to
+the reusable call. See
+[One entry per prefix](docs/caller-checks.md#one-entry-per-prefix). GitHub evicts by
+last access, so a shape's only seed can still disappear when other caches fill
+the allowance.
 The optional warmer is not a required consumer check. Merging this workflow
 does not release it or change consumer pins.
 
@@ -181,7 +197,7 @@ cargo-hakari (`cargo hakari verify` when `.config/hakari.toml` exists),
 typos (spelling), gitleaks (checked-out source, before build-cache restore),
 zizmor and actionlint (workflow
 security and correctness when workflows exist), plus at least 80% line coverage on merge groups and main pushes
-(measured in isolated nextest partitions, or in the single undeclared coverage
+(measured in isolated nextest shards, or in the single undeclared coverage
 job). Coverage measures library, binary and example sources exercised by those
 tests. It excludes `tests/` and `benches/` when their next path component is
 not `..`, so examples imported from a `src/tests/` module through parent paths
@@ -237,7 +253,8 @@ stays under the size GitHub accepts. The self-test fails any workflow file over
 ## Self-test
 
 `ci-internal.yml` calls the shared workflow on `fixtures/sample`, which must
-pass every check on Linux. The eleven broken copies are independent packages,
+pass every check on Linux. It also calls `ci-internal-shards.yml` to prove the
+declared test shard count. The eleven broken copies are independent packages,
 not members of a root workspace. Each fails only its intended command:
 format, lint, tests, an undocumented public item or a broken documentation link.
 The self-test reads the commands and documentation flags from `ci.yml` and

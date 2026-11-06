@@ -12,10 +12,12 @@ pub fn double(value: u32) -> u32 {
     value * 2
 }
 
+/// Exercises the crate's public function.
 #[cfg(test)]
 mod tests {
     use super::double;
 
+    /// Checks the doubling of a small value.
     #[test]
     fn doubles_value() {
         assert_eq!(double(2), 4);

@@ -13,12 +13,12 @@ jobs:
     name: Warm Maestro coverage cache
     permissions:
       contents: read
-      actions: read
+      actions: write
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: e9d368643602539eea18eb965e7063d0644f8c72
+      checkout-ref: a86dcd638d35dba0a43dd1554c4ffedd4195e64c
       concurrency-key: maestro-warm
       warm-cache: true
 
@@ -28,12 +28,12 @@ jobs:
     name: Maestro partitioned coverage
     permissions:
       contents: read
-      actions: read
+      actions: write
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 65aae5e5263d8bfcefc8677977f38700cf383b0a
+      checkout-ref: 17ec1067bf368ad45329450ac312d2b1df892b34
       concurrency-key: maestro-proof
       test-event: merge_group
 
@@ -43,13 +43,13 @@ jobs:
     if: always()
     permissions:
       contents: read
-      actions: read
+      actions: write
     uses: ./.github/workflows/ci.yml
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 65aae5e5263d8bfcefc8677977f38700cf383b0a
-      checkout-base-ref: e9d368643602539eea18eb965e7063d0644f8c72
+      checkout-ref: 17ec1067bf368ad45329450ac312d2b1df892b34
+      checkout-base-ref: a86dcd638d35dba0a43dd1554c4ffedd4195e64c
       concurrency-key: maestro-selected
       test-event: pull_request
 
@@ -67,7 +67,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Orchestration-Maestro/maestro
-          ref: 65aae5e5263d8bfcefc8677977f38700cf383b0a
+          ref: 17ec1067bf368ad45329450ac312d2b1df892b34
           path: maestro
       - name: Extract workflow steps
         run: python3 workflow/.github/extract-workflow-steps.py
