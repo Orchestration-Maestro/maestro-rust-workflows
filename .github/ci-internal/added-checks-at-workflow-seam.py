@@ -61,6 +61,15 @@ def boost_license_is_allowed_and_business_source_is_not(env, temporary):
         else:
             assert result.returncode != 0 and 'error[rejected]' in output and license in output, output
 
+def zero_bsd_license_needs_no_caller_exception(env, temporary):
+    directory = pathlib.Path(temporary) / 'zero-bsd-license'
+    shutil.copytree(root / 'fixtures/sample', directory, ignore=shutil.ignore_patterns('target'))
+    manifest = (root / 'fixtures/sample/Cargo.toml').read_text(encoding='utf-8')
+    assert 'license = "MIT"\n' in manifest
+    (directory / 'Cargo.toml').write_text(manifest.replace('license = "MIT"', 'license = "0BSD"'), encoding='utf-8')
+    result = execute('Licenses and dependencies', directory, env | {'CHECK_ADVISORIES': 'false'})
+    assert result.returncode == 0, 'a 0BSD crate must pass without a caller exception\n' + result.stdout + result.stderr
+
 def secrets_scan_before_restored_build_output(env, temporary):
     directory = pathlib.Path(temporary) / 'source-only'
     directory.mkdir()
@@ -573,7 +582,7 @@ def privileged_trigger_workflows_ignore_only_declared_audit(env, temporary):
 
 checks = ['Licenses and dependencies', 'Unused dependencies', 'Spelling', 'Secrets', 'Workflows', 'Coverage']
 base = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + [body('Lint'), 'cargo test --workspace --locked']
-assert len(base) == 4
+assert len(base) == 5
 with tempfile.TemporaryDirectory() as temporary:
     env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/paths',
                         'GITHUB_ENV': temporary + '/environment', 'QUALITY_CONFIG': '{}'}
@@ -600,6 +609,8 @@ with tempfile.TemporaryDirectory() as temporary:
     print('PASS fuzz_licences_allow_ncsa_only_for_libfuzzer_sys', flush=True)
     boost_license_is_allowed_and_business_source_is_not(env, temporary)
     print('PASS boost_license_is_allowed_and_business_source_is_not', flush=True)
+    zero_bsd_license_needs_no_caller_exception(env, temporary)
+    print('PASS zero_bsd_license_needs_no_caller_exception', flush=True)
     for name in checks:
         result = execute(name, root / 'fixtures/sample', env)
         assert result.returncode == 0, name + '\n' + result.stdout + result.stderr

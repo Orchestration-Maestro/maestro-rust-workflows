@@ -1255,6 +1255,12 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings -D missing_docs
         run: cargo doc --workspace --no-deps --locked
+      - name: Docs for every feature
+        # Merge groups and main pushes document every feature; pull requests stay fast.
+        if: needs.declaration.outputs.coverage == 'true'
+        env:
+          RUSTDOCFLAGS: -D warnings -D missing_docs
+        run: cargo doc --workspace --no-deps --locked --all-features
       - name: Compile cache statistics
         id: cache-statistics
         if: always()
@@ -2498,7 +2504,7 @@ jobs:
           # Callers can allow BUSL-1.1 for an exact package version through license_exceptions.
           allow = ['MIT', 'Apache-2.0', 'ISC', 'BSD-2-Clause', 'BSD-3-Clause', 'Zlib',
                    'Apache-2.0 WITH LLVM-exception', 'Unicode-DFS-2016', 'Unicode-3.0',
-                   'CC0-1.0', 'CDLA-Permissive-2.0', 'MPL-2.0', 'MIT-0', 'BSL-1.0']
+                   'CC0-1.0', 'CDLA-Permissive-2.0', 'MPL-2.0', 'MIT-0', 'BSL-1.0', '0BSD']
           deny = '[advisories]\nyanked = "deny"\n'
           if config.get('advisory_exceptions') or config.get('yanked_crate_exceptions'):
               with pathlib.Path('Cargo.lock').open('rb') as source:
@@ -3049,6 +3055,21 @@ jobs:
               subprocess.run(['rustup', 'target', 'add', 'wasm32-unknown-unknown'], check=True)
           for crate in crates:
               subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
+          PYTHON
+      - name: Document wasm crates
+        env:
+          WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}
+          RUSTDOCFLAGS: -D warnings -D missing_docs
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+          crates = json.loads(os.environ['WASM_CRATES'])
+          if crates:
+              subprocess.run(['rustup', 'target', 'add', 'wasm32-unknown-unknown'], check=True)
+          for crate in crates:
+              subprocess.run(['cargo', 'doc', '--locked', '--no-deps', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
           PYTHON
       - name: Browser recipe
         if: needs.declaration.outputs.browser_build == 'true'

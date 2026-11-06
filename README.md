@@ -10,8 +10,12 @@ One shared Rust CI. The original checks remain required:
 | Tests | `cargo nextest run` shards and `cargo test --doc` | Linux |
 
 Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
-be documented, and documentation warnings fail the check. Tests run on Linux
-for now; macOS and Windows return before the first release.
+be documented, and documentation warnings fail the check. Pull requests build
+the default features. Merge groups and main pushes also build every feature in
+the Docs job, so an item behind a non-default feature is documented before it
+merges, and the Wasm and browser build job documents each declared wasm crate
+for its own target with the same flags. Tests run on Linux for now; macOS and
+Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
 
 After declaration validation, pull requests run formatting, Clippy, docs,

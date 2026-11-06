@@ -4531,10 +4531,55 @@ def caller_name_stays_in_the_concurrency_group():
 caller_name_stays_in_the_concurrency_group()
 print('PASS caller_name_stays_in_the_concurrency_group')
 
+def docs_deny_missing_docs_for_non_default_features():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['docs']['steps']
+    names = [step.get('name') for step in steps]
+    every_feature = next(step for step in steps if step.get('name') == 'Docs for every feature')
+    assert every_feature['env']['RUSTDOCFLAGS'] == '-D warnings -D missing_docs'
+    assert every_feature['run'].strip() == 'cargo doc --workspace --no-deps --locked --all-features'
+    assert names.index('Docs') < names.index('Docs for every feature'), 'every feature is documented after the defaults'
+    # Pull requests keep the fast Docs job, so only merge groups and main pushes build every feature.
+    assert not evaluate(every_feature['if'], {'needs.declaration.outputs.coverage': 'false'})
+    assert evaluate(every_feature['if'], {'needs.declaration.outputs.coverage': 'true'})
+    assert 'Docs for every feature' not in [step.get('name') for step in document['jobs']['browser']['steps']], \
+        'a caller without wasm crates must still document every feature'
+    result = execute('Docs for every feature', root / 'fixtures/feature-gated', {'RUSTDOCFLAGS': '-D warnings -D missing_docs'})
+    output = result.stdout + result.stderr
+    assert result.returncode != 0 and 'missing documentation' in output, 'a non-default feature must be documented\n' + output
+    # Default features pass on the same crate, so the failure comes from the feature, not the fixture.
+    result = execute('Docs', root / 'fixtures/feature-gated', {'RUSTDOCFLAGS': '-D warnings -D missing_docs'})
+    assert result.returncode == 0, 'default features must pass\n' + result.stdout + result.stderr
+
+docs_deny_missing_docs_for_non_default_features()
+print('PASS docs_deny_missing_docs_for_non_default_features', flush=True)
+
+def wasm_rustdoc_denies_missing_docs():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['browser']['steps']
+    names = [step.get('name') for step in steps]
+    document_step = next(step for step in steps if step.get('name') == 'Document wasm crates')
+    assert document_step['env']['RUSTDOCFLAGS'] == '-D warnings -D missing_docs'
+    assert document_step['env']['WASM_CRATES'] == '${{ needs.declaration.outputs.wasm_crates }}', \
+        'every declared crate is documented'
+    assert names.index('Build wasm crates') < names.index('Document wasm crates') < names.index('Browser recipe')
+    assert 'if' not in document_step, 'every declared crate is documented on each run of the job'
+    flags = {'WASM_CRATES': '["wasm-undocumented"]', 'RUSTDOCFLAGS': '-D warnings -D missing_docs'}
+    result = execute('Document wasm crates', root / 'fixtures/wasm-undocumented', flags)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0 and 'missing documentation' in output, 'a wasm-only item must be documented\n' + output
+    # The host Docs step passes on the same crate, so only the wasm target sees the item.
+    result = execute('Docs', root / 'fixtures/wasm-undocumented', flags)
+    assert result.returncode == 0, 'the host target has no undocumented item\n' + result.stdout + result.stderr
+
+wasm_rustdoc_denies_missing_docs()
+print('PASS wasm_rustdoc_denies_missing_docs', flush=True)
+
 def workflow_safety_is_unchanged():
     assert re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + ['cargo test --workspace --locked'] == [
         'cargo fmt --all --check',
         'cargo doc --workspace --no-deps --locked',
+        'cargo doc --workspace --no-deps --locked --all-features',
         'cargo test --workspace --locked',
     ]
     assert not re.search(r'^    continue-on-error:', workflow, re.MULTILINE) and '|| true' not in workflow
@@ -4551,8 +4596,8 @@ def workflow_safety_is_unchanged():
         section = workflow.split(f'  {job}:\n', 1)[1]
         assert 'run: rustup show' in section or 'rustup show\n' in section
     internal = (root / '.github/ci-internal/each-broken-fixture-fails-only-its-own-check.py').read_text(encoding="utf-8")
-    assert "('unformatted', 0), ('clippy-warning', 1)" in internal
-    assert "('failing-test', 3), ('undocumented', 2), ('broken-doc-link', 2)" in internal
+    assert "('unformatted', (0,)), ('clippy-warning', (1,))" in internal
+    assert "('failing-test', (4,)), ('undocumented', (2, 3)), ('broken-doc-link', (2, 3))" in internal
     # Only the base-vs-isolated tests branch may condition an original command.
     for step in workflow.split('      - name: ')[1:]:
         if any(f'run: {command}\n' in step for command in [
