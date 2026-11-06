@@ -26,7 +26,9 @@ build or manifest inputs keeps their owning crate selected too. Included externa
 docs and fixtures route only to readers. See
 [package ownership](docs/caller-checks.md#pull-request-selection-and-retries)
 for root-package boundaries. Pull requests skip the test archive, test setup,
-test shards, doctests and wasm/browser builds. Their job names remain present;
+test shards, doctests and wasm/browser builds, except the declared
+[wasm example witnesses](docs/caller-checks.md#wasm-example-witnesses), which
+compile on every pull request. Their job names remain present;
 skipped jobs count as successful required checks. Merge groups and main pushes
 run the full shard matrix, coverage, doctests, wasm/browser builds and every
 declared foreign-target check. A main push skips the test legs when its exact
