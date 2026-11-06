@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.19.20](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.19...v0.19.20) (2026-11-06)
+
+
+### Continuous Integration
+
+* bound the Chromium apt install with a timeout, retries and a step limit ([#391](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/391)) ([55c5a5e](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/55c5a5edd1f8a74e56931e47e9c80af50e5453d8))
+* **guards:** keep one open issue per guard identity ([#393](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/393)) ([bbe683b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/bbe683b1737073ea6a67f7fccf7eb51dcf8a2b07))
+* move main scan pins to v0.19.19 ([#388](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/388)) ([4ace062](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/4ace062c738802b3f53dcb6bce8a1f09654c0ac2))
+
 ## [0.19.19](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.18...v0.19.19) (2026-11-06)
 
 
