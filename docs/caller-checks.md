@@ -1033,6 +1033,36 @@ runtime closure. Node must be at least 20; the job logs its actual version,
 Playwright, Chromium and binding CLI versions. Playwright's public `install-deps
 chromium` command installs Linux system libraries and may require sudo.
 
+### System packages and their cache
+
+`install-deps chromium` installs the Linux packages the browser links against,
+and that download is the one transfer in the job that can stall for minutes on a
+slow mirror. The job names those packages before it installs them:
+`install-deps chromium --dry-run` lists the packages the runner image lacks, and
+that list keys one archive bundle in the Actions cache. The job restores the
+newest bundle of that list and copies its `.deb` archives into apt's archive
+directory before the install, so apt downloads only a package the bundle lacks.
+A default-branch push saves a new bundle when its archives differ from the one it
+restored, and the job's pruner keeps the newest bundle of each list. A pull
+request and a merge group read the bundle and never write it.
+
+Before the install, the `Browser runtime packages` step writes
+`/etc/apt/apt.conf.d/99-maestro-browser-packages`:
+
+```text
+Acquire::http::Timeout "15";
+Acquire::https::Timeout "15";
+Acquire::Retries "3";
+```
+
+A stalled connection then fails over in seconds. The step also carries
+`timeout-minutes: 5`, so a mirror that streams too slowly to trip those timeouts
+still fails the job with the step's name instead of adding minutes to the group.
+The step runs `apt-get update` on every job, and the job installs no package
+off Playwright's list: apt picks the versions, the bundle caches the archives of
+the versions it picked, and the next default-branch push replaces the bundle
+when they move.
+
 The recipe receives absolute `PLAYWRIGHT_MODULE` and `CHROMIUM_PATH` values.
 The verified binding CLI directory precedes caller tools on PATH. The job runs
 `just browser-test` directly, without a later mise PATH rewrite. The consumer
@@ -1138,7 +1168,8 @@ To save a red and green pair:
 From the consumer checkout on Linux, set `WORKFLOW_CHECKOUT` to a checkout of
 the workflow release being qualified. This runs the same verified installer
 (including system-library setup), then the same fixed recipe. It requires
-Python, Node >=20, curl, unzip, tar and the caller-pinned just on PATH:
+Python, Node >=20, curl, unzip, tar, sudo for the system packages and the
+caller-pinned just on PATH:
 
 ```bash
 export WORKFLOW_CHECKOUT="$HOME/src/maestro-rust-workflows"
@@ -1150,12 +1181,19 @@ import subprocess
 import tempfile
 import textwrap
 source = (pathlib.Path(os.environ['WORKFLOW_CHECKOUT']) / '.github/workflows/ci.yml').read_text(encoding='utf-8')
-step = source.split('      - name: Browser runtime tools\n', 1)[1]
-command = textwrap.dedent(re.search(r'        run: \|\n((?:          .*\n|\n)+)', step)[1])
+def step_body(name):
+    step = source.split('      - name: ' + name + '\n', 1)[1]
+    pattern = re.compile(r'        run: \|\n((?:          .*\n|\n)+)')
+    return textwrap.dedent(pattern.search(step)[1])
+# The tools, the packages their names key, and the install: the three production steps in order.
+commands = [step_body(name) for name in ['Browser runtime tools', 'Browser runtime packages identity',
+                                         'Browser runtime packages']]
 with tempfile.TemporaryDirectory() as temporary:
     paths, values = pathlib.Path(temporary) / 'paths', pathlib.Path(temporary) / 'env'
-    env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths), 'GITHUB_ENV': str(values)}
-    subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command], env=env, check=True)
+    env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths), 'GITHUB_ENV': str(values),
+                        'GITHUB_OUTPUT': str(pathlib.Path(temporary) / 'output')}
+    for command in commands:
+        subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command], env=env, check=True)
     env.update(line.split('=', 1) for line in values.read_text(encoding='utf-8').splitlines())
     env['PATH'] = os.pathsep.join(reversed(paths.read_text(encoding='utf-8').splitlines())) + os.pathsep + env['PATH']
     env['CARGO_BUILD_JOBS'] = '3'

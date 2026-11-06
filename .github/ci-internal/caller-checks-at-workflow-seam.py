@@ -549,6 +549,7 @@ def browser_qualification_reuses_production_bodies():
     job = source.split('  browser-qualification:\n', 1)[1].split('\n  consumers:', 1)[0]
     names = ['Toolchain', 'Compile cache identity', 'Compile cache', 'Browser test tool pin',
              'Browser test mise bootstrap', 'Browser test caller tools', 'Browser runtime tools',
+             'Browser runtime packages identity', 'Browser runtime packages',
              'Compile cache statistics', 'Seal compile cache']
     def require_extracted(candidate):
         for name in names:
@@ -4329,6 +4330,10 @@ def browser_test_downloads_verify_every_archive():
         result = execute('Browser runtime tools', caller, env)
         assert result.returncode == 0, result.stdout + result.stderr
         values = dict(line.split('=', 1) for line in exported.read_text(encoding='utf-8').splitlines())
+        # The system packages are their own steps now: the driver names them, and the bundle caches their archives.
+        for step in ['Browser runtime packages identity', 'Browser runtime packages']:
+            packages = execute(step, caller, env | values | {'GITHUB_OUTPUT': str(directory / 'runtime-output')})
+            assert packages.returncode == 0, step + '\n' + packages.stdout + packages.stderr
         installed = pathlib.Path(values['PLAYWRIGHT_MODULE']).parent.parent
         cli = paths.read_text(encoding='utf-8').splitlines()[-1]
         assert 'Version 1.64.1' in result.stdout and '156.0.8078.4' in result.stdout
