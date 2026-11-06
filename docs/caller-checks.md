@@ -1412,9 +1412,31 @@ as they do in a run with no prefix.
 
 Pin the reference to a reviewed commit and list the listener workflow in
 `privileged_trigger_workflows`, as for the post-landing reporter. Issues are
-filed with the automatic job token. An open issue with the same title is never
-filed twice, so a breach that persists leaves one issue, and a job that cannot
-read the run fails instead of passing.
+filed with the automatic job token, and a job that cannot read the run fails
+instead of passing.
+
+Every finding carries one identity, its kind and its subject. The run is
+evidence in the body, never part of the title, so one cause that keeps breaching
+fills one issue with comments instead of an issue per run:
+
+| Guard | Identity, `kind: subject` |
+| --- | --- |
+| Time per unit | `CI run slower than its baseline: Test jobs on <band>`, or `Build jobs` for the compile units |
+| Shard balance | `Test shards unbalanced: <the blamed shard job>` |
+| Slow test | `Test over 30 seconds: <binary> <test>` |
+| Cache floor | `Compile cache below its hit-rate floor: <the job that judged its cache>` |
+| Snapshot seed | `Escalation: default-branch run did not seed its compile snapshots` |
+| Cache usage | `Repository cache above 90% of its limit` |
+| Required checks | `Required checks missing: <the missing checks>` |
+| Selection | `Test selection share above its range` |
+| Escalation | `Escalation: <what departed from the pattern>` |
+
+The guard reads the open issues once. A new identity opens an issue; an identity
+that is already open gets one comment with the new run's numbers, so a repeat
+breach comments instead of filing. A run that judges an identity and finds it in
+order comments the recovery on that issue once, so whoever owns the fix sees the
+run that passed. The guard never closes an issue itself, and a pass with no open
+issue says nothing.
 
 | Input | Default | Used by |
 | --- | --- | --- |
@@ -1452,15 +1474,17 @@ job sets.
 A run whose rate for either kind is more than 10% over its baseline, and
 whose gap is more than 2 s per executed job in total (the rate gap times the
 run's units of that kind, against two seconds for each job that did them), is a
-regression and files "CI run slower than its baseline: run N" at once. The
-bound is the measurement's own error (supervisor ruling S7759): GitHub stamps
-job and step times to the second, 1 s at each boundary, so a work-time
-difference is measurable only above 2 s per executed job. A difference within
-it is neither a regression nor an escalation, for a rate below its spread as well;
-anything above it at +10% fires, and anything above it outside the band's
-spread escalates. The
-issue names the run and the band, gives each regressed rate against its baseline
-and links the latest baseline runs. Fix it at its cause; nothing accepts it.
+regression and files `CI run slower than its baseline: Test jobs on <band>` at
+once, or the same title with `Build jobs` when the compile units are what
+regressed; each kind of work keeps its own issue, because each has its own
+limit. The bound is the measurement's own error (supervisor ruling S7759):
+GitHub stamps job and step times to the second, 1 s at each boundary, so a
+work-time difference is measurable only above 2 s per executed job. A difference
+within it is neither a regression nor an escalation, for a rate below its spread
+as well; anything above it at +10% fires, and anything above it outside the
+band's spread escalates. The issue names the run and the band, gives the
+regressed rate against its baseline and links the latest baseline runs. Fix it
+at its cause; nothing accepts it.
 
 Hosted Linux runners come in two speed bands: the same work, cache and image
 ran 1.45 to 1.6 times slower on some runners (maestro-rust-workflows runs
@@ -1546,10 +1570,11 @@ the warm-up stayed on a release without their writer, and the first group after 
 default-branch push (40996420703) restored all five at 100%. The warning is an
 annotation that names the shape and one cause. The guards read it from a
 merge-group or main-push run, and from a pull-request run when a caller passes
-one, and file "Compile cache below its hit-rate floor", or add a comment to the
-open issue listing each job and its warning, so repeated cold builds on
-default-branch pushes, which are the regression, show as a growing list of
-comments:
+one, and file `Compile cache below its hit-rate floor: <job>` for each job whose
+cache fell cold, or add a comment to that job's open issue, so repeated cold
+builds on default-branch pushes, which are the regression, show as a growing
+list of comments; a job that judged its cache and stayed over the floor comments
+the recovery on its open issue:
 
 - **Cold snapshot:** a snapshot was restored but lacks this build's objects.
   Run the warm build on the default branch to seed it again.
@@ -1618,11 +1643,12 @@ route. Source: of 14 measured PR runs, 11 selected 1 to 3 of 51 packages
 ### Shard balance
 
 When the slowest `Test shard` job takes more than `shard-balance-margin` times
-the median shard, the guard files "Test shards unbalanced: run N". The issue
-reads the blamed shard's own log, so only tests that ran on that shard appear:
-the ones that are new, or reached a higher slow mark since the last green run of
-the same event. Nextest prints only slow marks, so growth shows as a higher mark
-rather than exact seconds.
+the median shard, the guard files `Test shards unbalanced: <shard>` for that
+shard, and every other shard of a balanced run comments the recovery on its own
+open issue. The issue reads the blamed shard's own log, so only tests that ran
+on that shard appear: the ones that are new, or reached a higher slow mark since
+the last green run of the same event. Nextest prints only slow marks, so growth
+shows as a higher mark rather than exact seconds.
 
 Beside the tests, the issue lists the fixed phases the same log times: the
 extraction of the instrumented targets, each test setup, and the tests' own
@@ -1640,8 +1666,10 @@ the cause is the shard's composition or its setups.
 
 Nextest flags a test slow after `slow-test-seconds` (30), and the caller's
 `slow-timeout` period should match. A merge-group or main run files one issue
-for every test it flagged, "Test over 30 seconds: <test>", with no cap on how many one
-run files; an open issue for the test is never filed twice. Fix the test at its
+for every test it flagged, `Test over 30 seconds: <test>`, with no cap on how many one
+run files; an open issue for the test is never filed twice, and the next run
+that flags it comments its numbers there. A run that reports the test again
+without a slow mark comments the recovery on that issue once. Fix the test at its
 cause; do not raise a timeout.
 
 The kill is one hang limit, `hang-limit-seconds` (120). A nextest override may
