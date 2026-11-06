@@ -3187,50 +3187,9 @@ jobs:
           echo "$tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
           echo "PLAYWRIGHT_MODULE=$tools/node_modules/playwright" >> "$GITHUB_ENV"
           echo "CHROMIUM_PATH=$tools/chrome-linux64/chrome" >> "$GITHUB_ENV"
-      - name: Browser runtime packages identity
-        id: runtime-packages
-        run: |
-          python3 - <<'PYTHON'
-          import hashlib
-          import json
-          import os
-          import subprocess
-          # Playwright names the system packages its browser needs, so the cache entry is keyed by that list
-          # and finds the newest archive bundle of it.
-          dry_run = subprocess.run(['node', os.path.join(os.environ['PLAYWRIGHT_MODULE'], 'cli.js'),
-                                    'install-deps', 'chromium', '--dry-run'], text=True, capture_output=True)
-          listed = dry_run.stdout.split('Missing system dependencies (', 1)
-          names = sorted(line.strip() for line in listed[1].splitlines()[1:] if line.strip()) if len(listed) == 2 else []
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              if names:
-                  digest = hashlib.sha256(json.dumps(names, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
-                  output.write(f'prefix=maestro-browser-runtime-v1-{digest}-\nkey=maestro-browser-runtime-v1-{digest}-lookup\n')
-              elif 'All system dependencies are installed.' in dry_run.stdout:
-                  print('Every browser system package is already installed; the previous bundle stays as it is.')
-              else:
-                  print(f'::warning::The browser system packages could not be listed ({dry_run.returncode}); this job installs them without the bundle.')
-          PYTHON
-      - name: Restore browser runtime packages
-        id: runtime-cache
-        if: ${{ steps.runtime-packages.outputs.prefix != '' }}
-        continue-on-error: true
-        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: ${{ runner.temp }}/browser-runtime-packages
-          key: ${{ steps.runtime-packages.outputs.key }}
-          restore-keys: ${{ steps.runtime-packages.outputs.prefix }}
-          enableCrossOsArchive: false
-          fail-on-cache-miss: false
       - name: Browser runtime packages
-        id: runtime-apt
         timeout-minutes: 5
-        env:
-          CACHE_MATCHED_KEY: ${{ steps.runtime-cache.outputs.cache-matched-key }}
         run: |
-          # The archive directory apt keeps its downloads in; a seam sandbox points it at its own.
-          archives="${APT_ARCHIVES:-/var/cache/apt/archives}"
-          bundle="$RUNNER_TEMP/browser-runtime-packages"
-          mkdir -p "$bundle"
           # Apt reads this drop-in as root, so every transfer it still needs fails over in seconds instead
           # of holding the job for minutes.
           settings=$(mktemp)
@@ -3240,25 +3199,7 @@ jobs:
             'Acquire::Retries "3";' > "$settings"
           sudo install -m 0644 "$settings" /etc/apt/apt.conf.d/99-maestro-browser-packages
           rm "$settings"
-          # Apt installs a package from its archive when it already holds it, so only a missing one downloads.
-          if [ -n "${CACHE_MATCHED_KEY-}" ] && compgen -G "$bundle/*.deb" > /dev/null; then
-            sudo cp "$bundle"/*.deb "$archives/"
-            echo "Installing the browser system packages from the restored bundle $CACHE_MATCHED_KEY."
-          fi
           node "$PLAYWRIGHT_MODULE/cli.js" install-deps chromium
-          if compgen -G "$archives/*.deb" > /dev/null; then
-            cp "$archives"/*.deb "$bundle"/
-            echo "digest=$(cd "$bundle" && LC_ALL=C sha256sum -- *.deb | LC_ALL=C sort | sha256sum | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          else
-            echo '::warning::Apt kept no archive after the install; the browser system packages stay uncached this run.'
-          fi
-      - name: Save browser runtime packages
-        if: ${{ steps.cache-identity.outputs.writer == 'true' && steps.runtime-apt.outputs.digest != '' && !endsWith(steps.runtime-cache.outputs.cache-matched-key, steps.runtime-apt.outputs.digest) }}
-        continue-on-error: true
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: ${{ runner.temp }}/browser-runtime-packages
-          key: ${{ steps.runtime-packages.outputs.prefix }}${{ steps.runtime-apt.outputs.digest }}
       - name: Browser test recipe
         id: browser-recipe
         run: |
@@ -3318,8 +3259,8 @@ jobs:
           import re
           import subprocess
           import sys
-          # The compile, Cargo git, test setup and browser runtime prefixes each end in their identity digest.
-          prefix = re.compile(r'(?:maestro-compile-v1|maestro-cargo-git-v1|maestro-test-setup-v2|maestro-browser-runtime-v1)-[0-9a-f]{64}-')
+          # The compile, Cargo git and test setup prefixes each end in their identity digest.
+          prefix = re.compile(r'(?:maestro-compile-v1|maestro-cargo-git-v1|maestro-test-setup-v2)-[0-9a-f]{64}-')
           repository = os.environ['GITHUB_REPOSITORY']
           pages = json.loads(subprocess.check_output(['gh', 'api', '--paginate', '--slurp',
               f"repos/{repository}/actions/caches?ref={os.environ['GITHUB_REF']}&per_page=100"], text=True))

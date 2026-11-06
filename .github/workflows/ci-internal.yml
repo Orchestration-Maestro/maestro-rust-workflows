@@ -377,8 +377,6 @@ jobs:
         run: bash -e -o pipefail "$PROOF_STEPS/Browser test caller tools"
       - name: Browser runtime tools
         run: bash -e -o pipefail "$PROOF_STEPS/Browser runtime tools"
-      - name: Browser runtime packages identity
-        run: bash -e -o pipefail "$PROOF_STEPS/Browser runtime packages identity"
       - name: Browser runtime packages
         run: bash -e -o pipefail "$PROOF_STEPS/Browser runtime packages"
       - name: Immutable shared recipe qualification
