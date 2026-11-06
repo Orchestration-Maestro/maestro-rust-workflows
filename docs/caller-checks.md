@@ -638,6 +638,32 @@ grep -RFn -- 'CHILD-READY-MARKER' "$download/target/browser-author-diagnostics"
 grep -RFn -- 'phase: waiting-for-child-exit' "$download/target/browser-author-diagnostics"
 ```
 
+### Files the tests leave behind
+
+A test that writes into the caller's checkout can be staged and committed, so a
+shard fails when its tests leave files there. `Test checkout baseline` records
+`git status --porcelain --untracked-files=all` for the caller's working
+directory before either test route starts. `Tests leave no files behind`
+compares the same list after them and names every entry the tests added as
+`::error file=<path>::The tests left <path> in the checkout`, then fails the
+shard. The comparison subtracts the baseline, so a checkout that was changed
+before the tests is not blamed on them, and a deleted tracked file fails like an
+added one.
+
+The build directory `target/`, the test log `nextest.log`, the shard reports
+`shard-<n>.lcov` and the `mise.lock` that `Test tools` writes are the workflow's
+own files in the checkout. They are declared once in `TEST_CHECKOUT_EXCLUSIONS`
+and never fail a shard. Git-ignored files are not compared because they cannot
+be committed; nextest extracts its archive into the build directory, so archive
+members never appear either. A downloaded `shard-<n>.tar.zst` and
+`test-binaries.json` are in the baseline.
+
+The two steps sit in the step list that the `Test shard` and `Doctests` jobs
+share, so both test routes and the warm-cache run are checked. The check runs
+even when a test failed, which names the files a failing test left. A caller
+fixes the test, not the check: a test writes into a temporary directory it owns,
+and removing the file the shard names turns the next run green.
+
 ### Pull-request selection and retries
 
 Pull-request host Clippy, macOS and Windows checks select changed workspace crates,
