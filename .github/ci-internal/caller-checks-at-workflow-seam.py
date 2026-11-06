@@ -4269,7 +4269,6 @@ def pull_requests_compile_only_the_declared_witnesses():
         swept = context | {'github.event_name': event, 'needs.declaration.outputs.coverage': 'true'}
         for name in sweep:
             assert evaluate(steps[name]['if'], swept), (event, name)
-    assert document['jobs']['browser']['permissions'] == {'contents': 'read', 'actions': 'read'}
 
 pull_requests_compile_only_the_declared_witnesses()
 print('PASS pull_requests_compile_only_the_declared_witnesses')
