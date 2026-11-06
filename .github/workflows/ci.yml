@@ -3181,13 +3181,25 @@ jobs:
           assert.deepEqual(driver.optionalDependencies || {}, {});
           console.log(process.version);
           JAVASCRIPT
-          node node_modules/playwright/cli.js install-deps chromium
           node node_modules/playwright/cli.js --version
           "$tools/chrome-linux64/chrome" --version
           "$tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl/wasm-bindgen" --version
           echo "$tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
           echo "PLAYWRIGHT_MODULE=$tools/node_modules/playwright" >> "$GITHUB_ENV"
           echo "CHROMIUM_PATH=$tools/chrome-linux64/chrome" >> "$GITHUB_ENV"
+      - name: Browser runtime packages
+        timeout-minutes: 5
+        run: |
+          # Apt reads this drop-in as root, so every transfer it still needs fails over in seconds instead
+          # of holding the job for minutes.
+          settings=$(mktemp)
+          printf '%s\n' \
+            'Acquire::http::Timeout "15";' \
+            'Acquire::https::Timeout "15";' \
+            'Acquire::Retries "3";' > "$settings"
+          sudo install -m 0644 "$settings" /etc/apt/apt.conf.d/99-maestro-browser-packages
+          rm "$settings"
+          node "$PLAYWRIGHT_MODULE/cli.js" install-deps chromium
       - name: Browser test recipe
         id: browser-recipe
         run: |

@@ -211,6 +211,7 @@ for name in ['Coverage tools', 'Caller tools']:
     permit('ci-proof', 'comparison', name, 'timeout-minutes', '10')
 permit('ci-proof', 'comparison', 'Single-job coverage baseline', 'timeout-minutes', '45')
 permit('ci-internal', 'browser-qualification', 'Compile cache', 'timeout-minutes', '10')
+permit('ci', 'browser-tests', 'Browser runtime packages', 'timeout-minutes', '5')
 permit('ci', 'tests', 'Tests / "$TOOLS/cargo-nextest" nextest run', '--retries', '0')
 permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest', '--retries', '0')
 permit('ci', 'tests', 'Isolated tests / run_isolated "$TOOLS/cargo-nextest" nextest run', '--retries', '0')
@@ -360,7 +361,7 @@ class SearchReleases(unittest.TestCase):
 
     def test_workflow_controls_match_authority(self):
         report = require_recorded_controls(files)
-        self.assertEqual(len(report.splitlines()), 161)
+        self.assertEqual(len(report.splitlines()), 162)
         print(report)
 
     def assert_policy(self, sources, admitted):
@@ -642,7 +643,7 @@ class SearchReleases(unittest.TestCase):
 
     def test_inventory_requires_a_reason_for_each_occurrence(self):
         report = require_recorded_controls(files, authority)
-        self.assertEqual(len(report.splitlines()), 161)
+        self.assertEqual(len(report.splitlines()), 162)
         for row in authority:
             self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
         for row in [next(iter(authority)), next(reversed(authority))]:

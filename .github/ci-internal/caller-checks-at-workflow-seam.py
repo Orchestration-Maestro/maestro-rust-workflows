@@ -549,6 +549,7 @@ def browser_qualification_reuses_production_bodies():
     job = source.split('  browser-qualification:\n', 1)[1].split('\n  consumers:', 1)[0]
     names = ['Toolchain', 'Compile cache identity', 'Compile cache', 'Browser test tool pin',
              'Browser test mise bootstrap', 'Browser test caller tools', 'Browser runtime tools',
+             'Browser runtime packages',
              'Compile cache statistics', 'Seal compile cache']
     def require_extracted(candidate):
         for name in names:
