@@ -220,9 +220,16 @@ jobs:
           SLOWER, UNBALANCED, CACHE_FLOOR = ('CI run slower than its baseline', 'Test shards unbalanced',
                                              'Compile cache below its hit-rate floor')
 
+          # The phrase that marks a recovery comment, the one comment a passing run leaves.
+          PASSED = 'passed this guard'
+
+          def identity(kind, subject):
+              """The title of the one open issue an identity carries: the guard kind and its subject, never the run."""
+              return f'{kind}: {subject}'
+
           def finding(kind, subject, body, labels=()):
               """A guard finding, identified by its kind and its subject: the run is evidence in the body, never part of the title."""
-              return {'title': f'{kind}: {subject}', 'body': body, 'labels': list(labels)}
+              return {'title': identity(kind, subject), 'body': body, 'labels': list(labels)}
 
           def slow_kind(limit):
               """The kind of a slow-test finding: the limit the test crossed, with the test's own name as its subject."""
@@ -232,11 +239,11 @@ jobs:
               """The one comment a run leaves on the open issue of an identity it judged and passed, None when none is open.
 
               A pass with no open issue says nothing, and the guard never closes an issue itself."""
-              title = f'{kind}: {subject}'
+              title = identity(kind, subject)
               if title not in existing:
                   return None
               return {'title': title, 'recovery': True,
-                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) passed this guard: {text}.\n"
+                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) {PASSED}: {text}.\n"
                               'Close the issue when the fix is confirmed; the guard never closes one itself.\n'}
 
           # GitHub stamps job and step times to the second, 1 s at each boundary, so a work-time gap is measurable only above 2 s per executed job (S7759).
@@ -332,16 +339,25 @@ jobs:
               """The floor warnings a job printed for its compile cache, one per shape it compiled."""
               return [note['message'] for note in annotations_of(job) if note.get('title') == 'Compile cache floor']
 
+          def cache_shape(message):
+              """The compile cache shape a floor warning names: one shape is one snapshot, so it is the floor's subject."""
+              return re.search(r'floor in shape (\S+?):', message)[1]
+
+          def cache_pass_shape(log):
+              """The compile cache shape a job's floor step judged and passed, None when the step judged no cache."""
+              found = re.search(r'(?m)^Compile cache hit rate [0-9.]+% \(floor [0-9]+%\) in shape (\S+)$', clean(log))
+              return found[1] if found else None
+
           def cache_finding(run, jobs, annotations_of):
-              """One finding per job whose compile cache fell under its floor, from the warning that job printed."""
-              found = []
+              """One finding per compile cache shape that fell under its floor, with every job that judged that shape as evidence."""
+              shapes = {}
               for job in cache_judged(jobs):
-                  warnings = cache_warnings(job, annotations_of)
-                  if warnings:
-                      found.append(finding(CACHE_FLOOR, bare(job['name']),
-                                           f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
-                                           + '\n'.join(f"- {job['name']}: {warning}" for warning in warnings) + '\n'))
-              return found or None
+                  for warning in cache_warnings(job, annotations_of):
+                      shapes.setdefault(cache_shape(warning), []).append(f"- {job['name']}: {warning}")
+              return [finding(CACHE_FLOOR, shape,
+                              f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
+                              + '\n'.join(lines) + '\n')
+                      for shape, lines in shapes.items()] or None
 
           def snapshot_finding(run, jobs, caches):
               """A default-branch run that left compile snapshots unsaved: saves reported without a cache entry, none saved at all, or jobs cancelled before theirs."""
@@ -501,28 +517,35 @@ jobs:
               return found | {kind: spent[kind] / units[kind] for kind in spent}
 
           def rate_finding(run, measured, units, ran, prior, prior_measured, band, ratchet):
-              """One finding per kind of work whose seconds per unit are more than 10% over the lower of the band's recent median and its stored ratchet level,
-              and whose gap, over its units, is more than the stamp error of the jobs that did them. The kind of work is the subject, never the run."""
+              """The breaches and the passes of one run, per kind of work, judged against the lower of the band's recent median and its stored
+              ratchet level: a breach when the seconds per unit are more than 10% over it and the gap, over its units, is more than the stamp
+              error of the jobs that did them, a pass as (subject, text) otherwise. The kind of work is the subject, never the run."""
               if not watched(run):
-                  return None
+                  return [], []
               runs = '\n'.join(f"- {earlier['html_url']}" for earlier in prior)
-              found = []
+              found, passed = [], []
               for kind, (_, jobs, unit) in WORK.items():
                   history = [rates[kind] for rates in prior_measured if kind in rates]
                   baseline = baseline_of(history)
                   if baseline is None or kind not in measured:
                       continue
                   baseline = min(baseline, ratchet.get(kind, baseline))
-                  if measured[kind] > baseline * 1.10 and measurable(measured[kind] - baseline, units[kind], ran[kind]):
-                      outside = departure(measured[kind], history, rate_pad(history)) == 'above'
+                  rate = measured[kind]
+                  if rate > baseline * 1.10 and measurable(rate - baseline, units[kind], ran[kind]):
+                      outside = departure(rate, history, rate_pad(history)) == 'above'
                       found.append(finding(SLOWER, f'{jobs} on {band}',
                                            f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) on runner band {band}.\n"
                                            'Time per unit of work against the lower of the band\'s recent median and its stored ratchet level:\n\n'
-                                           f"- {jobs}: {measured[kind]:.2f} s per {unit} against a baseline of {baseline:.2f} s "
-                                           f"(+{(measured[kind] / baseline - 1) * 100:.0f}%, limit +10%)\n  Ratchet level: `{level_of(run, band, kind)}`\n\n"
+                                           f"- {jobs}: {rate:.2f} s per {unit} against a baseline of {baseline:.2f} s "
+                                           f"(+{(rate / baseline - 1) * 100:.0f}%, limit +10%)\n  Ratchet level: `{level_of(run, band, kind)}`\n\n"
                                            f"Latest baseline runs (successful, same workflow, event and runner band):\n{runs}\n",
                                            ['escalation'] if outside else []))
-              return found or None
+                  else:
+                      passed.append((f'{jobs} on {band}',
+                                     f'{rate:.2f} s per {unit} against a baseline of {baseline:.2f} s, '
+                                     + ('over the 10% limit but not a measurable regression' if rate > baseline * 1.10
+                                        else 'inside the 10% limit')))
+              return found, passed
 
           def selection_of(log):
               """Selected and total test packages and the full-suite trigger, as the selection step logs them."""
@@ -589,13 +612,17 @@ jobs:
               """The test shard jobs that ran: the only jobs the balance guard weighs."""
               return [job for job in jobs if kind_of(job['name']) == 'tests' and seconds(job) is not None]
 
+          def shard_median(jobs):
+              """The median seconds of the test shard jobs that ran: the shard a balance finding is weighed against; None below two shards."""
+              ran = shards_of(jobs)
+              return statistics.median(seconds(job) for job in ran) if len(ran) >= 2 else None
+
           def slowest_shard(jobs, margin):
               """The test shard past the margin over the median shard, as its job, its seconds and that median; None when the shards are balanced."""
-              ran = shards_of(jobs)
-              if len(ran) < 2:
+              median = shard_median(jobs)
+              if median is None:
                   return None
-              median = statistics.median(seconds(job) for job in ran)
-              slowest = max(ran, key=seconds)
+              slowest = max(shards_of(jobs), key=seconds)
               return None if seconds(slowest) <= margin * median else (slowest, seconds(slowest), median)
 
           def shard_finding(run, blamed, margin, grown, reading):
@@ -643,20 +670,30 @@ jobs:
               return {item['title']: item['number'] for item in json.loads(gh('issue', 'list', '-R', repository, '--state', 'open',
                                                                              '--limit', '1000', '--json', 'number,title'))}
 
-          def file_issues(findings, repository, gh, existing=None):
-              """File an identity's first finding, comment every later one and every recovery on its open issue, and close nothing.
+          def recovered(repository, gh, number, known):
+              """Whether the issue's latest guard comment is already a recovery: a passing run is reported once, not on every pass."""
+              if number not in known:
+                  comments = json.loads(gh('issue', 'view', str(number), '-R', repository, '--json', 'comments'))['comments']
+                  guard = [comment['body'] for comment in comments if (comment.get('body') or '').startswith('Run: ')]
+                  known[number] = bool(guard) and PASSED in guard[-1]
+              return known[number]
 
-              A recovery with no open issue says nothing. Returns the titles filed or commented."""
+          def file_issues(findings, repository, gh, existing=None):
+              """File an identity's first finding, comment every later one on its open issue, and close nothing.
+
+              A recovery is commented only when the issue's latest guard comment is still a breach. A recovery with no open issue says nothing.
+              Returns the titles filed or commented."""
               existing = open_findings(repository, gh) if existing is None else existing
-              filed, made = [], set()
+              filed, made, known = [], set(), {}
               for finding in findings:
                   title = finding['title']
                   if title in filed:
                       continue  # one identity, one comment per run
-                  if title in existing:
-                      if not existing[title]:
+                  number = existing.get(title)
+                  if number:
+                      if finding.get('recovery') and recovered(repository, gh, number, known):
                           continue
-                      gh('issue', 'comment', str(existing[title]), '-R', repository, '--body-file', '-', body=finding['body'])
+                      gh('issue', 'comment', str(number), '-R', repository, '--body-file', '-', body=finding['body'])
                   elif finding.get('recovery'):
                       continue
                   else:
@@ -666,7 +703,6 @@ jobs:
                               made.add(label)
                       labelled = [argument for label in finding.get('labels', []) for argument in ('--label', label)]
                       gh('issue', 'create', '-R', repository, '--title', title, *labelled, '--body-file', '-', body=finding['body'])
-                      existing[title] = None
                   filed.append(title)
               return filed
 
@@ -758,12 +794,10 @@ jobs:
                   if medians:
                       number, levels = ratchet_issue(repository, gh)
                       kept = {kind: levels[level_of(run, band, kind)]['rate'] for kind in medians if level_of(run, band, kind) in levels}
-                      findings.extend(rate_finding(run, measured, units, ran_jobs, like, prior_measured, band, kept) or [])
-                      for kind, (_, jobs_of_kind, unit) in WORK.items():
-                          if kind in medians and kind in measured:
-                              pass_of(SLOWER, f'{jobs_of_kind} on {band}',
-                                      f'{measured[kind]:.2f} s per {unit} against a baseline of '
-                                      f'{min(medians[kind], kept.get(kind, medians[kind])):.2f} s, inside the 10% limit')
+                      rates, rate_passes = rate_finding(run, measured, units, ran_jobs, like, prior_measured, band, kept)
+                      findings.extend(rates)
+                      for subject, text in rate_passes:
+                          pass_of(SLOWER, subject, text)
                       lowered = {level_of(run, band, kind): {'rate': value, 'reason': 'lowest median of the previous five successful runs on the level',
                                                              'run': run['id']}
                                  for kind, value in medians.items() if kind not in kept or value < kept[kind]}
@@ -773,18 +807,22 @@ jobs:
                   findings.append(capacity_finding(run, band, wait_of(run, jobs), work_of(jobs), like, [wait_of(other, jobs_of(other['id'])) for other in like]))
                   findings.append(shape_finding(run, band, jobs, prior, [jobs_of(other['id']) for other in prior]))
                   findings.extend(cache_finding(run, jobs, annotations_of) or [])
-                  for job in cache_judged(jobs):
-                      pass_of(CACHE_FLOOR, bare(job['name']), 'its compile cache hit rate stayed over the floor')
+                  # A pass names its shape only in the job's own log, so the log is read only while a floor issue is open.
+                  if any(title.startswith(f'{CACHE_FLOOR}:') for title in existing):
+                      for job in cache_judged(jobs):
+                          shape = cache_pass_shape(log_of(job))
+                          if shape:
+                              pass_of(CACHE_FLOOR, shape, 'its compile cache hit rate stayed over the floor')
               on_main = run['event'] in ('merge_group', 'push')
               if on_main:
                   findings.append(required_finding(run, jobs, settings['required']))
-              shards = shards_of(jobs)
+              shards, median = shards_of(jobs), shard_median(jobs)
               blamed = slowest_shard(jobs, settings['margin'])
-              if len(shards) >= 2:
-                  for job in shards:
-                      if not blamed or job['id'] != blamed[0]['id']:
-                          pass_of(UNBALANCED, bare(job['name']),
-                                  f'this shard took {seconds(job) / 60:.1f} min, inside {settings["margin"]:g} times the median shard')
+              for job in shards:
+                  # Only a shard inside the margin has recovered: a second shard over it is an imbalance of its own, never a pass.
+                  if median is not None and seconds(job) <= settings['margin'] * median:
+                      pass_of(UNBALANCED, bare(job['name']),
+                              f'this shard took {seconds(job) / 60:.1f} min, inside {settings["margin"]:g} times the median shard')
               readings = shard_readings(jobs) if blamed or on_main else {}
               unbalanced = None
               if blamed:

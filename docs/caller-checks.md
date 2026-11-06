@@ -1424,7 +1424,7 @@ fills one issue with comments instead of an issue per run:
 | Time per unit | `CI run slower than its baseline: Test jobs on <band>`, or `Build jobs` for the compile units |
 | Shard balance | `Test shards unbalanced: <the blamed shard job>` |
 | Slow test | `Test over 30 seconds: <binary> <test>` |
-| Cache floor | `Compile cache below its hit-rate floor: <the job that judged its cache>` |
+| Cache floor | `Compile cache below its hit-rate floor: <the cache shape>` |
 | Snapshot seed | `Escalation: default-branch run did not seed its compile snapshots` |
 | Cache usage | `Repository cache above 90% of its limit` |
 | Required checks | `Required checks missing: <the missing checks>` |
@@ -1435,8 +1435,15 @@ The guard reads the open issues once. A new identity opens an issue; an identity
 that is already open gets one comment with the new run's numbers, so a repeat
 breach comments instead of filing. A run that judges an identity and finds it in
 order comments the recovery on that issue once, so whoever owns the fix sees the
-run that passed. The guard never closes an issue itself, and a pass with no open
+run that passed; every later passing run says nothing until that identity
+breaches again. The guard never closes an issue itself, and a pass with no open
 issue says nothing.
+
+A subject is as wide as the cause: one cache shape is one identity, however many
+jobs judge it, so sixteen test shards on one cold snapshot produce one issue with
+sixteen job lines, not sixteen issues. A rate is one identity per kind of work
+and runner band, a shard balance one per blamed shard, and a slow test one per
+test.
 
 | Input | Default | Used by |
 | --- | --- | --- |
@@ -1544,8 +1551,10 @@ unbalanced, against the job token's 1,000 calls an hour for the whole
 repository. The cache reads add one call (cache usage), up to six pages of the
 cache list (the largest entries past 90%, and the snapshots of a default-branch
 run), and the floor annotations of the other jobs that ran a floor step, about
-15, so about 310 and 340. To respond, open the run link and fix the cause of the
-kind that regressed.
+15, so about 310 and 340. While a cache-floor issue is open, the guard also
+reads the log of each job that ran a floor step, about fifteen more calls, to
+name the shape that recovered; with no floor issue open it reads none. To
+respond, open the run link and fix the cause of the kind that regressed.
 
 ### Compile-cache hit-rate floor
 
@@ -1570,11 +1579,15 @@ the warm-up stayed on a release without their writer, and the first group after 
 default-branch push (40996420703) restored all five at 100%. The warning is an
 annotation that names the shape and one cause. The guards read it from a
 merge-group or main-push run, and from a pull-request run when a caller passes
-one, and file `Compile cache below its hit-rate floor: <job>` for each job whose
-cache fell cold, or add a comment to that job's open issue, so repeated cold
-builds on default-branch pushes, which are the regression, show as a growing
-list of comments; a job that judged its cache and stayed over the floor comments
-the recovery on its open issue:
+one, and file `Compile cache below its hit-rate floor: <shape>` for each shape
+that fell cold, listing every job that judged that shape in the body, or add a
+comment to that shape's open issue, so repeated cold builds on default-branch
+pushes, which are the regression, show as a growing list of comments. The shape
+is the identity because one snapshot serves every job that compiles it: the
+sixteen test shards of a cold `tests-coverage` snapshot are one cause. A run
+whose floor step stayed over the limit names its shape on its own log line, so a
+job that judged its cache and passed comments the recovery on that shape's open
+issue once:
 
 - **Cold snapshot:** a snapshot was restored but lacks this build's objects.
   Run the warm build on the default branch to seed it again.
@@ -1644,9 +1657,11 @@ route. Source: of 14 measured PR runs, 11 selected 1 to 3 of 51 packages
 
 When the slowest `Test shard` job takes more than `shard-balance-margin` times
 the median shard, the guard files `Test shards unbalanced: <shard>` for that
-shard, and every other shard of a balanced run comments the recovery on its own
-open issue. The issue reads the blamed shard's own log, so only tests that ran
-on that shard appear: the ones that are new, or reached a higher slow mark since
+shard, and every shard inside the margin of that same run comments the recovery
+on its own open issue. A second shard over the margin is an imbalance of its
+own, so it is never reported as recovered. The issue reads the blamed shard's
+own log, so only tests that ran on that shard appear: the ones that are new, or
+reached a higher slow mark since
 the last green run of the same event. Nextest prints only slow marks, so growth
 shows as a higher mark rather than exact seconds.
 
@@ -1669,7 +1684,8 @@ Nextest flags a test slow after `slow-test-seconds` (30), and the caller's
 for every test it flagged, `Test over 30 seconds: <test>`, with no cap on how many one
 run files; an open issue for the test is never filed twice, and the next run
 that flags it comments its numbers there. A run that reports the test again
-without a slow mark comments the recovery on that issue once. Fix the test at its
+without a slow mark comments the recovery on that issue once, and later passing
+runs say nothing until the test is flagged slow again. Fix the test at its
 cause; do not raise a timeout.
 
 The kill is one hang limit, `hang-limit-seconds` (120). A nextest override may

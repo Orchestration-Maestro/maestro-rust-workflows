@@ -1169,7 +1169,7 @@ jobs:
           # The guards read the compile units and the hit rate of every build from this notice.
           print(f'::notice title=Work units::compiles: {executed[1]}; hit-rate: {rate:.2f}')
           if rate >= floor:
-              finish(f'Compile cache hit rate {rate:.2f}% (floor {floor}%)')
+              finish(f'Compile cache hit rate {rate:.2f}% (floor {floor}%) in shape {shape}')
           matched, prefix = os.environ['CACHE_MATCHED_KEY'], os.environ['CACHE_PREFIX']
           if matched:
               cause = f"cold snapshot: the restored snapshot {matched} holds too few of this build's objects; seed it again from the default branch"
