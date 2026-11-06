@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.19](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.18...v0.19.19) (2026-11-06)
+
+
+### Continuous Integration
+
+* document every feature and every wasm crate before merge ([#378](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/378)) ([2b4379d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/2b4379d7ae80f643a30bbcaa3f0b353bad246b97))
+* move main scan pins to v0.19.18 ([#385](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/385)) ([8549314](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/854931462a0a8032d84ae609a75f0a05ab9f5147))
+
 ## [0.19.18](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.17...v0.19.18) (2026-11-05)
 
 
