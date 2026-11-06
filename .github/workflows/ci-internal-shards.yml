@@ -911,11 +911,15 @@ jobs:
           many = {'tests': 1000, 'compiles': 1000}
           ran_jobs = {'tests': 16, 'compiles': 1}
 
+          def rate_titles(*arguments):
+              """The breach titles of one rate judgement: a breach is what these proofs weigh, and the passes have their own proof."""
+              return [finding['title'] for finding in judging['rate_finding'](*arguments)[0]]
+
           def a_rate_more_than_ten_percent_over_its_baseline_files_an_issue():
               prior, measured = prior_runs(5, compiles=2.0)
-              finding = judging['rate_finding'](run_of(7, 33.3), {'tests': 11.1, 'compiles': 2.0}, many, ran_jobs, prior, measured, 'amd-epyc-7763-4c', {})
-              assert finding['title'] == 'CI run slower than its baseline: run 7', finding
-              body = finding['body']
+              findings = judging['rate_finding'](run_of(7, 33.3), {'tests': 11.1, 'compiles': 2.0}, many, ran_jobs, prior, measured, 'amd-epyc-7763-4c', {})[0]
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: Test jobs on amd-epyc-7763-4c'], findings
+              body = findings[0]['body']
               assert 'Run: https://example.test/runs/7' in body, body
               assert 'Rust CI (merge_group, main) on runner band amd-epyc-7763-4c.' in body, body
               assert '- Test jobs: 11.10 s per test run against a baseline of 10.00 s (+11%, limit +10%)' in body, body
@@ -925,15 +929,18 @@ jobs:
               for n in range(1, 6):
                   assert f'- https://example.test/runs/{n}' in body, body
               for rate in (10.9, 11.0):
-                  assert judging['rate_finding'](run_of(8, 30), {'tests': rate}, many, ran_jobs, prior, measured, 'band', {}) is None, rate
+                  assert not rate_titles(run_of(8, 30), {'tests': rate}, many, ran_jobs, prior, measured, 'band', {}), rate
               # Above the band's normal spread (the earlier rates widened by 10%) it is also escalated; inside the spread it is only a regression.
-              assert finding['labels'] == ['escalation'], finding
+              assert findings[0]['labels'] == ['escalation'], findings
               spread = [{'tests': rate} for rate in (8.0, 10.0, 10.0, 12.0, 10.0)]
-              inside = judging['rate_finding'](run_of(8, 30), {'tests': 11.1}, many, ran_jobs, prior, spread, 'band', {})
-              assert inside['title'] == 'CI run slower than its baseline: run 8' and inside['labels'] == [], inside
-              # Compile units are judged on their own rate.
-              body = judging['rate_finding'](run_of(8, 30), {'tests': 10.0, 'compiles': 2.22}, many, ran_jobs, prior, measured, 'band', {})['body']
-              assert '- Build jobs: 2.22 s per compile unit against a baseline of 2.00 s (+11%, limit +10%)' in body and 'Test jobs' not in body, body
+              inside = judging['rate_finding'](run_of(8, 30), {'tests': 11.1}, many, ran_jobs, prior, spread, 'band', {})[0]
+              assert inside[0]['title'] == 'CI run slower than its baseline: Test jobs on band' and inside[0]['labels'] == [], inside
+              # Compile units are judged on their own rate, so each kind of work keeps its own issue.
+              both = judging['rate_finding'](run_of(8, 30), {'tests': 11.1, 'compiles': 2.22}, many, ran_jobs, prior, measured, 'band', {})[0]
+              assert [finding['title'] for finding in both] == ['CI run slower than its baseline: Test jobs on band',
+                                                                 'CI run slower than its baseline: Build jobs on band'], both
+              assert '- Build jobs: 2.22 s per compile unit against a baseline of 2.00 s (+11%, limit +10%)' in both[1]['body'] \
+                  and 'Test jobs' not in both[1]['body'], both
 
           a_rate_more_than_ten_percent_over_its_baseline_files_an_issue()
           print('PASS a_rate_more_than_ten_percent_over_its_baseline_files_an_issue')
@@ -942,19 +949,19 @@ jobs:
               slow = run_of(9, 120)
               for count in (0, 1, 2):
                   prior, measured = prior_runs(count)
-                  assert judging['rate_finding'](slow, {'tests': 99.0}, many, ran_jobs, prior, measured, 'band', {}) is None, count
+                  assert not rate_titles(slow, {'tests': 99.0}, many, ran_jobs, prior, measured, 'band', {}), count
               prior, measured = prior_runs(3)
-              assert judging['rate_finding'](slow, {'tests': 99.0}, many, ran_jobs, prior, measured, 'band', {}) is not None
+              assert rate_titles(slow, {'tests': 99.0}, many, ran_jobs, prior, measured, 'band', {})
               assert judging['baseline_of']([18.0, 18.0]) is None and judging['baseline_of']([]) is None
               # The median keeps one fast run from lowering the bar.
               history = [run_of(n, 30) for n in range(3, 8)]
               measured = [{'tests': rate} for rate in (3.0, 10.0, 10.0, 10.0, 10.0)]
               assert judging['baseline_of']([3.0, 10.0, 10.0, 10.0, 10.0]) == 10.0
-              assert judging['rate_finding'](run_of(9, 30), {'tests': 10.9}, many, ran_jobs, history, measured, 'band', {}) is None
-              assert 'baseline of 10.00 s' in judging['rate_finding'](run_of(9, 30), {'tests': 11.1}, many, ran_jobs, history, measured, 'band', {})['body']
+              assert not rate_titles(run_of(9, 30), {'tests': 10.9}, many, ran_jobs, history, measured, 'band', {})
+              assert 'baseline of 10.00 s' in judging['rate_finding'](run_of(9, 30), {'tests': 11.1}, many, ran_jobs, history, measured, 'band', {})[0][0]['body']
               # A kind with fewer than three earlier rates has no baseline, whatever the other kinds have.
               prior, measured = prior_runs(5)
-              assert judging['rate_finding'](slow, {'tests': 10.0, 'compiles': 99.0}, many, ran_jobs, prior, measured, 'band', {}) is None
+              assert not rate_titles(slow, {'tests': 10.0, 'compiles': 99.0}, many, ran_jobs, prior, measured, 'band', {})
 
           the_baseline_needs_three_samples_and_is_their_median()
           print('PASS the_baseline_needs_three_samples_and_is_their_median')
@@ -966,7 +973,7 @@ jobs:
                                                  ('merge_group', 'CodeQL', 'x', False), ('push', 'CodeQL', 'main', False),
                                                  ('schedule', 'Rust CI', 'main', False)]:
                   slow = run_of(9, 60, event, name=name, branch=branch)
-                  assert (judging['rate_finding'](slow, {'tests': 20.0}, many, ran_jobs, prior, measured, 'band', {}) is not None) == fires, (event, name, branch)
+                  assert bool(rate_titles(slow, {'tests': 20.0}, many, ran_jobs, prior, measured, 'band', {})) == fires, (event, name, branch)
 
           only_runs_that_gate_a_merge_are_judged()
           print('PASS only_runs_that_gate_a_merge_are_judged')
@@ -975,12 +982,12 @@ jobs:
               creep = [run_of(n, 30) for n in range(3, 8)]
               measured = [{'tests': rate} for rate in (12.0, 13.0, 14.0, 15.0, 16.0)]
               # The last five alone give a median of 14 and a limit of 15.4; the stored 10 keeps the limit at 11.
-              finding = judging['rate_finding'](run_of(9, 30), {'tests': 12.0}, many, ran_jobs, creep, measured, 'band', {'tests': 10.0})
-              assert finding and 'against a baseline of 10.00 s (+20%, limit +10%)' in finding['body'], finding
-              assert judging['rate_finding'](run_of(9, 30), {'tests': 10.9}, many, ran_jobs, creep, measured, 'band', {'tests': 10.0}) is None
+              finding = judging['rate_finding'](run_of(9, 30), {'tests': 12.0}, many, ran_jobs, creep, measured, 'band', {'tests': 10.0})[0]
+              assert finding and 'against a baseline of 10.00 s (+20%, limit +10%)' in finding[0]['body'], finding
+              assert not rate_titles(run_of(9, 30), {'tests': 10.9}, many, ran_jobs, creep, measured, 'band', {'tests': 10.0})
               # A stored level above the recent median never raises the line.
-              raised = judging['rate_finding'](run_of(9, 30), {'tests': 16.0}, many, ran_jobs, creep, measured, 'band', {'tests': 30.0})
-              assert raised and 'against a baseline of 14.00 s' in raised['body'], raised
+              raised = judging['rate_finding'](run_of(9, 30), {'tests': 16.0}, many, ran_jobs, creep, measured, 'band', {'tests': 30.0})[0]
+              assert raised and 'against a baseline of 14.00 s' in raised[0]['body'], raised
 
           a_creeping_regression_fires_against_the_stored_ratchet()
           print('PASS a_creeping_regression_fires_against_the_stored_ratchet')
@@ -989,14 +996,19 @@ jobs:
               # S7759: GitHub stamps a job to the second, 1 s at each boundary, so a work-time gap is measurable only above 2 s per executed job.
               prior, measured = prior_runs(5, rate=19.0)
               run = run_of(9, 30)
-              fire = lambda rate, units, jobs, base=(prior, measured): judging['rate_finding'](
-                  run, {'tests': rate}, {'tests': units}, {'tests': jobs}, *base, 'band', {}) is not None
+              judge = lambda rate, units, jobs, base=(prior, measured): judging['rate_finding'](
+                  run, {'tests': rate}, {'tests': units}, {'tests': jobs}, *base, 'band', {})
+              fire = lambda *arguments: bool(judge(*arguments)[0])
               # One job: a 2 s gap (+10.5%) is within the bound; 2.1 s fires.
               assert not fire(21.0, 1, 1) and fire(21.1, 1, 1)
               # The bound grows with the executed jobs: 32 s over sixteen jobs is within it, 40 s fires.
               assert not fire(21.0, 16, 16) and fire(21.0, 20, 16)
               # A 20 s workflow that doubles still fires.
               assert fire(40.0, 1, 1, prior_runs(5, rate=20.0))
+              # The pass it reports is honest about what it judged: over the limit, but not a measurable regression.
+              assert judge(21.0, 1, 1)[1] == [('Test jobs on band', '21.00 s per test run against a baseline of 19.00 s, '
+                                                                 'over the 10% limit but not a measurable regression')], judge(21.0, 1, 1)
+              assert judge(20.0, 1, 1)[1] == [('Test jobs on band', '20.00 s per test run against a baseline of 19.00 s, inside the 10% limit')]
 
           a_rate_gap_within_the_stamp_error_of_the_executed_jobs_is_not_a_regression()
           print('PASS a_rate_gap_within_the_stamp_error_of_the_executed_jobs_is_not_a_regression')
@@ -1033,7 +1045,7 @@ jobs:
               run = run_of(7, 30)
               low = judging['range_findings'](run, 'band-x', {'tests': 8.0, 'compiles': 2.0, 'hit-rate': 99.5}, many, ran_jobs, prior, measured)
               assert [finding['title'] for finding in low] == ['Escalation: time per test run outside its normal spread'], low
-              assert low[0]['labels'] == ['escalation'] and low[0]['comment'], low
+              assert low[0]['labels'] == ['escalation'], low
               body = low[0]['body']
               assert 'Run: https://example.test/runs/7' in body and 'Rust CI (merge_group, main) on runner band band-x.' in body, body
               assert "8.00 s per test run, below the band's normal spread of 9.00 to 11.00 s" in body, body
@@ -1080,7 +1092,7 @@ jobs:
               assert shape(jobs_of_a_run(shards=40)) is None
               finding = shape(jobs_of_a_run(corpus=20))
               assert finding['title'] == 'Escalation: jobs or steps changed without matching work', finding
-              assert finding['labels'] == ['escalation'] and finding['comment'], finding
+              assert finding['labels'] == ['escalation'], finding
               body = finding['body']
               assert '- Docs / Download corpus appeared' in body and 'Run: https://example.test/runs/7' in body, body
               assert 'on runner band band-x.' in body and all(f'- https://example.test/runs/{n}' in body for n in range(1, 6)), body
@@ -1144,7 +1156,7 @@ jobs:
               assert capacity(100.0) is None and capacity(180.0) is None
               finding = capacity(181.0)
               assert finding['title'] == 'Escalation: runner wait over its median', finding
-              assert finding['labels'] == ['escalation'] and finding['comment'], finding
+              assert finding['labels'] == ['escalation'], finding
               body = finding['body']
               assert 'Run: https://example.test/runs/7' in body and 'on runner band band-x.' in body, body
               assert 'The run waited 3.0 min for runners against a median wait of 1.0 min' in body, body
@@ -1237,52 +1249,126 @@ jobs:
           every_linux_job_records_its_runner_hardware()
           print('PASS every_linux_job_records_its_runner_hardware')
 
-          def findings_file_once_and_every_slow_test_gets_an_issue():
-              calls = []
+          def a_finding_is_identified_by_its_kind_and_its_subject():
+              prior, measured = prior_runs(5)
+              first, _ = judging['rate_finding'](run_of(7, 30), {'tests': 11.1}, many, ran_jobs, prior, measured, 'amd-epyc-7763-4c', {})
+              assert [finding['title'] for finding in first] == ['CI run slower than its baseline: Test jobs on amd-epyc-7763-4c'], first
+              # The run is evidence in the body, never the identity: the next breaching run carries the same title.
+              later, _ = judging['rate_finding'](run_of(8, 30), {'tests': 11.1}, many, ran_jobs, prior, measured, 'amd-epyc-7763-4c', {})
+              assert later[0]['title'] == first[0]['title'] and 'runs/7' in first[0]['body'] and 'runs/8' in later[0]['body'], later
+              # A breach and the recovery of its identity carry one title, so a recovery can never miss its open issue.
+              assert judging['recovery']({'Test over 30 seconds: a::one': 7}, 'Test over 30 seconds', 'a::one', run_of(7, 39), 'it passed')['title'] == \
+                  judging['finding']('Test over 30 seconds', 'a::one', 'body')['title']
+              # A shard is identified by its shard, behind a reusable caller's job prefix too.
+              for prefix in ('', 'suite / '):
+                  shards = [job(f'{prefix}Test shard ({n}/2)', 10, identifier=n) for n in (1, 2)]
+                  shards.append(job(f'{prefix}Test shard (2/2)', 40, identifier=3))
+                  unbalanced = judging['shard_finding'](run_of(7, 50), judging['slowest_shard'](shards, 1.5), 1.5, [], {'phases': [], 'tests': None})
+                  assert unbalanced['title'] == 'Test shards unbalanced: Test shard (2/2)', unbalanced
+                  assert f'{prefix}Test shard (2/2) took 40.0 min' in unbalanced['body'], unbalanced
+              # A compile cache is identified by its shape: the shards of one cold snapshot share one issue.
+              cold = 'Compile cache hit rate 40.00% is below the 90% floor in shape tests-coverage: cold snapshot'
+              cache = judging['cache_finding'](run_of(7, 39), [job('Build test archive', 12, identifier=1, steps=[('Compile cache hit-rate floor', 1)])],
+                                              lambda item: [{'title': 'Compile cache floor', 'message': cold}])
+              assert [finding['title'] for finding in cache] == ['Compile cache below its hit-rate floor: tests-coverage'], cache
+              assert f'- Build test archive: {cold}' in cache[0]['body'], cache
+              slow = judging['slow_findings']({'a::one': 30.0}, 30.0, run_of(7, 39))
+              assert [finding['title'] for finding in slow] == ['Test over 30 seconds: a::one'], slow
+
+          a_finding_is_identified_by_its_kind_and_its_subject()
+          print('PASS a_finding_is_identified_by_its_kind_and_its_subject')
+
+          def a_repeat_breach_comments_on_its_open_issue():
+              calls, open_titles = [], ['Test shards unbalanced: Test shard (16/16)', 'Already open']
               def gh(*argv, body=None):
                   calls.append((argv, body))
-                  return json.dumps([{'number': 5, 'title': 'Already open'}]) if argv[:2] == ('issue', 'list') else ''
-              findings = [{'title': 'Already open', 'body': 'old'}, {'title': 'New', 'body': 'new body'}] + [
-                  {'title': f'Slow {n}', 'body': 'slow body'} for n in range(14)]
-              filed = judging['file_issues'](findings, 'owner/repo', gh)
-              assert filed == ['New'] + [f'Slow {n}' for n in range(14)], filed
-              creates = [call for call in calls if call[0][:2] == ('issue', 'create')]
-              assert [call[0][call[0].index('--title') + 1] for call in creates] == filed, creates
-              assert creates[0][1] == 'new body' and all('-R' in call[0] and 'owner/repo' in call[0] for call in calls), calls
-              # A standing finding marked for comment adds to its open issue, and creates one when none is open.
+                  if argv[:2] == ('issue', 'list'):
+                      return json.dumps([{'number': 5 + index, 'title': title} for index, title in enumerate(open_titles)])
+                  if argv[:2] == ('issue', 'create'):
+                      open_titles.append(argv[argv.index('--title') + 1])
+                  return ''
+              filed = judging['file_issues']([{'title': 'Test shards unbalanced: Test shard (16/16)', 'body': 'second run'},
+                                              {'title': 'Test shards unbalanced: Test shard (3/16)', 'body': 'new shard'}], 'owner/repo', gh)
+              assert filed == ['Test shards unbalanced: Test shard (16/16)', 'Test shards unbalanced: Test shard (3/16)'], filed
+              # The repeat comments the new run's numbers on the open issue; only the new identity opens one.
+              assert [call[0][:3] for call in calls if call[0][:2] == ('issue', 'comment')] == [('issue', 'comment', '5')], calls
+              assert calls[1][1] == 'second run', calls
+              creates = [call[0] for call in calls if call[0][:2] == ('issue', 'create')]
+              assert len(creates) == 1 and creates[0][creates[0].index('--title') + 1] == 'Test shards unbalanced: Test shard (3/16)', calls
+              assert all('-R' in call[0] and 'owner/repo' in call[0] for call in calls), calls
+              # One identity, one issue: the same title twice in one run opens nothing more.
               calls.clear()
-              filed = judging['file_issues']([{'title': 'Already open', 'body': 'again', 'comment': True},
-                                              {'title': 'Fresh', 'body': 'first', 'comment': True}], 'owner/repo', gh)
-              assert filed == ['Already open', 'Fresh'], filed
-              assert [call[0][:3] for call in calls if call[0][1] in ('comment', 'create')] == [('issue', 'comment', '5'), ('issue', 'create', '-R')], calls
-              assert calls[1][1] == 'again', calls
-              assert not [call for call in calls if call[0][0] == 'label'], calls
-              # An escalation is labelled, the label is made once, and a standing one comments on its open issue.
+              judging['file_issues']([{'title': 'Test shards unbalanced: Test shard (3/16)', 'body': 'again'}] * 2, 'owner/repo', gh)
+              assert [call[:3] for call, _ in calls if call[:2] == ('issue', 'comment')] == [('issue', 'comment', '7')], calls
+              assert not [call for call, _ in calls if call[:2] == ('issue', 'create')], calls
+              # An escalation is labelled, and the label is made once for the run.
               calls.clear()
-              flagged = {'comment': True, 'labels': ['escalation']}
-              filed = judging['file_issues']([{'title': 'Escalation: new', 'body': 'first'} | flagged, {'title': 'Already open', 'body': 'again'} | flagged,
+              flagged = {'labels': ['escalation']}
+              filed = judging['file_issues']([{'title': 'Escalation: new', 'body': 'first'} | flagged,
+                                              {'title': 'Already open', 'body': 'again'} | flagged,
                                               {'title': 'Escalation: other', 'body': 'second'} | flagged], 'owner/repo', gh)
               assert filed == ['Escalation: new', 'Already open', 'Escalation: other'], filed
               made = [call[0] for call in calls if call[0][:2] == ('label', 'create')]
               assert len(made) == 1 and made[0][:6] == ('label', 'create', 'escalation', '-R', 'owner/repo', '--force'), made
               creates = [call[0] for call in calls if call[0][:2] == ('issue', 'create')]
               assert len(creates) == 2 and all(argv[argv.index('--label') + 1] == 'escalation' for argv in creates), creates
-              assert [call[0][:3] for call in calls if call[0][1] == 'comment'] == [('issue', 'comment', '5')], calls
+              assert [call[0][:3] for call in calls if call[0][1] == 'comment'] == [('issue', 'comment', '6')], calls
 
-          findings_file_once_and_every_slow_test_gets_an_issue()
-          print('PASS findings_file_once_and_every_slow_test_gets_an_issue')
+          a_repeat_breach_comments_on_its_open_issue()
+          print('PASS a_repeat_breach_comments_on_its_open_issue')
+
+          def a_recovery_comments_once_on_its_open_issue_and_never_closes():
+              calls, history = [], {7: []}
+              def gh(*argv, body=None):
+                  calls.append((argv, body))
+                  if argv[:2] == ('issue', 'list'):
+                      return json.dumps([{'number': 7, 'title': 'Test over 30 seconds: a::one'}])
+                  if argv[:2] == ('issue', 'view'):
+                      return json.dumps({'comments': [{'body': text} for text in history[int(argv[2])]]})
+                  if argv[:2] == ('issue', 'comment'):
+                      history[int(argv[2])].append(body)
+                  return ''
+              open_issue = {'Test over 30 seconds: a::one': 7}
+              def pass_note(number):
+                  return judging['recovery'](open_issue, 'Test over 30 seconds', 'a::one', run_of(number, 39), 'it ran without crossing a slow mark')
+              assert judging['file_issues']([pass_note(7)], 'owner/repo', gh) == ['Test over 30 seconds: a::one']
+              assert [body.splitlines()[0] for body in history[7]] == ['Run: https://example.test/runs/7'], history
+              # The next passing run says nothing: whoever owns the fix already has the recovery.
+              calls.clear()
+              assert judging['file_issues']([pass_note(8)], 'owner/repo', gh) == []
+              assert [call[0][:2] for call in calls if call[0][0] == 'issue' and call[0][1] != 'list'] == [('issue', 'view')], calls
+              # A breach is news again, so the recovery that follows it is commented.
+              history[7].append('Run: https://example.test/runs/9\nthe shard took 44.0 min')
+              assert judging['file_issues']([pass_note(10)], 'owner/repo', gh) == ['Test over 30 seconds: a::one']
+              assert [body.splitlines()[0] for body in history[7]] == ['Run: https://example.test/runs/7', 'Run: https://example.test/runs/9',
+                                                                       'Run: https://example.test/runs/10'], history
+              # A pass with no open issue says nothing: it opens none and closes none.
+              calls.clear()
+              assert judging['file_issues']([{'title': 'Test over 30 seconds: b::two', 'recovery': True,
+                                              'body': 'Run: https://example.test/runs/7\nit ran without crossing a slow mark'}], 'owner/repo', gh) == []
+              assert [call[0][:2] for call in calls if call[0][0] == 'issue' and call[0][1] != 'list'] == [], calls
+              assert not [call for call in calls if call[0][:2] == ('issue', 'close')], 'the guard never closes an issue itself'
+              # A breach and a recovery of the same identity never both arrive: the newer one would contradict the run.
+              calls.clear()
+              judging['file_issues']([{'title': 'Test over 30 seconds: a::one', 'body': 'Run: https://example.test/runs/11\nbroke'},
+                                      pass_note(12)], 'owner/repo', gh)
+              assert [call[1].splitlines()[0] for call in calls if call[0][:2] == ('issue', 'comment')] == ['Run: https://example.test/runs/11'], calls
+
+          a_recovery_comments_once_on_its_open_issue_and_never_closes()
+          print('PASS a_recovery_comments_once_on_its_open_issue_and_never_closes')
 
           def fake_repository(minutes=30, bands=None, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group',
                                   ratchet=None, floor=None, newer=0, pace=None, build=None, steps=None, extra_jobs=None,
-                                  seeding=None, conclusion='success', cancelled=(), usage_gb=3.0):
+                                  seeding=None, conclusion='success', cancelled=(), usage_gb=3.0, open_issues=()):
               """Serves the REST calls judge makes for run 7, its earlier runs and the stored ratchet; `newer` runs finish after run 7.
 
               `pace` maps a run to (shard duration factor, test runs per shard) and `build` to (build duration factor, compile units, cache hit rate);
               `steps` maps (run, job name) to its (step, seconds) pairs; `extra_jobs` maps a run to the names of jobs it ran besides the usual ones;
-              `floor` maps a run to the cache-floor warning of each named job (every run then ran the floor step in those jobs);
+              `floor` maps a run to the cache-floor warning of each named job (every run then ran the floor step in those jobs, and a job whose value is
+              None passed it in the shape `SHAPES` gives it);
               `seeding` is (the jobs that save a snapshot, the cache entries run 7 left): every run then reports those saves and leaves one entry
-              per saving job, except run 7; `conclusion` and `cancelled` set how run 7 and which of its jobs ended; `usage_gb` is the repository cache in use.
-              Runs after run 7 are five times slower per unit."""
+              per saving job, except run 7; `conclusion` and `cancelled` set how run 7 and which of its jobs ended; `usage_gb` is the repository cache in use;
+              `open_issues` are the titles of the repository's open issues. Runs after run 7 are five times slower per unit."""
               ratchet = {} if ratchet is None else ratchet
               counts = collections.Counter()
               names = required or ['Caller declaration', 'Format and lint', 'Docs', 'Build test archive', 'Doctests',
@@ -1310,6 +1396,9 @@ jobs:
                       found.append(job(f'Test shard ({index + 1}/16)', took * factor, identifier=base + 100 + index, start=begin,
                                        steps=(steps or {}).get((identifier, f'Test shard ({index + 1}/16)'), []) + [('Tests', took * factor * 60)]))
                       logs[base + 100 + index] = (shard_logs or {}).get((identifier, index), 'Summary [1.0s] 1 test run\n')
+                  for index, warned in (floor or {}).get(identifier, {}).items():
+                      if warned is None:
+                          logs[base + names.index(index)] = f'Compile cache hit rate 99.50% (floor 90%) in shape {SHAPES[index]}\n'
                   found += [job(extra, 5, identifier=base + 200 + index, start=begin) for index, extra in enumerate((extra_jobs or {}).get(identifier, []))]
                   declaration = next(item for item in found if item['name'] == 'Caller declaration') if 'Caller declaration' in names else None
                   if declaration:
@@ -1349,8 +1438,9 @@ jobs:
                       if index < len(names) and names[index] == 'Build test archive':
                           _, compiles, hit_rate = build.get(identifier, (1, 600, 99.5))
                           notes += work_units(f'compiles: {compiles}; hit-rate: {hit_rate}')
-                      if index < len(names) and names[index] in (floor or {}).get(identifier, {}):
-                          notes.append({'title': 'Compile cache floor', 'message': floor[identifier][names[index]], 'annotation_level': 'warning'})
+                      warning = (floor or {}).get(identifier, {}).get(names[index]) if index < len(names) else None
+                      if warning:
+                          notes.append({'title': 'Compile cache floor', 'message': warning, 'annotation_level': 'warning'})
                       return json.dumps(notes)
                   if re.search(r'actions/cache/usage$', text):
                       counts['usage'] += 1
@@ -1379,15 +1469,21 @@ jobs:
                       ratchet['body'] = body
                       return ''
                   if argv[:2] == ('issue', 'list'):
-                      return '[]'
+                      return json.dumps([{'number': 50 + index, 'title': title} for index, title in enumerate(open_issues)])
+                  if argv[:2] == ('issue', 'view'):
+                      return json.dumps({'comments': []})
                   if argv[:2] == ('issue', 'create'):
                       created.append((argv[argv.index('--title') + 1], body))
+                      return ''
+                  if argv[:2] == ('issue', 'comment'):
+                      comments.append((argv[2], body))
                       return ''
                   if argv[:2] == ('label', 'create'):
                       return ''
                   raise AssertionError(f'unexpected gh call: {text}')
-              created = []
+              created, comments = [], []
               gh.counts = counts
+              gh.comments = comments
               return gh, created
 
           def stored_levels(ratchet):
@@ -1400,8 +1496,53 @@ jobs:
               'Caller declaration', 'Format and lint', 'Docs', 'Build test archive', 'Test shard (*', 'Doctests',
               'Tests (ubuntu-latest)', 'Dependency, source and coverage checks']}
 
+          # The compile cache shape each named job judges, as ci.yml's cache identity gives it.
+          SHAPES = {'Caller declaration': 'declaration', 'Format and lint': 'quality', 'Docs': 'docs',
+                    'Build test archive': 'tests-coverage', 'Doctests': 'doctests', 'Tests (ubuntu-latest)': 'tests-coverage',
+                    'Dependency, source and coverage checks': 'checks'}
+
           # With the default shards a run spends 16.5 s per test run (440 shard minutes over 16 shards of 100 tests) and 0.5 s per compile unit.
           TESTS_RATE, COMPILES_RATE = 16.5, 0.5
+
+          def judge_recovers_every_identity_it_judged_and_passed():
+              # One passing test in a shard log, so a slow-test identity is judged and passed by the same run.
+              passed_log = '2026-10-30T02:53:23.4168865Z         PASS [   1.2s] crate one\n     Summary [10.0s] 1 test run: 1 passed\n'
+              open_issues = ['CI run slower than its baseline: Test jobs on unknown', 'Compile cache below its hit-rate floor: docs',
+                             'Test shards unbalanced: Test shard (3/16)', 'Test over 30 seconds: crate one']
+              gh, _ = fake_repository(ratchet={}, floor={7: {'Docs': None}}, shard_logs={(7, 3): passed_log}, open_issues=open_issues)
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings] == open_issues, findings
+              for finding in findings:
+                  assert finding['recovery'] and 'passed this guard' in finding['body'], finding
+                  assert 'Run: https://example.test/runs/7' in finding['body'] and 'never closes one itself' in finding['body'], finding
+              # The pass reports what the run judged, not the limit it did not cross.
+              assert '16.50 s per test run against a baseline of 16.50 s, inside the 10% limit' in findings[0]['body'], findings
+              assert 'its compile cache hit rate stayed over the floor' in findings[1]['body'], findings
+              # The identity that breached is never also recovered: the run says it is still broken.
+              gh, _ = fake_repository(ratchet={}, open_issues=open_issues, pace={7: (1.11, 100)})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings if not finding.get('recovery')] == [open_issues[0]], findings
+              assert [finding['title'] for finding in findings if finding.get('recovery')] == ['Test shards unbalanced: Test shard (3/16)'], findings
+              # A pass with no open issue says nothing at all.
+              gh, _ = fake_repository(ratchet={})
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+              # Two shards over the margin are one imbalance and one silence: the shard that is not blamed has not recovered.
+              over = [26] * 14 + [45, 50]
+              gh, _ = fake_repository(ratchet={}, shard_minutes=over,
+                                      open_issues=['Test shards unbalanced: Test shard (15/16)', 'Test shards unbalanced: Test shard (16/16)'])
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings] == ['Test shards unbalanced: Test shard (16/16)'], findings
+              gh, _ = fake_repository(ratchet={}, shard_minutes=over, open_issues=['Test shards unbalanced: Test shard (1/16)'])
+              assert [finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS)
+                      if finding.get('recovery')] == ['Test shards unbalanced: Test shard (1/16)']
+              # And the recovery is a comment: nothing is filed and nothing is closed.
+              gh, created = fake_repository(ratchet={}, open_issues=open_issues)
+              judging['file_issues'](judging['judge']('7', 'owner/repo', gh, SETTINGS), 'owner/repo', gh)
+              assert created == [] and len(gh.comments) == 2, (created, gh.comments)
+              assert not [call for call in gh.comments if call[0] not in ('50', '52')], gh.comments
+
+          judge_recovers_every_identity_it_judged_and_passed()
+          print('PASS judge_recovers_every_identity_it_judged_and_passed')
 
           def judge_stays_quiet_on_a_healthy_run_and_reports_a_rate_breach():
               ratchet = {}
@@ -1413,7 +1554,7 @@ jobs:
               assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
               gh, _ = fake_repository(pace={7: (1.11, 100)})
               findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: Test jobs on unknown'], findings
               assert '(+11%, limit +10%)' in findings[0]['body'], findings
               assert '- https://example.test/runs/2' in findings[0]['body'] and '- https://example.test/runs/1' not in findings[0]['body']
               # A cancelled merge group is judged for the cache only; its wall time and rates mean nothing.
@@ -1432,7 +1573,7 @@ jobs:
               # The same growth at a 11% higher rate is a regression.
               gh, _ = fake_repository(minutes=66.6, pace={7: (2.22, 200)}, build={7: (2, 1200, 99.5)})
               titles = [finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS)]
-              assert titles == ['CI run slower than its baseline: run 7'], titles
+              assert titles == ['CI run slower than its baseline: Test jobs on unknown'], titles
 
           natural_growth_stays_quiet()
           print('PASS natural_growth_stays_quiet')
@@ -1455,7 +1596,7 @@ jobs:
               # A rate that regressed is one issue, labelled, not a regression plus an escalation.
               gh, _ = fake_repository(pace={7: (1.5, 100)})
               findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'] and findings[0]['labels'] == ['escalation'], findings
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: Test jobs on unknown'] and findings[0]['labels'] == ['escalation'], findings
 
           judge_escalates_what_stands_out_of_the_pattern()
           print('PASS judge_escalates_what_stands_out_of_the_pattern')
@@ -1467,7 +1608,7 @@ jobs:
               # Work at +11% fires as a regression only; the wall stays near the work.
               gh, _ = fake_repository(minutes=33, pace={7: (1.11, 100)})
               findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: Test jobs on unknown'], findings
               # A long wait is its own capacity issue and no regression.
               gh, _ = fake_repository(minutes=35)
               findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
@@ -1475,7 +1616,7 @@ jobs:
               # Both can happen in one run, and the wait never hides the regression.
               gh, _ = fake_repository(minutes=40, pace={7: (1.11, 100)})
               titles = sorted(finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS))
-              assert titles == ['CI run slower than its baseline: run 7', 'Escalation: runner wait over its median'], titles
+              assert titles == ['CI run slower than its baseline: Test jobs on unknown', 'Escalation: runner wait over its median'], titles
 
           a_runner_wait_is_never_ci_slowness()
           print('PASS a_runner_wait_is_never_ci_slowness')
@@ -1492,7 +1633,7 @@ jobs:
               # Three like runs among the five earlier ones are enough: the unlike runs are skipped, not counted.
               gh, _ = fake_repository(pace={7: (1.5, 100)}, extra_jobs={3: ['Attest'], 4: ['Attest']})
               findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: Test jobs on unknown'], findings
               assert all(f'- https://example.test/runs/{n}\n' not in findings[0]['body'] for n in (3, 4)), findings
 
           a_run_is_compared_only_with_runs_that_executed_the_same_jobs()
@@ -1504,7 +1645,7 @@ jobs:
               split = {1: 'slow', 2: 'slow', 3: 'slow', 4: 'fast', 5: 'fast', 6: 'fast'}
               gh, _ = fake_repository(pace=slow_history | {7: (1.11, 100)}, bands=split | {7: 'fast'})
               findings = judging['judge']('7', 'owner/repo', gh, SIX)
-              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: Test jobs on fast'], findings
               body = findings[0]['body']
               assert 'on runner band fast.' in body and all(f'- https://example.test/runs/{n}' in body for n in (4, 5, 6)), body
               assert not any(f'- https://example.test/runs/{n}\n' in body for n in (1, 2, 3)), body
@@ -1539,7 +1680,7 @@ jobs:
               for attempt in range(2):
                   gh, _ = fake_repository(pace={n: (1.5, 100) for n in range(1, 8)}, ratchet=ratchet)
                   findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-                  assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+                  assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: Test jobs on unknown'], findings
                   assert 'against a baseline of 8.25 s' in findings[0]['body'], findings
                   assert stored_levels(ratchet)[key]['rate'] == TESTS_RATE / 2, ratchet
 
@@ -1551,7 +1692,7 @@ jobs:
               ratchet = stored_ratchet({key: {'rate': TESTS_RATE, 'reason': 'seed', 'run': 1}})
               gh, _ = fake_repository(pace={n: (1.13, 100) for n in range(1, 7)} | {7: (1.2, 100)}, ratchet=ratchet)
               findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: run 7'], findings
+              assert [finding['title'] for finding in findings] == ['CI run slower than its baseline: Test jobs on unknown'], findings
               assert 'against a baseline of 16.50 s (+20%, limit +10%)' in findings[0]['body'], findings
               assert stored_levels(ratchet)[key] == {'rate': TESTS_RATE, 'reason': 'seed', 'run': 1}, ratchet
 
@@ -1571,39 +1712,46 @@ jobs:
                   assert counts['logs'] == (3 if event == 'pull_request' else 16), counts
               gh, _ = fake_repository(event='pull_request', shard_minutes=[26] * 15 + [45], ratchet={})
               titles = [finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS)]
-              assert titles == ['Test shards unbalanced: run 7'], titles
+              assert titles == ['Test shards unbalanced: Test shard (16/16)'], titles
               assert gh.counts['logs of run 7'] == 17 and gh.counts['logs of run 6'] == 17, gh.counts
 
           judge_reads_only_the_window_of_earlier_runs()
           print('PASS judge_reads_only_the_window_of_earlier_runs')
 
-          def a_cache_floor_warning_in_any_compile_job_files_or_updates_one_issue():
+          def each_cache_floor_warning_names_the_shape_that_needs_seeding():
               cold = "Compile cache hit rate 40.00% is below the 90% floor in shape tests-coverage: cold snapshot: the restored snapshot k holds too few of this build's objects"
               unseeded = 'Compile cache hit rate 0.00% is below the 90% floor in shape docs: no writer: no snapshot of this job exists while others do'
               floor_step = [('Compile cache hit-rate floor', 1)]
+              shards = [job(f'Test shard ({n}/16)', 12, identifier=100 + n, steps=floor_step) for n in range(1, 17)]
               jobs = [job('Docs', 5, identifier=2, steps=floor_step), job('Build test archive', 12, identifier=1, steps=floor_step),
-                      job('Format and lint', 4, identifier=3, steps=floor_step), job('Caller declaration', 1, identifier=4)]
-              notes = {1: [{'title': 'Runner hardware', 'message': 'runner-band: x'}, {'title': 'Compile cache floor', 'message': cold, 'annotation_level': 'warning'}],
-                       2: [{'title': 'Compile cache floor', 'message': unseeded, 'annotation_level': 'warning'}], 3: [], 4: []}
-              finding = judging['cache_finding'](run_of(7, 39), jobs, lambda item: notes.get(item['id'], []))
-              assert finding['title'] == 'Compile cache below its hit-rate floor' and finding['comment'], finding
-              assert 'Run: https://example.test/runs/7' in finding['body'] and 'Rust CI (merge_group, main)' in finding['body'], finding
-              assert f'- Build test archive: {cold}\n' in finding['body'] and f'- Docs: {unseeded}\n' in finding['body'], finding
-              assert 'Format and lint' not in finding['body'] and 'Caller declaration' not in finding['body'], finding
+                      job('Format and lint', 4, identifier=3, steps=floor_step), job('Caller declaration', 1, identifier=4)] + shards
+              notes = {index: [{'title': 'Compile cache floor', 'message': cold, 'annotation_level': 'warning'}] for index in range(101, 117)}
+              notes |= {1: [{'title': 'Runner hardware', 'message': 'runner-band: x'}, {'title': 'Compile cache floor', 'message': cold, 'annotation_level': 'warning'}],
+                        2: [{'title': 'Compile cache floor', 'message': unseeded, 'annotation_level': 'warning'}], 3: [], 4: []}
+              findings = judging['cache_finding'](run_of(7, 39), jobs, lambda item: notes.get(item['id'], []))
+              # One identity per cache shape: two cold caches are two causes, never one list.
+              assert [finding['title'] for finding in findings] == ['Compile cache below its hit-rate floor: docs',
+                                                                  'Compile cache below its hit-rate floor: tests-coverage'], findings
+              assert 'Run: https://example.test/runs/7' in findings[1]['body'] and 'Rust CI (merge_group, main)' in findings[1]['body'], findings
+              assert f'- Docs: {unseeded}\n' in findings[0]['body'], findings
+              # One cold snapshot is one issue however many jobs judged it: every judging job is evidence in that issue.
+              assert f'- Build test archive: {cold}\n' in findings[1]['body'] and findings[1]['body'].count('- Test shard (') == 16, findings
+              assert 'Format and lint' not in findings[1]['body'] and 'Caller declaration' not in findings[1]['body'], findings
               # Only jobs whose floor step ran are read; none with a quiet floor files anything.
               read = []
-              assert judging['cache_finding'](run_of(7, 39), jobs, lambda item: read.append(item['id']) or []) is None and read == [2, 1, 3], read
-              assert judging['cache_finding'](run_of(7, 39), jobs[3:], lambda item: notes[2]) is None
+              assert judging['cache_finding'](run_of(7, 39), jobs, lambda item: read.append(item['id']) or []) is None and read == [2, 1, 3] + list(range(101, 117)), read
+              assert judging['cache_finding'](run_of(7, 39), jobs[3:4], lambda item: notes[2]) is None
               for event in ('merge_group', 'pull_request'):
                   gh, _ = fake_repository(floor={7: {'Build test archive': cold, 'Docs': unseeded}}, event=event, ratchet={})
                   findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-                  assert [item['title'] for item in findings] == ['Compile cache below its hit-rate floor'], (event, findings)
-                  assert cold in findings[0]['body'] and unseeded in findings[0]['body'], (event, findings)
+                  assert [item['title'] for item in findings] == ['Compile cache below its hit-rate floor: docs',
+                                                                'Compile cache below its hit-rate floor: tests-coverage'], (event, findings)
+                  assert unseeded in findings[0]['body'] and cold in findings[1]['body'], (event, findings)
               gh, _ = fake_repository(event='pull_request', ratchet={})
               assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
 
-          a_cache_floor_warning_in_any_compile_job_files_or_updates_one_issue()
-          print('PASS a_cache_floor_warning_in_any_compile_job_files_or_updates_one_issue')
+          each_cache_floor_warning_names_the_shape_that_needs_seeding()
+          print('PASS each_cache_floor_warning_names_the_shape_that_needs_seeding')
 
           def a_default_branch_run_that_left_snapshots_unsaved_files_an_issue():
               title = 'Escalation: default-branch run did not seed its compile snapshots'
@@ -1617,7 +1765,7 @@ jobs:
               assert judging['snapshot_finding'](run, jobs, entries(3)) is None
               # Entries of earlier runs are not this run's.
               finding = judging['snapshot_finding'](run, jobs, entries(2) + entries(5, 6))
-              assert finding['title'] == title and finding['comment'] and finding['labels'] == ['escalation'], finding
+              assert finding['title'] == title and finding['labels'] == ['escalation'], finding
               assert 'Run: https://example.test/runs/7' in finding['body'], finding
               assert '- 3 jobs reported a saved snapshot but the repository cache holds 2 for this run or a newer one' in finding['body'], finding
               # A newer run's entry for the same job replaces this run's, and the pruning job deletes the older one.
@@ -1662,7 +1810,7 @@ jobs:
                         {'key': 'maestro-compile-v1-d64fd68a-41067106725-1-test-build-0', 'ref': 'refs/heads/main', 'size_in_bytes': 1055336357},
                         {'key': 'maestro-compile-v1-7c366038-41067106725-1-targets-0-e3b0c442', 'ref': 'refs/heads/main', 'size_in_bytes': 250877247}]
               finding = judging['usage_finding'](run, usage, 10, caches)
-              assert finding['title'] == title and finding['comment'], finding
+              assert finding['title'] == title, finding
               body = finding['body']
               assert 'Run: https://example.test/runs/7' in body, body
               assert 'The repository cache holds 10.18 GiB in 22 entries against its 10 GiB limit (101.8%); the threshold is 90%' in body, body
@@ -1738,10 +1886,13 @@ jobs:
               '2026-11-04T19:34:06.7952286Z      Summary [ 305.092s] 1064 tests run: 1064 passed, 16047 skipped', ''])
 
           def slow_marks_are_read_from_nextest_output():
-              assert judging['slow_tests'](SLOW_LOG) == {
+              assert judging['slow_marks'](judging['test_results'](SLOW_LOG)) == {
                   'maestro-tooling::integration browser_author_build::repairs': 60.0,
                   'maestro-wasmtime::integration guide::builds_from_a_clean_folder': 30.0}
-              assert judging['slow_tests']('\x1b[32m        PASS\x1b[0m [   1.2s] crate test\n') == {}
+              # A test that ran without a slow mark is an identity the guard judged and passed, so it can recover an open issue.
+              assert judging['test_results']('\x1b[32m        PASS\x1b[0m [   1.2s] crate test\n') == {'crate test': None}
+              assert judging['test_results']('TRY 1 FAIL [  12.5s] crate retried\nTRY 2 PASS [   0.1s] crate retried\n') == {'crate retried': None}
+              assert judging['test_results']('TRY 2 SLOW [> 30.000s] (─────) crate tried\n') == {'crate tried': 30.0}
 
           slow_marks_are_read_from_nextest_output()
           print('PASS slow_marks_are_read_from_nextest_output')
@@ -1768,7 +1919,7 @@ jobs:
               assert blamed[0]['name'] == 'Test shard (16/16)' and blamed[1:] == (31 * 60, 20 * 60), blamed
               reading = {'phases': [('setup workspace-sources', 79.751)], 'tests': 305.092}
               finding = judging['shard_finding'](run_of(7, 50), blamed, 1.5, grown, reading)
-              assert finding['title'] == 'Test shards unbalanced: run 7', finding
+              assert finding['title'] == 'Test shards unbalanced: Test shard (16/16)', finding
               assert 'Test shard (16/16) took 31.0 min against a median shard of 20.0 min (1.55 times; the margin is 1.5).' in finding['body'], finding
               assert '- `a::slow`: over 60 s now, over 30 s before' in finding['body'], finding
               assert '- `b::new`: over 30 s now, not slow before' in finding['body'], finding
@@ -1937,7 +2088,7 @@ jobs:
               finding = judging['shard_finding'](run_of(7, 50), judging['slowest_shard'](work, 1.5), 1.5,
                                                  judging['grown_tests']({'t::slow': 90.0}, {}),
                                                  {'phases': [], 'tests': None})
-              assert finding and finding['title'] == 'Test shards unbalanced: run 7', finding
+              assert finding and finding['title'] == 'Test shards unbalanced: Test shard (2/2)', finding
               assert 'suite / Test shard (2/2) took 40.0 min against a median shard of 25.0 min' in finding['body'], finding
 
           a_run_behind_one_reusable_caller_prefix_satisfies_every_pinned_check()
@@ -1977,7 +2128,7 @@ jobs:
               run = run_of(7, 30)
               finding = judging['selection_departure'](run, [(7, 51, 51, 'shared input: Cargo.toml')] + narrow)
               assert finding['title'] == 'Escalation: test selection share outside its usual range', finding
-              assert finding['labels'] == ['escalation'] and finding['comment'], finding
+              assert finding['labels'] == ['escalation'], finding
               body = finding['body']
               assert 'Run: https://example.test/runs/7' in body, body
               assert '- This run selected 51/51 test packages (100%), above the usual range of 0% to 12%, full suite because shared input: Cargo.toml' in body, body
@@ -2193,7 +2344,8 @@ jobs:
               prefix = 'maestro-compile-v1-aaa-'
               for rate in (100, 99.67, 90):
                   result = run_cache_floor('tests-coverage', stats_of(610, rate), prefix + '1-tests', [])
-                  assert result.returncode == 0 and f'Compile cache hit rate {rate:.2f}% (floor 90%)' in result.stdout, result.stdout + result.stderr
+                  # A pass names its shape too: it is the identity the guards recover on, and the warning names it on a breach.
+                  assert result.returncode == 0 and f'Compile cache hit rate {rate:.2f}% (floor 90%) in shape tests-coverage' in result.stdout, result.stdout + result.stderr
               cases = [('tests-coverage', 40, prefix + '1-tests', [prefix + '1-tests'], 'cold snapshot'),
                        ('tests-coverage', 0, '', ['maestro-compile-v1-bbb-1-1-tests-0-abc', 'maestro-compile-v1-ccc-1-1-docs-0-abc'], 'key change'),
                        ('tests-coverage', 0, '', ['maestro-compile-v1-ccc-1-1-docs-0-abc'], 'no writer'),
@@ -2215,7 +2367,7 @@ jobs:
                                  ('browser-tests', 'browser-tests'), ('test-prepare', 'test-prepare'), ('targets', 'targets-clippy-aarch64-unknown-linux-gnu')]:
                   seeder = identity_of(job)['seeder']
                   result = run_cache_floor(shape, stats_of(610, 100), prefix + '1-' + job, [], seeder=seeder)
-                  assert result.returncode == 0 and 'Compile cache hit rate 100.00% (floor 90%)' in result.stdout, (shape, result.stdout + result.stderr)
+                  assert result.returncode == 0 and f'Compile cache hit rate 100.00% (floor 90%) in shape {shape}' in result.stdout, (shape, result.stdout + result.stderr)
                   other = f'maestro-compile-v1-bbb-1-1-{job}-0-abc'
                   for listing, cause in [([other], 'key change'), (['maestro-compile-v1-ccc-1-1-other-0-abc'], 'no writer'), ([], 'eviction')]:
                       result = run_cache_floor(shape, stats_of(610, 0), '', listing, seeder=seeder)
