@@ -1067,6 +1067,21 @@ jobs:
             target=(--target "$TARGET")
           fi
           cargo clippy "${packages[@]}" --all-targets --locked "${target[@]}" -- -D warnings
+      - name: Lint wasm crates
+        env:
+          WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+          crates = json.loads(os.environ['WASM_CRATES'])
+          if crates:
+              subprocess.run(['rustup', 'target', 'add', 'wasm32-unknown-unknown'], check=True)
+              # Library targets only, as the wasm build compiles them: tests may depend on native-only crates.
+              packages = [argument for crate in crates for argument in ('-p', crate)]
+              subprocess.run(['cargo', 'clippy', '--locked', '--target', 'wasm32-unknown-unknown', *packages, '--', '-D', 'warnings'], check=True)
+          PYTHON
       - name: Compile cache statistics
         id: cache-statistics
         if: always()
