@@ -1031,7 +1031,7 @@ print('PASS preparation_runs_beside_host_compilation')
 def absent_keeps_base_checks():
     result, values = declaration(root / 'fixtures/sample')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
+    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]'}
     assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
     assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
     assert "inputs.working-directory != '.'" in workflow
@@ -1447,7 +1447,7 @@ def warm_push_seeds_non_test_shapes():
                             'inputs.fuzz-scan': excluded == 'fuzz',
                             'github.repository_id': 'caller', 'inputs.working-directory': '.',
                             'needs.declaration.outputs.coverage': 'true',
-                            'needs.declaration.outputs.wasm_crates': '["web"]', 'needs.declaration.outputs.wasm_examples': '[]',
+                            'needs.declaration.outputs.wasm_crates': '["web"]',
                             'needs.declaration.outputs.browser_build': 'true',
                             'needs.declaration.outputs.browser_tests': 'true'})
                         assert observed == (excluded == 'none' and (not warm or
@@ -3648,7 +3648,6 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 'needs.declaration.outputs.tests_reused': values['tests_reused'],
                 'needs.declaration.outputs.enabled': 'true', 'needs.declaration.outputs.browser_tests': 'true',
                 'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.wasm_crates': '["web"]',
-                'needs.declaration.outputs.wasm_examples': '[]',
                 'needs.declaration.outputs.test_prepare_inputs': '[]', 'needs.declaration.outputs.test_prepare': '"prepare"',
                 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                 'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True}

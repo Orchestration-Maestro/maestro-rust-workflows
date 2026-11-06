@@ -38,11 +38,12 @@ Pull requests run declaration validation, formatting, Clippy, docs,
 dependency/source checks and declared macOS and Windows target checks. Host Clippy
 and these target checks select changed crates and their workspace dependents;
 formatting still checks the whole workspace. Pull requests skip the test archive,
-test setup, test shards, doctests and wasm/browser builds, except that the
-[declared example witnesses](#wasm-example-witnesses) still compile. Every required check
-name still reports; skipped jobs count as success. Merge groups and main pushes
-run every workspace test with the full shard matrix, doctests, coverage and all
-declared builds and foreign-target checks, except that a main push reuses tests
+test setup, test shards, doctests and wasm/browser builds. The declared
+[example witnesses](#wasm-example-witnesses) are the exception: they still
+compile. Every required check name still reports; skipped jobs count as
+success. Merge groups and main pushes run every workspace test with the full
+shard matrix, doctests, coverage and all declared builds and foreign-target
+checks, except that a main push reuses tests
 when its exact commit already passed a completed merge-group run of the same
 shared workflow revision with the full workspace selected. That push skips the
 test shards and coverage. The archive, preparation, Doctests, Wasm and browser
@@ -179,9 +180,10 @@ same concurrency group with its called workflow; see GitHub's
 
 ## Declaration
 
-The `wasm_crates` and `check_targets` arrays are required, including when empty. `browser_build` and
-`test_tools` are optional booleans that default to `false`. `wasm_examples` is an optional
-table of package names to example target names that defaults to `{}`. The
+The `wasm_crates` and `check_targets` arrays are required, including when empty.
+`browser_build` and `test_tools` are optional booleans that default to `false`.
+`wasm_examples` is an optional table that maps package names to example names and
+defaults to `{}`. The
 [schema](../.github/ci.schema.json) describes the parsed TOML shape; there is no
 version key or older-format reader.
 
@@ -204,9 +206,9 @@ member or non-boolean tool/build flag fails declaration validation. An empty
 present document is invalid. Integer and string booleans are not accepted.
 
 Names are exact, without whitespace or Unicode normalization. Each wasm name
-must match a package in the caller's locked Cargo metadata, and each
-`wasm_examples` example must be a target of its package. Each target must
-match the caller compiler's target list and the runner table below. An unknown
+must match a package in the caller's locked Cargo metadata. Each
+`wasm_examples` example must be an example target of its package. Each target
+must match the caller compiler's target list and the runner table below. An unknown
 package, unknown target or recognized target without a runner fails with a
 file/key diagnostic before optional work is emitted. Metadata or compiler
 inspection failures also fail validation. Wasm and target array order and repetitions are
@@ -987,8 +989,9 @@ not enable tools in other jobs. With `browser_build = true`, the workflow runs
 `mise exec -- just browser-build` after successful wasm builds, including when
 the wasm array is empty. Both wasm builds and the browser recipe run on every
 merge group and main push. Pull requests, advisory scans, fuzz scans and warm
-calls outside a default-branch push skip them, apart from the example
-witnesses below. A failed wasm build prevents the recipe. False or omitted `browser_build` skips the recipe and its
+calls outside a default-branch push skip them, except for the
+[example witnesses](#wasm-example-witnesses). A failed wasm build prevents
+the recipe. False or omitted `browser_build` skips the recipe and its
 `just`-pin validation, even when tools are enabled for wasm compilation.
 
 Provide a `mise.toml` pinning the recipe's tools, including `just`, and a
@@ -1004,36 +1007,40 @@ not proof of browser runtime behavior.
 
 ## Wasm example witnesses
 
-`wasm_examples` is an optional table that maps exact locked package names to
-arrays of exact example target names. It defaults to `{}`. Use it for an example
-whose body compiles only for `wasm32-unknown-unknown`: native Clippy never builds
-that body, so only a wasm check can see it break.
+Quick start: declare the examples whose body compiles only for
+`wasm32-unknown-unknown`. Native Clippy never builds that body, so only a wasm
+check sees it break.
 
 ```toml
 wasm_crates = ["my-browser-library"]
 wasm_examples = { "my-browser-library" = ["browser_check", "import_check"] }
 ```
 
-The Wasm and browser build job runs this command for every pair, in declaration
-order (packages as written, then each package's examples), after the
-`wasm_crates` builds:
+`wasm_examples` is an optional table that maps exact locked package names to
+arrays of exact example names. It defaults to `{}`.
+
+The Wasm and browser build job runs this command for every pair, after the
+`wasm_crates` builds, in declaration order (packages as written, then each
+package's examples):
 
 ```bash
 cargo check --locked --target wasm32-unknown-unknown -p "$CRATE" --example "$EXAMPLE"
 ```
 
-Before each compile the log prints `wasm example <package>::<example>`. The job
-stops at the first failure, so the last line names the witness that broke.
-Declaring examples installs the wasm target even when `wasm_crates` is empty.
+Each compile starts with the log line `wasm example <package>::<example>`. The
+job stops at the first failure; the last `wasm example` line names the witness
+that broke. Declaring examples installs the wasm target even when `wasm_crates`
+is empty.
 
-Unlike the wasm crate builds, witnesses compile on pull requests, so a broken
-one fails the pull request that breaks it. That run does only the witness
-compile: the crate builds, documentation, caller tools for `browser_build` and
-the browser recipe stay on merge groups and main pushes. `test_tools = true`
-still installs the caller's tools first. A package that is not in the locked
-Cargo metadata, or an example that package does not declare, fails declaration
-validation with the file and key. Repetitions are kept, and declaration text is
-never run as shell syntax.
+Witnesses compile on pull requests, so a broken one fails the pull request that
+breaks it. That run does only the witness compile. The crate builds,
+documentation, `browser_build` tools and the browser recipe stay on merge groups
+and main pushes. `test_tools = true` still installs the caller's tools first.
+
+Declaration validation fails with the file and key when a package is not in the
+locked Cargo metadata or an example is not a target of its package. Repetitions
+are kept. Declaration text reaches cargo as arguments and never runs as shell
+syntax.
 
 ## Chromium browser tests
 
