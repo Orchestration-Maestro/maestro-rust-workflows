@@ -1357,55 +1357,15 @@ jobs:
           a_recovery_comments_once_on_its_open_issue_and_never_closes()
           print('PASS a_recovery_comments_once_on_its_open_issue_and_never_closes')
 
-          def judge_recovers_every_identity_it_judged_and_passed():
-              # One passing test in a shard log, so a slow-test identity is judged and passed by the same run.
-              passed_log = '2026-10-30T02:53:23.4168865Z         PASS [   1.2s] crate one\n     Summary [10.0s] 1 test run: 1 passed\n'
-              open_issues = ['CI run slower than its baseline: Test jobs on unknown', 'Compile cache below its hit-rate floor: docs',
-                             'Test shards unbalanced: Test shard (3/16)', 'Test over 30 seconds: crate one']
-              gh, _ = fake_repository(ratchet={}, floor={7: {'Docs': None}}, shard_logs={(7, 3): passed_log}, open_issues=open_issues)
-              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-              assert [finding['title'] for finding in findings] == open_issues, findings
-              for finding in findings:
-                  assert finding['recovery'] and 'passed this guard' in finding['body'], finding
-                  assert 'Run: https://example.test/runs/7' in finding['body'] and 'never closes one itself' in finding['body'], finding
-              # The pass reports what the run judged, not the limit it did not cross.
-              assert '16.50 s per test run against a baseline of 16.50 s, inside the 10% limit' in findings[0]['body'], findings
-              assert 'its compile cache hit rate stayed over the floor' in findings[1]['body'], findings
-              # The identity that breached is never also recovered: the run says it is still broken.
-              gh, _ = fake_repository(ratchet={}, open_issues=open_issues, pace={7: (1.11, 100)})
-              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-              assert [finding['title'] for finding in findings if not finding.get('recovery')] == [open_issues[0]], findings
-              assert [finding['title'] for finding in findings if finding.get('recovery')] == ['Test shards unbalanced: Test shard (3/16)'], findings
-              # A pass with no open issue says nothing at all.
-              gh, _ = fake_repository(ratchet={})
-              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
-              # Two shards over the margin are one imbalance and one silence: the shard that is not blamed has not recovered.
-              over = [26] * 14 + [45, 50]
-              gh, _ = fake_repository(ratchet={}, shard_minutes=over,
-                                      open_issues=['Test shards unbalanced: Test shard (15/16)', 'Test shards unbalanced: Test shard (16/16)'])
-              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
-              assert [finding['title'] for finding in findings] == ['Test shards unbalanced: Test shard (16/16)'], findings
-              gh, _ = fake_repository(ratchet={}, shard_minutes=over, open_issues=['Test shards unbalanced: Test shard (1/16)'])
-              assert [finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS)
-                      if finding.get('recovery')] == ['Test shards unbalanced: Test shard (1/16)']
-              # And the recovery is a comment: nothing is filed and nothing is closed.
-              gh, created = fake_repository(ratchet={}, open_issues=open_issues)
-              judging['file_issues'](judging['judge']('7', 'owner/repo', gh, SETTINGS), 'owner/repo', gh)
-              assert created == [] and len(gh.comments) == 2, (created, gh.comments)
-              assert not [call for call in gh.comments if call[0] not in ('50', '52')], gh.comments
-
-          judge_recovers_every_identity_it_judged_and_passed()
-          print('PASS judge_recovers_every_identity_it_judged_and_passed')
-
           def fake_repository(minutes=30, bands=None, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group',
                                   ratchet=None, floor=None, newer=0, pace=None, build=None, steps=None, extra_jobs=None,
-                                  seeding=None, conclusion='success', cancelled=(), usage_gb=3.0, open_issues=(), comment_history=None):
+                                  seeding=None, conclusion='success', cancelled=(), usage_gb=3.0, open_issues=()):
               """Serves the REST calls judge makes for run 7, its earlier runs and the stored ratchet; `newer` runs finish after run 7.
 
               `pace` maps a run to (shard duration factor, test runs per shard) and `build` to (build duration factor, compile units, cache hit rate);
               `steps` maps (run, job name) to its (step, seconds) pairs; `extra_jobs` maps a run to the names of jobs it ran besides the usual ones;
               `floor` maps a run to the cache-floor warning of each named job (every run then ran the floor step in those jobs, and a job whose value is
-              None passed it in the shape `SHAPES` gives it); `comment_history` maps an issue number to the bodies of its comments;
+              None passed it in the shape `SHAPES` gives it);
               `seeding` is (the jobs that save a snapshot, the cache entries run 7 left): every run then reports those saves and leaves one entry
               per saving job, except run 7; `conclusion` and `cancelled` set how run 7 and which of its jobs ended; `usage_gb` is the repository cache in use;
               `open_issues` are the titles of the repository's open issues. Runs after run 7 are five times slower per unit."""
@@ -1511,7 +1471,7 @@ jobs:
                   if argv[:2] == ('issue', 'list'):
                       return json.dumps([{'number': 50 + index, 'title': title} for index, title in enumerate(open_issues)])
                   if argv[:2] == ('issue', 'view'):
-                      return json.dumps({'comments': [{'body': body} for body in (comment_history or {}).get(argv[2], [])]})
+                      return json.dumps({'comments': []})
                   if argv[:2] == ('issue', 'create'):
                       created.append((argv[argv.index('--title') + 1], body))
                       return ''
@@ -1543,6 +1503,46 @@ jobs:
 
           # With the default shards a run spends 16.5 s per test run (440 shard minutes over 16 shards of 100 tests) and 0.5 s per compile unit.
           TESTS_RATE, COMPILES_RATE = 16.5, 0.5
+
+          def judge_recovers_every_identity_it_judged_and_passed():
+              # One passing test in a shard log, so a slow-test identity is judged and passed by the same run.
+              passed_log = '2026-10-30T02:53:23.4168865Z         PASS [   1.2s] crate one\n     Summary [10.0s] 1 test run: 1 passed\n'
+              open_issues = ['CI run slower than its baseline: Test jobs on unknown', 'Compile cache below its hit-rate floor: docs',
+                             'Test shards unbalanced: Test shard (3/16)', 'Test over 30 seconds: crate one']
+              gh, _ = fake_repository(ratchet={}, floor={7: {'Docs': None}}, shard_logs={(7, 3): passed_log}, open_issues=open_issues)
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings] == open_issues, findings
+              for finding in findings:
+                  assert finding['recovery'] and 'passed this guard' in finding['body'], finding
+                  assert 'Run: https://example.test/runs/7' in finding['body'] and 'never closes one itself' in finding['body'], finding
+              # The pass reports what the run judged, not the limit it did not cross.
+              assert '16.50 s per test run against a baseline of 16.50 s, inside the 10% limit' in findings[0]['body'], findings
+              assert 'its compile cache hit rate stayed over the floor' in findings[1]['body'], findings
+              # The identity that breached is never also recovered: the run says it is still broken.
+              gh, _ = fake_repository(ratchet={}, open_issues=open_issues, pace={7: (1.11, 100)})
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings if not finding.get('recovery')] == [open_issues[0]], findings
+              assert [finding['title'] for finding in findings if finding.get('recovery')] == ['Test shards unbalanced: Test shard (3/16)'], findings
+              # A pass with no open issue says nothing at all.
+              gh, _ = fake_repository(ratchet={})
+              assert judging['judge']('7', 'owner/repo', gh, SETTINGS) == []
+              # Two shards over the margin are one imbalance and one silence: the shard that is not blamed has not recovered.
+              over = [26] * 14 + [45, 50]
+              gh, _ = fake_repository(ratchet={}, shard_minutes=over,
+                                      open_issues=['Test shards unbalanced: Test shard (15/16)', 'Test shards unbalanced: Test shard (16/16)'])
+              findings = judging['judge']('7', 'owner/repo', gh, SETTINGS)
+              assert [finding['title'] for finding in findings] == ['Test shards unbalanced: Test shard (16/16)'], findings
+              gh, _ = fake_repository(ratchet={}, shard_minutes=over, open_issues=['Test shards unbalanced: Test shard (1/16)'])
+              assert [finding['title'] for finding in judging['judge']('7', 'owner/repo', gh, SETTINGS)
+                      if finding.get('recovery')] == ['Test shards unbalanced: Test shard (1/16)']
+              # And the recovery is a comment: nothing is filed and nothing is closed.
+              gh, created = fake_repository(ratchet={}, open_issues=open_issues)
+              judging['file_issues'](judging['judge']('7', 'owner/repo', gh, SETTINGS), 'owner/repo', gh)
+              assert created == [] and len(gh.comments) == 2, (created, gh.comments)
+              assert not [call for call in gh.comments if call[0] not in ('50', '52')], gh.comments
+
+          judge_recovers_every_identity_it_judged_and_passed()
+          print('PASS judge_recovers_every_identity_it_judged_and_passed')
 
           def judge_stays_quiet_on_a_healthy_run_and_reports_a_rate_breach():
               ratchet = {}

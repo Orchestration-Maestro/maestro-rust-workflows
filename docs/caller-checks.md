@@ -1681,7 +1681,7 @@ the cause is the shard's composition or its setups.
 
 Nextest flags a test slow after `slow-test-seconds` (30), and the caller's
 `slow-timeout` period should match. A merge-group or main run files one issue
-for every test it flagged, `Test over 30 seconds: <test>`, with no cap on how many one
+for every test it flagged, `Test over 30 seconds: <binary> <test>`, with no cap on how many one
 run files; an open issue for the test is never filed twice, and the next run
 that flags it comments its numbers there. A run that reports the test again
 without a slow mark comments the recovery on that issue once, and later passing
