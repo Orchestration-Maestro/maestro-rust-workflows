@@ -1289,6 +1289,23 @@ def archive_build_runs_on_native_host_shells():
 archive_build_runs_on_native_host_shells()
 print('PASS archive_build_runs_on_native_host_shells')
 
+def windows_compile_jobs_start_cold_builds_unscanned_and_unincremental():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    # The jobs that compile on Windows with no compile cache: the preparation, the archive build and the doctest compilation.
+    for job in ['test-build', 'test-prepare', 'tests', 'doctests']:
+        steps = document['jobs'][job]['steps']
+        names = [step.get('name') for step in steps]
+        step = steps[names.index('Windows build settings')]
+        assert step['if'] == "runner.os == 'Windows'" and step['shell'] == 'pwsh', (job, step)
+        # Before the checkout and the toolchain install write the first build tree.
+        assert names.index('Windows build settings') < names.index('Checkout'), (job, names)
+        for tree in ['$env:GITHUB_WORKSPACE', '$env:RUNNER_TEMP', '$HOME\\.cargo', '$HOME\\.rustup']:
+            assert f'Add-MpPreference -ExclusionPath' in step['run'] and tree in step['run'], (job, tree)
+        assert "CARGO_INCREMENTAL=0" in step['run'] and '$env:GITHUB_ENV' in step['run'], job
+
+windows_compile_jobs_start_cold_builds_unscanned_and_unincremental()
+print('PASS windows_compile_jobs_start_cold_builds_unscanned_and_unincremental')
+
 def selected_archive_build_compiles_only_selected_packages():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)

@@ -1323,6 +1323,13 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
         run: *runner-hardware
+      - name: Windows build settings
+        if: runner.os == 'Windows'
+        shell: pwsh
+        # Cold Windows builds are CPU- and file-bound: real-time scanning of the build trees and incremental state, which no later run reuses, add to the time.
+        run: &windows-build-settings |
+          foreach ($path in $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, "$HOME\.cargo", "$HOME\.rustup") { Add-MpPreference -ExclusionPath $path }
+          Add-Content -Path $env:GITHUB_ENV -Value 'CARGO_INCREMENTAL=0'
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1671,6 +1678,10 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
         run: *runner-hardware
+      - name: Windows build settings
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: *windows-build-settings
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2104,6 +2115,10 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
         run: *runner-hardware
+      - name: Windows build settings
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: *windows-build-settings
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
