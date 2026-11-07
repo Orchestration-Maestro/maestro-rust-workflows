@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.19.22](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.21...v0.19.22) (2026-11-07)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot to v0.19.21 ([#406](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/406)) ([3521201](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/352120197dc8c99f422c9df938d7fce81bbd4bca))
+* fail a shard whose tests leave files in the checkout ([#405](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/405)) ([3222654](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/3222654c1ef40c197fbf39c9fe8852ebdb9ba45f))
+* move main scan pins to v0.19.21 ([#403](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/403)) ([cf0b7ca](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/cf0b7ca45d08a39b9aac8504601c92698b1f8784))
+* run claimed native test hosts in the existing shards ([#292](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/292)) ([1160ae4](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/1160ae4fcf189b3a6bd12e7963d21287392c01ea))
+
 ## [0.19.21](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.20...v0.19.21) (2026-11-07)
 
 
