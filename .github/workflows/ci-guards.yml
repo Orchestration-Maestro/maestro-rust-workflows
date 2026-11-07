@@ -20,7 +20,7 @@ on:
         type: number
         default: 1.5
       slow-test-seconds:
-        description: Seconds after which nextest flags a test slow; each such test on main gets one issue
+        description: Seconds after which nextest flags a test slow; main's slow tests are listed in one issue
         type: number
         default: 30
       hang-limit-seconds:
@@ -229,7 +229,8 @@ jobs:
           PASSED = 'passed this guard'
 
           def identity(kind, subject):
-              """The name of one subject of a kind, `kind: subject`, or the kind alone for a finding without subjects; the kind alone titles the issue."""
+              """The name of one subject of a kind, `kind: subject`, or the kind alone for a finding without subjects;
+              the kind alone titles the issue, and an escalation's kind is built from what departed from the pattern."""
               return kind if subject is None else f'{kind}: {subject}'
 
           def finding(kind, subject, run, body, labels=()):
