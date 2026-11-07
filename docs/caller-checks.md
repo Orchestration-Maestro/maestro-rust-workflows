@@ -16,10 +16,10 @@ parent as its PR base. The warmer is non-required, and consumers still run if it
 fails. See [Compile cache](../README.md#compile-cache) for snapshot shapes,
 fail-open transfers and storage limits.
 Advance all proof checkout references together after checking locked dependencies.
-The proof uses `17ec1067bf368ad45329450ac312d2b1df892b34`, the Maestro main
+The proof uses `3a00afdf75f2eb40b8f3ccbb7d0719f18c74a4c2`, the Maestro main
 revision that qualifies the current release, and it still includes the native
 residency-helper compilation repair. Its first parent,
-`a86dcd638d35dba0a43dd1554c4ffedd4195e64c`, supplies the warm build and
+`0366b2a26decff83b65cc2a303b4d0071a0c352d`, supplies the warm build and
 selected-package base.
 The coverage proof runs only on pushes to `ci/228-merge-proof`, not on pull requests.
 Check its results before landing.
@@ -35,22 +35,23 @@ test_tools = false
 ## Test policy and caller permissions
 
 Pull requests run declaration validation, formatting, Clippy, docs,
-dependency/source checks and declared macOS and Windows target checks. Host Clippy
-and these target checks select changed crates and their workspace dependents;
-formatting still checks the whole workspace. Pull requests skip the test archive,
-test setup, test shards, doctests and wasm/browser builds. Every required check
-name still reports; skipped jobs count as success. Merge groups and main pushes
-run every workspace test with the full shard matrix, doctests, coverage and all
-declared builds and foreign-target checks, except that a main push reuses tests
-when its exact commit already passed a completed merge-group run of the same
-shared workflow revision with the full workspace selected. That push skips the
-test shards and coverage. The archive, preparation, Doctests, Wasm and browser
-build and Chromium browser tests jobs still run and save their compiled-cache
-snapshots for the next merge group, so doctests and browser tests run a second
-time on that commit. The archive keeps the same instrumentation and cache shape
-as that group.
-Formatting, lint, docs, dependency/source checks and target checks still run.
-No caller setting changes this policy.
+dependency/source checks and declared macOS and Windows target checks. Host
+Clippy and these target checks select changed crates and their workspace
+dependents; formatting still checks the whole workspace. Pull requests skip the
+test archive, test setup, test shards, doctests and wasm/browser builds. The
+declared [example witnesses](#wasm-example-witnesses) are the exception: they
+still compile. Every required check name still reports; skipped jobs count as
+success. Merge groups and main pushes run every workspace test with the full
+shard matrix, doctests, coverage and all declared builds and foreign-target
+checks, except that a main push reuses tests when its exact commit already
+passed a completed merge-group run of the same shared workflow revision with the
+full workspace selected. That push skips the test shards and coverage. The
+archive, preparation, Doctests, Wasm and browser build and Chromium browser
+tests jobs still run and save their compiled-cache snapshots for the next merge
+group, so doctests and browser tests run a second time on that commit. The
+archive keeps the same instrumentation and cache shape as that group.
+Formatting, lint, docs, dependency/source checks and target checks still run. No
+caller setting changes this policy.
 
 Every merge-group declaration uploads a small identity artifact: the shared
 workflow's full repository path, exact revision and whether it declared the full
@@ -178,10 +179,11 @@ same concurrency group with its called workflow; see GitHub's
 
 ## Declaration
 
-The `wasm_crates` and `check_targets` arrays are required, including when empty. `browser_build` and
-`test_tools` are optional booleans that default to `false`. The
-[schema](../.github/ci.schema.json) describes the parsed TOML shape; there is no
-version key or older-format reader.
+The `wasm_crates` and `check_targets` arrays are required, including when empty.
+`browser_build` and `test_tools` are optional booleans that default to `false`.
+`wasm_examples` is an optional table that maps package names to example names
+and defaults to `{}`. The [schema](../.github/ci.schema.json) describes the
+parsed TOML shape; there is no version key or older-format reader.
 
 `reserved_ports` is an optional array of unique integers from 1 to 65535. When
 set, every Linux test job runs
@@ -202,11 +204,12 @@ member or non-boolean tool/build flag fails declaration validation. An empty
 present document is invalid. Integer and string booleans are not accepted.
 
 Names are exact, without whitespace or Unicode normalization. Each wasm name
-must match a package in the caller's locked Cargo metadata. Each target must
-match the caller compiler's target list and the runner table below. An unknown
-package, unknown target or recognized target without a runner fails with a
-file/key diagnostic before optional work is emitted. Metadata or compiler
-inspection failures also fail validation. Wasm and target array order and repetitions are
+must match a package in the caller's locked Cargo metadata. Each `wasm_examples`
+example must be an example target of its package. Each target must match the
+caller compiler's target list and the runner table below. An unknown package,
+unknown target or recognized target without a runner fails with a file/key
+diagnostic before optional work is emitted. Metadata or compiler inspection
+failures also fail validation. Wasm and target array order and repetitions are
 retained; declaration text is never executed as shell syntax.
 
 macOS target checks use the runner's built-in Bash. Callers do not need to
@@ -682,8 +685,10 @@ Root manifest and lockfile changes still follow the rules below.
 
 Host Clippy and declared macOS and Windows target checks lint the selected packages
 with `--all-targets`. Merge groups and main pushes lint the whole workspace.
-An empty PR selection performs no Clippy compilation; the named checks still
-report success. An absent base selects every package for lint. Pull requests
+An empty PR selection performs no host or target Clippy compilation; the named
+checks still report success. An absent base selects every package for lint.
+Wasm Clippy ignores the selection and lints every `wasm_crates` package on every
+run; see [Wasm and browser builds](#wasm-and-browser-builds). Pull requests
 skip the test archive, preparation, test shards, doctests and wasm/browser
 builds regardless of package selection.
 
@@ -985,7 +990,21 @@ keeps its Docs job as fast as before.
 
 ## Wasm and browser builds
 
-On merge groups and main pushes, Linux runs this command for
+Every call that runs Format and lint, pull requests included, lints the listed
+packages for the wasm target with warnings denied, in one Clippy run with a `-p`
+for each package:
+
+```bash
+cargo clippy --locked --target wasm32-unknown-unknown -p "$FIRST" -p "$SECOND" -- -D warnings
+```
+
+Host Clippy never compiles code that only a WebAssembly build sees. A lint
+finding or a compile error in a wasm-only body fails Format and lint before the
+change merges. The run checks library targets only, as the wasm build does,
+because test targets may depend on native-only crates. It lints every listed
+package whatever the pull request changed; an empty list compiles nothing.
+
+On merge groups and main pushes, Linux also runs this command for
 each listed package:
 
 ```bash
@@ -1010,7 +1029,8 @@ not enable tools in other jobs. With `browser_build = true`, the workflow runs
 `mise exec -- just browser-build` after successful wasm builds, including when
 the wasm array is empty. Both wasm builds and the browser recipe run on every
 merge group and main push. Pull requests, advisory scans, fuzz scans and warm
-calls outside a default-branch push skip them. A failed wasm build prevents
+calls outside a default-branch push skip them, except for the
+[example witnesses](#wasm-example-witnesses). A failed wasm build prevents
 the recipe. False or omitted `browser_build` skips the recipe and its
 `just`-pin validation, even when tools are enabled for wasm compilation.
 
@@ -1024,6 +1044,43 @@ not override the caller's tool versions; the self-test uses just 1.58.0.
 The caller owns the browser application, entry, temporary bundles and
 application-specific diagnostics. A wasm build or recipe invocation alone is
 not proof of browser runtime behavior.
+
+## Wasm example witnesses
+
+Quick start: declare the examples whose body compiles only for
+`wasm32-unknown-unknown`. Native Clippy never builds that body, so only a wasm
+check sees it break.
+
+```toml
+wasm_crates = ["my-browser-library"]
+wasm_examples = { "my-browser-library" = ["browser_check", "import_check"] }
+```
+
+`wasm_examples` is an optional table that maps exact locked package names to
+arrays of exact example names. It defaults to `{}`.
+
+The Wasm and browser build job runs this command for every pair, after the
+`wasm_crates` builds, in declaration order (packages as written, then each
+package's examples):
+
+```bash
+cargo check --locked --target wasm32-unknown-unknown -p "$CRATE" --example "$EXAMPLE"
+```
+
+Each compile starts with the log line `wasm example <package>::<example>`. The
+job stops at the first failure; the last `wasm example` line names the witness
+that broke. Declaring examples installs the wasm target even when `wasm_crates`
+is empty.
+
+Witnesses compile on pull requests, so a broken one fails the pull request that
+breaks it. That run does only the witness compile. The crate builds,
+documentation, `browser_build` tools and the browser recipe stay on merge groups
+and main pushes. `test_tools = true` still installs the caller's tools first.
+
+Declaration validation fails with the file and key when a package is not in the
+locked Cargo metadata or an example is not a target of its package. Repetitions
+are kept. Declaration text reaches cargo as arguments and never runs as shell
+syntax.
 
 ## Chromium browser tests
 
@@ -1777,9 +1834,11 @@ Pull requests require `Caller declaration`, `Format and lint`, `Docs`,
 `Check (aarch64-apple-darwin)`, `Check (x86_64-apple-darwin)` and
 `Check (x86_64-pc-windows-msvc)`. A failed target check fails the workflow.
 Undeclared targets do not create required results. Pull requests keep the test
-and build job names but skip their work. The required-checks guard enforces
-execution only on merge groups and main pushes, so intentional PR skips do not
-file missing-check findings.
+and build job names but skip their work, except that `Wasm and browser build`
+compiles the declared [example witnesses](#wasm-example-witnesses) and reports
+its required name. The required-checks guard enforces execution only on merge
+groups and main pushes, so intentional PR skips do not file missing-check
+findings.
 
 ### Escalations
 

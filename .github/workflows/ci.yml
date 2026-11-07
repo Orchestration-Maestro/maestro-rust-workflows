@@ -128,6 +128,7 @@ jobs:
       test_shard_count: ${{ steps.config.outputs.test_shard_count }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
+      wasm_examples: ${{ steps.config.outputs.wasm_examples }}
       targets: ${{ steps.config.outputs.targets }}
       browser_test_crates: ${{ steps.config.outputs.browser_test_crates }}
       browser_tests: ${{ steps.selection.outputs.browser_tests }}
@@ -196,17 +197,20 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', wasm_examples='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'wasm_examples', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   replacement = '; test_prepare_setups replaces test_prepare_packages' if 'test_prepare_packages' in unknown else ''
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}' + replacement)
               for key in ('wasm_crates', 'check_targets'):
                   if key not in config or not isinstance(config[key], list) or any(type(item) is not str for item in config[key]):
                       raise SystemExit(f'{path}: {key} must be an array of strings')
+              witnesses = config.get('wasm_examples', {})
+              if not isinstance(witnesses, dict) or any(not isinstance(names, list) or any(type(name) is not str for name in names) for names in witnesses.values()):
+                  raise SystemExit(f'{path}: wasm_examples must map package names to arrays of strings')
               browser_tests = config.get('browser_test_crates', [])
               if not isinstance(browser_tests, list) or any(type(item) is not str for item in browser_tests):
                   raise SystemExit(f'{path}: browser_test_crates must be an array of strings')
@@ -335,6 +339,7 @@ jobs:
                   metadata = json.loads(subprocess.check_output(
                       ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))
                   packages = {package['name'] for package in metadata['packages']}
+                  examples = {package['name']: {target['name'] for target in package['targets'] if 'example' in target['kind']} for package in metadata['packages']}
                   supported = set(subprocess.check_output(['rustc', '--print', 'target-list'], text=True).splitlines())
               except (subprocess.CalledProcessError, OSError, ValueError) as error:
                   raise SystemExit(f'{path}: caller metadata/toolchain failed') from error
@@ -347,6 +352,12 @@ jobs:
               for crate in config['wasm_crates']:
                   if crate not in packages:
                       raise SystemExit(f'{path}: wasm_crates contains unknown package {crate!r}')
+              for crate, names in witnesses.items():
+                  if crate not in packages:
+                      raise SystemExit(f'{path}: wasm_examples contains unknown package {crate!r}')
+                  for name in names:
+                      if name not in examples[crate]:
+                          raise SystemExit(f'{path}: wasm_examples[{json.dumps(crate)}] contains unknown example {name!r}')
               for crate in browser_tests:
                   if crate not in packages:
                       raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
@@ -490,6 +501,7 @@ jobs:
                       targets.append(dict(target=target, runner=runners[target]))
               values.update(targets=json.dumps(targets))
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
+                            wasm_examples=json.dumps([[crate, name] for crate, names in witnesses.items() for name in names]),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
@@ -1067,6 +1079,21 @@ jobs:
             target=(--target "$TARGET")
           fi
           cargo clippy "${packages[@]}" --all-targets --locked "${target[@]}" -- -D warnings
+      - name: Lint wasm crates
+        env:
+          WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+          crates = json.loads(os.environ['WASM_CRATES'])
+          if crates:
+              subprocess.run(['rustup', 'target', 'add', 'wasm32-unknown-unknown'], check=True)
+              # Library targets only, as the wasm build compiles them: tests may depend on native-only crates.
+              packages = [argument for crate in crates for argument in ('-p', crate)]
+              subprocess.run(['cargo', 'clippy', '--locked', '--target', 'wasm32-unknown-unknown', *packages, '--', '-D', 'warnings'], check=True)
+          PYTHON
       - name: Compile cache statistics
         id: cache-statistics
         if: always()
@@ -3020,7 +3047,8 @@ jobs:
     name: Wasm and browser build
     needs: declaration
     # A push that reuses merge-queue tests still builds, to seed this shape's snapshot.
-    if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    # A pull request runs the job only for declared example witnesses; the other steps skip.
+    if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.wasm_examples != '[]') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -3054,7 +3082,7 @@ jobs:
         timeout-minutes: 10
         run: *sccache-install
       - name: Browser tool pin
-        if: needs.declaration.outputs.browser_build == 'true'
+        if: needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
         run: &browser-tool-pin |
           test -f mise.toml
           python3 - <<'PYTHON'
@@ -3066,13 +3094,14 @@ jobs:
           PYTHON
       - name: Browser mise bootstrap
         timeout-minutes: 10
-        if: needs.declaration.outputs.test_tools == 'true' || needs.declaration.outputs.browser_build == 'true'
+        if: needs.declaration.outputs.test_tools == 'true' || (needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true'))
         run: *mise-bootstrap
       - name: Browser tools
         timeout-minutes: 10
-        if: needs.declaration.outputs.test_tools == 'true' || needs.declaration.outputs.browser_build == 'true'
+        if: needs.declaration.outputs.test_tools == 'true' || (needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true'))
         run: *caller-tools
       - name: Build wasm crates
+        if: &browser-sweep (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
         env:
           WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}
         run: |
@@ -3086,7 +3115,23 @@ jobs:
           for crate in crates:
               subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
           PYTHON
+      - name: Build wasm examples
+        env:
+          WASM_EXAMPLES: ${{ needs.declaration.outputs.wasm_examples }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+          witnesses = json.loads(os.environ['WASM_EXAMPLES'])
+          if witnesses:
+              subprocess.run(['rustup', 'target', 'add', 'wasm32-unknown-unknown'], check=True)
+          for crate, example in witnesses:
+              print(f'wasm example {crate}::{example}', flush=True)
+              subprocess.run(['cargo', 'check', '--locked', '--target', 'wasm32-unknown-unknown', '-p', crate, '--example', example], check=True)
+          PYTHON
       - name: Document wasm crates
+        if: *browser-sweep
         env:
           WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}
           RUSTDOCFLAGS: -D warnings -D missing_docs
@@ -3102,7 +3147,7 @@ jobs:
               subprocess.run(['cargo', 'doc', '--locked', '--no-deps', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
           PYTHON
       - name: Browser recipe
-        if: needs.declaration.outputs.browser_build == 'true'
+        if: needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
         run: |
           mise exec -- just browser-build
       - name: Compile cache statistics

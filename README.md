@@ -14,8 +14,10 @@ be documented, and documentation warnings fail the check. Pull requests build
 the default features. Merge groups and main pushes also build every feature in
 the Docs job, so an item behind a non-default feature is documented before it
 merges, and the Wasm and browser build job documents each declared wasm crate
-for its own target with the same flags. Tests run on Linux for now; macOS and
-Windows return before the first release.
+for its own target with the same flags. Lint also runs Clippy for
+`wasm32-unknown-unknown` on every declared wasm crate, on pull requests too, so
+code that only a WebAssembly build compiles is linted before it merges. Tests
+run on Linux for now; macOS and Windows return before the first release.
 A new push to a pull request cancels that pull request's older run.
 
 After declaration validation, pull requests run formatting, Clippy, docs,
@@ -26,7 +28,9 @@ build or manifest inputs keeps their owning crate selected too. Included externa
 docs and fixtures route only to readers. See
 [package ownership](docs/caller-checks.md#pull-request-selection-and-retries)
 for root-package boundaries. Pull requests skip the test archive, test setup,
-test shards, doctests and wasm/browser builds. Their job names remain present;
+test shards, doctests and wasm/browser builds. The declared
+[wasm example witnesses](docs/caller-checks.md#wasm-example-witnesses) are the
+exception: they compile on every pull request. Their job names remain present;
 skipped jobs count as successful required checks. Merge groups and main pushes
 run the full shard matrix, coverage, doctests, wasm/browser builds and every
 declared foreign-target check. A main push skips the test legs when its exact
