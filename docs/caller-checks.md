@@ -656,8 +656,10 @@ Root manifest and lockfile changes still follow the rules below.
 
 Host Clippy and declared macOS and Windows target checks lint the selected packages
 with `--all-targets`. Merge groups and main pushes lint the whole workspace.
-An empty PR selection performs no Clippy compilation; the named checks still
-report success. An absent base selects every package for lint. Pull requests
+An empty PR selection performs no host or target Clippy compilation; the named
+checks still report success. An absent base selects every package for lint.
+Wasm Clippy ignores the selection and lints every `wasm_crates` package on every
+run; see [Wasm and browser builds](#wasm-and-browser-builds). Pull requests
 skip the test archive, preparation, test shards, doctests and wasm/browser
 builds regardless of package selection.
 
@@ -959,7 +961,21 @@ keeps its Docs job as fast as before.
 
 ## Wasm and browser builds
 
-On merge groups and main pushes, Linux runs this command for
+Every call that runs Format and lint, pull requests included, lints the listed
+packages for the wasm target with warnings denied, in one Clippy run with a `-p`
+for each package:
+
+```bash
+cargo clippy --locked --target wasm32-unknown-unknown -p "$FIRST" -p "$SECOND" -- -D warnings
+```
+
+Host Clippy never compiles code that only a WebAssembly build sees. A lint
+finding or a compile error in a wasm-only body fails Format and lint before the
+change merges. The run checks library targets only, as the wasm build does,
+because test targets may depend on native-only crates. It lints every listed
+package whatever the pull request changed; an empty list compiles nothing.
+
+On merge groups and main pushes, Linux also runs this command for
 each listed package:
 
 ```bash

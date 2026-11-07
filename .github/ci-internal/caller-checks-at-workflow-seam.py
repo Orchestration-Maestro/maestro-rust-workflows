@@ -4576,6 +4576,45 @@ def wasm_rustdoc_denies_missing_docs():
 wasm_rustdoc_denies_missing_docs()
 print('PASS wasm_rustdoc_denies_missing_docs', flush=True)
 
+def wasm_clippy_denies_warnings():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = document['jobs']['quality']['steps']
+    names = [step.get('name') for step in steps]
+    assert 'Lint wasm crates' in names, 'no pull request or merge group runs Clippy for the wasm target'
+    lint_step = next(step for step in steps if step.get('name') == 'Lint wasm crates')
+    assert lint_step['env']['WASM_CRATES'] == '${{ needs.declaration.outputs.wasm_crates }}', \
+        'every declared crate is linted'
+    assert names.index('Lint') < names.index('Lint wasm crates') < names.index('Compile cache statistics')
+    assert 'if' not in lint_step, 'every declared crate is linted on each run of the job'
+    for event, coverage in [('pull_request', 'false'), ('merge_group', 'true')]:
+        jobs = routed_jobs(document, {'github.event_name': event, 'github.ref': 'refs/heads/topic',
+                                      'needs.declaration.outputs.coverage': coverage})
+        assert 'quality' in jobs, (event, jobs)
+    result = execute('Lint wasm crates', root / 'fixtures/wasm-clippy-warning', {'WASM_CRATES': '["wasm-clippy-warning"]'})
+    output = result.stdout + result.stderr
+    assert result.returncode != 0 and 'clippy::needless_return' in output, 'a wasm-only body must pass Clippy\n' + output
+    # The host Lint step passes on the same crate, so only the wasm target sees the body.
+    result = execute('Lint', root / 'fixtures/wasm-clippy-warning',
+                     {'TEST_PACKAGES': '["wasm-clippy-warning"]', 'COVERAGE_SCOPE': '', 'TARGET': ''})
+    assert result.returncode == 0, 'the host target has no Clippy finding\n' + result.stdout + result.stderr
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        tools, log = install_recording_runner(directory)
+        (tools / 'rustup').symlink_to(tools / 'cargo')
+        path = {'PATH': str(tools) + os.pathsep + os.environ['PATH']}
+        result = execute('Lint wasm crates', directory, path | {'WASM_CRATES': '[]'})
+        assert result.returncode == 0 and not log.exists(), 'a caller without wasm crates compiles nothing\n' + result.stderr
+        result = execute('Lint wasm crates', directory, path | {'WASM_CRATES': '["first", "second"]'})
+        assert result.returncode == 0, result.stdout + result.stderr
+        commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
+        # Library targets only, as the wasm build compiles them: tests may depend on native-only crates.
+        assert commands == [['target', 'add', 'wasm32-unknown-unknown'],
+                            ['clippy', '--locked', '--target', 'wasm32-unknown-unknown', '-p', 'first', '-p', 'second',
+                             '--', '-D', 'warnings']], commands
+
+wasm_clippy_denies_warnings()
+print('PASS wasm_clippy_denies_warnings', flush=True)
+
 def workflow_safety_is_unchanged():
     assert re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + ['cargo test --workspace --locked'] == [
         'cargo fmt --all --check',
