@@ -1372,6 +1372,34 @@ jobs:
           a_body_the_guard_did_not_write_fails_the_run_and_is_never_overwritten()
           print('PASS a_body_the_guard_did_not_write_fails_the_run_and_is_never_overwritten')
 
+          def a_listing_past_the_body_limit_drops_its_earliest_passed_subjects():
+              evidence = 'Run: https://example.test/runs/1\n' + 'x' * 500
+              passed = [(f'a::passed{index:02}', 'Passed', 1, evidence) for index in range(60)]
+              breaching = [(f'a::breaching{index:02}', 'Breaching', 1, evidence) for index in range(40)]
+              gh = issue_tracker(('Test over 30 seconds', listing(*passed, *breaching)))
+              slow = partial(judging['finding'], 'Test over 30 seconds', run=run_of(2, 39), body=evidence)
+              new = [f'a::new{index:02}' for index in range(20)]
+              judging['file_issues']([slow(subject) for subject in new], 'owner/repo', gh)
+              # The body stays under GitHub's 65,536-character limit: every breaching subject stays listed, and the earliest passed ones leave first.
+              assert len(gh.issues[0]['body']) <= 65536, len(gh.issues[0]['body'])
+              left = listed(gh, 1)
+              kept = [subject for subject, _, _, _ in passed if subject in left]
+              assert 0 < len(kept) < len(passed) and kept == [subject for subject, _, _, _ in passed][-len(kept):], kept
+              assert all(subject in left for subject, _, _, _ in breaching) and all(subject in left for subject in new), left
+              assert gh.issues[0]['comments'] == ['Run: https://example.test/runs/2\nNew subjects: ' + ', '.join(f'`{subject}`' for subject in new) + '.\n']
+              # Breaching subjects alone past the limit fail the run and open nothing, since a subject still breaching is never dropped.
+              gh = issue_tracker()
+              try:
+                  judging['file_issues']([slow(f'a::many{index:03}') for index in range(120)], 'owner/repo', gh)
+              except RuntimeError as error:
+                  assert 'more breaching subjects than one issue body holds' in str(error), error
+              else:
+                  raise AssertionError('a body past the limit was written')
+              assert not gh.issues, gh.issues
+
+          a_listing_past_the_body_limit_drops_its_earliest_passed_subjects()
+          print('PASS a_listing_past_the_body_limit_drops_its_earliest_passed_subjects')
+
           def fake_repository(minutes=30, bands=None, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group',
                                   ratchet=None, floor=None, newer=0, pace=None, build=None, steps=None, extra_jobs=None,
                                   seeding=None, conclusion='success', cancelled=(), usage_gb=3.0, open_issues=None):
@@ -2617,10 +2645,9 @@ jobs:
               assert 'runner band' in guide and 'lowest such median' in guide and 'runner-band: <label>' in guide
               # The ratchet is stored in one issue and only the guard lowers it.
               assert 'issue titled "CI time ratchet"' in guide and 'only the guard lowers it' in guide
-              # The cache floor warns; the guards list its shapes in one issue. Each kind keeps one issue, rewritten in place, and the replayed fan-out is cited.
+              # The cache floor warns and its issue is documented; the replayed fan-out is cited as the guards' source.
               assert 'never fails the build' in guide and 'Compile cache below its hit-rate floor' in guide
-              assert 'one open issue per kind' in guide and 'rewrites its body in place' in guide and '`fixtures/guard-fan-out/verdicts.json`' in guide
-              assert 'one issue for every test' not in guide and 'growing list of comments' not in guide
+              assert '`fixtures/guard-fan-out/verdicts.json`' in guide
               # Everything out of the pattern is escalated under one label, with a standing title per departure.
               assert 'label `escalation`' in guide and 'Nothing outside the pattern is absorbed silently' in guide
               for title in ['Escalation: time per test run outside its normal spread', 'Escalation: time per compile unit outside its normal spread',

@@ -708,6 +708,20 @@ jobs:
               return LISTED + ''.join(('' if subject is None else f'\n### `{subject}`') + f'\n{state}, first seen in {first}.\n\n{evidence}\n'
                                       for subject, (state, first, evidence) in listing.items())
 
+          # GitHub refuses an issue body over 65,536 characters.
+          BODY_LIMIT = 65536
+
+          def bounded(kind, listing):
+              """A listing whose body fits GitHub's limit: subjects that passed leave it, the earliest listed first.
+              A subject still breaching is never dropped, so breaching subjects alone past the limit fail the run."""
+              after = dict(listing)
+              passed = [subject for subject, (state, _, _) in after.items() if state == 'Passed']
+              while passed and len(listing_body(after)) > BODY_LIMIT:
+                  del after[passed.pop(0)]
+              if len(listing_body(after)) > BODY_LIMIT:
+                  raise RuntimeError(f'the {kind!r} issue would list more breaching subjects than one issue body holds; fix them and close it')
+              return after
+
           def merged(listing, group):
               """A kind's listing after one run's findings: a breach lists its subject or updates it, keeping the run that first breached it,
               and a pass updates only a subject already listed."""
@@ -742,7 +756,7 @@ jobs:
               for kind, group in kinds.items():
                   number = existing.get(kind)
                   before = listing_of(number, json.loads(gh('issue', 'view', str(number), '-R', repository, '--json', 'body'))['body']) if number else {}
-                  after = merged(before, group)
+                  after = bounded(kind, merged(before, group))
                   if after == before:
                       continue
                   if number:

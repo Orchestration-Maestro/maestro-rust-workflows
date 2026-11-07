@@ -1613,6 +1613,12 @@ judged:
   a pass while another subject still breaches, and a breach of a subject that
   had passed update the body and add no comment.
 
+A body stays within GitHub's 65,536-character limit. When a rewrite would pass
+it, the guard drops subjects that passed, the earliest listed first, and lists
+any of them that breaches again as new. The guard never drops a breaching
+subject, so when breaching subjects alone would pass the limit, the run fails
+and the issue stays as it was.
+
 The guard never closes an issue. Close it once the fix is confirmed; the next
 breach of that kind opens a new one. A pass with no open issue, or for a subject
 the issue does not list, changes nothing. The guard rewrites only a body it can
