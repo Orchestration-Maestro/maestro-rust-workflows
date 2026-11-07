@@ -282,8 +282,10 @@ def workflow_steps():
 
 def block_map(text, indent, key='env'):
     # A block's mapping whose values sit on the key's own line, so no YAML tool is needed.
-    block = re.search(r'^' + ' ' * indent + re.escape(key) + r':(?: &[\w-]+)?\n((?:' +
-                      ' ' * (indent + 2) + r'[\w-]+: .*\n)+)', shared_block(text, indent, key), re.MULTILINE)
+    # A comment line sits inside the mapping, so it continues the block rather than ending it.
+    entry = ' ' * (indent + 2) + r'(?:[\w-]+: .*|#.*)\n'
+    block = re.search(r'^' + ' ' * indent + re.escape(key) + r':(?: &[\w-]+)?\n((?:' + entry + r')+)',
+                      shared_block(text, indent, key), re.MULTILINE)
     return dict(re.findall(r'^' + ' ' * (indent + 2) + r'([\w-]+): (.*)$', block[1], re.MULTILINE)) if block else {}
 
 def shard_count_seen_by(job, step, declared, matrix_count=0):
@@ -349,6 +351,8 @@ def seam_steps_read_their_shard_count_from_the_workflow():
             assert shard_count_seen_by('test-build', 'Build test archive', 32) == '32'
             # A step outside the wiring reads no count, so no seam test passes on a copied value.
             assert wired_shard_count('Format') is None
+            # A commented line inside the env does not end it, so a key below the comment still reads.
+            assert 'TEST_CHECKOUT_EXCLUSIONS' in block_map(workflow_jobs()['tests'], 4)
         finally:
             os.environ['PATH'] = inherited
         assert not used.exists(), 'the shard readers shelled out to a YAML tool'
