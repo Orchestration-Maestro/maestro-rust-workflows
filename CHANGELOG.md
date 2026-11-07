@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.19.21](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.20...v0.19.21) (2026-11-07)
+
+
+### Continuous Integration
+
+* advance the release proof source snapshot to v0.19.20 ([#402](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/402)) ([883ef89](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/883ef899b0df3a540972be95b0f23d688b482305))
+* build declared wasm example witnesses in the browser job ([#397](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/397)) ([8e524d9](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/8e524d94d0d219b48cce103a51bedd0947d0b324))
+* lint the wasm32 target with Clippy before merge ([#401](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/401)) ([b9fbc4b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/b9fbc4b37432c681842cb1a0929b354effa095b1)), closes [#399](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/399)
+* move main scan pins to v0.19.20 ([#395](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/395)) ([e095453](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/e09545393a93c396ad162fa01246ecc9b3e74673))
+
 ## [0.19.20](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.19...v0.19.20) (2026-11-06)
 
 
