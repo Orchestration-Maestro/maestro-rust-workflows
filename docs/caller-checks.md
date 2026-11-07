@@ -966,7 +966,7 @@ packages for the wasm target with warnings denied, in one Clippy run with a `-p`
 for each package:
 
 ```bash
-cargo clippy --locked --target wasm32-unknown-unknown -p "$CRATE" -- -D warnings
+cargo clippy --locked --target wasm32-unknown-unknown -p "$FIRST" -p "$SECOND" -- -D warnings
 ```
 
 Host Clippy never compiles code that only a WebAssembly build sees. A lint
