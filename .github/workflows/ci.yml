@@ -126,6 +126,7 @@ jobs:
       tests_reused: ${{ steps.queue.outputs.tests_reused }}
       coverage_scope: ${{ steps.selection.outputs.coverage_scope }}
       test_runners: ${{ steps.selection.outputs.test_runners }}
+      test_counts: ${{ steps.selection.outputs.test_counts }}
       test_shard_count: ${{ steps.config.outputs.test_shard_count }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
@@ -808,6 +809,7 @@ jobs:
               shards = [dict(runner=runner, shard=shard, count=count) for runner, count in hosts.items() for shard in range(1, count + 1)]
               output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('test_runners=' + json.dumps(list(hosts)) + '\n')
+              output.write('test_counts=' + json.dumps(hosts) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
       - name: Validate browser-only request
@@ -1310,7 +1312,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
-      TEST_SHARD_COUNT: ${{ needs.declaration.outputs.test_shard_count }}
+      TEST_SHARD_COUNT: ${{ fromJSON(needs.declaration.outputs.test_counts)[matrix.runner] }}
       TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
       COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
       COLLECT_COVERAGE: ${{ matrix.runner == 'ubuntu-latest' && needs.declaration.outputs.enabled == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') }}

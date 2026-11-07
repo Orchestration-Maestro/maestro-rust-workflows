@@ -4210,8 +4210,12 @@ def native_test_hosts_follow_claims_and_full_suite_events():
                             assert [leg for leg in legs if leg['runner'] == runner] == [
                                 {'runner': runner, 'shard': shard, 'count': expected} for shard in range(1, expected + 1)]
                         assert len(legs) == count + (len(runners) - 1) * min(4, count)
+                        # The archive build splits each host's binaries into as many archives as that host has shard legs.
+                        assert json.loads(selected['test_counts']) == {
+                            runner: len([leg for leg in legs if leg['runner'] == runner]) for runner in runners}, (targets, event, reused, selected)
     for name in ['test-prepare', 'test-build', 'doctests']:
         assert 'test_runners' in jobs[name]['strategy']['matrix']['runner']
+    assert 'test_counts' in jobs['test-build']['env']['TEST_SHARD_COUNT'] and 'matrix.runner' in jobs['test-build']['env']['TEST_SHARD_COUNT']
     assert 'test_shards' in jobs['tests']['strategy']['matrix']['include']
     for job, names in [('test-build', ['Upload test archive']), ('test-prepare', ['Upload test setup', 'Test setup candidates', 'Download test setup candidates']),
                        ('tests', ['Download test archive', 'Download test archive in one stream', 'Download test setup', 'Download test setup in one stream'])]:

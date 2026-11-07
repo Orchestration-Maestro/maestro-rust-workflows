@@ -235,6 +235,17 @@ Windows compilation runs uncached because sccache expands response files beyond
 Windows' command-line limit; [Windows caching](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/166)
 tracks the upstream fix.
 
+Because Windows has no compile cache, a Windows run with no earlier prepared
+bundle builds everything cold on four cores. The jobs that compile there (`Build
+test archive`, `Prepare test setup` and the test and doctest legs) start with a
+`Windows build settings` step. It excludes the workspace, the runner temp
+directory and the Cargo and Rustup homes from real-time scanning and sets
+`CARGO_INCREMENTAL=0`, since no later run reads the incremental state. The step
+runs before the checkout writes the first build tree. Source: the same cold
+Windows preparation of the same Maestro commit took 32 minutes with the step
+(run 42319979959) and ran past the 45-minute step limit without it (run
+42313125576, 37 minutes to the first Clippy phase against 25 minutes).
+
 A push with `warm-cache: true`, including a feature-branch push, also runs the
 declared target checks; warm calls for other events skip them. Only
 default-branch pushes save those compiled-cache snapshots. Host-specific,
@@ -418,6 +429,15 @@ each binary goes whole to the group with the fewest seconds so far. Shard 1 gets
 the slowest group. The job log prints each shard's tests and binaries, with its
 seconds when an earlier run timed them, and `cargo nextest archive -E` writes
 one archive per group from the binaries already built.
+
+Each host's job groups the binaries into that host's own shard count: the
+declared `test_shard_count` on Linux and `min(4, test_shard_count)` on a claimed
+native host. That way every group has a shard that runs it.
+
+The job keeps each shard's filter on its own line of `target/test-filters.txt`
+with a Unix line end, and reads the file with a plain `while read` loop. Windows
+Python would otherwise end each line with a carriage return that nextest rejects,
+and the Bash 3.2 on macOS runners has no `mapfile`.
 
 The seconds come from the `Earlier test seconds` step, before the build. It takes
 the newest earlier successful merge group or push run of the same workflow in
