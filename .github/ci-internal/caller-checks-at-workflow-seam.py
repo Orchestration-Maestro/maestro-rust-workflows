@@ -5,6 +5,7 @@ import os
 import pathlib
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -196,7 +197,8 @@ print('PASS workflow_text_io_uses_utf8')
 def execute(name, cwd, extra=None, prelude=''):
     env = {k: v for k, v in os.environ.items()
            if k not in credential_names and not k.endswith('_API_KEY')}
-    env['TEST_SHARD_COUNT'] = '16'
+    # The shard count the workflow's own step env carries, so a step that loses its wiring reads none.
+    env['TEST_SHARD_COUNT'] = wired_shard_count(name)
     # The declaration's output without test_prepare_setups.
     env['TEST_PREPARE_CONSUMERS'] = 'null'
     env.update(extra or {})
@@ -210,7 +212,6 @@ def execute(name, cwd, extra=None, prelude=''):
         command = body('Mise bootstrap') + (body('Browser tool pin') if name == 'Browser tools' else '') + command
     bash = 'bash'
     if os.name == 'nt':
-        import shutil
         # Match the runner's Bash shell, not the Windows WSL launcher.
         bash = str(pathlib.Path(shutil.which('git')).parent.parent / 'bin/bash.exe')
         assert pathlib.Path(bash).is_file(), f'Git Bash not found: {bash}'
@@ -241,6 +242,73 @@ GOOGLE_CLOUD_LOCATION AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 AWS_SESSION_TOKEN AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK
 AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI
 AWS_WEB_IDENTITY_TOKEN_FILE BEDROCK_EXTENSIVE_MODEL_TEST FIREWORKS_API_KEY'''.split()
+
+def declaration(directory):
+    with tempfile.NamedTemporaryFile() as output:
+        result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': output.name})
+        values = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding="utf-8").splitlines())
+        return result, values
+
+def shard_count_seen_by(job, step, declared, matrix_count=0):
+    # Layers workflow, job and step env as GitHub does; a step outside that wiring reads no count.
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    layers = [document.get('env', {}), document['jobs'][job].get('env', {}),
+              next(s for s in document['jobs'][job]['steps'] if s.get('name') == step).get('env', {})]
+    seen = [layer['TEST_SHARD_COUNT'] for layer in layers if 'TEST_SHARD_COUNT' in layer]
+    if not seen:
+        return None
+    # The wired expression resolves through a real declaration run of the declarations it names.
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        if declared is not None:
+            (directory / '.github').mkdir()
+            (directory / '.github/ci.toml').write_text(
+                f'wasm_crates=[]\ncheck_targets=[]\ntest_shard_count={declared}\n', encoding='utf-8')
+        result, outputs = declaration(directory)
+        assert result.returncode == 0, result.stderr
+    def resolve(value):
+        text = str(value)
+        if text.startswith('$' + '{{ matrix.count || '):
+            return str(evaluate(value, {'matrix.count': matrix_count, 'needs.declaration.outputs.test_shard_count': outputs['test_shard_count']}))
+        match = re.fullmatch(r'\$\{\{ (steps\.config|needs\.declaration)\.outputs\.(\w+) \}\}', text)
+        if match and match[1] == 'steps.config':
+            return outputs[match[2]]
+        if match:
+            return resolve(document['jobs']['declaration']['outputs'][match[2]])
+        # The test archive names its count per runner, and the seam's proof host is the Linux one.
+        if re.fullmatch(r'\$\{\{ fromJSON\(needs\.declaration\.outputs\.test_counts\)\[matrix\.runner\] \}\}', text):
+            return str(json.loads(outputs['test_hosts'])['ubuntu-latest'])
+        assert '$' + '{{' not in text, f'{step} reads an unknown shard count: {text}'
+        return text
+    return resolve(seen[-1])
+
+def wired_shard_count(step):
+    # The count the workflow wires into the step body() runs; none when that step's env was dropped.
+    resolved = wired_shard_count.__dict__.setdefault('resolved', {})
+    if step not in resolved:
+        document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+        job = next((name for name, candidate in document['jobs'].items()
+                    if any(entry.get('name') == step for entry in candidate.get('steps', []))), None)
+        assert job, f'Missing executable body: {step}'
+        resolved[step] = shard_count_seen_by(job, step, None)
+    return resolved[step]
+
+def seam_steps_read_their_shard_count_from_the_workflow():
+    # The seam's fixture declares no count, so every reader sees the declaration's own default.
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        result, outputs = declaration(directory)
+        assert result.returncode == 0, result.stderr
+    for step in ['Select test packages', 'Build test archive', 'Tests', 'Isolated tests', 'Merge coverage']:
+        assert wired_shard_count(step) == outputs['test_shard_count'], step
+    assert shard_count_seen_by('test-build', 'Build test archive', 32) == '32'
+    # A step outside the wiring reads no count, so no seam test passes on a copied value.
+    assert wired_shard_count('Format') is None
+
+seam_steps_read_their_shard_count_from_the_workflow()
+print('PASS seam_steps_read_their_shard_count_from_the_workflow')
 
 def link_test_toolchains(directory):
     physical = pathlib.Path(subprocess.check_output(['rustup', 'which', 'rustc'], text=True).strip()).parent.parent
@@ -326,13 +394,6 @@ def child_cargo_keeps_selected_toolchain_offline():
 
 child_cargo_keeps_selected_toolchain_offline()
 print('PASS child_cargo_keeps_selected_toolchain_offline')
-
-def declaration(directory):
-    with tempfile.NamedTemporaryFile() as output:
-        result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': output.name})
-        values = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding="utf-8").splitlines())
-        return result, values
-
 
 def browser_test_declaration_checks_exact_packages():
     with tempfile.TemporaryDirectory() as temporary:

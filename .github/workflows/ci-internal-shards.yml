@@ -68,35 +68,6 @@ jobs:
           shard_count_declaration_is_validated()
           print('PASS shard_count_declaration_is_validated')
 
-          def shard_count_seen_by(job, step, declared, matrix_count=0):
-              # Layers workflow, job and step env as GitHub does, resolving declaration outputs from a real declaration run.
-              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-              with tempfile.TemporaryDirectory() as temporary:
-                  directory = pathlib.Path(temporary)
-                  shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
-                  if declared is not None:
-                      (directory / '.github').mkdir()
-                      (directory / '.github/ci.toml').write_text(
-                          f'wasm_crates=[]\ncheck_targets=[]\ntest_shard_count={declared}\n', encoding='utf-8')
-                  result, outputs = declaration(directory)
-                  assert result.returncode == 0, result.stderr
-              def resolve(value):
-                  if str(value).startswith('$' + '{{ matrix.count || '):
-                      return str(evaluate(value, {'matrix.count': matrix_count, 'needs.declaration.outputs.test_shard_count': outputs['test_shard_count']}))
-                  match = re.fullmatch(r'\$\{\{ (steps\.config|needs\.declaration)\.outputs\.(\w+) \}\}', str(value))
-                  if not match:
-                      return str(value)
-                  if match[1] == 'steps.config':
-                      return outputs[match[2]]
-                  return resolve(document['jobs']['declaration']['outputs'][match[2]])
-              layers = [document.get('env', {}), document['jobs'][job].get('env', {}),
-                        next(s for s in document['jobs'][job]['steps'] if s.get('name') == step).get('env', {})]
-              seen = [layer['TEST_SHARD_COUNT'] for layer in layers if 'TEST_SHARD_COUNT' in layer]
-              if not seen:
-                  return None
-              value = seen[-1]
-              return resolve(value)
-
           def declared_shard_count_reaches_every_reader():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               assert 'TEST_SHARD_COUNT' not in document.get('env', {}), 'the shard count is no longer fixed for the workflow'
@@ -146,8 +117,9 @@ jobs:
           def diagnostics_docs_follow_the_declared_shard_count():
               # The artifact name is built from the shard number, so the documented range must follow the declaration.
               guide = ' '.join((root / 'docs/caller-checks.md').read_text(encoding='utf-8').split())
-              assert 'The shard field is `1` through the declared `test_shard_count`, or `doctests`' in guide
-              assert '`1` through `16`' not in guide
+              section = guide.split('### Test diagnostics', 1)[1].split('### ', 1)[0]
+              assert '`test_shard_count`' in section
+              assert not re.search(r'`1` through `\d+`', section), 'the documented shard range must follow the declaration'
 
           diagnostics_docs_follow_the_declared_shard_count()
           print('PASS diagnostics_docs_follow_the_declared_shard_count')
