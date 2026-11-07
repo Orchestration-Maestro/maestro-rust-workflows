@@ -662,7 +662,7 @@ The two steps sit in the step list that the `Test shard` and `Doctests` jobs
 share, so both test routes and the warm-cache run are checked. The check runs
 even when a test failed, which names the files a failing test left. A caller
 fixes the test, not the check: a test writes into a temporary directory it owns,
-and removing the file the shard names turns the next run green.
+and once the test stops writing there, the next run is green.
 
 ### Pull-request selection and retries
 
