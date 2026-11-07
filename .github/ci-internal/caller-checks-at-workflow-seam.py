@@ -1,4 +1,5 @@
 import ast
+import functools
 import itertools
 import json
 import os
@@ -249,11 +250,47 @@ def declaration(directory):
         values = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding="utf-8").splitlines())
         return result, values
 
+@functools.cache
+def workflow_jobs():
+    # The workflow's jobs by name, in source order, split where the file declares them.
+    return dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
+                           workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+
+def shared_block(text, indent, key):
+    # The block `key:` declares, following the anchor a job shares it with instead of repeating it.
+    alias = re.search(r'^' + ' ' * indent + re.escape(key) + r': \*([\w-]+)\n', text, re.MULTILINE)
+    if not alias:
+        return text
+    anchor = re.search(r'^' + ' ' * indent + re.escape(key) + r': &' + re.escape(alias[1]) + r'\n',
+                       workflow, re.MULTILINE)
+    assert anchor, f'Missing {key} anchor: {alias[1]}'
+    # The anchor's block ends where the next job starts.
+    return re.split(r'^  [\w-]+:\n', workflow[anchor.start():], maxsplit=1, flags=re.MULTILINE)[0]
+
+@functools.cache
+def workflow_steps():
+    # Every step with the job that declares it and the indent its keys use, in source order.
+    steps = {}
+    for job, text in workflow_jobs().items():
+        block = shared_block(text, 4, 'steps')
+        layout = re.search(r'^( *)steps:(?: &[\w-]+)?\n', block, re.MULTILINE)
+        if not layout:
+            continue
+        for part in re.split(r'^' + layout[1] + r'  - name: ', block, flags=re.MULTILINE)[1:]:
+            steps.setdefault((job, part.splitlines()[0]), (part, len(layout[1]) + 4))
+    return steps
+
+def block_map(text, indent, key='env'):
+    # A block's mapping whose values sit on the key's own line, so no YAML tool is needed.
+    block = re.search(r'^' + ' ' * indent + re.escape(key) + r':(?: &[\w-]+)?\n((?:' +
+                      ' ' * (indent + 2) + r'[\w-]+: .*\n)+)', shared_block(text, indent, key), re.MULTILINE)
+    return dict(re.findall(r'^' + ' ' * (indent + 2) + r'([\w-]+): (.*)$', block[1], re.MULTILINE)) if block else {}
+
 def shard_count_seen_by(job, step, declared, matrix_count=0):
     # Layers workflow, job and step env as GitHub does; a step outside that wiring reads no count.
-    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-    layers = [document.get('env', {}), document['jobs'][job].get('env', {}),
-              next(s for s in document['jobs'][job]['steps'] if s.get('name') == step).get('env', {})]
+    assert (job, step) in workflow_steps(), f'Missing executable body: {step}'
+    chunk, indent = workflow_steps()[(job, step)]
+    layers = [block_map(workflow, 0), block_map(workflow_jobs()[job], 4), block_map(chunk, indent)]
     seen = [layer['TEST_SHARD_COUNT'] for layer in layers if 'TEST_SHARD_COUNT' in layer]
     if not seen:
         return None
@@ -275,7 +312,7 @@ def shard_count_seen_by(job, step, declared, matrix_count=0):
         if match and match[1] == 'steps.config':
             return outputs[match[2]]
         if match:
-            return resolve(document['jobs']['declaration']['outputs'][match[2]])
+            return resolve(block_map(workflow_jobs()['declaration'], 4, 'outputs')[match[2]])
         # The test archive names its count per runner, and the seam's proof host is the Linux one.
         if re.fullmatch(r'\$\{\{ fromJSON\(needs\.declaration\.outputs\.test_counts\)\[matrix\.runner\] \}\}', text):
             return str(json.loads(outputs['test_hosts'])['ubuntu-latest'])
@@ -287,12 +324,33 @@ def wired_shard_count(step):
     # The count the workflow wires into the step body() runs; none when that step's env was dropped.
     resolved = wired_shard_count.__dict__.setdefault('resolved', {})
     if step not in resolved:
-        document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-        job = next((name for name, candidate in document['jobs'].items()
-                    if any(entry.get('name') == step for entry in candidate.get('steps', []))), None)
+        job = next((name for (name, candidate), _ in workflow_steps().items() if candidate == step), None)
         assert job, f'Missing executable body: {step}'
         resolved[step] = shard_count_seen_by(job, step, None)
     return resolved[step]
+
+def shard_count_readers_need_no_yaml_tool():
+    # The native proofs have Python and no YAML tool, so the readers take the workflow's own text.
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        used = directory / 'used'
+        (directory / 'yq').write_text(f'#!/bin/sh\ntouch "{used}"\nexit 1\n', encoding='utf-8')
+        (directory / 'yq').chmod(0o755)
+        fixture = directory / 'fixture'
+        shutil.copytree(root / 'fixtures/sample', fixture, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        inherited = os.environ['PATH']
+        os.environ['PATH'] = str(directory) + os.pathsep + inherited
+        try:
+            result, outputs = declaration(fixture)
+            assert result.returncode == 0, result.stderr
+            assert wired_shard_count('Merge coverage') == outputs['test_shard_count']
+            assert shard_count_seen_by('test-build', 'Build test archive', 32) == '32'
+        finally:
+            os.environ['PATH'] = inherited
+        assert not used.exists(), 'the shard readers shelled out to a YAML tool'
+
+shard_count_readers_need_no_yaml_tool()
+print('PASS shard_count_readers_need_no_yaml_tool')
 
 def seam_steps_read_their_shard_count_from_the_workflow():
     # The seam's fixture declares no count, so every reader sees the declaration's own default.
