@@ -262,11 +262,11 @@ jobs:
                   # The selection step reads the consumers the declaration step read from the nextest configuration.
                   result, declared = declaration(directory)
                   assert result.returncode == 0, result.stderr
-                  with tempfile.NamedTemporaryFile() as output:
-                      result = select_packages(directory, {'TEST_EVENT': event, 'GITHUB_OUTPUT': output.name,
+                  with output_file() as output:
+                      result = select_packages(directory, {'TEST_EVENT': event, 'GITHUB_OUTPUT': str(output),
                                                            'TEST_PREPARE_CONSUMERS': declared['test_prepare_consumers']} | (extra or {}))
                       assert result.returncode == 0, result.stderr
-                      values = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding='utf-8').splitlines())
+                      values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       return values['test_prepare'], json.loads(values['packages']), result.stdout
               def prepared(directory, event, extra=None):
                   return selection(directory, event, extra)[0]
@@ -377,11 +377,11 @@ jobs:
               assert not {'CALLER_REPOSITORY', 'CALLER_DIRECTORY', 'HOST_OS', 'HOST_ARCH'} & set(identity['env'])
               assert 'rustc' not in identity['run']
               def key(directory, patterns=('inputs/*.txt',), command='echo ready', extra=None):
-                  with tempfile.NamedTemporaryFile() as output:
-                      env = {'TEST_PREPARE': command, 'TEST_PREPARE_INPUTS': json.dumps(list(patterns)), 'GITHUB_OUTPUT': output.name,
+                  with output_file() as output:
+                      env = {'TEST_PREPARE': command, 'TEST_PREPARE_INPUTS': json.dumps(list(patterns)), 'GITHUB_OUTPUT': str(output),
                              'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work'} | (extra or {})
                       result = execute('Test setup cache identity', directory, env)
-                      values = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding='utf-8').splitlines())
+                      values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       return result, values
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -452,10 +452,10 @@ jobs:
                       env = {'TEST_PREPARE': command, 'TEST_PREPARE_INPUTS': json.dumps(['key.txt']), 'RUNNER_TEMP': str(runner),
                              'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work',
                              'CACHE_WRITER': 'true' if writer else 'false'}
-                      with tempfile.NamedTemporaryFile() as output:
-                          result = execute('Test setup cache identity', checkout, env | {'GITHUB_OUTPUT': output.name})
+                      with output_file() as output:
+                          result = execute('Test setup cache identity', checkout, env | {'GITHUB_OUTPUT': str(output)})
                           assert result.returncode == 0, result.stderr
-                          identity = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding='utf-8').splitlines())
+                          identity = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       key = identity['key']
                       # The restore step: a hit copies the saved file into place. A miss copies the newest bundle
                       # under the same prefix, if any, and still reports no hit.

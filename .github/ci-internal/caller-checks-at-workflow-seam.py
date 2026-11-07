@@ -1,4 +1,5 @@
 import ast
+import contextlib
 import functools
 import itertools
 import json
@@ -231,6 +232,17 @@ def execute(name, cwd, extra=None, prelude=''):
             argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
         return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
 
+@contextlib.contextmanager
+def output_file():
+    # A step writes GITHUB_OUTPUT by name, and Windows refuses to read a file its own process still
+    # holds open, so the handle closes before the values are read back.
+    descriptor, path = tempfile.mkstemp()
+    os.close(descriptor)
+    try:
+        yield pathlib.Path(path)
+    finally:
+        pathlib.Path(path).unlink()
+
 def select_packages(cwd, extra):
     return execute('Select test packages', cwd, extra)
 
@@ -245,9 +257,9 @@ AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI
 AWS_WEB_IDENTITY_TOKEN_FILE BEDROCK_EXTENSIVE_MODEL_TEST FIREWORKS_API_KEY'''.split()
 
 def declaration(directory):
-    with tempfile.NamedTemporaryFile() as output:
-        result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': output.name})
-        values = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding="utf-8").splitlines())
+    with output_file() as output:
+        result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output)})
+        values = dict(line.split('=', 1) for line in output.read_text(encoding="utf-8").splitlines())
         return result, values
 
 @functools.cache
@@ -330,6 +342,35 @@ def wired_shard_count(step):
         assert job, f'Missing executable body: {step}'
         resolved[step] = shard_count_seen_by(job, step, None)
     return resolved[step]
+
+def declared_outputs_are_read_from_a_closed_file():
+    # Windows refuses to read a file its own process still holds open, so the output file the
+    # declaration step writes must be closed before its values are read back.
+    descriptors = pathlib.Path('/proc/self/fd')
+    if not descriptors.is_dir():
+        return
+    seen = []
+    writing = execute
+    def held(descriptors):
+        # The listing closes its own descriptor, so only the process's own handles remain.
+        return {os.readlink(descriptors / entry) for entry in os.listdir(descriptors) if (descriptors / entry).exists()}
+    def recording(name, cwd, extra=None, prelude=''):
+        path = (extra or {})['GITHUB_OUTPUT']
+        seen.append(path)
+        assert path not in held(descriptors), \
+            'the declaration step writes GITHUB_OUTPUT while this process holds it open'
+        return writing(name, cwd, extra, prelude)
+    globals()['execute'] = recording
+    try:
+        result, values = declaration(root / 'fixtures/sample')
+    finally:
+        globals()['execute'] = writing
+    assert result.returncode == 0, result.stderr
+    assert values['test_shard_count'] == '16', values
+    assert seen
+
+declared_outputs_are_read_from_a_closed_file()
+print('PASS declared_outputs_are_read_from_a_closed_file')
 
 def seam_steps_read_their_shard_count_from_the_workflow():
     # The seam's fixture declares no count, so every reader sees the declaration's own default.
