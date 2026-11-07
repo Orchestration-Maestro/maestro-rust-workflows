@@ -329,8 +329,9 @@ def wired_shard_count(step):
         resolved[step] = shard_count_seen_by(job, step, None)
     return resolved[step]
 
-def shard_count_readers_need_no_yaml_tool():
-    # The native proofs have Python and no YAML tool, so the readers take the workflow's own text.
+def seam_steps_read_their_shard_count_from_the_workflow():
+    # The seam's fixture declares no count, so every reader sees the declaration's own default.
+    # The native proofs provide only Python, so a stand-in YAML tool proves none is called.
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         used = directory / 'used'
@@ -343,27 +344,14 @@ def shard_count_readers_need_no_yaml_tool():
         try:
             result, outputs = declaration(fixture)
             assert result.returncode == 0, result.stderr
-            assert wired_shard_count('Merge coverage') == outputs['test_shard_count']
+            for step in ['Select test packages', 'Build test archive', 'Tests', 'Isolated tests', 'Merge coverage']:
+                assert wired_shard_count(step) == outputs['test_shard_count'], step
             assert shard_count_seen_by('test-build', 'Build test archive', 32) == '32'
+            # A step outside the wiring reads no count, so no seam test passes on a copied value.
+            assert wired_shard_count('Format') is None
         finally:
             os.environ['PATH'] = inherited
         assert not used.exists(), 'the shard readers shelled out to a YAML tool'
-
-shard_count_readers_need_no_yaml_tool()
-print('PASS shard_count_readers_need_no_yaml_tool')
-
-def seam_steps_read_their_shard_count_from_the_workflow():
-    # The seam's fixture declares no count, so every reader sees the declaration's own default.
-    with tempfile.TemporaryDirectory() as temporary:
-        directory = pathlib.Path(temporary)
-        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
-        result, outputs = declaration(directory)
-        assert result.returncode == 0, result.stderr
-    for step in ['Select test packages', 'Build test archive', 'Tests', 'Isolated tests', 'Merge coverage']:
-        assert wired_shard_count(step) == outputs['test_shard_count'], step
-    assert shard_count_seen_by('test-build', 'Build test archive', 32) == '32'
-    # A step outside the wiring reads no count, so no seam test passes on a copied value.
-    assert wired_shard_count('Format') is None
 
 seam_steps_read_their_shard_count_from_the_workflow()
 print('PASS seam_steps_read_their_shard_count_from_the_workflow')
