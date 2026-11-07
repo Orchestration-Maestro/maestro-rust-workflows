@@ -1950,9 +1950,11 @@ jobs:
                   assert judging['level_of'](run_of(1, 50), 'band', kind) != judging['level_of'](run_of(1, 50), 'band', 'tests')
                   linux = [job(f'Test shard ({n}/16)', 20) for n in range(1, 17)]
                   healthy = [job(f'Test shard ({host} {n}/4)', 100) for n in range(1, 5)]
-                  assert judging['shard_finding'](run_of(7, 50), linux + healthy, 1.5, []) is None
+                  assert judging['slowest_shard'](linux + healthy, 1.5) is None
                   slow = healthy[:3] + [job(f'Test shard ({host} 4/4)', 151)]
-                  finding = judging['shard_finding'](run_of(7, 50), linux + slow, 1.5, [])
+                  blamed = judging['slowest_shard'](linux + slow, 1.5)
+                  assert blamed[0]['name'] == f'Test shard ({host} 4/4)' and blamed[2] == 100 * 60, blamed
+                  finding = judging['shard_finding'](run_of(7, 50), blamed, 1.5, [], {'phases': [], 'tests': None})
                   assert f'Test shard ({host} 4/4)' in finding['body'], finding
 
           native_work_is_judged_per_host()
