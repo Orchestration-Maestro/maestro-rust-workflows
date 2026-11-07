@@ -203,7 +203,7 @@ jobs:
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'native_test_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   replacement = '; test_prepare_setups replaces test_prepare_packages' if 'test_prepare_packages' in unknown else ''
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}' + replacement)
@@ -495,20 +495,12 @@ jobs:
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
-          native_tests = {'aarch64-apple-darwin': ('macos-latest', 4), 'x86_64-pc-windows-msvc': ('windows-latest', 4)}
+          # The test jobs carry a Windows leg, but Windows is not a native test host until its cold setup fits the job limit.
+          native_tests = {'aarch64-apple-darwin': ('macos-latest', 4)}
           count = int(values['test_shard_count'])
           hosts = {'ubuntu-latest': count}
-          if config is not None:
-              claimed = config.get('native_test_targets', config['check_targets'])
-              if not isinstance(claimed, list) or any(type(item) is not str for item in claimed):
-                  raise SystemExit(f'{path}: native_test_targets must be an array of strings')
-              for target in config.get('native_test_targets', []):
-                  if target not in native_tests:
-                      raise SystemExit(f'{path}: native_test_targets contains {target!r}, which is not a native test target')
-                  if target not in config['check_targets']:
-                      raise SystemExit(f'{path}: native_test_targets contains {target!r}, which is not in check_targets')
-              if os.environ.get('TEST_EVENT') != 'pull_request' and os.environ.get('WARM') != 'true':
-                  hosts.update({runner: min(shards, count) for target, (runner, shards) in native_tests.items() if target in claimed})
+          if config is not None and os.environ.get('TEST_EVENT') != 'pull_request' and os.environ.get('WARM') != 'true':
+              hosts.update({runner: min(shards, count) for target, (runner, shards) in native_tests.items() if target in config['check_targets']})
           values.update(test_hosts=json.dumps(hosts))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
               for key, value in values.items():
@@ -1334,14 +1326,6 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
         run: *runner-hardware
-      - name: Windows build settings
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: ${{ github.workspace }}
-        # Cold Windows builds are CPU- and file-bound: real-time scanning of the build trees and incremental state, which no later run reuses, add to the time.
-        run: &windows-build-settings |
-          foreach ($path in $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, "$HOME\.cargo", "$HOME\.rustup") { Add-MpPreference -ExclusionPath $path }
-          Add-Content -Path $env:GITHUB_ENV -Value 'CARGO_INCREMENTAL=0'
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1454,6 +1438,7 @@ jobs:
         timeout-minutes: 10
         if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
         run: &search-tools |
+          # Digests: ripgrep's release .sha256 file and fd's GitHub release asset digest.
           case "$(uname -s):$(uname -m)" in
             Linux:x86_64) tools='
           https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz 33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c rg
@@ -1690,11 +1675,6 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
         run: *runner-hardware
-      - name: Windows build settings
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: ${{ github.workspace }}
-        run: *windows-build-settings
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -2128,11 +2108,6 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: ${{ github.workspace }}
         run: *runner-hardware
-      - name: Windows build settings
-        if: runner.os == 'Windows'
-        shell: pwsh
-        working-directory: ${{ github.workspace }}
-        run: *windows-build-settings
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

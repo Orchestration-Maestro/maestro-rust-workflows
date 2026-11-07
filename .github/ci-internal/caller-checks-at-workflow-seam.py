@@ -1289,25 +1289,6 @@ def archive_build_runs_on_native_host_shells():
 archive_build_runs_on_native_host_shells()
 print('PASS archive_build_runs_on_native_host_shells')
 
-def windows_compile_jobs_start_cold_builds_unscanned_and_unincremental():
-    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-    # The jobs that compile on Windows with no compile cache: the preparation, the archive build and the doctest compilation.
-    for job in ['test-build', 'test-prepare', 'tests', 'doctests']:
-        steps = document['jobs'][job]['steps']
-        names = [step.get('name') for step in steps]
-        step = steps[names.index('Windows build settings')]
-        assert step['if'] == "runner.os == 'Windows'" and step['shell'] == 'pwsh', (job, step)
-        # The caller's working directory does not exist until the checkout creates it.
-        assert step['working-directory'] == '$' + '{{ github.workspace }}', (job, step)
-        # Before the checkout and the toolchain install write the first build tree.
-        assert names.index('Windows build settings') < names.index('Checkout'), (job, names)
-        for tree in ['$env:GITHUB_WORKSPACE', '$env:RUNNER_TEMP', '$HOME\\.cargo', '$HOME\\.rustup']:
-            assert f'Add-MpPreference -ExclusionPath' in step['run'] and tree in step['run'], (job, tree)
-        assert "CARGO_INCREMENTAL=0" in step['run'] and '$env:GITHUB_ENV' in step['run'], job
-
-windows_compile_jobs_start_cold_builds_unscanned_and_unincremental()
-print('PASS windows_compile_jobs_start_cold_builds_unscanned_and_unincremental')
-
 def selected_archive_build_compiles_only_selected_packages():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
@@ -4183,7 +4164,9 @@ def native_test_hosts_follow_claims_and_full_suite_events():
         fixture_git(directory, 'init', '--quiet')
         fixture_git(directory, 'add', '.')
         fixture_git(directory, 'commit', '-qm', 'host fixture')
-        for targets, native in [(['aarch64-apple-darwin', 'x86_64-pc-windows-msvc'], ['macos-latest', 'windows-latest']),
+        # Windows compile checks stay claimed, but only macOS joins the native test hosts.
+        for targets, native in [(['aarch64-apple-darwin', 'x86_64-pc-windows-msvc'], ['macos-latest']),
+                                (['x86_64-pc-windows-msvc'], []),
                                 (['x86_64-apple-darwin', 'aarch64-unknown-linux-gnu'], [])]:
             for count in [2, 16]:
                 (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=' + json.dumps(targets) + f'\ntest_shard_count={count}\n', encoding='utf-8')
@@ -4227,37 +4210,6 @@ def native_test_hosts_follow_claims_and_full_suite_events():
 
 native_test_hosts_follow_claims_and_full_suite_events()
 print('PASS native_test_hosts_follow_claims_and_full_suite_events')
-
-def native_test_targets_narrow_the_claimed_hosts():
-    import shutil
-    both = ['aarch64-apple-darwin', 'x86_64-pc-windows-msvc']
-    with tempfile.TemporaryDirectory() as temporary:
-        directory = pathlib.Path(temporary)
-        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
-        (directory / '.github').mkdir()
-        fixture_git(directory, 'init', '--quiet')
-        fixture_git(directory, 'add', '.')
-        fixture_git(directory, 'commit', '-qm', 'host fixture')
-        for native_targets, hosts in [(['aarch64-apple-darwin'], ['macos-latest']), (['x86_64-pc-windows-msvc'], ['windows-latest']), ([], [])]:
-            (directory / '.github/ci.toml').write_text(
-                'wasm_crates=[]\ncheck_targets=' + json.dumps(both) + '\nnative_test_targets=' + json.dumps(native_targets) + '\n', encoding='utf-8')
-            result, values = declaration(directory)
-            assert result.returncode == 0, result.stderr
-            assert list(json.loads(values['test_hosts'])) == ['ubuntu-latest'] + hosts, (native_targets, values)
-            # The compile checks keep every claimed target.
-            assert [item['target'] for item in json.loads(values['targets'])] == both
-        for native_targets, reason in [(['x86_64-apple-darwin'], 'not a native test target'), (['aarch64-unknown-linux-gnu'], 'not a native test target'),
-                                       (['x86_64-pc-windows-msvc'], 'not in check_targets'), ('aarch64-apple-darwin', 'must be an array of strings')]:
-            claimed = ['aarch64-apple-darwin'] if reason == 'not in check_targets' else both
-            (directory / '.github/ci.toml').write_text(
-                'wasm_crates=[]\ncheck_targets=' + json.dumps(claimed) + '\nnative_test_targets=' + json.dumps(native_targets) + '\n', encoding='utf-8')
-            result, _ = declaration(directory)
-            assert result.returncode != 0 and reason in result.stderr, (native_targets, reason, result.stderr)
-    schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
-    assert schema['properties']['native_test_targets']['type'] == 'array' and 'native_test_targets' not in schema['required']
-
-native_test_targets_narrow_the_claimed_hosts()
-print('PASS native_test_targets_narrow_the_claimed_hosts')
 
 def supported_targets_use_native_runners():
     targets_job = workflow.split('  targets:\n', 1)[1].split('\n  browser:', 1)[0]
@@ -4373,8 +4325,6 @@ isolation_creates_a_missing_cargo_home()
 print('PASS isolation_creates_a_missing_cargo_home')
 
 def windows_known_folders_resolve_inside_isolated_profile():
-    if os.name != 'nt':
-        return
     import shutil
     import sys
     with tempfile.TemporaryDirectory() as temporary:
@@ -4423,12 +4373,13 @@ def windows_known_folders_resolve_inside_isolated_profile():
         assert result.returncode == 0, result.stdout + result.stderr
         assert not list(directory.glob('maestro-tests.*')), 'Isolated profile was not cleaned'
 
-windows_known_folders_resolve_inside_isolated_profile()
-print('PASS windows_known_folders_resolve_inside_isolated_profile')
+if os.name == 'nt':
+    windows_known_folders_resolve_inside_isolated_profile()
+    print('PASS windows_known_folders_resolve_inside_isolated_profile')
+else:
+    print('SKIP windows_known_folders_resolve_inside_isolated_profile: runs on Windows only')
 
 def windows_system_locations_accept_mixed_case_names():
-    if os.name != 'nt':
-        return
     import shutil
     import sys
     with tempfile.TemporaryDirectory() as temporary:
@@ -4458,11 +4409,15 @@ def windows_system_locations_accept_mixed_case_names():
         print(result.stdout + result.stderr, flush=True)
         assert result.returncode == 0, result.stdout + result.stderr
 
-windows_system_locations_accept_mixed_case_names()
-print('PASS windows_system_locations_accept_mixed_case_names')
+if os.name == 'nt':
+    windows_system_locations_accept_mixed_case_names()
+    print('PASS windows_system_locations_accept_mixed_case_names')
+else:
+    print('SKIP windows_system_locations_accept_mixed_case_names: runs on Windows only')
 
 def native_test_failures_are_detected():
     import shutil
+    import sys
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         shutil.copytree(root / 'fixtures/host-test-rejected', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
@@ -4475,7 +4430,7 @@ def native_test_failures_are_detected():
         result = execute('Isolated tests', directory, env | {'TOOLS': tools, 'COLLECT_COVERAGE': 'false',
                          'TEST_PACKAGES': '["host-test-rejected"]', 'SHARD': '1', 'TEST_SHARD_COUNT': '1', 'CARGO_COVERAGE_MIN_LINES': ''})
         output = result.stdout + result.stderr
-        if os.name == 'nt' or __import__('sys').platform == 'darwin':
+        if os.name == 'nt' or sys.platform == 'darwin':
             assert result.returncode != 0 and 'fixture rejects native test host' in output, output
         else:
             assert result.returncode == 0 and 'PASS' in output, output

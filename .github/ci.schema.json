@@ -23,13 +23,6 @@
         "type": "string"
       }
     },
-    "native_test_targets": {
-      "description": "Native test targets, a subset of check_targets: aarch64-apple-darwin or x86_64-pc-windows-msvc. Absent, every claimed native test target runs its tests.",
-      "type": "array",
-      "items": {
-        "type": "string"
-      }
-    },
     "test_tools": {
       "description": "Install caller mise.toml tools before every enabled caller-compiling operation, including isolated tests.",
       "type": "boolean",

@@ -7,13 +7,13 @@ One shared Rust CI. The original checks remain required:
 | Format | `cargo fmt --all --check` | Linux |
 | Lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Linux |
 | Docs | `cargo doc --workspace --no-deps --locked` | Linux |
-| Tests | `cargo nextest run` shards and `cargo test --doc` | Linux, declared macOS and Windows |
+| Tests | `cargo nextest run` shards and `cargo test --doc` | Linux, declared macOS |
 
 Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
 be documented, and documentation warnings fail the check. Callers claiming
-`aarch64-apple-darwin` or `x86_64-pc-windows-msvc` in `check_targets` also run
-tests on those native hosts on merge groups and main pushes, unless `native_test_targets`
-narrows the hosts. Pull requests build
+`aarch64-apple-darwin` in `check_targets` also run tests on that native host on
+merge groups and main pushes; a claimed `x86_64-pc-windows-msvc` stays a compile
+check for now. Pull requests build
 the default features. Merge groups and main pushes also build every feature in
 the Docs job, so an item behind a non-default feature is documented before it
 merges, and the Wasm and browser build job documents each declared wasm crate
@@ -41,7 +41,7 @@ Formatting, lint, docs, dependency/source and target checks still run; the
 independent `warm-cache` call continues on every main push. See
 [test policy](docs/caller-checks.md#test-policy-and-caller-permissions).
 The main-push behaviour below applies when no matching merge-queue result exists.
-Full events also run native test legs for claimed macOS and Windows hosts, except
+Full events also run native test legs for a claimed macOS host, except
 when a main push reuses merge-queue tests.
 
 Merge groups and main pushes always run declared Chromium tests, regardless of

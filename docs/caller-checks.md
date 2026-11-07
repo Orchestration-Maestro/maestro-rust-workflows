@@ -182,25 +182,11 @@ The `wasm_crates` and `check_targets` arrays are required, including when empty.
 `test_tools` are optional booleans that default to `false`. The
 [schema](../.github/ci.schema.json) describes the parsed TOML shape; there is no
 version key or older-format reader. `check_targets` also selects native test hosts:
-`aarch64-apple-darwin` adds `macos-latest`, and `x86_64-pc-windows-msvc` adds
-`windows-latest`. These test legs run on merge groups and main pushes only.
-Pull requests and warm calls keep Linux-only tests. The other supported targets
-remain compile-only.
-
-`native_test_targets` is an optional array that narrows the native test hosts.
-Each entry is `aarch64-apple-darwin` or `x86_64-pc-windows-msvc` and must also be
-in `check_targets`; anything else stops the declaration. Absent, every claimed
-native test target runs its tests. A caller that wants a platform compiled and
-linted but not yet tested lists only the other one:
-
-```toml
-check_targets = ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
-native_test_targets = ["aarch64-apple-darwin"]
-```
-
-An empty array keeps every test on Linux. The compile checks always follow
-`check_targets`. List a host only once its cold preparation fits the 45-minute step
-limit (see the Windows timings under Build once, test many).
+`aarch64-apple-darwin` adds `macos-latest`. These test legs run on merge groups
+and main pushes only; pull requests and warm calls keep Linux-only tests. The
+other supported targets, including `x86_64-pc-windows-msvc`, remain compile-only.
+The test jobs already carry a Windows leg, but `windows-latest` joins the native
+test hosts only once its cold preparation fits the job's 45-minute step limit.
 
 `reserved_ports` is an optional array of unique integers from 1 to 65535. When
 set, every Linux test job runs
@@ -251,20 +237,9 @@ Windows' command-line limit; [Windows caching](https://github.com/Orchestration-
 tracks the upstream fix.
 
 Because Windows has no compile cache, a Windows run with no earlier prepared
-bundle builds everything cold on four cores. The jobs that compile there (`Build
-test archive`, `Prepare test setup` and the test and doctest legs) start with a
-`Windows build settings` step. It excludes the workspace, the runner temp
-directory and the Cargo and Rustup homes from real-time scanning and sets
-`CARGO_INCREMENTAL=0`, since no later run reads the incremental state. The step
-runs before the checkout writes the first build tree.
-
-The cold Windows preparation of one Maestro commit is still close to the
-45-minute step limit, and its time follows the runner's processor. In ten
-measured runs, on three generations of AMD EPYC, the preparation took 29 to 38
-minutes in five and ran past the limit in five. The step is not shown to bring the
-slowest runners under the limit, and the limit is unchanged. Runs 42313125576,
-42319979959, 42325056734, 42329367779, 42320059723 and 42330265157 hold the
-timings.
+bundle builds everything cold on four cores. The cold preparation of a large
+workspace sits near the 45-minute step limit and varies with the runner's
+processor, so Windows tests wait until it fits.
 
 A push with `warm-cache: true`, including a feature-branch push, also runs the
 declared target checks; warm calls for other events skip them. Only
@@ -1812,9 +1787,9 @@ in: `Test shard (*` stands for any shard, and `Dependency, source and coverage
 checks` is one check despite its comma. The title never carries the run id, so
 a set that stays missing across landings keeps one issue; each body names the
 judged run. A failed job is not a missing one; the run already reports it. The
-The pinned `Test shard (*` prefix includes native shard names, and
+pinned `Test shard (*` prefix includes native shard names, and
 `Tests (ubuntu-latest)` requires every native shard and doctest leg to succeed;
-a failure, cancellation or unexpected skip fails the aggregate.
+a failure, cancellation or unexpected skip fails the aggregate. The
 self-test checks every pinned name against `ci.yml`, and checks that this
 repository's ruleset checks, `Required repository quality` and `Required
 consumer tests`, still exist, so renaming a job fails there first. When you

@@ -188,6 +188,7 @@ jobs:
               print('PASS windows_system_locations_accept_mixed_case_names')
           if os.environ['TARGET'] in ('aarch64-apple-darwin', 'x86_64-pc-windows-msvc'):
               namespace['native_test_failures_are_detected']()
+              print('PASS native_test_failures_are_detected')
           namespace['foreign_target_warnings_are_denied']()
           namespace['cargo_git_cache_reuses_exact_locked_sources']()
           print('PASS foreign_target_failures_are_detected')
