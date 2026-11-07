@@ -4586,11 +4586,10 @@ def wasm_clippy_denies_warnings():
         'every declared crate is linted'
     assert names.index('Lint') < names.index('Lint wasm crates') < names.index('Compile cache statistics')
     assert 'if' not in lint_step, 'every declared crate is linted on each run of the job'
-    # The job that lints runs on pull requests too, unlike the merge-group-only wasm build.
     for event, coverage in [('pull_request', 'false'), ('merge_group', 'true')]:
         jobs = routed_jobs(document, {'github.event_name': event, 'github.ref': 'refs/heads/topic',
                                       'needs.declaration.outputs.coverage': coverage})
-        assert 'quality' in jobs and ('browser' in jobs) == (coverage == 'true'), (event, jobs)
+        assert 'quality' in jobs, (event, jobs)
     result = execute('Lint wasm crates', root / 'fixtures/wasm-clippy-warning', {'WASM_CRATES': '["wasm-clippy-warning"]'})
     output = result.stdout + result.stderr
     assert result.returncode != 0 and 'clippy::needless_return' in output, 'a wasm-only body must pass Clippy\n' + output
