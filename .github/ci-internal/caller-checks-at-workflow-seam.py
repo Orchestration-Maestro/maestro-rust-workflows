@@ -348,16 +348,19 @@ def declared_outputs_are_read_from_a_closed_file():
     # declaration step writes must be closed before its values are read back.
     descriptors = pathlib.Path('/proc/self/fd')
     if not descriptors.is_dir():
-        return
+        # Only this table shows a held handle, so the native legs prove the step itself.
+        print('SKIP declared_outputs_are_read_from_a_closed_file: no descriptor table')
+        return False
     seen = []
     writing = execute
-    def held(descriptors):
+    def held():
         # The listing closes its own descriptor, so only the process's own handles remain.
         return {os.readlink(descriptors / entry) for entry in os.listdir(descriptors) if (descriptors / entry).exists()}
     def recording(name, cwd, extra=None, prelude=''):
-        path = (extra or {})['GITHUB_OUTPUT']
+        path = os.path.realpath((extra or {})['GITHUB_OUTPUT'])
         seen.append(path)
-        assert path not in held(descriptors), \
+        # A handle's target is resolved, so a temporary directory behind a symlink still matches.
+        assert path not in held(), \
             'the declaration step writes GITHUB_OUTPUT while this process holds it open'
         return writing(name, cwd, extra, prelude)
     globals()['execute'] = recording
@@ -368,9 +371,10 @@ def declared_outputs_are_read_from_a_closed_file():
     assert result.returncode == 0, result.stderr
     assert values['test_shard_count'] == '16', values
     assert seen
+    return True
 
-declared_outputs_are_read_from_a_closed_file()
-print('PASS declared_outputs_are_read_from_a_closed_file')
+if declared_outputs_are_read_from_a_closed_file():
+    print('PASS declared_outputs_are_read_from_a_closed_file')
 
 def seam_steps_read_their_shard_count_from_the_workflow():
     # The seam's fixture declares no count, so every reader sees the declaration's own default.
