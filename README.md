@@ -7,17 +7,19 @@ One shared Rust CI. The original checks remain required:
 | Format | `cargo fmt --all --check` | Linux |
 | Lint | `cargo clippy --workspace --all-targets --locked -- -D warnings` | Linux |
 | Docs | `cargo doc --workspace --no-deps --locked` | Linux |
-| Tests | `cargo nextest run` shards and `cargo test --doc` | Linux |
+| Tests | `cargo nextest run` shards and `cargo test --doc` | Linux, declared macOS |
 
 Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
-be documented, and documentation warnings fail the check. Pull requests build
+be documented, and documentation warnings fail the check. Callers claiming
+`aarch64-apple-darwin` in `check_targets` also run tests on that native host on
+merge groups and main pushes; a claimed `x86_64-pc-windows-msvc` stays a compile
+check for now. Pull requests build
 the default features. Merge groups and main pushes also build every feature in
 the Docs job, so an item behind a non-default feature is documented before it
 merges, and the Wasm and browser build job documents each declared wasm crate
 for its own target with the same flags. Lint also runs Clippy for
 `wasm32-unknown-unknown` on every declared wasm crate, on pull requests too, so
-code that only a WebAssembly build compiles is linted before it merges. Tests
-run on Linux for now; macOS and Windows return before the first release.
+code that only a WebAssembly build compiles is linted before it merges.
 A new push to a pull request cancels that pull request's older run.
 
 After declaration validation, pull requests run formatting, Clippy, docs,
@@ -43,6 +45,8 @@ Formatting, lint, docs, dependency/source and target checks still run; the
 independent `warm-cache` call continues on every main push. See
 [test policy](docs/caller-checks.md#test-policy-and-caller-permissions).
 The main-push behaviour below applies when no matching merge-queue result exists.
+Full events also run native test legs for a claimed macOS host, except
+when a main push reuses merge-queue tests.
 
 Merge groups and main pushes always run declared Chromium tests, regardless of
 changed paths. Ordinary pull requests skip Chromium runtime tests. See
@@ -55,6 +59,9 @@ The `warm-cache` call instead compiles and runs its warm test filter in one job.
 A caller can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
 [test shards](docs/caller-checks.md#test-shards). Doctests run in a
 parallel `Doctests` matrix leg on merge groups and main pushes.
+Each claimed native host gets up to four shards, capped at `test_shard_count`,
+and its own `Doctests (<runner>)` leg on full events. Native shards are named
+`Test shard (<runner> k/n)`; Linux job names stay unchanged.
 The aggregate `Tests (ubuntu-latest)` requires every shard and `Doctests` to
 succeed on full runs. Pull requests require a successful declaration and skipped
 test and doctest jobs.
@@ -88,7 +95,7 @@ than being repaired. Adoption needs a workflows release and organization re-pin.
 Pinned tool downloads use curl's `--retry 3` for transient failures without
 changing their pins or integrity checks.
 
-Numeric test shards download one nextest archive instead of compiling the workspace.
+Numeric test shards download one nextest archive per host instead of compiling the workspace.
 An optional caller `test_prepare` command runs beside the host build and writes
 reusable outputs to `TEST_PREPARE_OUTPUT` (`target/test-setup`). Shards download
 those files separately and setup scripts reuse them. `test_prepare_setups` names
@@ -289,7 +296,8 @@ browser failures and pinned tooling. The required consumer result also includes
 using extracted shared setup and recipe bodies. A developer-tool fixture proves build-script
 tool availability across compiling jobs. Isolated tests spawn caller-pinned
 `just` and `prek` only when opted in. Native
-runner proofs detect deliberate Windows/macOS-only failures. The `fixtures/fuzz`
+runner proofs detect deliberate Windows/macOS-only compilation and test failures.
+Intel macOS remains compile-only. The `fixtures/fuzz`
 caller runs the fuzz job on hosted runners: its planted crash, stall and large
 allocation each give one finding, its clean target gives none, and the report
 code files them through a fake `gh`, so the self-test never opens a real issue.

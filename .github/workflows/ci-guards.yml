@@ -190,6 +190,9 @@ jobs:
           WORK = {'tests': ('Test shard (', 'Test jobs', 'test run'),
                   'compiles': ('Build test archive', 'Build jobs', 'compile unit')}
 
+          WORK = WORK | {f'{kind}-{host}': (f'{prefix}{host} ' if kind == 'tests' else f'{prefix} ({host})', f'{label} ({host})', unit)
+                   for host in ('macos-latest', 'windows-latest') for kind, (prefix, label, unit) in list(WORK.items())}
+
           # The steps of a test shard that run the tests: the only seconds of a shard that count as test work.
           TEST_STEPS = ('Tests', 'Isolated tests')
 
@@ -200,7 +203,9 @@ jobs:
           def kind_of(name):
               """The kind of work a job name measures, None for any other job; a reusable caller's prefix is not part of the name."""
               name = bare(name)
-              return next((kind for kind, (measuring, _, _) in WORK.items() if name.startswith(measuring)), None)
+              kind = next((kind for kind, (measuring, _, _) in WORK.items() if name.startswith(measuring)), None)
+              host = next((host for host in ('macos-latest', 'windows-latest') if host in name), None)
+              return f'{kind}-{host}' if host and kind in ('tests', 'compiles') else kind
 
           def rated(name):
               """Whether the rate finding already judges the seconds of a timing: the archive build, a shard job and the step of a shard that runs its tests.
@@ -212,7 +217,7 @@ jobs:
                   return False
               job, step = parts[first], ' / '.join(parts[first + 1:]) or None
               kind = kind_of(job)
-              return kind == 'compiles' or (kind == 'tests' and (not step or step in TEST_STEPS))
+              return (kind or '').startswith(('compiles', 'tests')) and (kind.startswith('compiles') or not step or step in TEST_STEPS)
 
           RATCHET_TITLE = 'CI time ratchet'
 
@@ -498,14 +503,14 @@ jobs:
                   kind = kind_of(job['name'])
                   if kind is None:
                       continue
-                  took = sum(seconds(step) or 0 for step in job.get('steps', []) if step['name'] in TEST_STEPS) if kind == 'tests' else seconds(job)
+                  took = sum(seconds(step) or 0 for step in job.get('steps', []) if step['name'] in TEST_STEPS) if kind.startswith('tests') else seconds(job)
                   for note in annotations_of(job):
                       if note.get('title') != 'Work units':
                           continue
                       for name, value in re.findall(r'(tests|compiles|hit-rate): ([0-9.]+)', note['message']):
                           if name == 'hit-rate':
                               found[name] = float(value)
-                          elif name == kind and float(value) > 0:
+                          elif name == kind.split('-', 1)[0] and float(value) > 0:
                               spent[kind] = spent.get(kind, 0) + took
                               units[kind] = units.get(kind, 0) + float(value)
                               ran[kind] = ran.get(kind, 0) + 1
@@ -610,20 +615,32 @@ jobs:
 
           def shards_of(jobs):
               """The test shard jobs that ran: the only jobs the balance guard weighs."""
-              return [job for job in jobs if kind_of(job['name']) == 'tests' and seconds(job) is not None]
+              return [job for job in jobs if (kind_of(job['name']) or '').startswith('tests') and seconds(job) is not None]
 
-          def shard_median(jobs):
-              """The median seconds of the test shard jobs that ran: the shard a balance finding is weighed against; None below two shards."""
-              ran = shards_of(jobs)
+          def shard_kinds(jobs):
+              """The host of each test shard that ran: a shard is weighed against the shards that ran on its own host."""
+              return sorted({kind_of(job['name']) for job in shards_of(jobs)})
+
+          def shards_on(jobs, kind):
+              """The test shard jobs of one host that ran."""
+              return [job for job in shards_of(jobs) if kind_of(job['name']) == kind]
+
+          def shard_median(jobs, kind):
+              """The median seconds of one host's test shards: the shard a balance finding is weighed against; None below two shards."""
+              ran = shards_on(jobs, kind)
               return statistics.median(seconds(job) for job in ran) if len(ran) >= 2 else None
 
           def slowest_shard(jobs, margin):
-              """The test shard past the margin over the median shard, as its job, its seconds and that median; None when the shards are balanced."""
-              median = shard_median(jobs)
-              if median is None:
-                  return None
-              slowest = max(shards_of(jobs), key=seconds)
-              return None if seconds(slowest) <= margin * median else (slowest, seconds(slowest), median)
+              """The test shard furthest past the margin over its own host's median, as its job, its seconds and that median; None when every host's shards are balanced."""
+              worst = None
+              for kind in shard_kinds(jobs):
+                  median = shard_median(jobs, kind)
+                  if median is None:
+                      continue
+                  slowest = max(shards_on(jobs, kind), key=seconds)
+                  if seconds(slowest) > margin * median and (worst is None or seconds(slowest) / median > worst[1] / worst[2]):
+                      worst = (slowest, seconds(slowest), median)
+              return worst
 
           def shard_finding(run, blamed, margin, grown, reading):
               """The finding for a shard past the margin: the slow tests that grew on that shard, then the fixed phases it paid before them.
@@ -733,7 +750,7 @@ jobs:
                   # What each test shard's own log measures: its test results, the fixed phases it names, its tests' seconds.
                   found = {}
                   for job in jobs:
-                      if kind_of(job['name']) == 'tests':
+                      if (kind_of(job['name']) or '').startswith('tests'):
                           log = log_of(job)
                           found[job['name']] = {'results': test_results(log), 'phases': shard_phases(log), 'tests': test_seconds(log)}
                   return found
@@ -816,10 +833,12 @@ jobs:
               on_main = run['event'] in ('merge_group', 'push')
               if on_main:
                   findings.append(required_finding(run, jobs, settings['required']))
-              shards, median = shards_of(jobs), shard_median(jobs)
+              shards = shards_of(jobs)
+              medians = {kind: shard_median(jobs, kind) for kind in shard_kinds(jobs)}
               blamed = slowest_shard(jobs, settings['margin'])
               for job in shards:
                   # Only a shard inside the margin has recovered: a second shard over it is an imbalance of its own, never a pass.
+                  median = medians[kind_of(job['name'])]
                   if median is not None and seconds(job) <= settings['margin'] * median:
                       pass_of(UNBALANCED, bare(job['name']),
                               f'this shard took {seconds(job) / 60:.1f} min, inside {settings["margin"]:g} times the median shard')

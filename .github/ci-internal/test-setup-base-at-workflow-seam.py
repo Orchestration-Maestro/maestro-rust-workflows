@@ -101,3 +101,24 @@ for check in [prepare_gets_the_restored_bundle_as_its_base, prepare_lists_the_re
               prepare_ignores_an_unreadable_bundle]:
     check()
     print('PASS ' + check.__name__, flush=True)
+
+def setup_cache_identity_separates_host_bundles():
+    assert 'test_runners' in document['jobs']['test-prepare']['strategy']['matrix']['runner']
+    assert 'steps.cache-identity.outputs.prefix' in steps['Test setup cache identity']['env']['COMPILE_CACHE_PREFIX']
+    identity = next(step for step in document['jobs']['test-prepare']['steps'] if step['name'] == 'Compile cache identity')
+    assert 'if' not in identity, 'Windows still needs a host-specific identity without compile caching'
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        (directory / 'input').write_text('bundle input', encoding='utf-8')
+        def key(prefix):
+            output = directory / 'output'
+            output.write_text('', encoding='utf-8')
+            result = execute('Test setup cache identity', directory, {'COMPILE_CACHE_PREFIX': prefix, 'TEST_PREPARE_INPUTS': '["input"]',
+                             'GITHUB_WORKSPACE': '/checkout', 'TEST_PREPARE': 'prepare', 'GITHUB_OUTPUT': str(output)})
+            assert result.returncode == 0, result.stderr
+            return output.read_text(encoding='utf-8')
+        assert key('linux-compiler') == key('linux-compiler')
+        assert len({key(host + '-compiler') for host in ['linux', 'macos', 'windows']}) == 3
+
+setup_cache_identity_separates_host_bundles()
+print('PASS setup_cache_identity_separates_host_bundles')

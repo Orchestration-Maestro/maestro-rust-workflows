@@ -30,7 +30,12 @@ mod tests {
             assert!(path.is_dir());
             assert_eq!(path.parent(), paths[0].parent());
             assert!(!paths[..index].contains(path));
-            assert_eq!(fs::read_dir(path).unwrap().count(), 0);
+            let entries = fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .filter(|name| !(cfg!(windows) && name == "AppData"))
+                .count();
+            assert_eq!(entries, 0);
         }
         assert_eq!(env::var("TMP").unwrap(), env::var("TMPDIR").unwrap());
         assert_eq!(env::var("TEMP").unwrap(), env::var("TMPDIR").unwrap());
