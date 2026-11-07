@@ -1,10 +1,13 @@
 import ast
+import contextlib
+import functools
 import itertools
 import json
 import os
 import pathlib
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -196,7 +199,8 @@ print('PASS workflow_text_io_uses_utf8')
 def execute(name, cwd, extra=None, prelude=''):
     env = {k: v for k, v in os.environ.items()
            if k not in credential_names and not k.endswith('_API_KEY')}
-    env['TEST_SHARD_COUNT'] = '16'
+    # The shard count the workflow's own step env carries, so a step that loses its wiring reads none.
+    env['TEST_SHARD_COUNT'] = wired_shard_count(name)
     # The declaration's output without test_prepare_setups.
     env['TEST_PREPARE_CONSUMERS'] = 'null'
     env.update(extra or {})
@@ -210,7 +214,6 @@ def execute(name, cwd, extra=None, prelude=''):
         command = body('Mise bootstrap') + (body('Browser tool pin') if name == 'Browser tools' else '') + command
     bash = 'bash'
     if os.name == 'nt':
-        import shutil
         # Match the runner's Bash shell, not the Windows WSL launcher.
         bash = str(pathlib.Path(shutil.which('git')).parent.parent / 'bin/bash.exe')
         assert pathlib.Path(bash).is_file(), f'Git Bash not found: {bash}'
@@ -229,6 +232,17 @@ def execute(name, cwd, extra=None, prelude=''):
             argv.insert(0, os.path.expanduser('~/.local/bin/capped'))
         return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True)
 
+@contextlib.contextmanager
+def output_file():
+    # A step writes GITHUB_OUTPUT by name, and Windows refuses to read a file its own process still
+    # holds open, so the handle closes before the values are read back.
+    descriptor, path = tempfile.mkstemp()
+    os.close(descriptor)
+    try:
+        yield pathlib.Path(path)
+    finally:
+        pathlib.Path(path).unlink()
+
 def select_packages(cwd, extra):
     return execute('Select test packages', cwd, extra)
 
@@ -241,6 +255,155 @@ GOOGLE_CLOUD_LOCATION AWS_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 AWS_SESSION_TOKEN AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK
 AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI
 AWS_WEB_IDENTITY_TOKEN_FILE BEDROCK_EXTENSIVE_MODEL_TEST FIREWORKS_API_KEY'''.split()
+
+def declaration(directory):
+    with output_file() as output:
+        result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output)})
+        values = dict(line.split('=', 1) for line in output.read_text(encoding="utf-8").splitlines())
+        return result, values
+
+@functools.cache
+def workflow_jobs():
+    # The workflow's jobs by name, in source order, split where the file declares them.
+    return dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
+                           workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+
+def shared_block(text, indent, key):
+    # The block `key:` declares, following the anchor a job shares it with instead of repeating it.
+    alias = re.search(r'^' + ' ' * indent + re.escape(key) + r': \*([\w-]+)\n', text, re.MULTILINE)
+    if not alias:
+        return text
+    anchor = re.search(r'^' + ' ' * indent + re.escape(key) + r': &' + re.escape(alias[1]) + r'\n',
+                       workflow, re.MULTILINE)
+    assert anchor, f'Missing {key} anchor: {alias[1]}'
+    # The anchor's block ends where the next job starts.
+    return re.split(r'^  [\w-]+:\n', workflow[anchor.start():], maxsplit=1, flags=re.MULTILINE)[0]
+
+@functools.cache
+def workflow_steps():
+    # Every step with the job that declares it and the indent its keys use, in source order.
+    steps = {}
+    for job, text in workflow_jobs().items():
+        block = shared_block(text, 4, 'steps')
+        layout = re.search(r'^( *)steps:(?: &[\w-]+)?\n', block, re.MULTILINE)
+        if not layout:
+            continue
+        for part in re.split(r'^' + layout[1] + r'  - name: ', block, flags=re.MULTILINE)[1:]:
+            steps.setdefault((job, part.splitlines()[0]), (part, len(layout[1]) + 4))
+    return steps
+
+def block_map(text, indent, key='env'):
+    # A block's mapping whose values sit on the key's own line, so no YAML tool is needed.
+    # A comment line sits inside the mapping, so it continues the block rather than ending it.
+    entry = ' ' * (indent + 2) + r'(?:[\w-]+: .*|#.*)\n'
+    block = re.search(r'^' + ' ' * indent + re.escape(key) + r':(?: &[\w-]+)?\n((?:' + entry + r')+)',
+                      shared_block(text, indent, key), re.MULTILINE)
+    return dict(re.findall(r'^' + ' ' * (indent + 2) + r'([\w-]+): (.*)$', block[1], re.MULTILINE)) if block else {}
+
+def shard_count_seen_by(job, step, declared, matrix_count=0):
+    # Layers workflow, job and step env as GitHub does; a step outside that wiring reads no count.
+    assert (job, step) in workflow_steps(), f'Missing executable body: {step}'
+    chunk, indent = workflow_steps()[(job, step)]
+    layers = [block_map(workflow, 0), block_map(workflow_jobs()[job], 4), block_map(chunk, indent)]
+    seen = [layer['TEST_SHARD_COUNT'] for layer in layers if 'TEST_SHARD_COUNT' in layer]
+    if not seen:
+        return None
+    # The wired expression resolves through a real declaration run of the declarations it names.
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        if declared is not None:
+            (directory / '.github').mkdir()
+            (directory / '.github/ci.toml').write_text(
+                f'wasm_crates=[]\ncheck_targets=[]\ntest_shard_count={declared}\n', encoding='utf-8')
+        result, outputs = declaration(directory)
+        assert result.returncode == 0, result.stderr
+    def resolve(value):
+        text = str(value)
+        if text.startswith('$' + '{{ matrix.count || '):
+            return str(evaluate(value, {'matrix.count': matrix_count, 'needs.declaration.outputs.test_shard_count': outputs['test_shard_count']}))
+        match = re.fullmatch(r'\$\{\{ (steps\.config|needs\.declaration)\.outputs\.(\w+) \}\}', text)
+        if match and match[1] == 'steps.config':
+            return outputs[match[2]]
+        if match:
+            return resolve(block_map(workflow_jobs()['declaration'], 4, 'outputs')[match[2]])
+        # The test archive names its count per runner, and the seam's proof host is the Linux one.
+        if re.fullmatch(r'\$\{\{ fromJSON\(needs\.declaration\.outputs\.test_counts\)\[matrix\.runner\] \}\}', text):
+            return str(json.loads(outputs['test_hosts'])['ubuntu-latest'])
+        assert '$' + '{{' not in text, f'{step} reads an unknown shard count: {text}'
+        return text
+    return resolve(seen[-1])
+
+def wired_shard_count(step):
+    # The count the workflow wires into the step body() runs; none when that step's env was dropped.
+    resolved = wired_shard_count.__dict__.setdefault('resolved', {})
+    if step not in resolved:
+        job = next((name for (name, candidate), _ in workflow_steps().items() if candidate == step), None)
+        assert job, f'Missing executable body: {step}'
+        resolved[step] = shard_count_seen_by(job, step, None)
+    return resolved[step]
+
+def declared_outputs_are_read_from_a_closed_file():
+    # Windows refuses to read a file its own process still holds open, so the output file the
+    # declaration step writes must be closed before its values are read back.
+    descriptors = pathlib.Path('/proc/self/fd')
+    if not descriptors.is_dir():
+        # Only this table shows a held handle, so the native legs prove the step itself.
+        print('SKIP declared_outputs_are_read_from_a_closed_file: no descriptor table')
+        return False
+    seen = []
+    writing = execute
+    def held():
+        # The listing closes its own descriptor, so only the process's own handles remain.
+        return {os.readlink(descriptors / entry) for entry in os.listdir(descriptors) if (descriptors / entry).exists()}
+    def recording(name, cwd, extra=None, prelude=''):
+        path = os.path.realpath((extra or {})['GITHUB_OUTPUT'])
+        seen.append(path)
+        # A handle's target is resolved, so a temporary directory behind a symlink still matches.
+        assert path not in held(), \
+            'the declaration step writes GITHUB_OUTPUT while this process holds it open'
+        return writing(name, cwd, extra, prelude)
+    globals()['execute'] = recording
+    try:
+        result, values = declaration(root / 'fixtures/sample')
+    finally:
+        globals()['execute'] = writing
+    assert result.returncode == 0, result.stderr
+    assert values['test_shard_count'] == '16', values
+    assert seen
+    return True
+
+if declared_outputs_are_read_from_a_closed_file():
+    print('PASS declared_outputs_are_read_from_a_closed_file')
+
+def seam_steps_read_their_shard_count_from_the_workflow():
+    # The seam's fixture declares no count, so every reader sees the declaration's own default.
+    # The native proofs provide only Python, so a stand-in YAML tool proves none is called.
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        used = directory / 'used'
+        (directory / 'yq').write_text(f'#!/bin/sh\ntouch "{used}"\nexit 1\n', encoding='utf-8')
+        (directory / 'yq').chmod(0o755)
+        fixture = directory / 'fixture'
+        shutil.copytree(root / 'fixtures/sample', fixture, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        inherited = os.environ['PATH']
+        os.environ['PATH'] = str(directory) + os.pathsep + inherited
+        try:
+            result, outputs = declaration(fixture)
+            assert result.returncode == 0, result.stderr
+            for step in ['Select test packages', 'Build test archive', 'Tests', 'Isolated tests', 'Merge coverage']:
+                assert wired_shard_count(step) == outputs['test_shard_count'], step
+            assert shard_count_seen_by('test-build', 'Build test archive', 32) == '32'
+            # A step outside the wiring reads no count, so no seam test passes on a copied value.
+            assert wired_shard_count('Format') is None
+            # A commented line inside the env does not end it, so a key below the comment still reads.
+            assert 'TEST_CHECKOUT_EXCLUSIONS' in block_map(workflow_jobs()['tests'], 4)
+        finally:
+            os.environ['PATH'] = inherited
+        assert not used.exists(), 'the shard readers shelled out to a YAML tool'
+
+seam_steps_read_their_shard_count_from_the_workflow()
+print('PASS seam_steps_read_their_shard_count_from_the_workflow')
 
 def link_test_toolchains(directory):
     physical = pathlib.Path(subprocess.check_output(['rustup', 'which', 'rustc'], text=True).strip()).parent.parent
@@ -326,13 +489,6 @@ def child_cargo_keeps_selected_toolchain_offline():
 
 child_cargo_keeps_selected_toolchain_offline()
 print('PASS child_cargo_keeps_selected_toolchain_offline')
-
-def declaration(directory):
-    with tempfile.NamedTemporaryFile() as output:
-        result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': output.name})
-        values = dict(line.split('=', 1) for line in pathlib.Path(output.name).read_text(encoding="utf-8").splitlines())
-        return result, values
-
 
 def browser_test_declaration_checks_exact_packages():
     with tempfile.TemporaryDirectory() as temporary:
