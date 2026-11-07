@@ -1576,35 +1576,61 @@ Pin the reference to a reviewed commit and list the listener workflow in
 filed with the automatic job token, and a job that cannot read the run fails
 instead of passing.
 
-Every finding carries one identity, its kind and its subject. The run is
-evidence in the body, never part of the title, so one cause that keeps breaching
-fills one issue with comments instead of an issue per run:
+Every finding has a kind, and most have a subject. The guards keep one open
+issue per kind: the kind is its title and each subject is one section in it.
+One slow build behind four slow tests, or one cold snapshot behind five cache
+shapes, opens one issue that lists them. The run is evidence in the body, never part of
+the title:
 
-| Guard | Identity, `kind: subject` |
-| --- | --- |
-| Time per unit | `CI run slower than its baseline: Test jobs on <band>`, or `Build jobs` for the compile units |
-| Shard balance | `Test shards unbalanced: <the blamed shard job>` |
-| Slow test | `Test over 30 seconds: <binary> <test>` |
-| Cache floor | `Compile cache below its hit-rate floor: <the cache shape>` |
-| Snapshot seed | `Escalation: default-branch run did not seed its compile snapshots` |
-| Cache usage | `Repository cache above 90% of its limit` |
-| Required checks | `Required checks missing: <the missing checks>` |
-| Selection | `Test selection share above its range` |
-| Escalation | `Escalation: <what departed from the pattern>` |
+| Guard | Issue title, the kind | Subject |
+| --- | --- | --- |
+| Time per unit | `CI run slower than its baseline` | `Test jobs on <band>`, or `Build jobs on <band>` for the compile units |
+| Shard balance | `Test shards unbalanced` | the blamed shard job |
+| Slow test | `Test over 30 seconds` | `<binary> <test>` |
+| Cache floor | `Compile cache below its hit-rate floor` | the cache shape |
+| Required checks | `Required checks missing` | the missing checks |
+| Snapshot seed | `Escalation: default-branch run did not seed its compile snapshots` | none |
+| Cache usage | `Repository cache above 90% of its limit` | none |
+| Selection | `Test selection share above its range` | none |
+| Escalation | `Escalation: <what departed from the pattern>` | none |
 
-The guard reads the open issues once. A new identity opens an issue; an identity
-that is already open gets one comment with the new run's numbers, so a repeat
-breach comments instead of filing. A run that judges an identity and finds it in
-order comments the recovery on that issue once, so whoever owns the fix sees the
-run that passed; every later passing run says nothing until that identity
-breaches again. The guard never closes an issue itself, and a pass with no open
-issue says nothing.
+The issue body is the finding's current state. Each section holds the subject,
+`Breaching` or `Passed`, the run that first breached it, and the latest
+evidence, which opens with the run that last judged the subject. A kind without
+subjects has one section and no subject heading.
 
-A subject is as wide as the cause: one cache shape is one identity, however many
-jobs judge it, so sixteen test shards on one cold snapshot produce one issue with
-sixteen job lines, not sixteen issues. A rate is one identity per kind of work
-and runner band, a shard balance one per blamed shard, and a slow test one per
-test.
+The guard reads the open issues once per run, then handles each kind the run
+judged:
+
+- With no open issue, a breach opens one that lists every subject that breached
+  in the run.
+- With an open issue, the guard rewrites its body in place. A breach adds its
+  subject, or replaces that subject's evidence and keeps the run that first
+  breached it. A pass updates only a subject the issue already lists.
+- A comment marks a change only: subjects listed for the first time
+  (`New subjects: ...`), or the run after which no listed subject is breaching
+  (`passed this guard: every subject listed here has passed`). A repeat breach,
+  a pass while another subject still breaches, and a breach of a subject that
+  had passed update the body and add no comment.
+
+The guard never closes an issue. Close it once the fix is confirmed; the next
+breach of that kind opens a new one. A pass with no open issue, or for a subject
+the issue does not list, changes nothing. The guard rewrites only a body it can
+read back: an open issue with a kind's title and no subject section fails the
+run and stays untouched. Close that issue, and the next breach opens a new one.
+
+A subject is as wide as the cause: one cache shape is one subject, however many
+jobs judge it, so sixteen test shards on one cold snapshot are one section with
+sixteen job lines. A rate is one subject per kind of work and runner band, a
+shard balance one per blamed shard, and a slow test one per test.
+
+Source: on 2026-11-06 and 2026-11-07, while each issue carried one subject, one
+slow browser build in Maestro's tooling tests opened four slow-test issues and a
+second shard issue, one cold compile snapshot opened five cache-floor issues,
+and the open issues gained a comment on nearly every merge group, up to 26 each.
+The self-test replays those verdicts run by run
+(`fixtures/guard-fan-out/verdicts.json`) and ends with one issue per kind and 13
+comments in all.
 
 | Input | Default | Used by |
 | --- | --- | --- |
@@ -1642,10 +1668,10 @@ job sets.
 A run whose rate for either kind is more than 10% over its baseline, and
 whose gap is more than 2 s per executed job in total (the rate gap times the
 run's units of that kind, against two seconds for each job that did them), is a
-regression and files `CI run slower than its baseline: Test jobs on <band>` at
-once, or the same title with `Build jobs` when the compile units are what
-regressed; each kind of work keeps its own issue, because each has its own
-limit. The bound is the measurement's own error (supervisor ruling S7759):
+regression: the guard lists `Test jobs on <band>` at once in the `CI run slower
+than its baseline` issue, or `Build jobs on <band>` when the compile units are
+what regressed. Each kind of work keeps its own section, because each has its
+own limit. The bound is the measurement's own error (supervisor ruling S7759):
 GitHub stamps job and step times to the second, 1 s at each boundary, so a
 work-time difference is measurable only above 2 s per executed job. A difference
 within it is neither a regression nor an escalation, for a rate below its spread
@@ -1714,8 +1740,10 @@ cache list (the largest entries past 90%, and the snapshots of a default-branch
 run), and the floor annotations of the other jobs that ran a floor step, about
 15, so about 310 and 340. While a cache-floor issue is open, the guard also
 reads the log of each job that ran a floor step, about fifteen more calls, to
-name the shape that recovered; with no floor issue open it reads none. To
-respond, open the run link and fix the cause of the kind that regressed.
+name the shape that recovered; with no floor issue open it reads none. Keeping
+the issues costs two calls for each open issue whose kind the run judged (the
+body is read, then rewritten) and one more for each comment. To respond, open
+the run link and fix the cause of the kind that regressed.
 
 ### Compile-cache hit-rate floor
 
@@ -1740,15 +1768,14 @@ the warm-up stayed on a release without their writer, and the first group after 
 default-branch push (40996420703) restored all five at 100%. The warning is an
 annotation that names the shape and one cause. The guards read it from a
 merge-group or main-push run, and from a pull-request run when a caller passes
-one, and file `Compile cache below its hit-rate floor: <shape>` for each shape
-that fell cold, listing every job that judged that shape in the body, or add a
-comment to that shape's open issue, so repeated cold builds on default-branch
-pushes, which are the regression, show as a growing list of comments. The shape
-is the identity because one snapshot serves every job that compiles it: the
-sixteen test shards of a cold `tests-coverage` snapshot are one cause. A run
-whose floor step stayed over the limit names its shape on its own log line, so a
-job that judged its cache and passed comments the recovery on that shape's open
-issue once:
+one, and list each shape that fell cold in the `Compile cache below its hit-rate
+floor` issue, with every job that judged that shape. The shape is the subject
+because one snapshot serves every job that compiles it: the sixteen test shards
+of a cold `tests-coverage` snapshot are one cause. A repeated cold build updates
+its shape's section, and a shape that turns cold for the first time adds a
+section and one comment. A run whose floor step stayed over the limit names its
+shape on its own log line, so a job that judged its cache and passed marks that
+shape passed. The causes a warning names, with their fixes:
 
 - **Cold snapshot:** a snapshot was restored but lacks this build's objects.
   Run the warm build on the default branch to seed it again.
@@ -1796,7 +1823,7 @@ repository cache they fill.
   2026-10-30 against its 10 GiB limit. The guide and the finding use GiB. To respond, delete the pull-request entries the issue lists, or
   shrink what the snapshots hold.
 
-Both titles are standing: a repeat adds a comment to the open issue.
+Both are kinds without subjects: a repeat rewrites the open issue in place.
 
 ### Selection check
 
@@ -1817,16 +1844,16 @@ route. Source: of 14 measured PR runs, 11 selected 1 to 3 of 51 packages
 ### Shard balance
 
 When the slowest `Test shard` job takes more than `shard-balance-margin` times
-the median shard on the same host, the guard files `Test shards unbalanced: <shard>` for that
-shard, and every shard inside the margin of that same run comments the recovery
-on its own open issue. A second shard over the margin is an imbalance of its
-own, so it is never reported as recovered. The issue reads the blamed shard's
+the median shard on the same host, the guard lists that shard in the
+`Test shards unbalanced` issue, and every shard inside the margin of that same
+run is marked passed there. A second shard over the margin is an imbalance of
+its own, so it is never marked passed. Its section reads the blamed shard's
 own log, so only tests that ran on that shard appear: the ones that are new, or
 reached a higher slow mark since
 the last green run of the same event. Nextest prints only slow marks, so growth
 shows as a higher mark rather than exact seconds.
 
-Beside the tests, the issue lists the fixed phases the same log times: the
+Beside the tests, the section lists the fixed phases the same log times: the
 extraction of the instrumented targets, each test setup, and the tests' own
 seconds from the nextest summary. A shard past the margin is often slow from
 that fixed work before its first test runs, so read those lines before blaming a
@@ -1844,13 +1871,12 @@ for Linux, macOS and Windows.
 ### Test-time limit
 
 Nextest flags a test slow after `slow-test-seconds` (30), and the caller's
-`slow-timeout` period should match. A merge-group or main run files one issue
-for every test it flagged, `Test over 30 seconds: <binary> <test>`, with no cap on how many one
-run files; an open issue for the test is never filed twice, and the next run
-that flags it comments its numbers there. A run that reports the test again
-without a slow mark comments the recovery on that issue once, and later passing
-runs say nothing until the test is flagged slow again. Fix the test at its
-cause; do not raise a timeout.
+`slow-timeout` period should match. A merge-group or main run lists every test
+it flagged, `<binary> <test>`, in the `Test over 30 seconds` issue, with no cap
+on how many; a listed test is never listed twice, and the next run that flags it
+updates its numbers there. A run that reports the test again without a slow mark
+marks it passed, and the issue gets its recovery comment once no listed test is
+still slow. Fix the test at its cause; do not raise a timeout.
 
 The kill is one hang limit, `hang-limit-seconds` (120). A nextest override may
 exceed it only for a test that needs more, and the comment directly above its
@@ -1866,11 +1892,12 @@ needs 208 seconds.
 For a full merge-group or main run, `ci-guards.yml` pins the jobs that must run:
 `Caller declaration`, `Format and lint`, `Docs`, `Build test archive`, the
 `Test shard` jobs, `Doctests`, `Tests (ubuntu-latest)` and `Dependency, source
-and coverage checks`. A pinned job that is missing or skipped files an issue
-titled `Required checks missing: Docs, Doctests`, with the missing set filled
-in: `Test shard (*` stands for any shard, and `Dependency, source and coverage
-checks` is one check despite its comma. The title never carries the run id, so
-a set that stays missing across landings keeps one issue; each body names the
+and coverage checks`. A pinned job that is missing or skipped is listed in the
+`Required checks missing` issue, with the missing set as its subject, such as
+`Docs, Doctests`: `Test shard (*` stands for any shard, and `Dependency, source
+and coverage checks` is one check despite its comma. The title never carries
+the run id, so a set that stays missing across landings keeps one section,
+naming the latest
 judged run. A failed job is not a missing one; the run already reports it. The
 pinned `Test shard (*` prefix includes native shard names, and
 `Tests (ubuntu-latest)` requires every native shard and doctest leg to succeed;
@@ -1900,13 +1927,14 @@ findings.
 ### Escalations
 
 Anything that stands out of the pattern is escalated explicitly: the guard files
-an issue with the label `escalation`, or adds a comment to the open one with the
-same title, naming the run, its baseline runs and what departed from them.
+an issue with the label `escalation`, or rewrites the open one with the same
+title, naming the run, its baseline runs and what departed from them.
 Nothing outside the pattern is absorbed silently. The normal spread of a rate is
 the range of the band's earlier rates widened by 10% of their median; for a hit
 rate or a share it is the range of the earlier values widened by 10 points.
-Three earlier values are needed for a spread. Each title is standing, so a
-departure that repeats shows as comments on one issue:
+Three earlier values are needed for a spread. Each departure is a kind of its
+own with a standing title, so one that repeats keeps one issue, rewritten in
+place:
 
 - "Escalation: time per test run outside its normal spread" and "Escalation:
   time per compile unit outside its normal spread": a rate below the band's

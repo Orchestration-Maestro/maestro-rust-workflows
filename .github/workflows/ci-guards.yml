@@ -221,35 +221,33 @@ jobs:
 
           RATCHET_TITLE = 'CI time ratchet'
 
-          # The kind of each standing finding; its subject beside it is the identity one open issue carries while it lasts.
+          # The kind of each standing finding: one open issue per kind lists every subject of it while it lasts.
           SLOWER, UNBALANCED, CACHE_FLOOR = ('CI run slower than its baseline', 'Test shards unbalanced',
                                              'Compile cache below its hit-rate floor')
 
-          # The phrase that marks a recovery comment, the one comment a passing run leaves.
+          # The phrase that marks a pass, in a subject's evidence and in the recovery comment.
           PASSED = 'passed this guard'
 
           def identity(kind, subject):
-              """The title of the one open issue an identity carries: the guard kind and its subject, never the run."""
-              return f'{kind}: {subject}'
+              """The name of one subject of a kind, `kind: subject`, or the kind alone for a finding without subjects; the kind alone titles the issue."""
+              return kind if subject is None else f'{kind}: {subject}'
 
-          def finding(kind, subject, body, labels=()):
-              """A guard finding, identified by its kind and its subject: the run is evidence in the body, never part of the title."""
-              return {'title': identity(kind, subject), 'body': body, 'labels': list(labels)}
+          def finding(kind, subject, run, body, labels=()):
+              """A guard finding about one subject of a kind. The kind titles the one open issue that lists its subjects;
+              the run is evidence, never part of the title."""
+              return {'kind': kind, 'subject': subject, 'title': identity(kind, subject), 'run': run['html_url'], 'body': body, 'labels': list(labels)}
 
           def slow_kind(limit):
               """The kind of a slow-test finding: the limit the test crossed, with the test's own name as its subject."""
               return f'Test over {limit:g} seconds'
 
-          def recovery(existing, kind, subject, run, text):
-              """The one comment a run leaves on the open issue of an identity it judged and passed, None when none is open.
-
-              A pass with no open issue says nothing, and the guard never closes an issue itself."""
-              title = identity(kind, subject)
-              if title not in existing:
-                  return None
-              return {'title': title, 'recovery': True,
-                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) {PASSED}: {text}.\n"
-                              'Close the issue when the fix is confirmed; the guard never closes one itself.\n'}
+          def recovery(kind, run, passed):
+              """The subjects of one kind that a run judged and passed, by subject, with the evidence each one's section takes on its open issue,
+              and the comment that issue earns when they leave none of its subjects breaching."""
+              head = f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) {PASSED}: "
+              return {'kind': kind, 'title': kind, 'recovery': True, 'run': run['html_url'],
+                      'passed': {subject: f'{head}{text}.' for subject, text in passed.items()},
+                      'body': f'{head}every subject listed here has passed.\nClose the issue when the fix is confirmed; the guard never closes one itself.\n'}
 
           # GitHub stamps job and step times to the second, 1 s at each boundary, so a work-time gap is measurable only above 2 s per executed job (S7759).
           STAMP_ERROR = 2
@@ -359,7 +357,7 @@ jobs:
               for job in cache_judged(jobs):
                   for warning in cache_warnings(job, annotations_of):
                       shapes.setdefault(cache_shape(warning), []).append(f"- {job['name']}: {warning}")
-              return [finding(CACHE_FLOOR, shape,
+              return [finding(CACHE_FLOOR, shape, run,
                               f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
                               + '\n'.join(lines) + '\n')
                       for shape, lines in shapes.items()] or None
@@ -384,7 +382,7 @@ jobs:
                   lines.append(f"- The run was cancelled with {len(unfinished)} jobs unfinished: {', '.join(unfinished)}")
               if not lines:
                   return None
-              return finding('Escalation', 'default-branch run did not seed its compile snapshots',
+              return finding(identity('Escalation', 'default-branch run did not seed its compile snapshots'), None, run,
                              f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
                              'What departed from one saved snapshot per seeded shape:\n' + '\n'.join(lines) + '\n', ['escalation'])
 
@@ -402,10 +400,10 @@ jobs:
                   return None
               largest = '\n'.join(f"- {cache['ref']}: {cache['size_in_bytes'] / 1024**3:.2f} GiB {cache['key']}"
                                   for cache in sorted(caches, key=lambda cache: cache['size_in_bytes'], reverse=True)[:5])
-              return {'title': 'Repository cache above 90% of its limit',
-                      'body': f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
-                              f"The repository cache holds {used / 1024**3:.2f} GiB in {usage['active_caches_count']} entries against its {limit_gb:g} GiB limit "
-                              f"({used / limit:.1%}); the threshold is 90%. Over the limit, GitHub evicts the oldest snapshots.\n\nLargest entries by ref:\n{largest}\n"}
+              return finding('Repository cache above 90% of its limit', None, run,
+                             f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
+                             f"The repository cache holds {used / 1024**3:.2f} GiB in {usage['active_caches_count']} entries against its {limit_gb:g} GiB limit "
+                             f"({used / limit:.1%}); the threshold is 90%. Over the limit, GitHub evicts the oldest snapshots.\n\nLargest entries by ref:\n{largest}\n")
 
           def spread_of(history, pad, ceiling=None):
               """The range of earlier values widened by `pad`, never below zero or above the ceiling; None below three values."""
@@ -426,9 +424,10 @@ jobs:
               return 0.10 * statistics.median(history or [0])
 
           def escalation(run, what, baseline, lines, band=None):
-              """An issue for something out of the pattern, with the run, its baseline and what departed from it; the title is standing, so a repeat comments on the open issue."""
+              """An issue for something out of the pattern, with the run, its baseline and what departed from it; each departure is a kind of its own,
+              so a repeat rewrites its open issue in place."""
               where = f' on runner band {band}' if band else ''
-              return finding('Escalation', what,
+              return finding(identity('Escalation', what), None, run,
                              f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}){where}.\n\n"
                              'Baseline (earlier successful runs of the same workflow and event):\n' + '\n'.join(baseline)
                              + '\n\nWhat departed from it:\n' + '\n'.join(lines) + '\n', ['escalation'])
@@ -538,7 +537,7 @@ jobs:
                   rate = measured[kind]
                   if rate > baseline * 1.10 and measurable(rate - baseline, units[kind], ran[kind]):
                       outside = departure(rate, history, rate_pad(history)) == 'above'
-                      found.append(finding(SLOWER, f'{jobs} on {band}',
+                      found.append(finding(SLOWER, f'{jobs} on {band}', run,
                                            f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) on runner band {band}.\n"
                                            'Time per unit of work against the lower of the band\'s recent median and its stored ratchet level:\n\n'
                                            f"- {jobs}: {rate:.2f} s per {unit} against a baseline of {baseline:.2f} s "
@@ -561,7 +560,7 @@ jobs:
               fallback = re.search(r'(?m)^Full-suite fallback: (.+)$', log)
               return int(count[1]), int(count[2]), fallback[1] if fallback else None
 
-          def selection_finding(rows, ceiling, window):
+          def selection_finding(run, rows, ceiling, window):
               """A sustained share: the median over a full window of runs is above the ceiling."""
               if len(rows) < window:
                   return None
@@ -572,9 +571,9 @@ jobs:
               listed = '\n'.join(f"- run {run_id}: {selected}/{total} packages ({selected * 100 / total:.0f}%)"
                                  + (f", full suite because {trigger}" if trigger else '')
                                  for run_id, selected, total, trigger in rows)
-              return {'title': 'Test selection share above its range',
-                      'body': f'The median share of workspace test packages selected over the last {len(rows)} runs is '
-                              f'{median:.0f}%; the expected ceiling is {ceiling:g}%.\n\n{listed}\n'}
+              return finding('Test selection share above its range', None, run,
+                             f"Run: {run['html_url']}\nThe median share of workspace test packages selected over the last {len(rows)} runs is "
+                             f'{median:.0f}%; the expected ceiling is {ceiling:g}%.\n\n{listed}\n')
 
           def test_results(log):
               """Every test a shard's log reports, with its longest slow mark, None when it never crossed one.
@@ -655,11 +654,11 @@ jobs:
                       f"({slowest / median:.2f} times; the margin is {margin:g}).\n\nSlow tests in that shard that grew:\n{lines}\n")
               if phases:
                   body += '\nFixed phases of that shard:\n' + '\n'.join(phases) + '\n'
-              return finding(UNBALANCED, bare(job['name']), body)
+              return finding(UNBALANCED, bare(job['name']), run, body)
 
           def slow_findings(slow, limit, run):
-              """One issue per test that ran past the slow mark."""
-              return [finding(slow_kind(limit), test,
+              """One finding per test that ran past the slow mark, each a subject of the one slow-test issue."""
+              return [finding(slow_kind(limit), test, run,
                               f"Run: {run['html_url']}\nNextest flagged this test slow, over {mark:g} seconds. "
                               'Fix the test at its cause; do not raise a timeout.\n')
                       for test, mark in sorted(slow.items())]
@@ -670,7 +669,7 @@ jobs:
 
           def required_finding(run, jobs, pinned):
               """Pinned jobs that did not run at all, so a renamed or removed gate cannot pass silently.
-              The title is the set of missing checks, never the run id, so a listener files one issue, not one per landing."""
+              The subject is the set of missing checks, never the run id, so a listener keeps one issue, not one per landing."""
               if reuses_tests(run, jobs):
                   pinned = [name for name in pinned if name not in ('Test shard (*', 'Doctests')]
               ran = [bare(job['name']) for job in jobs if job.get('conclusion') in ('success', 'failure')]
@@ -678,53 +677,92 @@ jobs:
                   job.startswith(name[:-1]) if name.endswith('*') else job == name for job in ran)]
               if not missing:
                   return None
-              return finding('Required checks missing', ', '.join(missing),
+              return finding('Required checks missing', ', '.join(missing), run,
                              f"Run: {run['html_url']}\nThese pinned jobs did not run: " + ', '.join(f'`{name}`' for name in missing) +
                              '.\nA job was renamed, removed or skipped; restore it or update the pinned list.\n')
 
           def open_findings(repository, gh):
-              """The repository's open issues by title: the identity every guard finding carries."""
+              """The repository's open issues by title: a guard issue is titled by its kind."""
               return {item['title']: item['number'] for item in json.loads(gh('issue', 'list', '-R', repository, '--state', 'open',
                                                                              '--limit', '1000', '--json', 'number,title'))}
 
-          def recovered(repository, gh, number, known):
-              """Whether the issue's latest guard comment is already a recovery: a passing run is reported once, not on every pass."""
-              if number not in known:
-                  comments = json.loads(gh('issue', 'view', str(number), '-R', repository, '--json', 'comments'))['comments']
-                  guard = [comment['body'] for comment in comments if (comment.get('body') or '').startswith('Run: ')]
-                  known[number] = bool(guard) and PASSED in guard[-1]
-              return known[number]
+          # The opening of every guard issue; one section per subject of its kind follows it.
+          LISTED = ('The CI guards rewrite this issue in place on every run that judges one of its subjects, and comment only on a change: '
+                    'a new subject, or every subject passing. Close the issue when the fix is confirmed; the guard never closes one itself.\n')
+
+          # The head of a subject's section: the subject (none for a kind without subjects), its state and the run that first breached it.
+          SECTION = re.compile(r'(?m)^(?:### `(?P<subject>[^`\n]+)`\n)?(?P<state>Breaching|Passed), first seen in (?P<first>\S+)\.$')
+
+          def listing_of(number, body):
+              """The subjects an open guard issue lists, by subject, as (state, first-seen run, latest evidence).
+              A body without one section is not the guard's, so the guard fails rather than overwrite it."""
+              body = body.replace('\r\n', '\n')
+              heads = list(SECTION.finditer(body))
+              if not heads:
+                  raise RuntimeError(f'issue #{number} lists no guard subjects; close it, and the next breach of its kind opens a new issue')
+              ends = [head.start() for head in heads[1:]] + [len(body)]
+              return {head['subject']: (head['state'], head['first'], body[head.end():end].strip()) for head, end in zip(heads, ends)}
+
+          def listing_body(listing):
+              """The body of a guard issue: one section per subject, with its state, the run that first breached it and its latest evidence."""
+              return LISTED + ''.join(('' if subject is None else f'\n### `{subject}`') + f'\n{state}, first seen in {first}.\n\n{evidence}\n'
+                                      for subject, (state, first, evidence) in listing.items())
+
+          def merged(listing, group):
+              """A kind's listing after one run's findings: a breach lists its subject or updates it, keeping the run that first breached it,
+              and a pass updates only a subject already listed."""
+              after = dict(listing)
+              for item in group:
+                  if item.get('recovery'):
+                      after |= {subject: ('Passed', after[subject][1], evidence) for subject, evidence in item['passed'].items() if subject in after}
+                  else:
+                      first = after[item['subject']][1] if item['subject'] in after else item['run']
+                      after[item['subject']] = ('Breaching', first, item['body'].strip())
+              return after
+
+          def change_of(before, after, group):
+              """The comment a rewrite earns: the subjects it lists for the first time, or the recovery once no subject that was breaching still is;
+              None when only the runs and the numbers changed."""
+              new = [subject for subject in after if subject not in before]
+              if new:
+                  return f"Run: {group[0]['run']}\nNew subjects: " + ', '.join(f'`{subject}`' for subject in new) + '.\n'
+              if any(state == 'Breaching' for state, _, _ in before.values()) and all(state == 'Passed' for state, _, _ in after.values()):
+                  return next(item['body'] for item in group if item.get('recovery'))
+              return None
 
           def file_issues(findings, repository, gh, existing=None):
-              """File an identity's first finding, comment every later one on its open issue, and close nothing.
-
-              A recovery is commented only when the issue's latest guard comment is still a breach. A recovery with no open issue says nothing.
-              Returns the titles filed or commented."""
+              """Keep one open issue per kind listing its subjects: open it with the kind's first breach, rewrite it in place on each later run that
+              judges one of them, and comment only on a change. Nothing is ever closed, and a pass with no open issue or listed subject says nothing.
+              Returns the kinds opened or rewritten."""
               existing = open_findings(repository, gh) if existing is None else existing
-              filed, made, known = [], set(), {}
+              kinds = {}
               for finding in findings:
-                  title = finding['title']
-                  if title in filed:
-                      continue  # one identity, one comment per run
-                  number = existing.get(title)
-                  if number:
-                      if finding.get('recovery') and recovered(repository, gh, number, known):
-                          continue
-                      gh('issue', 'comment', str(number), '-R', repository, '--body-file', '-', body=finding['body'])
-                  elif finding.get('recovery'):
+                  kinds.setdefault(finding['kind'], []).append(finding)
+              filed, made = [], set()
+              for kind, group in kinds.items():
+                  number = existing.get(kind)
+                  before = listing_of(number, json.loads(gh('issue', 'view', str(number), '-R', repository, '--json', 'body'))['body']) if number else {}
+                  after = merged(before, group)
+                  if after == before:
                       continue
+                  if number:
+                      gh('issue', 'edit', str(number), '-R', repository, '--body-file', '-', body=listing_body(after))
+                      comment = change_of(before, after, group)
+                      if comment:
+                          gh('issue', 'comment', str(number), '-R', repository, '--body-file', '-', body=comment)
                   else:
-                      for label in finding.get('labels', []):
+                      labels = list(dict.fromkeys(label for item in group for label in item.get('labels', [])))
+                      for label in labels:
                           if label not in made:
                               gh('label', 'create', label, '-R', repository, '--force', '--description', 'Out of the pattern: a CI guard found a departure to investigate')
                               made.add(label)
-                      labelled = [argument for label in finding.get('labels', []) for argument in ('--label', label)]
-                      gh('issue', 'create', '-R', repository, '--title', title, *labelled, '--body-file', '-', body=finding['body'])
-                  filed.append(title)
+                      labelled = [argument for label in labels for argument in ('--label', label)]
+                      gh('issue', 'create', '-R', repository, '--title', kind, *labelled, '--body-file', '-', body=listing_body(after))
+                  filed.append(kind)
               return filed
 
           def judge(run_id, repository, gh, settings, existing=None):
-              """Every finding for one completed run, and a recovery for each identity it judged and passed; also lowers the stored ratchet level of the run's band
+              """Every finding for one completed run, and a recovery for each open kind with subjects it judged and passed; also lowers the stored ratchet level of the run's band
               when the earlier runs show a lower median. `existing` is `open_findings`, read once here when a caller has not read it."""
               def api(path):
                   return json.loads(gh('api', f'repos/{repository}/{path}'))
@@ -774,10 +812,9 @@ jobs:
               existing = open_findings(repository, gh) if existing is None else existing
               passed = {}
               def pass_of(kind, subject, text):
-                  # One recovery per identity this run judged and passed; only an identity with an open issue is worth a comment.
-                  note = recovery(existing, kind, subject, run, text)
-                  if note:
-                      passed.setdefault(note['title'], note)
+                  # Only a kind with an open issue lists subjects, so only its passes can update one.
+                  if kind in existing:
+                      passed.setdefault(kind, {}).setdefault(subject, text)
               usage, limit = api('actions/cache/usage'), settings['cache_limit']
               findings = [usage_finding(run, usage, limit, [])]
               if findings[0]:
@@ -825,7 +862,7 @@ jobs:
                   findings.append(shape_finding(run, band, jobs, prior, [jobs_of(other['id']) for other in prior]))
                   findings.extend(cache_finding(run, jobs, annotations_of) or [])
                   # A pass names its shape only in the job's own log, so the log is read only while a floor issue is open.
-                  if any(title.startswith(f'{CACHE_FLOOR}:') for title in existing):
+                  if CACHE_FLOOR in existing:
                       for job in cache_judged(jobs):
                           shape = cache_pass_shape(log_of(job))
                           if shape:
@@ -862,12 +899,14 @@ jobs:
                       chosen = selection_of(log_of(declaration)) if declaration else None
                       if chosen:
                           rows.append((other['id'], *chosen))
-                  findings.append(selection_finding(rows, settings['ceiling'], window))
+                  findings.append(selection_finding(run, rows, settings['ceiling'], window))
                   if watched(run) and rows and rows[0][0] == run['id']:
                       findings.append(selection_departure(run, rows))
               found = [finding for finding in findings if finding]
               breached = {finding['title'] for finding in found}
-              return found + [note for title, note in passed.items() if title not in breached]
+              # A subject that breached is never also passed: the run says it is still broken.
+              kept = {kind: {subject: text for subject, text in subjects.items() if identity(kind, subject) not in breached} for kind, subjects in passed.items()}
+              return found + [recovery(kind, run, subjects) for kind, subjects in kept.items() if subjects]
 
           def main():
               def gh(*argv, body=None):
@@ -886,9 +925,9 @@ jobs:
                   filed = file_issues(findings, repository, gh, existing)
               except (RuntimeError, KeyError, ValueError, OSError) as error:
                   sys.exit(f'CI guards failed: {error}')
-              print(f'{len(findings)} findings, {len(filed)} issues filed')
-              for title in filed:
-                  print(f'Filed: {title}')
+              print(f'{len(findings)} findings, {len(filed)} issues opened or rewritten')
+              for kind in filed:
+                  print(f'Written: {kind}')
 
           if __name__ == '__main__':
               main()
