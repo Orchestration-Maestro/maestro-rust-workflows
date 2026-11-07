@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.23](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.22...v0.19.23) (2026-11-07)
+
+
+### Continuous Integration
+
+* move main scan pins to v0.19.22 ([#408](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/408)) ([0999be8](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/0999be826b99c706e7c87dfa0dc5b95814e013af))
+
 ## [0.19.22](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.21...v0.19.22) (2026-11-07)
 
 
