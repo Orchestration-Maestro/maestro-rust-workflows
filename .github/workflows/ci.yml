@@ -1326,6 +1326,7 @@ jobs:
       - name: Windows build settings
         if: runner.os == 'Windows'
         shell: pwsh
+        working-directory: ${{ github.workspace }}
         # Cold Windows builds are CPU- and file-bound: real-time scanning of the build trees and incremental state, which no later run reuses, add to the time.
         run: &windows-build-settings |
           foreach ($path in $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, "$HOME\.cargo", "$HOME\.rustup") { Add-MpPreference -ExclusionPath $path }
@@ -1681,6 +1682,7 @@ jobs:
       - name: Windows build settings
         if: runner.os == 'Windows'
         shell: pwsh
+        working-directory: ${{ github.workspace }}
         run: *windows-build-settings
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2118,6 +2120,7 @@ jobs:
       - name: Windows build settings
         if: runner.os == 'Windows'
         shell: pwsh
+        working-directory: ${{ github.workspace }}
         run: *windows-build-settings
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

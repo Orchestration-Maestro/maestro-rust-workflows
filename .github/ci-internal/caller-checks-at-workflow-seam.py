@@ -1297,6 +1297,8 @@ def windows_compile_jobs_start_cold_builds_unscanned_and_unincremental():
         names = [step.get('name') for step in steps]
         step = steps[names.index('Windows build settings')]
         assert step['if'] == "runner.os == 'Windows'" and step['shell'] == 'pwsh', (job, step)
+        # The caller's working directory does not exist until the checkout creates it.
+        assert step['working-directory'] == '$' + '{{ github.workspace }}', (job, step)
         # Before the checkout and the toolchain install write the first build tree.
         assert names.index('Windows build settings') < names.index('Checkout'), (job, names)
         for tree in ['$env:GITHUB_WORKSPACE', '$env:RUNNER_TEMP', '$HOME\\.cargo', '$HOME\\.rustup']:
