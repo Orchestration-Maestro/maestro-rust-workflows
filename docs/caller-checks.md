@@ -187,6 +187,21 @@ version key or older-format reader. `check_targets` also selects native test hos
 Pull requests and warm calls keep Linux-only tests. The other supported targets
 remain compile-only.
 
+`native_test_targets` is an optional array that narrows the native test hosts.
+Each entry is `aarch64-apple-darwin` or `x86_64-pc-windows-msvc` and must also be
+in `check_targets`; anything else stops the declaration. Absent, every claimed
+native test target runs its tests. A caller that wants a platform compiled and
+linted but not yet tested lists only the other one:
+
+```toml
+check_targets = ["aarch64-apple-darwin", "x86_64-pc-windows-msvc"]
+native_test_targets = ["aarch64-apple-darwin"]
+```
+
+An empty array keeps every test on Linux. The compile checks always follow
+`check_targets`. List a host only once its cold preparation fits the 45-minute step
+limit (see the Windows timings under Build once, test many).
+
 `reserved_ports` is an optional array of unique integers from 1 to 65535. When
 set, every Linux test job runs
 `sudo sysctl -w net.ipv4.ip_local_reserved_ports=<list>` before the tests, so

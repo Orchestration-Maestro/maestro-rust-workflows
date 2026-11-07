@@ -4228,6 +4228,37 @@ def native_test_hosts_follow_claims_and_full_suite_events():
 native_test_hosts_follow_claims_and_full_suite_events()
 print('PASS native_test_hosts_follow_claims_and_full_suite_events')
 
+def native_test_targets_narrow_the_claimed_hosts():
+    import shutil
+    both = ['aarch64-apple-darwin', 'x86_64-pc-windows-msvc']
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        (directory / '.github').mkdir()
+        fixture_git(directory, 'init', '--quiet')
+        fixture_git(directory, 'add', '.')
+        fixture_git(directory, 'commit', '-qm', 'host fixture')
+        for native_targets, hosts in [(['aarch64-apple-darwin'], ['macos-latest']), (['x86_64-pc-windows-msvc'], ['windows-latest']), ([], [])]:
+            (directory / '.github/ci.toml').write_text(
+                'wasm_crates=[]\ncheck_targets=' + json.dumps(both) + '\nnative_test_targets=' + json.dumps(native_targets) + '\n', encoding='utf-8')
+            result, values = declaration(directory)
+            assert result.returncode == 0, result.stderr
+            assert list(json.loads(values['test_hosts'])) == ['ubuntu-latest'] + hosts, (native_targets, values)
+            # The compile checks keep every claimed target.
+            assert [item['target'] for item in json.loads(values['targets'])] == both
+        for native_targets, reason in [(['x86_64-apple-darwin'], 'not a native test target'), (['aarch64-unknown-linux-gnu'], 'not a native test target'),
+                                       (['x86_64-pc-windows-msvc'], 'not in check_targets'), ('aarch64-apple-darwin', 'must be an array of strings')]:
+            claimed = ['aarch64-apple-darwin'] if reason == 'not in check_targets' else both
+            (directory / '.github/ci.toml').write_text(
+                'wasm_crates=[]\ncheck_targets=' + json.dumps(claimed) + '\nnative_test_targets=' + json.dumps(native_targets) + '\n', encoding='utf-8')
+            result, _ = declaration(directory)
+            assert result.returncode != 0 and reason in result.stderr, (native_targets, reason, result.stderr)
+    schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
+    assert schema['properties']['native_test_targets']['type'] == 'array' and 'native_test_targets' not in schema['required']
+
+native_test_targets_narrow_the_claimed_hosts()
+print('PASS native_test_targets_narrow_the_claimed_hosts')
+
 def supported_targets_use_native_runners():
     targets_job = workflow.split('  targets:\n', 1)[1].split('\n  browser:', 1)[0]
     assert 'defaults:\n      run:\n        shell: bash\n' in targets_job, \

@@ -203,7 +203,7 @@ jobs:
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'check_targets', 'native_test_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   replacement = '; test_prepare_setups replaces test_prepare_packages' if 'test_prepare_packages' in unknown else ''
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}' + replacement)
@@ -498,8 +498,17 @@ jobs:
           native_tests = {'aarch64-apple-darwin': ('macos-latest', 4), 'x86_64-pc-windows-msvc': ('windows-latest', 4)}
           count = int(values['test_shard_count'])
           hosts = {'ubuntu-latest': count}
-          if config is not None and os.environ.get('TEST_EVENT') != 'pull_request' and os.environ.get('WARM') != 'true':
-              hosts.update({runner: min(shards, count) for target, (runner, shards) in native_tests.items() if target in config['check_targets']})
+          if config is not None:
+              claimed = config.get('native_test_targets', config['check_targets'])
+              if not isinstance(claimed, list) or any(type(item) is not str for item in claimed):
+                  raise SystemExit(f'{path}: native_test_targets must be an array of strings')
+              for target in config.get('native_test_targets', []):
+                  if target not in native_tests:
+                      raise SystemExit(f'{path}: native_test_targets contains {target!r}, which is not a native test target')
+                  if target not in config['check_targets']:
+                      raise SystemExit(f'{path}: native_test_targets contains {target!r}, which is not in check_targets')
+              if os.environ.get('TEST_EVENT') != 'pull_request' and os.environ.get('WARM') != 'true':
+                  hosts.update({runner: min(shards, count) for target, (runner, shards) in native_tests.items() if target in claimed})
           values.update(test_hosts=json.dumps(hosts))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
               for key, value in values.items():

@@ -12,7 +12,8 @@ One shared Rust CI. The original checks remain required:
 Docs uses `RUSTDOCFLAGS="-D warnings -D missing_docs"`: every public item must
 be documented, and documentation warnings fail the check. Callers claiming
 `aarch64-apple-darwin` or `x86_64-pc-windows-msvc` in `check_targets` also run
-tests on those native hosts on merge groups and main pushes. Pull requests build
+tests on those native hosts on merge groups and main pushes, unless `native_test_targets`
+narrows the hosts. Pull requests build
 the default features. Merge groups and main pushes also build every feature in
 the Docs job, so an item behind a non-default feature is documented before it
 merges, and the Wasm and browser build job documents each declared wasm crate
