@@ -5035,3 +5035,15 @@ print('PASS workflow_safety_is_unchanged')
 
 cargo_git_cache_reuses_exact_locked_sources()
 print('PASS cargo_git_cache_reuses_exact_locked_sources')
+
+def self_test_leg_loads_helpers_without_running_cases():
+    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+    loader = body('Foreign target failures are detected', internal).split('exec(compile', 1)[0]
+    namespace = {}
+    exec(loader, namespace)
+    kept = {type(node) for node in namespace['tree'].body}
+    # A kept statement such as a module-level if would run its cases before the leg calls them.
+    assert kept <= {ast.Import, ast.ImportFrom, ast.FunctionDef, ast.Assign}, kept
+
+self_test_leg_loads_helpers_without_running_cases()
+print('PASS self_test_leg_loads_helpers_without_running_cases')
