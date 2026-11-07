@@ -905,8 +905,8 @@ jobs:
               found = [finding for finding in findings if finding]
               breached = {finding['title'] for finding in found}
               # A subject that breached is never also passed: the run says it is still broken.
-              kept = {kind: {subject: text for subject, text in subjects.items() if identity(kind, subject) not in breached} for kind, subjects in passed.items()}
-              return found + [recovery(kind, run, subjects) for kind, subjects in kept.items() if subjects]
+              unbroken = {kind: {subject: text for subject, text in subjects.items() if identity(kind, subject) not in breached} for kind, subjects in passed.items()}
+              return found + [recovery(kind, run, subjects) for kind, subjects in unbroken.items() if subjects]
 
           def main():
               def gh(*argv, body=None):
