@@ -16,6 +16,17 @@
         "type": "string"
       }
     },
+    "wasm_examples": {
+      "description": "Exact caller Cargo package names mapped to exact example target names, each compiled for wasm32-unknown-unknown with cargo check in declaration order. Repetitions are retained.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "default": {}
+    },
     "check_targets": {
       "description": "Exact caller compiler targets with a supported native runner, in execution order.",
       "type": "array",

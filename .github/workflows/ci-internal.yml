@@ -126,6 +126,8 @@ jobs:
         run: python3 .github/ci-internal/browser-runtime-packages-at-workflow-seam.py
       - name: Test seconds at workflow seam
         run: python3 .github/ci-internal/test-seconds-at-workflow-seam.py
+      - name: Files left by tests at workflow seam
+        run: python3 .github/ci-internal/files-left-by-tests-at-workflow-seam.py
       # Reusable workflow calls cannot use continue-on-error. The broken
       # fixtures run the workflow's own commands and assert all twenty-five
       # outcomes.
