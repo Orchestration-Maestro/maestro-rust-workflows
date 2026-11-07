@@ -193,7 +193,7 @@ def workflow_text_io_uses_utf8():
 workflow_text_io_uses_utf8()
 print('PASS workflow_text_io_uses_utf8')
 
-def execute(name, cwd, extra=None):
+def execute(name, cwd, extra=None, prelude=''):
     env = {k: v for k, v in os.environ.items()
            if k not in credential_names and not k.endswith('_API_KEY')}
     env['TEST_SHARD_COUNT'] = '16'
@@ -205,7 +205,7 @@ def execute(name, cwd, extra=None):
     if name in ['Tests', 'Isolated tests']:
         env.update(toolchain_environment(cwd, env))
     env = {key: value for key, value in env.items() if value is not None}
-    command = body(name)
+    command = prelude + body(name)
     if name in ['Browser tools', 'Test tools']:
         command = body('Mise bootstrap') + (body('Browser tool pin') if name == 'Browser tools' else '') + command
     bash = 'bash'
@@ -1259,6 +1259,35 @@ def archive_groups_follow_earlier_test_seconds():
 
 archive_groups_follow_earlier_test_seconds()
 print('PASS archive_groups_follow_earlier_test_seconds')
+
+def archive_build_runs_on_native_host_shells():
+    # macOS ships Bash 3.2, which has no mapfile; Windows Python writes text with CRLF line ends, which a Bash read keeps on the filterset.
+    for host, prelude, crlf in [('macOS', 'enable -n mapfile 2>/dev/null || :\n', False), ('Windows', '', True)]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            tools, log = install_recording_runner(directory)
+            site = directory / 'site'
+            site.mkdir()
+            (site / 'sitecustomize.py').write_text(textwrap.dedent('''
+                import pathlib
+                write_text = pathlib.Path.write_text
+                def native_write_text(self, data, encoding=None, errors=None, newline=None):
+                    # Windows text mode translates every \\n; this applies the same rule on any host.
+                    return write_text(self, data.replace('\\n', '\\r\\n') if newline is None else data, encoding, errors, '' if newline is None else newline)
+                pathlib.Path.write_text = native_write_text
+            ''') if crlf else '', encoding='utf-8')
+            result = execute('Build test archive', directory, {
+                'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools), 'COLLECT_COVERAGE': 'false',
+                'TEST_PACKAGES': '["sample"]', 'PYTHONPATH': str(site)}, prelude)
+            assert result.returncode == 0, f'{host}: ' + result.stdout + result.stderr
+            archives = [command['args'] for command in map(json.loads, log.read_text(encoding='utf-8').splitlines())
+                        if command['args'][:2] == ['nextest', 'archive']]
+            assert len(archives) == 16, (host, archives)
+            filters = [args[args.index('-E') + 1] for args in archives]
+            assert all(filter.startswith(('binary_id(=', 'none()')) and filter.isprintable() for filter in filters), (host, filters)
+
+archive_build_runs_on_native_host_shells()
+print('PASS archive_build_runs_on_native_host_shells')
 
 def selected_archive_build_compiles_only_selected_packages():
     with tempfile.TemporaryDirectory() as temporary:

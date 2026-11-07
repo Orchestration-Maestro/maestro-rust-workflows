@@ -1590,13 +1590,15 @@ jobs:
           groups.sort(key=load, reverse=True)
           for shard, group in enumerate(groups, 1):
               print(f'Shard {shard}: ' + (f'{load(group)[0]:.0f} s, ' if known else '') + f'{load(group)[1]} tests in {len(group)} {"binary" if len(group) == 1 else "binaries"}: {" ".join(group)}')
+          # Bash reads this file: a Windows text-mode write would end each line with a carriage return that nextest rejects in the filterset.
           pathlib.Path('target/test-filters.txt').write_text(
-              ''.join((' | '.join(f'binary_id(={binary})' for binary in group) or 'none()') + '\n' for group in groups), encoding='utf-8')
+              ''.join((' | '.join(f'binary_id(={binary})' for binary in group) or 'none()') + '\n' for group in groups), encoding='utf-8', newline='\n')
           # How many test binaries each shard's archive holds: a shard with none has nothing to run.
           pathlib.Path('test-archives/test-binaries.json').write_text(
               json.dumps({f'shard-{shard}.tar.zst': len(group) for shard, group in enumerate(groups, 1)}), encoding='utf-8')
           PYTHON
-          mapfile -t filters < target/test-filters.txt
+          filters=()
+          while IFS= read -r filter; do filters+=("$filter"); done < target/test-filters.txt
           for shard in "${!filters[@]}"; do
             "$TOOLS/cargo-nextest" nextest archive "${build[@]}" -E "${filters[$shard]}" --archive-file "test-archives/shard-$((shard + 1)).tar.zst"
           done
