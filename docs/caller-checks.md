@@ -241,10 +241,15 @@ test archive`, `Prepare test setup` and the test and doctest legs) start with a
 `Windows build settings` step. It excludes the workspace, the runner temp
 directory and the Cargo and Rustup homes from real-time scanning and sets
 `CARGO_INCREMENTAL=0`, since no later run reads the incremental state. The step
-runs before the checkout writes the first build tree. Source: the same cold
-Windows preparation of the same Maestro commit took 32 minutes with the step
-(run 42319979959) and ran past the 45-minute step limit without it (run
-42313125576, 37 minutes to the first Clippy phase against 25 minutes).
+runs before the checkout writes the first build tree.
+
+The cold Windows preparation of one Maestro commit is still close to the
+45-minute step limit, and its time follows the runner's processor. In ten
+measured runs, on three generations of AMD EPYC, the preparation took 29 to 38
+minutes in five and ran past the limit in five. The step is not shown to bring the
+slowest runners under the limit, and the limit is unchanged. Runs 42313125576,
+42319979959, 42325056734, 42329367779, 42320059723 and 42330265157 hold the
+timings.
 
 A push with `warm-cache: true`, including a feature-branch push, also runs the
 declared target checks; warm calls for other events skip them. Only
