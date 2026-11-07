@@ -2021,6 +2021,9 @@ jobs:
       TEST_ARCHIVE: ${{ !inputs.warm-cache && matrix.shard != 'doctests' && format('{0}/{1}/shard-{2}.tar.zst', github.workspace, inputs.working-directory || '.', matrix.shard) || '' }}
       COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
       COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
+      # What the shard itself writes into the checkout, so a test's own file stands out against
+      # the baseline: the build directory, the test log, the shard reports and the tool lock file.
+      TEST_CHECKOUT_EXCLUSIONS: ':(exclude)target :(exclude)nextest.log :(exclude)shard-*.lcov :(exclude)mise.lock'
     defaults: &test-defaults
       run:
         shell: bash
@@ -2107,6 +2110,13 @@ jobs:
         run: |
           mkdir -p target
           tar -C target -xf "$RUNNER_TEMP/maestro-test-setup/test-setup.tar"
+      - name: Test checkout baseline
+        run: |
+          # The checkout as git reports it, taken before either test route runs; the after-tests step
+          # subtracts it, so only the files the tests themselves left are named.
+          read -r -a exclusions <<< "$TEST_CHECKOUT_EXCLUSIONS"
+          git status --porcelain --untracked-files=all -- . "${exclusions[@]}" > "$RUNNER_TEMP/test-checkout-baseline"
+          echo "Test checkout baseline: $(wc -l < "$RUNNER_TEMP/test-checkout-baseline") entries"
       - name: Tests
         timeout-minutes: 45
         if: ${{ env.WARM_CACHE != 'true' && needs.declaration.outputs.enabled != 'true' }}
@@ -2301,6 +2311,26 @@ jobs:
           if [[ "${WARM_CACHE:-false}" != true && -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( -z "${TEST_ARCHIVE:-}" && "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
             run_isolated cargo test --locked --doc "${packages[@]}"
           fi
+      - name: Tests leave no files behind
+        if: always()
+        run: |
+          # A test that writes into the checkout can be staged and committed: name every file that was
+          # not there before the tests, whatever its name, and fail the shard.
+          state="$RUNNER_TEMP/test-checkout-baseline"
+          if [ ! -f "$state" ]; then
+            echo 'No test checkout baseline was recorded before the tests' >&2
+            exit 1
+          fi
+          after="$RUNNER_TEMP/test-checkout-after-tests"
+          read -r -a exclusions <<< "$TEST_CHECKOUT_EXCLUSIONS"
+          git status --porcelain --untracked-files=all -- . "${exclusions[@]}" > "$after"
+          status=0
+          while IFS= read -r entry; do
+            path=${entry:3}
+            echo "::error file=$path::The tests left $path in the checkout"
+            status=1
+          done < <(comm -13 <(LC_ALL=C sort "$state") <(LC_ALL=C sort "$after"))
+          exit "$status"
       - name: Print test diagnostics
         id: diagnostics
         if: always() && needs.declaration.outputs.enabled == 'true'
