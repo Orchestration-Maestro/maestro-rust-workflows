@@ -1368,8 +1368,8 @@ cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warning
 | `x86_64-apple-darwin` | `macos-latest` (requested target installed) |
 | `x86_64-pc-windows-msvc` | `windows-latest` |
 
-There is no Linux fallback for Apple/MSVC targets. Runtime tests on claimed
-macOS arm64 and Windows hosts use the separate [test shard route](#test-shards).
+There is no Linux fallback for Apple/MSVC targets. Runtime tests on a claimed
+macOS arm64 host use the separate [test shard route](#test-shards).
 Merge groups and main pushes run every opted-in target check.
 Ordinary pull requests run declared `aarch64-apple-darwin`,
 `x86_64-apple-darwin` and `x86_64-pc-windows-msvc` checks in parallel.
