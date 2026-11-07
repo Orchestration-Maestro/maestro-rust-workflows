@@ -18,6 +18,6 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: fe515f468edec62954ac7beec29eeb9025ce2884
+      checkout-ref: 0162f91b9d6cc12fa0716ea346cc9a3349c7dd9c
       concurrency-key: maestro-proof
       test-event: merge_group
