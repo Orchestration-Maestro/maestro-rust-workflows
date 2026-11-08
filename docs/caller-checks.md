@@ -1169,8 +1169,7 @@ does not build the listed packages.
 
 The SDK comes from the emsdk 6.0.10 release archive on github.com. That request
 is the only one that carries the job token, and the step drops the token before
-the installer runs. Maestro verifies three archives by SHA-256 before it unpacks
-any of them:
+the installer runs. Each archive is verified by SHA-256 before it is unpacked:
 
 | Archive | SHA-256 |
 | --- | --- |
