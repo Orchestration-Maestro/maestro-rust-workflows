@@ -216,7 +216,11 @@ def a_replaced_run_never_joins_a_group_the_live_run_holds():
         assert index == len(jobs[name]['steps']) - 1 and copy == step, (name, index)
     # A run that failed the check skips every job that needs the declaration, and its `tests` legs never start.
     for name in LEGS:
-        assert 'declaration' in str(jobs[name]['needs']) and 'always()' not in str(jobs[name].get('if')), name
+        assert 'declaration' in str(jobs[name]['needs']), name
+    # `doctests` and `targets` carry no status function at all; `tests` uses `!cancelled()` and is checked by `starts`.
+    for name in ['doctests', 'targets']:
+        condition = str(jobs[name].get('if'))
+        assert not any(call in condition for call in ('always()', 'failure()', 'cancelled()')), (name, condition)
     tests_if = expression(jobs['tests']['if'])
     def starts(build, prepare):
         contexts = {'github': {'repository_id': '1'}, 'inputs': {'working-directory': ''}, 'needs': {

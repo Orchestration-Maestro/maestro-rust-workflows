@@ -164,8 +164,9 @@ compatible snapshot.
 
 ## Superseded merge-group runs
 
-When the merge queue rebuilds a group, the new run cancels the test and Apple
-jobs of the run it replaces, and the live group takes those runners.
+When the merge queue rebuilds a group, the new run cancels the jobs of the run
+it replaces that can hold a macOS runner, and the live group takes those
+runners.
 
 A queued group runs on a ref named `gh-readonly-queue/<base>/pr-<number>-<hash>`.
 A rebuild keeps the number and changes the hash, so the ref alone cannot match
@@ -179,7 +180,8 @@ is the calling workflow, `mg`, the number, the `concurrency-key`, the job and
 the matrix leg. Both runs of one pull request share it, so the newer run cancels
 the older one. Different pull requests, jobs, legs and callers never share one,
 so live groups never cancel each other. Every leg of those jobs is cancelled,
-the Linux ones too. The superseded run's other jobs finish on their own.
+whatever its runner: Linux, macOS and Windows alike. The superseded run's other
+jobs finish on their own.
 
 GitHub cancels whichever job already holds a group when another joins, however
 old its run is. A replaced run that reaches a group late would cancel the live
@@ -212,7 +214,8 @@ reusable workflow more than once, give each calling job a distinct, stable
 key (case-insensitive), such as `concurrency-key: quality`. Reuse that key on
 later pushes so a new pull-request run cancels the older invocation of the
 same job, not another job in its own run. Do not use a run ID as the key.
-A rebuilt merge group cancels the test and Apple jobs of the run it replaces; see
+A rebuilt merge group cancels the jobs of the run it replaces that can hold a
+macOS runner; see
 [Superseded merge-group runs](#superseded-merge-group-runs). The caller must not
 share the same concurrency group with its called workflow; see GitHub's
 [reusable workflow concurrency rules](https://docs.github.com/en/actions/reference/reusable-workflows-reference#limitations-of-reusable-workflows).
