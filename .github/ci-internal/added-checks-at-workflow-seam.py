@@ -654,7 +654,7 @@ with tempfile.TemporaryDirectory() as temporary:
     shadow = caller_tools / 'cargo-llvm-cov'
     shadow.write_text('#!/bin/sh\necho caller-coverage-bypass\nexit 0\n', encoding="utf-8")
     shadow.chmod(0o755)
-    hostile_env = env | {'PATH': str(caller_tools) + ':' + env['PATH']}
+    hostile_env = env | {'PATH': str(caller_tools) + ':' + env['PATH'], 'AMBIENT_PATH': env['PATH']}
     for name, command in [('Coverage', body('Coverage')),
                           ('Isolated coverage', body('Isolated tests'))]:
         # The coverage job reuses the isolated test body with its coverage floor.

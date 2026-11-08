@@ -488,6 +488,7 @@ def snapshot_restart_preserves_isolated_local_policy():
             command = setup + '\nrun_isolated env\nrun_isolated env SCCACHE_SERVER_UDS="$SCCACHE_SERVER_UDS" cargo build --locked --manifest-path "$SAMPLE_MANIFEST" --target-dir "$CARGO_TARGET_DIR"\n'
             isolated_env = env | {'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0],
                                   'SAMPLE_MANIFEST': str(root / 'fixtures/sample/Cargo.toml'),
+                                  'AMBIENT_PATH': os.environ['PATH'],
                                   'OPENAI_API_KEY': 'not-a-credential-canary'}
             warm = shell(command, isolated_env)
             assert warm.returncode == 0, warm.stderr
@@ -612,7 +613,7 @@ def native_c_compiler_configuration_reaches_isolated_children():
             env = environment(directory) | compiler | {
                 'isolation': temporary, 'diagnostics': temporary,
                 'cargo_home': str(directory / 'cargo'), 'rustup_home': str(directory / 'rustup'),
-                'RUSTUP_TOOLCHAIN': 'stable'}
+                'RUSTUP_TOOLCHAIN': 'stable', 'test_path': os.environ['PATH']}
             result = shell(isolated[0] + '\nrun_isolated python3 -c ' + shlex.quote(probe), env)
             assert result.returncode == 0, result.stdout + result.stderr
             assert json.loads(result.stdout) == compiler, (compiler, result.stdout)

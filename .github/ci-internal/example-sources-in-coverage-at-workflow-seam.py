@@ -30,7 +30,7 @@ def example_sources_are_measured():
                                    ('Isolated tests', '', '1')]:
             env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
                                 'CARGO_COVERAGE_MIN_LINES': floor, 'COLLECT_COVERAGE': 'true',
-                                'SHARD': shard, 'TEST_SHARD_COUNT': '1'}
+                                'SHARD': shard, 'TEST_SHARD_COUNT': '1', 'AMBIENT_PATH': os.environ['PATH']}
             command = body(name)
             result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
                                     cwd=directory, env=env, capture_output=True, text=True)
@@ -75,7 +75,7 @@ def single_coverage_runs_setup_scripts(name):
         toolchain = subprocess.check_output(['rustup', 'show', 'active-toolchain'], cwd=directory, text=True).split()[0]
         env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
                             'CARGO_COVERAGE_MIN_LINES': '100', 'COLLECT_COVERAGE': 'true',
-                            'SHARD': '', 'TEST_SHARD_COUNT': '16'}
+                            'SHARD': '', 'TEST_SHARD_COUNT': '16', 'AMBIENT_PATH': os.environ['PATH']}
         result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body(name)],
                                 cwd=directory, env=env, capture_output=True, text=True)
         assert result.returncode == 0, result.stdout + result.stderr
@@ -96,7 +96,7 @@ def caller_retries_cannot_rescue_a_coverage_failure():
             encoding='utf-8')
         toolchain = subprocess.check_output(['rustup', 'show', 'active-toolchain'], cwd=directory, text=True).split()[0]
         env = os.environ | {'RUNNER_TEMP': temporary, 'RUSTUP_TOOLCHAIN': toolchain,
-                            'CARGO_COVERAGE_MIN_LINES': '0'}
+                            'CARGO_COVERAGE_MIN_LINES': '0', 'AMBIENT_PATH': os.environ['PATH']}
         for name in ['Coverage', 'Isolated tests']:
             result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body(name)],
                                     cwd=directory, env=env, capture_output=True, text=True)
