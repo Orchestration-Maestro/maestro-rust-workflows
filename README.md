@@ -109,8 +109,8 @@ parallel in their own leg. See [test shards](docs/caller-checks.md#test-shards).
 
 ## Compile cache
 
-Linux compiling jobs and target checks on Linux and arm64 macOS restore one
-compiled-cache snapshot through GitHub's cache action, then run
+The jobs that feed the test shards, the coverage checks job and the arm64 macOS
+jobs restore one compiled-cache snapshot through GitHub's cache action, then run
 checksum-pinned sccache 0.18.0 from
 `${runner.temp}/maestro-sccache`. Compiler lookups use local disk, not GitHub
 requests per object. Incremental compilation stays disabled. See
@@ -134,15 +134,16 @@ and reusable calls without splitting the shared restore prefix. GitHub's
 branch/default-branch visibility and newest-compatible-prefix lookup apply.
 Only pushes to the caller's default branch save snapshots. Pull-request and
 merge-group jobs restore but never save. Each test shape has one writer per
-call: the warm build or the archive build, plus the separate plain doctest leg
-when the numeric shards use coverage or a default-branch push warms. Other
-cached compiling jobs each write their own shape.
-A default-branch push warm call also runs Format and lint, Docs, Doctests,
-Wasm and browser build, and Chromium browser tests when declared. These jobs
-use their normal commands, paths and compiler output modes, including running
-the doctests and browser tests, to seed exactly the shapes their readers need.
-Other warm calls skip these jobs because they cannot save. Declared Linux and
-macOS target checks also seed their shapes on default-branch push warm calls.
+call: the warm build or the archive build; the plain doctest leg writes none. Other
+cached compiling jobs each write their own shape, except the Linux jobs that
+no later job restores: Format and lint, Docs, Doctests, Wasm and browser build,
+Chromium browser tests and the Linux target checks keep no snapshot and compile
+cold, because one snapshot for each of them would not fit the repository's cache
+limit. See [Jobs that keep no snapshot](docs/caller-checks.md#jobs-that-keep-no-snapshot).
+A default-branch push warm call also runs those jobs when declared, with their
+normal commands, paths and compiler output modes, but they save nothing. Other
+warm calls skip them. Declared arm64 macOS target checks seed their shapes on
+default-branch push warm calls.
 
 Missing snapshots build cold. Failed restores discard partial data before
 startup, including warning-only failures with no matched-cache output. Only
@@ -159,8 +160,9 @@ failures and payloads whose objects or preprocessor entries exceed the shape's
 cap skip saving. The archive contains compiler objects, never `target/`,
 registry sources, credentials or diagnostics. Compressed archive bytes are a
 separate measurement. This per-save bound does not bound the repository's 10 GB
-allowance: seven 1-GiB shapes and the setup shape allow 9,126,805,504 bytes of
-objects, before targets and preprocessor entries. After each job that saves a
+allowance; the sum of one snapshot per kept shape does, and the guide measures
+it at 8.33 GiB, under 90% of the limit
+([One entry per prefix](docs/caller-checks.md#one-entry-per-prefix)). After each job that saves a
 cache on a default-branch push, a pruning job keeps only the newest entry of each
 compile, Cargo git and test setup prefix, the entry a restore reads, so the
 repository holds one generation. Pruning jobs are the only jobs that hold

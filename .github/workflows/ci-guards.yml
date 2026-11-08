@@ -248,7 +248,7 @@ jobs:
               head = f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']}) {PASSED}: "
               return {'kind': kind, 'title': kind, 'recovery': True, 'run': run['html_url'],
                       'passed': {subject: f'{head}{text}.' for subject, text in passed.items()},
-                      'body': f'{head}every subject listed here has passed.\nClose the issue when the fix is confirmed; the guard never closes one itself.\n'}
+                      'body': f'{head}every subject listed here has passed.\nClose the issue when the fix is confirmed; the guard never closes it.\n'}
 
           # GitHub stamps job and step times to the second, 1 s at each boundary, so a work-time gap is measurable only above 2 s per executed job (S7759).
           STAMP_ERROR = 2
@@ -394,17 +394,34 @@ jobs:
                   raise ValueError(f'cache-storage-limit-gib must be the repository cache storage limit in GiB, a positive number, not {declared!r}')
               return limit
 
+          def replaced_size(caches):
+              """Bytes of default-branch snapshots a newer entry of the same prefix replaces: a push leaves them until its pruning jobs finish, so they are the save window, not the cache at rest."""
+              # The prefixes and the keep-newest rule of the pruning jobs in the shared workflow.
+              prefix = re.compile(r'(?:maestro-compile-v1|maestro-cargo-git-v1|maestro-test-setup-v2)-[0-9a-f]{64}-')
+              named = [(match[0], cache) for cache in caches if cache['ref'] == 'refs/heads/main' and (match := prefix.match(cache['key']))]
+              newest, size = {}, 0
+              for name, cache in sorted(named, key=lambda item: datetime.datetime.fromisoformat(item[1]['created_at']), reverse=True):
+                  if newest.setdefault(name, cache) is not cache:
+                      size += cache['size_in_bytes']
+              return size
+
           def usage_finding(run, usage, limit_gb, caches):
-              """The repository cache over 90% of its storage limit, with its largest entries by ref."""
+              """The repository cache at rest over 90% of its storage limit, with its largest entries by ref."""
               limit, used = limit_gb * 1024**3, usage['active_caches_size_in_bytes']
-              if used <= limit * 0.9:
+              window = replaced_size(caches)
+              if used - window <= limit * 0.9:
                   return None
               largest = '\n'.join(f"- {cache['ref']}: {cache['size_in_bytes'] / 1024**3:.2f} GiB {cache['key']}"
                                   for cache in sorted(caches, key=lambda cache: cache['size_in_bytes'], reverse=True)[:5])
+              held = f"The repository cache holds {used / 1024**3:.2f} GiB in {usage['active_caches_count']} entries against its {limit_gb:g} GiB limit"
+              if window:
+                  held += (f"; {window / 1024**3:.2f} GiB of them are snapshots that newer entries replace and the pruning jobs delete, "
+                           f"and the {(used - window) / 1024**3:.2f} GiB that stay ({(used - window) / limit:.1%}) are over the 90% threshold")
+              else:
+                  held += f" ({used / limit:.1%}); the threshold is 90%"
               return finding('Repository cache above 90% of its limit', None, run,
                              f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
-                             f"The repository cache holds {used / 1024**3:.2f} GiB in {usage['active_caches_count']} entries against its {limit_gb:g} GiB limit "
-                             f"({used / limit:.1%}); the threshold is 90%. Over the limit, GitHub evicts the oldest snapshots.\n\nLargest entries by ref:\n{largest}\n")
+                             f"{held}. Over the limit, GitHub evicts the oldest snapshots.\n\nLargest entries by ref:\n{largest}\n")
 
           def spread_of(history, pad, ceiling=None):
               """The range of earlier values widened by `pad`, never below zero or above the ceiling; None below three values."""
@@ -682,14 +699,18 @@ jobs:
                              f"Run: {run['html_url']}\nThese pinned jobs did not run: " + ', '.join(f'`{name}`' for name in missing) +
                              '.\nA job was renamed, removed or skipped; restore it or update the pinned list.\n')
 
-          def open_findings(repository, gh):
-              """The repository's open issues by title: a guard issue is titled by its kind."""
-              return {item['title']: item['number'] for item in json.loads(gh('issue', 'list', '-R', repository, '--state', 'open',
-                                                                             '--limit', '1000', '--json', 'number,title'))}
+          def open_numbers(repository, gh):
+              """Every open issue's number by title, lowest first: a guard issue is titled by its kind, and two runs that finished at the same
+              moment can open that title twice, so the lowest number holds the kind and the rest are duplicates waiting to be folded in."""
+              listed = json.loads(gh('issue', 'list', '-R', repository, '--state', 'open', '--limit', '1000', '--json', 'number,title'))
+              numbers = {}
+              for item in sorted(listed, key=lambda item: item['number']):
+                  numbers.setdefault(item['title'], []).append(item['number'])
+              return numbers
 
           # The opening of every guard issue; one section per subject of its kind follows it.
           LISTED = ('The CI guards rewrite this issue in place on every run that judges one of its subjects, and comment only on a change: '
-                    'a new subject, or every subject passing. Close the issue when the fix is confirmed; the guard never closes one itself.\n')
+                    'a new subject, or every subject passing. Close the issue when the fix is confirmed; the guard never closes it.\n')
 
           # The head of a subject's section: the subject (none for a kind without subjects), its state and the run that first breached it.
           SECTION = re.compile(r'(?m)^(?:### `(?P<subject>[^`\n]+)`\n)?(?P<state>Breaching|Passed), first seen in (?P<first>\S+)\.$')
@@ -711,6 +732,9 @@ jobs:
 
           # GitHub refuses an issue body over 65,536 characters.
           BODY_LIMIT = 65536
+
+          # GitHub limits a comment to the same 65,536 characters as an issue body, while one write records a section per subject.
+          COMMENT_LIMIT = BODY_LIMIT
 
           def bounded(kind, listing):
               """A listing whose body fits GitHub's limit: subjects that passed leave it, the earliest listed first.
@@ -745,40 +769,129 @@ jobs:
                   return next(item['body'] for item in group if item.get('recovery'))
               return None
 
+          # A write records, as a hidden comment, the sections a later run cannot rebuild from the body, and it writes that comment before it
+          # writes the body: the subject this write adds, which no body lists yet, and the subject whose state changed since the guard
+          # recorded it, so a passed subject the body drops to fit comes back as passed. GitHub has no write that refuses a body built from
+          # an older read, so a body alone can lose a subject, while a comment, once written, stays. A repeat breach of a listed subject
+          # changes neither, so it adds no comment. The guard posts with the workflow's token, and the reader that reads a record back spells
+          # that token's author `github-actions`, so only that login is a record: a marker in anyone else's comment is text.
+          RECORD_AUTHOR = 'github-actions'
+          RECORD = re.compile(r'<!-- ci-guards record: (?P<sections>.*?) -->')
+
+          def record_comment(sections):
+              """The hidden comment that records the sections a write adds: what a later run reads back to rebuild the body."""
+              return f'<!-- ci-guards record: {json.dumps({subject or "": list(section) for subject, section in sections.items()})} -->\n'
+
+          def record_comments(sections):
+              """The hidden comments that record the sections a write adds, each within GitHub's comment limit: the reader takes them all back
+              as one record, so a write that adds more sections than one comment holds posts as many comments as it needs."""
+              comments = []
+              for subject, section in sections.items():
+                  if comments and len(record_comment(comments[-1] | {subject: section})) <= COMMENT_LIMIT:
+                      comments[-1][subject] = section
+                  else:
+                      comments.append({subject: section})
+              if any(len(record_comment(comment)) > COMMENT_LIMIT for comment in comments):
+                  raise RuntimeError("a subject's section is longer than one issue comment holds; shorten its evidence")
+              return [record_comment(comment) for comment in comments]
+
+          def sections_to_record(body, record, listed):
+              """The sections a write records: the subject it adds, which no body lists yet, and the subject whose state changed since the
+              guard recorded it, so a passed subject the body drops to fit comes back as passed. A subject the body already lists needs no
+              entry until its state changes, so a repeat breach of it records nothing."""
+              return {subject: section for subject, section in listed.items()
+                      if (subject not in body and subject not in record) or (subject in record and record[subject][0] != section[0])}
+
+          def read_back(number, repository, gh):
+              """An issue's body sections and the subjects its own record comments hold, the last write's entry winning per subject: the record
+              is what the guard rebuilds a body from, and a body without one section is not the guard's, so the guard fails before writing.
+              A comment by any other author is not a record, however it is marked."""
+              held = json.loads(gh('issue', 'view', str(number), '-R', repository, '--json', 'body,comments'))
+              record = {}
+              for comment in held['comments']:
+                  if (comment.get('author') or {}).get('login') != RECORD_AUTHOR:
+                      continue
+                  for found in RECORD.finditer(comment['body']):
+                      record |= {subject or None: tuple(section) for subject, section in json.loads(found['sections']).items()}
+              return listing_of(number, held['body']), record
+
+          def opened(kind, group, repository, gh, made):
+              """Open the kind's issue with this run's findings, then look again for a run that finished at the same moment and opened the same
+              kind first: the lower number holds the kind, and the duplicate this run opened keeps its own copy of these findings, points at that
+              issue, and stays open until a later run folds it in. Returns the number that holds the kind and the number this run opened."""
+              after = bounded(kind, merged({}, group))
+              labels = list(dict.fromkeys(label for item in group for label in item.get('labels', [])))
+              for label in labels:
+                  if label not in made:
+                      gh('label', 'create', label, '-R', repository, '--force', '--description', 'Out of the pattern: a CI guard found a departure to investigate')
+                      made.add(label)
+              labelled = [argument for label in labels for argument in ('--label', label)]
+              ours = int(gh('issue', 'create', '-R', repository, '--title', kind, *labelled, '--body-file', '-',
+                            body=listing_body(after)).strip().rsplit('/', 1)[-1])
+              holder = open_numbers(repository, gh).get(kind, [ours])[0]
+              if holder != ours:
+                  gh('issue', 'comment', str(ours), '-R', repository, '--body-file', '-',
+                     body=f'Duplicate of #{holder}: another run judged this kind at the same moment and the lower number holds it.\n')
+              return holder, ours
+
           def file_issues(findings, repository, gh, existing=None):
               """Keep one open issue per kind listing its subjects: open it with the kind's first breach, rewrite it in place on each later run that
-              judges one of them, and comment only on a change. Nothing is ever closed, and a pass with no open issue or listed subject says nothing.
-              Returns the kinds opened or rewritten."""
-              existing = open_findings(repository, gh) if existing is None else existing
+              judges one of them, and comment only on a change. Each write records the sections a later run cannot rebuild from the body before
+              it writes the body, so a run that wrote a body built from an older read leaves that body behind but never drops a subject: the
+              next run rebuilds it from the record. A duplicate holds its run's findings until a later run folds them into the record of the
+              issue that holds the kind and only then closes it. A pass with no open issue or listed subject says nothing. Returns the kinds
+              opened or rewritten."""
+              existing = open_numbers(repository, gh) if existing is None else existing
               kinds = {}
               for finding in findings:
                   kinds.setdefault(finding['kind'], []).append(finding)
               filed, made = [], set()
               for kind, group in kinds.items():
-                  number = existing.get(kind)
-                  before = listing_of(number, json.loads(gh('issue', 'view', str(number), '-R', repository, '--json', 'body'))['body']) if number else {}
-                  after = bounded(kind, merged(before, group))
-                  if after == before:
-                      continue
-                  if number:
-                      gh('issue', 'edit', str(number), '-R', repository, '--body-file', '-', body=listing_body(after))
+                  numbers = existing.get(kind, [])
+                  if numbers:
+                      holder, duplicates = numbers[0], numbers[1:]
+                  else:
+                      # A run that is only passing subjects of a kind with no open issue says nothing and opens nothing.
+                      if all(item.get('recovery') for item in group):
+                          continue
+                      # The issue this run opened holds the body this run just wrote, and it never folds itself in; a run that lost the race
+                      # writes its findings onto the issue that holds the kind.
+                      holder, ours = opened(kind, group, repository, gh, made)
+                      duplicates = []
+                      filed.append(kind)
+                  body, record = read_back(holder, repository, gh)
+                  # The body is the latest full listing, so it wins where it lists a subject, and the record adds the subjects a body built from an
+                  # older read left out. A duplicate's own sections join the listing where neither lists them, and the section the kind's issue
+                  # already lists stays as it is.
+                  before = dict(body)
+                  for subject, section in record.items():
+                      before.setdefault(subject, section)
+                  folded = [read_back(number, repository, gh)[0] for number in duplicates]
+                  held = dict(before)
+                  for sections in folded:
+                      for subject, section in sections.items():
+                          held.setdefault(subject, section)
+                  listed = merged(held, group)
+                  after = bounded(kind, listed)
+                  fresh = sections_to_record(body, record, listed)
+                  if fresh:
+                      # Only a section a later run cannot rebuild from the body is worth a comment: a repeat's evidence updates the body
+                      # alone. The records go first, so a body left behind is rebuilt from them and a duplicate's subjects are safe to close over.
+                      for record_body in record_comments(fresh):
+                          gh('issue', 'comment', str(holder), '-R', repository, '--body-file', '-', body=record_body)
+                  if body != after:
+                      gh('issue', 'edit', str(holder), '-R', repository, '--body-file', '-', body=listing_body(after))
                       comment = change_of(before, after, group)
                       if comment:
-                          gh('issue', 'comment', str(number), '-R', repository, '--body-file', '-', body=comment)
-                  else:
-                      labels = list(dict.fromkeys(label for item in group for label in item.get('labels', [])))
-                      for label in labels:
-                          if label not in made:
-                              gh('label', 'create', label, '-R', repository, '--force', '--description', 'Out of the pattern: a CI guard found a departure to investigate')
-                              made.add(label)
-                      labelled = [argument for label in labels for argument in ('--label', label)]
-                      gh('issue', 'create', '-R', repository, '--title', kind, *labelled, '--body-file', '-', body=listing_body(after))
-                  filed.append(kind)
-              return filed
+                          gh('issue', 'comment', str(holder), '-R', repository, '--body-file', '-', body=comment)
+                      filed.append(kind)
+                  for number in duplicates:
+                      gh('issue', 'close', str(number), '-R', repository)
+              return list(dict.fromkeys(filed))
 
           def judge(run_id, repository, gh, settings, existing=None):
               """Every finding for one completed run, and a recovery for each open kind with subjects it judged and passed; also lowers the stored ratchet level of the run's band
-              when the earlier runs show a lower median. `existing` is `open_findings`, read once here when a caller has not read it."""
+              when the earlier runs show a lower median. `existing` is `open_numbers`, read once here when a caller has not read it."""
               def api(path):
                   return json.loads(gh('api', f'repos/{repository}/{path}'))
               known = {}
@@ -824,7 +937,7 @@ jobs:
               if run['status'] != 'completed':
                   return []
               jobs = jobs_of(run['id'])
-              existing = open_findings(repository, gh) if existing is None else existing
+              existing = open_numbers(repository, gh) if existing is None else existing
               passed = {}
               def pass_of(kind, subject, text):
                   # Only a kind with an open issue lists subjects, so only its passes can update one.
@@ -935,7 +1048,7 @@ jobs:
                               'ceiling': float(os.environ['SELECTION_CEILING']), 'margin': float(os.environ['SHARD_MARGIN']),
                               'slow': float(os.environ['SLOW_SECONDS']), 'cache_limit': storage_limit(os.environ['CACHE_STORAGE_LIMIT_GIB']),
                               'required': json.loads(os.environ['REQUIRED_CHECKS'])}
-                  existing = open_findings(repository, gh)
+                  existing = open_numbers(repository, gh)
                   findings = judge(os.environ['RUN_ID'], repository, gh, settings, existing) if os.environ['RUN_ID'] else []
                   filed = file_issues(findings, repository, gh, existing)
               except (RuntimeError, KeyError, ValueError, OSError) as error:

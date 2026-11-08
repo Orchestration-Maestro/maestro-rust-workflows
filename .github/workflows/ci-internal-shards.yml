@@ -1257,32 +1257,42 @@ jobs:
           a_finding_is_identified_by_its_kind_and_its_subject()
           print('PASS a_finding_is_identified_by_its_kind_and_its_subject')
 
+          GUARD_LOGIN = 'github-actions'
+
           def issue_tracker(*open_issues):
               """A repository's issues as the guard reads and writes them, standing in for gh: `open_issues` are (title, body) pairs numbered from 1,
-              and the issues the guard opens follow them. `gh.issues` holds each one's body and comments, `gh.calls` every call; any other call fails."""
-              issues = [{'number': index + 1, 'title': title, 'body': body, 'comments': [], 'labels': []} for index, (title, body) in enumerate(open_issues)]
+              and the issues the guard opens follow them. `gh.issues` holds each one's body and comments, `gh.calls` every call; any other call fails.
+              The guard posts with the workflow's token, so `gh.login` is the author every comment it writes carries: GUARD_LOGIN is the login a
+              live comment posted by that token showed, so the fixture writes the reader's spelling and never the production constant."""
+              issues = [{'number': index + 1, 'title': title, 'body': body, 'comments': [], 'labels': [], 'state': 'open'}
+                        for index, (title, body) in enumerate(open_issues)]
               calls = []
               def gh(*argv, body=None):
                   calls.append(argv)
+                  # GitHub refuses an issue body or a comment over 65,536 characters, so a fixture write past it fails as the API's write would.
+                  if body is not None and len(body) > 65536:
+                      raise AssertionError(f'a write of {len(body)} characters passes the 65,536 GitHub accepts')
                   if argv[:2] == ('issue', 'list'):
-                      return json.dumps([{'number': issue['number'], 'title': issue['title']} for issue in issues])
+                      return json.dumps([{'number': issue['number'], 'title': issue['title']} for issue in issues if issue['state'] == 'open'])
                   if argv[:2] == ('issue', 'create'):
                       issues.append({'number': len(issues) + 1, 'title': argv[argv.index('--title') + 1], 'body': body, 'comments': [],
-                                     'labels': [argv[index + 1] for index, item in enumerate(argv) if item == '--label']})
-                      return ''
+                                     'labels': [argv[index + 1] for index, item in enumerate(argv) if item == '--label'], 'state': 'open'})
+                      return f'https://example.test/issues/{len(issues)}\n'
                   if argv[:2] == ('label', 'create'):
                       return ''
                   issue = issues[int(argv[2]) - 1]
                   if argv[:2] == ('issue', 'view'):
-                      return json.dumps({'body': issue['body'], 'comments': [{'body': text} for text in issue['comments']]})
+                      return json.dumps({'body': issue['body'], 'comments': issue['comments']})
                   if argv[:2] == ('issue', 'edit'):
                       issue['body'] = body
                   elif argv[:2] == ('issue', 'comment'):
-                      issue['comments'].append(body)
+                      issue['comments'].append({'author': {'login': gh.login}, 'body': body})
+                  elif argv[:2] == ('issue', 'close'):
+                      issue['state'] = 'closed'
                   else:
                       raise AssertionError(f'unexpected gh call: {argv}')
                   return ''
-              gh.issues, gh.calls = issues, calls
+              gh.issues, gh.calls, gh.login = issues, calls, GUARD_LOGIN
               return gh
 
           def listing(*sections):
@@ -1294,6 +1304,10 @@ jobs:
               return {subject: (state, first, evidence.splitlines()[0])
                       for subject, (state, first, evidence) in judging['listing_of'](number, gh.issues[number - 1]['body']).items()}
 
+          def news(gh, number):
+              """The comments a guard issue shows: the changes it commented, without the hidden records it rebuilds bodies from."""
+              return [comment['body'] for comment in gh.issues[number - 1]['comments'] if not judging['RECORD'].match(comment['body'])]
+
           def a_repeat_breach_rewrites_its_open_issue_and_only_a_new_subject_comments():
               gh = issue_tracker(('Test shards unbalanced', listing(('Test shard (16/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'))),
                                  ('Escalation: already open', listing((None, 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'))))
@@ -1304,14 +1318,18 @@ jobs:
               # The open issue is rewritten in place: the repeat keeps the run that first breached it, and the new shard joins the list.
               assert listed(gh, 1) == {'Test shard (16/16)': ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/2'),
                                        'Test shard (3/16)': ('Breaching', 'https://example.test/runs/2', 'Run: https://example.test/runs/2')}, gh.issues[0]
-              # Only the new subject is news, so the run leaves one comment naming it.
-              assert gh.issues[0]['comments'] == ['Run: https://example.test/runs/2\nNew subjects: `Test shard (3/16)`.\n'], gh.issues[0]
+              # Only the new subject is news, so the run leaves one comment naming it, and one record comment for the subject no body listed.
+              assert news(gh, 1) == ['Run: https://example.test/runs/2\nNew subjects: `Test shard (3/16)`.\n'], gh.issues[0]
+              assert len(gh.issues[0]['comments']) == 2, gh.issues[0]
               assert all('-R' in call and 'owner/repo' in call for call in gh.calls), gh.calls
-              # A repeat of listed subjects only rewrites the numbers: twice in one run is one rewrite and no comment.
+              # A repeat of listed subjects only rewrites the numbers: twice in one run is one rewrite and no comment at all, records included.
               gh.calls.clear()
+              written = len(gh.issues[0]['comments'])
               judging['file_issues']([shard('Test shard (3/16)', run_of(3, 39), 'Run: https://example.test/runs/3\nagain')] * 2, 'owner/repo', gh)
-              assert [call[:3] for call in gh.calls if call[0] == 'issue' and call[1] != 'list'] == [('issue', 'view', '1'), ('issue', 'edit', '1')], gh.calls
-              assert len(gh.issues[0]['comments']) == 1 and listed(gh, 1)['Test shard (3/16)'][2] == 'Run: https://example.test/runs/3', gh.issues[0]
+              assert [call[:3] for call in gh.calls if call[0] == 'issue' and call[1] != 'list'] == [
+                  ('issue', 'view', '1'), ('issue', 'edit', '1')], gh.calls
+              assert len(gh.issues[0]['comments']) == written and len(news(gh, 1)) == 1, gh.issues[0]
+              assert listed(gh, 1)['Test shard (3/16)'][2] == 'Run: https://example.test/runs/3', gh.issues[0]
               # An escalation is labelled, the label is made once for the run, and each departure keeps an issue of its own.
               gh.calls.clear()
               escalate = partial(judging['escalation'], run_of(4, 39), baseline=[], lines=['- departed'])
@@ -1320,10 +1338,47 @@ jobs:
               made = [call for call in gh.calls if call[:2] == ('label', 'create')]
               assert len(made) == 1 and made[0][:6] == ('label', 'create', 'escalation', '-R', 'owner/repo', '--force'), made
               assert [(issue['title'], issue['labels']) for issue in gh.issues[2:]] == [('Escalation: new', ['escalation']), ('Escalation: other', ['escalation'])]
-              assert listed(gh, 2) == {None: ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/4')} and not gh.issues[1]['comments']
+              assert listed(gh, 2) == {None: ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/4')} and not news(gh, 2)
+              # An issue written before the guard recorded anything needs no record for a subject its body already lists: a repeat breach of
+              # it comments nothing at all and leaves the comment count at zero.
+              gh = issue_tracker(('Test shards unbalanced', listing(('Test shard (7/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'))))
+              assert judging['file_issues']([shard('Test shard (7/16)', run_of(5, 39), 'Run: https://example.test/runs/5\nrepeat')], 'owner/repo', gh) == \
+                  ['Test shards unbalanced']
+              assert gh.issues[0]['comments'] == [], gh.issues[0]
 
           a_repeat_breach_rewrites_its_open_issue_and_only_a_new_subject_comments()
           print('PASS a_repeat_breach_rewrites_its_open_issue_and_only_a_new_subject_comments')
+
+          def a_comment_the_guard_did_not_write_never_becomes_its_record():
+              # A record is state, so only the comments the guard itself wrote are read: anyone else can carry the marker, and the guard ignores
+              # it. A forged record that lists one subject, marks another Passed, adds one, or is not shaped like a record changes nothing.
+              both = listing(('Test shard (1/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'),
+                             ('Test shard (2/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nsecond'))
+              gh = issue_tracker(('Test shards unbalanced', both))
+              forged = judging['record_comment']({'Test shard (1/16)': ['Passed', 'https://example.test/runs/1', 'forged'],
+                                                 'Test shard (9/16)': ['Breaching', 'https://example.test/runs/1', 'forged']})
+              gh.issues[0]['comments'] += [{'author': {'login': 'a-maintainer'}, 'body': forged},
+                                           {'author': {'login': 'another-bot[bot]'}, 'body': forged},
+                                           {'author': None, 'body': forged},
+                                           {'author': {'login': 'a-maintainer'}, 'body': '<!-- ci-guards record: {"Test shard (1/16)": []} -->\n'}]
+              shard = partial(judging['finding'], 'Test shards unbalanced')
+              judging['file_issues']([shard('Test shard (2/16)', run_of(2, 39), 'Run: https://example.test/runs/2\nagain')], 'owner/repo', gh)
+              # The forged subject never joins the listing, the forged pass never stands, and the listed subject it left out stays listed.
+              assert listed(gh, 1) == {'Test shard (1/16)': ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/1'),
+                                       'Test shard (2/16)': ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/2')}, gh.issues[0]
+              assert not news(gh, 1), gh.issues[0]
+              # A repeat of a listed subject records nothing: both subjects sit in the body the guard read, so its record stays empty and the
+              # forged markers are the only ones there.
+              assert judging['read_back'](1, 'owner/repo', gh)[1] == {}, gh.issues[0]
+              # A comment the guard itself wrote is a record, and the reader reports the workflow's login as GUARD_LOGIN, so the fixture's own
+              # records are read back with no help from the production constant.
+              gh = issue_tracker(('Test shards unbalanced', both))
+              gh.issues[0]['comments'].append({'author': {'login': GUARD_LOGIN},
+                                               'body': judging['record_comment']({'Test shard (9/16)': ['Breaching', 'https://example.test/runs/1', 'held']})})
+              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {'Test shard (9/16)'}, gh.issues[0]
+
+          a_comment_the_guard_did_not_write_never_becomes_its_record()
+          print('PASS a_comment_the_guard_did_not_write_never_becomes_its_record')
 
           def a_recovery_comments_once_every_listed_subject_has_passed_and_never_closes():
               both = listing(('a::one', 'Breaching', 1, 'Run: https://example.test/runs/1\nslow'), ('b::two', 'Breaching', 1, 'Run: https://example.test/runs/1\nslow'))
@@ -1332,24 +1387,24 @@ jobs:
                   return judging['recovery']('Test over 30 seconds', run_of(number, 39), {test: 'it ran without crossing a slow mark' for test in tests})
               # One subject passing while another still breaches is a number, not news.
               assert judging['file_issues']([passing(2, 'a::one')], 'owner/repo', gh) == ['Test over 30 seconds']
-              assert listed(gh, 1)['a::one'] == ('Passed', 'https://example.test/runs/1', 'Run: https://example.test/runs/2') and not gh.issues[0]['comments']
+              assert listed(gh, 1)['a::one'] == ('Passed', 'https://example.test/runs/1', 'Run: https://example.test/runs/2') and not news(gh, 1)
               # The last breaching subject passing is the recovery, commented once with the run that passed.
               judging['file_issues']([passing(3, 'b::two')], 'owner/repo', gh)
-              assert [comment.splitlines()[0] for comment in gh.issues[0]['comments']] == ['Run: https://example.test/runs/3'], gh.issues[0]
-              assert 'passed this guard: every subject listed here has passed' in gh.issues[0]['comments'][0], gh.issues[0]
+              assert [comment.splitlines()[0] for comment in news(gh, 1)] == ['Run: https://example.test/runs/3'], gh.issues[0]
+              assert 'passed this guard: every subject listed here has passed' in news(gh, 1)[0], gh.issues[0]
               # Later passes only move the latest run, and a breach of a listed subject is a number too.
               judging['file_issues']([passing(4, 'a::one', 'b::two')], 'owner/repo', gh)
               judging['file_issues']([judging['finding']('Test over 30 seconds', 'a::one', run_of(5, 39), 'Run: https://example.test/runs/5\nslow')], 'owner/repo', gh)
-              assert len(gh.issues[0]['comments']) == 1 and listed(gh, 1)['a::one'] == ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/5')
+              assert len(news(gh, 1)) == 1 and listed(gh, 1)['a::one'] == ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/5')
               # A breach is news again once it passes: the recovery after it is commented.
               judging['file_issues']([passing(6, 'a::one')], 'owner/repo', gh)
-              assert [comment.splitlines()[0] for comment in gh.issues[0]['comments']] == ['Run: https://example.test/runs/3', 'Run: https://example.test/runs/6']
+              assert [comment.splitlines()[0] for comment in news(gh, 1)] == ['Run: https://example.test/runs/3', 'Run: https://example.test/runs/6']
               # A pass of a subject the issue does not list, or of a kind with no open issue, says nothing and opens nothing.
               gh.calls.clear()
               assert judging['file_issues']([passing(7, 'c::three'), judging['recovery']('Test shards unbalanced', run_of(7, 39), {'Test shard (1/16)': 'inside'})],
                                             'owner/repo', gh) == []
               assert [call[:2] for call in gh.calls if call[1] != 'list'] == [('issue', 'view')] and len(gh.issues) == 1, gh.calls
-              assert len(gh.issues[0]['comments']) == 2, 'the guard never closes an issue itself, and the tracker fails on any close'
+              assert len(news(gh, 1)) == 2, 'the guard closes no issue of a kind, and this run folded no duplicate in'
 
           a_recovery_comments_once_every_listed_subject_has_passed_and_never_closes()
           print('PASS a_recovery_comments_once_every_listed_subject_has_passed_and_never_closes')
@@ -1386,7 +1441,27 @@ jobs:
               kept = [subject for subject, _, _, _ in passed if subject in left]
               assert 0 < len(kept) < len(passed) and kept == [subject for subject, _, _, _ in passed][-len(kept):], kept
               assert all(subject in left for subject, _, _, _ in breaching) and all(subject in left for subject in new), left
-              assert gh.issues[0]['comments'] == ['Run: https://example.test/runs/2\nNew subjects: ' + ', '.join(f'`{subject}`' for subject in new) + '.\n']
+              assert news(gh, 1) == ['Run: https://example.test/runs/2\nNew subjects: ' + ', '.join(f'`{subject}`' for subject in new) + '.\n']
+              # A passed subject the guard recorded comes back as passed when the body has room again, never as the breach it was first listed
+              # with: the record follows the state it last wrote, so a pruned recovery stays passed and a run never fails on a subject it already
+              # recovered.
+              gh = issue_tracker(('Test over 30 seconds', listing(('a::old', 'Breaching', 1, evidence))))
+              broke = [f'a::broke{index:02}' for index in range(100)]
+              more = [f'a::more{index:02}' for index in range(60)]
+              judging['file_issues']([slow(subject) for subject in broke], 'owner/repo', gh)
+              assert len(judging['read_back'](1, 'owner/repo', gh)[1]) == len(broke), gh.issues[0]
+              judging['file_issues']([judging['recovery']('Test over 30 seconds', run_of(3, 39), {subject: 'it passed' for subject in broke[:60]})],
+                                     'owner/repo', gh)
+              judging['file_issues']([slow(subject) for subject in more], 'owner/repo', gh)
+              dropped = [subject for subject in broke[:60] if subject not in listed(gh, 1)]
+              assert dropped and all(listed(gh, 1)[subject][0] == 'Passed' for subject in broke[:60] if subject in listed(gh, 1)), gh.issues[0]
+              judging['file_issues']([slow('a::again')], 'owner/repo', gh)
+              assert len(gh.issues[0]['body']) <= 65536, len(gh.issues[0]['body'])
+              left = {subject: state for subject, (state, _, _) in listed(gh, 1).items()}
+              assert not [subject for subject in dropped if left.get(subject, 'Passed') != 'Passed'], left
+              assert left['a::again'] == 'Breaching' and all(left[subject] == 'Breaching' for subject in more), left
+              # The record follows the state it last wrote, which is what lets the next run put a dropped subject back as passed.
+              assert judging['read_back'](1, 'owner/repo', gh)[1]['a::broke00'][0] == 'Passed', gh.issues[0]
               # Breaching subjects alone past the limit fail the run and open nothing, since a subject still breaching is never dropped.
               gh = issue_tracker()
               try:
@@ -1399,6 +1474,36 @@ jobs:
 
           a_listing_past_the_body_limit_drops_its_earliest_passed_subjects()
           print('PASS a_listing_past_the_body_limit_drops_its_earliest_passed_subjects')
+
+          def a_record_past_the_comment_limit_posts_as_many_comments_as_it_needs():
+              # One write records a section per subject it adds and per subject whose state it changes, so a run that judges many subjects
+              # records more than one comment of 65,536 characters holds: each write posts as many record comments as it needs, and the
+              # reader merges them back, so no section is lost.
+              evidence = 'Run: https://example.test/runs/1\n' + 'x' * 500
+              gh = issue_tracker(('Test over 30 seconds', listing(('a::old', 'Breaching', 1, evidence))))
+              # A run that read the issue before another run added these wrote a body without them, and the record kept them as breaching.
+              stale = [f'a::stale{index:03}' for index in range(100)]
+              gh.issues[0]['comments'].append({'author': {'login': GUARD_LOGIN}, 'body': judging['record_comment'](
+                  {subject: ['Breaching', 'https://example.test/runs/1', evidence] for subject in stale})})
+              fresh = [f'a::fresh{index:03}' for index in range(100)]
+              slow = partial(judging['finding'], 'Test over 30 seconds', run=run_of(2, 39), body=evidence)
+              judging['file_issues']([judging['recovery']('Test over 30 seconds', run_of(2, 39), {subject: 'it passed' for subject in stale})]
+                                     + [slow(subject) for subject in fresh], 'owner/repo', gh)
+              # Every write stayed within the limit the fixture enforces, and the record lost no section: the 100 recovered subjects read
+              # back as passed and the 100 new ones as breaching, though the body has room for the breaching ones alone.
+              record = judging['read_back'](1, 'owner/repo', gh)[1]
+              assert set(record) == set(stale) | set(fresh), sorted(set(record) ^ (set(stale) | set(fresh)))
+              assert [record[subject][0] for subject in stale] == ['Passed'] * 100, record['a::stale000']
+              assert [record[subject][0] for subject in fresh] == ['Breaching'] * 100, record['a::fresh000']
+              assert len(gh.issues[0]['body']) <= 65536 and all(subject in listed(gh, 1) for subject in fresh), listed(gh, 1)
+              # The sections needed more than one record comment, and none of them is a change announcement.
+              records = [comment for comment in gh.issues[0]['comments'] if judging['RECORD'].match(comment['body'])]
+              assert len(records) > 1 and len(records) == len([comment for comment in records if comment['author']['login'] == GUARD_LOGIN])
+              assert news(gh, 1) == ['Run: https://example.test/runs/2\nNew subjects: ' + ', '.join(f'`{subject}`' for subject in fresh) + '.\n'], \
+                  news(gh, 1)
+
+          a_record_past_the_comment_limit_posts_as_many_comments_as_it_needs()
+          print('PASS a_record_past_the_comment_limit_posts_as_many_comments_as_it_needs')
 
           def fake_repository(minutes=30, bands=None, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group',
                                   ratchet=None, floor=None, newer=0, pace=None, build=None, steps=None, extra_jobs=None,
@@ -1454,7 +1559,8 @@ jobs:
               stored = []
               for identifier in range(1, 8):
                   left = seeding[1] if seeding and identifier == 7 else len(seeding[0]) if seeding else 0
-                  stored += [{'key': f'maestro-compile-v1-{n:064x}-{identifier}-1-docs-0-abc', 'ref': 'refs/heads/main', 'size_in_bytes': 100 * 1024**2} for n in range(left)]
+                  stored += [{'key': f'maestro-compile-v1-{n:064x}-{identifier}-1-docs-0-abc', 'ref': 'refs/heads/main', 'size_in_bytes': 100 * 1024**2,
+                              'created_at': moment(identifier)} for n in range(left)]
               # Other workflows of the repository share the listing; their wide selections must not count.
               decoys = [dict(run_of(identifier, 30, event), workflow_id=3) for identifier in range(101, 105)]
               for decoy in decoys:
@@ -1514,7 +1620,7 @@ jobs:
                   if argv[:2] == ('issue', 'list'):
                       return json.dumps([{'number': 50 + index, 'title': title} for index, title in enumerate(open_issues or {})])
                   if argv[:2] == ('issue', 'view'):
-                      return json.dumps({'body': list((open_issues or {}).values())[int(argv[2]) - 50]})
+                      return json.dumps({'body': list((open_issues or {}).values())[int(argv[2]) - 50], 'comments': []})
                   if argv[:2] == ('issue', 'edit'):
                       edited.append((argv[2], body))
                       return ''
@@ -1565,7 +1671,7 @@ jobs:
               for kind, subject in [('CI run slower than its baseline', 'Test jobs on unknown'), ('Compile cache below its hit-rate floor', 'docs'),
                                     ('Test shards unbalanced', 'Test shard (3/16)'), ('Test over 30 seconds', 'crate one')]:
                   assert passed[kind][subject].startswith('Run: https://example.test/runs/7\nRust CI (merge_group, main) passed this guard: '), passed[kind]
-              assert all('never closes one itself' in finding['body'] for finding in findings), findings
+              assert all('every subject listed here has passed' in finding['body'] for finding in findings), findings
               # The pass reports what the run judged, not the limit it did not cross.
               assert '16.50 s per test run against a baseline of 16.50 s, inside the 10% limit' in passed['CI run slower than its baseline']['Test jobs on unknown']
               assert 'its compile cache hit rate stayed over the floor' in passed['Compile cache below its hit-rate floor']['docs']
@@ -1593,7 +1699,8 @@ jobs:
               gh, created = fake_repository(ratchet={}, open_issues=open_issues)
               judging['file_issues'](judging['judge']('7', 'owner/repo', gh, SETTINGS), 'owner/repo', gh)
               assert created == [] and [number for number, _ in gh.edited] == ['50', '52'], (created, gh.edited)
-              assert [number for number, _ in gh.comments] == ['50', '52'] and all('every subject listed here has passed' in body for _, body in gh.comments), gh.comments
+              assert [number for number, body in gh.comments if not judging['RECORD'].match(body)] == ['50', '52'] and \
+                  all('every subject listed here has passed' in body for _, body in gh.comments if not judging['RECORD'].match(body)), gh.comments
 
           judge_passes_each_subject_it_judged_once_per_open_kind()
           print('PASS judge_passes_each_subject_it_judged_once_per_open_kind')
@@ -1665,7 +1772,8 @@ jobs:
                                'browser': ('Passed', run(42285912771), f'Run: {run(42343453409)}'),
                                'docs': ('Passed', run(42300656449), f'Run: {run(42342558647)}')}, floor
               # A comment marks a change only: a new subject, or the run after which none is breaching. The recorded issues held 5 to 26 comments each.
-              changes = [[(comment.splitlines()[0].removeprefix(f'Run: {run("")}'), 'new' if 'New subjects' in comment else 'recovered') for comment in issue['comments']]
+              changes = [[(comment.splitlines()[0].removeprefix(f'Run: {run("")}'), 'new' if 'New subjects' in comment else 'recovered')
+                          for comment in [comment['body'] for comment in issue['comments']] if not judging['RECORD'].match(comment)]
                          for issue in tracker.issues]
               assert changes == [[('42245672751', 'recovered'), ('42273102165', 'new'), ('42291900908', 'new'), ('42296204759', 'new'),
                                   ('42310443432', 'recovered'), ('42318972038', 'recovered'), ('42334480205', 'recovered')],
@@ -1675,6 +1783,124 @@ jobs:
 
           one_cause_keeps_one_issue_per_kind_through_the_recorded_fan_out()
           print('PASS one_cause_keeps_one_issue_per_kind_through_the_recorded_fan_out')
+
+          def two_runs_that_read_before_either_opened_keep_one_issue():
+              # Two merge groups finished together (maestro runs 42464709437 and 42464708050): both judged the kind before either had
+              # opened its issue, so both opened one and the second stayed open, never updated again. The lower number holds the kind,
+              # the duplicate points at it and keeps its own copy of the run's findings, and a later run folds the duplicate in and closes it.
+              shard = partial(judging['finding'], 'Test shards unbalanced')
+              def blamed(number, minutes, median, shard_number):
+                  return shard(f'Test shard ({shard_number}/16)', run_of(number, 26),
+                               f'Run: https://example.test/runs/{number}\nIt took {minutes} min against a median shard of {median} min.\n')
+              def passing(number, subject):
+                  return judging['recovery']('Test shards unbalanced', run_of(number, 39), {subject: 'it ran without crossing a slow mark'})
+              gh = issue_tracker()
+              before_either = judging['open_numbers']('owner/repo', gh)
+              assert judging['file_issues']([blamed(7, 6.3, 2.4, 1)], 'owner/repo', gh, before_either) == ['Test shards unbalanced']
+              judging['file_issues']([blamed(8, 5.2, 2.5, 2)], 'owner/repo', gh, before_either)
+              # The issue that became the kind's keeps both runs' subjects, and only the subject the second run added is news.
+              assert listed(gh, 1) == {'Test shard (1/16)': ('Breaching', 'https://example.test/runs/7', 'Run: https://example.test/runs/7'),
+                                       'Test shard (2/16)': ('Breaching', 'https://example.test/runs/8', 'Run: https://example.test/runs/8')}, gh.issues[0]
+              assert news(gh, 1) == ['Run: https://example.test/runs/8\nNew subjects: `Test shard (2/16)`.\n'], gh.issues[0]
+              # The duplicate the losing run opened stays open with its own copy and a pointer to the issue that holds the kind: a write built
+              # from another run's read can drop a subject, so only a later run that reads the survivor back closes it.
+              assert [(issue['number'], issue['state']) for issue in gh.issues] == [(1, 'open'), (2, 'open')], gh.issues
+              assert [int(number) for number in re.findall(r'#(\d+)', ' '.join(news(gh, 2)))] == [1], gh.issues[1]
+              assert set(listed(gh, 2)) == {'Test shard (2/16)'}, gh.issues[1]
+              judging['file_issues']([passing(11, 'Test shard (2/16)')], 'owner/repo', gh)
+              assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1], gh.issues
+              assert set(listed(gh, 1)) == {'Test shard (1/16)', 'Test shard (2/16)'}, gh.issues[0]
+              # A run that is the only one judging its kind closes nothing.
+              gh = issue_tracker()
+              judging['file_issues']([blamed(9, 6.3, 2.4, 3)], 'owner/repo', gh, judging['open_numbers']('owner/repo', gh))
+              assert [(issue['number'], issue['state']) for issue in gh.issues] == [(1, 'open')] and not [call for call in gh.calls if call[:2] == ('issue', 'close')], gh.calls
+
+          two_runs_that_read_before_either_opened_keep_one_issue()
+          print('PASS two_runs_that_read_before_either_opened_keep_one_issue')
+
+          def overlapping_writes_to_one_issue_lose_no_subject():
+              # Three merge groups finished together: all three judged the kind before any issue existed, so each opened one. The third read
+              # the surviving issue before the second had written it, so it wrote the body it read and the second run's subject left that
+              # body. The record the guard writes first still lists it, and the next run puts it back before closing anything.
+              shard = partial(judging['finding'], 'Test shards unbalanced')
+              def blamed(number, shard_number):
+                  return shard(f'Test shard ({shard_number}/16)', run_of(number, 26),
+                               f'Run: https://example.test/runs/{number}\nIt took 6 min against a median shard of 2 min.\n')
+              gh = issue_tracker()
+              started = judging['open_numbers']('owner/repo', gh)
+              judging['file_issues']([blamed(7, 1)], 'owner/repo', gh, started)
+              read_before_the_write = {'body': gh.issues[0]['body'], 'comments': list(gh.issues[0]['comments'])}
+              judging['file_issues']([blamed(8, 2)], 'owner/repo', gh, started)
+              stale = []
+              def gh_read_before_the_write(*argv, body=None):
+                  # The third run's view of the surviving issue returns what it read before the second run wrote over it.
+                  if argv[:2] == ('issue', 'view') and argv[2] == '1' and not stale:
+                      stale.append(argv)
+                      return json.dumps(read_before_the_write)
+                  return gh(*argv, body=body)
+              gh_read_before_the_write.issues, gh_read_before_the_write.calls = gh.issues, gh.calls
+              judging['file_issues']([blamed(9, 3)], 'owner/repo', gh_read_before_the_write, started)
+              assert stale, 'the third run read the surviving issue'
+              # The survivor's body misses the second run's subject, and the record holds it, so no run has to read a duplicate again. The record
+              # holds what the body cannot: the subjects no body listed when a write added them.
+              assert set(listed(gh, 1)) == {'Test shard (1/16)', 'Test shard (3/16)'}, gh.issues[0]
+              assert set(listed(gh, 2)) == {'Test shard (2/16)'}, gh.issues[1]
+              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {'Test shard (2/16)', 'Test shard (3/16)'}, gh.issues[0]
+              assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1, 2, 3], gh.issues
+              # A later run folds every duplicate's subjects into the survivor, records them, and only then closes the duplicates.
+              judging['file_issues']([judging['recovery']('Test shards unbalanced', run_of(11, 39), {'Test shard (1/16)': 'it ran without crossing a slow mark'})],
+                                     'owner/repo', gh)
+              assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1], gh.issues
+              assert set(listed(gh, 1)) == {'Test shard (1/16)', 'Test shard (2/16)', 'Test shard (3/16)'}, gh.issues[0]
+              assert listed(gh, 1)['Test shard (2/16)'][:2] == ('Breaching', 'https://example.test/runs/8'), gh.issues[0]
+              # A duplicate older than the run folds in the same way, whether or not this run opened an issue.
+              gh = issue_tracker(('Test shards unbalanced', listing(('Test shard (1/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'))),
+                                 ('Test shards unbalanced', listing(('Test shard (2/16)', 'Breaching', 2, 'Run: https://example.test/runs/2\nsecond'))))
+              assert judging['open_numbers']('owner/repo', gh) == {'Test shards unbalanced': [1, 2]}
+              judging['file_issues']([blamed(10, 3)], 'owner/repo', gh, judging['open_numbers']('owner/repo', gh))
+              assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1], gh.issues
+              assert set(listed(gh, 1)) == {'Test shard (1/16)', 'Test shard (2/16)', 'Test shard (3/16)'}, gh.issues[0]
+
+          overlapping_writes_to_one_issue_lose_no_subject()
+          print('PASS overlapping_writes_to_one_issue_lose_no_subject')
+
+          def a_stale_writer_cannot_erase_a_subject_whose_duplicate_closed():
+              # Two merge groups finished together and both opened the kind's issue, so the second number holds its own findings as a
+              # duplicate. A third run created its duplicate before either issue existed, read the surviving issue, and wrote the body it read
+              # only after a later run had folded the second in and closed it. That write dropped the folded subject, and a closed duplicate
+              # lists nothing again. The record the guard keeps holds what every write listed, so the next run puts the subject back.
+              shard = partial(judging['finding'], 'Test shards unbalanced')
+              def blamed(number, shard_number):
+                  return shard(f'Test shard ({shard_number}/16)', run_of(number, 26),
+                               f'Run: https://example.test/runs/{number}\nIt took 6 min against a median shard of 2 min.\n')
+              gh = issue_tracker(('Test shards unbalanced', listing(('Test shard (1/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'))),
+                                 ('Test shards unbalanced', listing(('Test shard (2/16)', 'Breaching', 2, 'Run: https://example.test/runs/2\nsecond'))))
+              before_the_fold = {'body': gh.issues[0]['body'], 'comments': list(gh.issues[0]['comments'])}
+              # A later run folds the duplicate in, records what the fold lists, and closes the duplicate.
+              judging['file_issues']([blamed(11, 3)], 'owner/repo', gh)
+              assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1], gh.issues
+              assert set(listed(gh, 1)) == {'Test shard (1/16)', 'Test shard (2/16)', 'Test shard (3/16)'}, gh.issues[0]
+              # The third run read no open issue, so it opens its own and writes the surviving issue it read before the fold.
+              frozen = []
+              def gh_read_before_the_fold(*argv, body=None):
+                  if argv[:2] == ('issue', 'view') and argv[2] == '1' and not frozen:
+                      frozen.append(argv)
+                      return json.dumps(before_the_fold)
+                  return gh(*argv, body=body)
+              judging['file_issues']([blamed(12, 4)], 'owner/repo', gh_read_before_the_fold, {})
+              assert frozen, 'the third run read the surviving issue before the fold'
+              # The write from that read drops both subjects the fold listed, and the closed duplicate cannot list them again.
+              assert set(listed(gh, 1)) == {'Test shard (1/16)', 'Test shard (4/16)'}, gh.issues[0]
+              assert gh.issues[1]['state'] == 'closed', gh.issues
+              # The next run rebuilds the body from the record the guard keeps, so every subject is listed again where it was.
+              judging['file_issues']([blamed(13, 5)], 'owner/repo', gh)
+              assert set(listed(gh, 1)) == {f'Test shard ({number}/16)' for number in (1, 2, 3, 4, 5)}, gh.issues[0]
+              assert listed(gh, 1)['Test shard (2/16)'][:2] == ('Breaching', 'https://example.test/runs/2'), gh.issues[0]
+              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {f'Test shard ({number}/16)' for number in (2, 3, 4, 5)}, gh.issues[0]
+              assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1], gh.issues
+
+          a_stale_writer_cannot_erase_a_subject_whose_duplicate_closed()
+          print('PASS a_stale_writer_cannot_erase_a_subject_whose_duplicate_closed')
 
           def judge_stays_quiet_on_a_healthy_run_and_reports_a_rate_breach():
               ratchet = {}
@@ -1966,6 +2192,30 @@ jobs:
 
           the_repository_cache_over_90_percent_of_its_limit_files_an_issue()
           print('PASS the_repository_cache_over_90_percent_of_its_limit_files_an_issue')
+
+          def the_cache_usage_check_sets_aside_the_snapshots_a_push_replaces():
+              run = run_of(7, 30)
+              title = 'Repository cache above 90% of its limit'
+              def entry(kind, digit, identifier, size, ref='refs/heads/main'):
+                  return {'key': f'{kind}-{digit * 64}-{identifier}-1-job-0', 'ref': ref, 'size_in_bytes': int(size * 1024**3), 'created_at': moment(identifier)}
+              def finding_of(caches):
+                  usage = {'active_caches_size_in_bytes': sum(cache['size_in_bytes'] for cache in caches), 'active_caches_count': len(caches)}
+                  return judging['usage_finding'](run, usage, 10, caches)
+              kinds = ['maestro-compile-v1', 'maestro-cargo-git-v1', 'maestro-test-setup-v2']
+              # The generation Maestro keeps at rest (8.33 GiB), and the previous one a push leaves until its pruning jobs finish (3.40 GiB).
+              kept = [entry(kinds[0], 'a', 2, 5.0), entry(kinds[1], 'b', 2, 1.0), entry(kinds[2], 'c', 2, 2.33)]
+              replaced = [entry(kind, digit, 1, size) for kind, digit, size in zip(kinds, 'abc', (2.0, 1.0, 0.4))]
+              assert finding_of(kept + replaced) is None, 'the save window is not the cache at rest'
+              # A generation that does not fit still files, and the issue says how much of the reading is the window.
+              body = finding_of([entry(kinds[0], 'a', 2, 6.17)] + kept[1:] + replaced)['body']
+              assert 'holds 12.90 GiB in 6 entries' in body and '3.40 GiB' in body and 'the 9.50 GiB that stay (95.0%)' in body, body
+              # Only the default branch is pruned, and only the prefixes the pruners name: anything else counts in full.
+              other_ref = [dict(cache, ref='refs/pull/119/merge') for cache in replaced]
+              assert finding_of(kept + other_ref)['title'] == title
+              assert finding_of(kept + [entry('caller-cache', 'a', 1, 3.0), entry('caller-cache', 'a', 2, 0.5)])['title'] == title
+
+          the_cache_usage_check_sets_aside_the_snapshots_a_push_replaces()
+          print('PASS the_cache_usage_check_sets_aside_the_snapshots_a_push_replaces')
 
           def the_cache_limit_is_the_declared_one_since_the_job_token_cannot_read_it():
               # The fake repository answers the storage-limit read with the job token's 403, so a judge that reads it fails here.
@@ -2453,15 +2703,15 @@ jobs:
           the_manual_accept_path_is_gone()
           print('PASS the_manual_accept_path_is_gone')
 
-          def identity_of(job):
+          def identity_of(job, host='Linux', **changes):
               # The outputs of the real identity step for one job: its key and the pattern that finds the keys of that job.
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
-                  env = {'CALLER_REPOSITORY': 'example/caller', 'CALLER_DIRECTORY': '.', 'HOST_OS': 'Linux', 'HOST_ARCH': 'X64', 'CACHE_JOB': job,
+                  env = {'CALLER_REPOSITORY': 'example/caller', 'CALLER_DIRECTORY': '.', 'HOST_OS': host, 'HOST_ARCH': 'X64' if host == 'Linux' else 'ARM64', 'CACHE_JOB': job,
                          'CACHE_INDEX': '0', 'CACHE_CALL': 'consumer', 'CACHE_COVERAGE': 'true', 'CACHE_ENABLED': 'true', 'CACHE_WARM': 'false',
                          'SHARD': '1', 'GITHUB_RUN_ID': '10', 'GITHUB_RUN_ATTEMPT': '1', 'CACHE_TARGET': 'aarch64-unknown-linux-gnu',
                          'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/heads/main', 'CACHE_DEFAULT_BRANCH': 'main',
-                         'GITHUB_OUTPUT': str(directory / 'output')}
+                         'GITHUB_OUTPUT': str(directory / 'output')} | changes
                   result = execute('Compile cache identity', directory, env)
                   assert result.returncode == 0, result.stdout + result.stderr
                   return dict(line.split('=', 1) for line in (directory / 'output').read_text(encoding='utf-8').splitlines())
@@ -2476,7 +2726,7 @@ jobs:
           a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_only()
           print('PASS a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_only')
 
-          def run_cache_floor(shape, stats, matched, listing, namespace='maestro-compile-v1-', seeder=None):
+          def run_cache_floor(shape, stats, matched, listing, namespace='maestro-compile-v1-', seeder=None, snapshot='true'):
               seeder = seeder or identity_of('tests')['seeder']
               with tempfile.TemporaryDirectory() as temporary:
                   directory = pathlib.Path(temporary)
@@ -2491,7 +2741,8 @@ jobs:
                   return execute('Compile cache hit-rate floor', directory, {
                       'PATH': f"{directory / 'bin'}:{os.environ['PATH']}", 'RUNNER_TEMP': str(directory),
                       'GITHUB_REPOSITORY': 'owner/repo', 'GH_TOKEN': 'unused', 'CACHE_SHAPE': shape,
-                      'CACHE_MATCHED_KEY': matched, 'CACHE_PREFIX': namespace + 'aaa-', 'CACHE_NAMESPACE': namespace, 'CACHE_SEEDER': seeder})
+                      'CACHE_MATCHED_KEY': matched, 'CACHE_PREFIX': namespace + 'aaa-', 'CACHE_NAMESPACE': namespace, 'CACHE_SEEDER': seeder,
+                      'CACHE_SNAPSHOT': snapshot})
 
           def stats_of(executed, rate):
               return '\n'.join([f'Compile requests                     {executed + 3}', f'Compile requests executed            {executed}',
@@ -2520,7 +2771,7 @@ jobs:
                   assert f'::warning title=Compile cache floor::Compile cache hit rate {rate:.2f}% is below the 90% floor in shape {shape}: {cause}' in output or (
                       cause == 'cache list is unavailable' and 'no snapshot restored' in output and cause in output), (cause, output)
                   assert '::error' not in output, (cause, output)
-              # Every shape a default-branch push seeds is judged, not only the coverage snapshot: five of them sat at 0% for four days.
+              # The floor finds each job's own snapshots, not only the coverage ones: five shapes sat at 0% for four days. Jobs that keep none are covered below.
               for job, shape in [('tests', 'tests-plain'), ('quality', 'quality'), ('docs', 'docs'), ('checks', 'checks'), ('browser', 'browser'),
                                  ('browser-tests', 'browser-tests'), ('test-prepare', 'test-prepare'), ('targets', 'targets-clippy-aarch64-unknown-linux-gnu')]:
                   seeder = identity_of(job)['seeder']
@@ -2538,6 +2789,57 @@ jobs:
 
           a_build_below_the_cache_floor_warns_and_names_its_shape_and_cause()
           print('PASS a_build_below_the_cache_floor_warns_and_names_its_shape_and_cause')
+
+          def leaf_jobs_on_linux_keep_no_snapshot_and_the_jobs_that_feed_the_tests_keep_theirs():
+              leaves = [('quality', {}), ('docs', {}), ('doctests', {'SHARD': 'doctests'}), ('browser', {}), ('browser-tests', {}), ('targets', {})]
+              for job, changes in leaves:
+                  identity = identity_of(job, **changes)
+                  assert (identity['snapshot'], identity['writer']) == ('false', 'false'), (job, identity)
+                  assert identity_of(job, 'macOS', **changes)['snapshot'] == 'true', job
+              for job, changes in [('test-build', {}), ('test-prepare', {}), ('tests', {'CACHE_WARM': 'true', 'SHARD': 'warm'}), ('checks', {})]:
+                  identity = identity_of(job, **changes)
+                  assert (identity['snapshot'], identity['writer']) == ('true', 'true'), (job, identity)
+              for job in ['test-build', 'test-prepare', 'targets']:
+                  assert identity_of(job, 'macOS')['writer'] == 'true', job
+              assert identity_of('doctests', 'macOS', SHARD='doctests')['writer'] == 'false'
+              assert identity_of('test-prepare', GITHUB_EVENT_NAME='merge_group')['writer'] == 'false'
+              # A job without a snapshot restores none and is not judged on a hit rate it cannot reach.
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              for name in ['quality', 'docs', 'tests', 'targets', 'browser', 'browser-tests']:
+                  restore = next(step for step in document['jobs'][name]['steps'] if step.get('name') == 'Restore compile cache')
+                  assert "steps.cache-identity.outputs.snapshot == 'true'" in restore['if'], name
+              for job, changes in leaves:
+                  identity = identity_of(job, **changes)
+                  result = run_cache_floor(identity['shape'], stats_of(610, 0), '', [], seeder=identity['seeder'], snapshot=identity['snapshot'])
+                  assert result.returncode == 0 and 'keeps no snapshot' in result.stdout and '::warning' not in result.stdout, (job, result.stdout + result.stderr)
+                  assert '::notice title=Work units::compiles: 610\n' in result.stdout and 'hit-rate' not in result.stdout, (job, result.stdout)
+
+          leaf_jobs_on_linux_keep_no_snapshot_and_the_jobs_that_feed_the_tests_keep_theirs()
+          print('PASS leaf_jobs_on_linux_keep_no_snapshot_and_the_jobs_that_feed_the_tests_keep_theirs')
+
+          def one_snapshot_per_kept_shape_fits_under_the_cache_limit():
+              # The sizes are the guide's measurement; a shape added or dropped without a new row, or a total over 90% of the limit, fails here.
+              guide = (root / 'docs/caller-checks.md').read_text(encoding='utf-8')
+              table = guide.split('| Entry | Host | GiB |', 1)[1].split('\n\n', 1)[0]
+              measured = {(name, host): float(size) for name, host, size in re.findall(r'\| `([^`]+)` \| (\w+) \| ([0-9.]+) \|', table)}
+              maestro = [('tests', 'Linux', {'CACHE_WARM': 'true', 'SHARD': 'warm'}), ('test-build', 'Linux', {}), ('test-prepare', 'Linux', {}),
+                         ('quality', 'Linux', {}), ('docs', 'Linux', {}), ('doctests', 'Linux', {'SHARD': 'doctests'}), ('browser', 'Linux', {}),
+                         ('browser-tests', 'Linux', {}), ('targets', 'Linux', {'CACHE_TARGET': 'aarch64-unknown-linux-gnu'}),
+                         ('test-build', 'macOS', {}), ('test-prepare', 'macOS', {}), ('doctests', 'macOS', {'SHARD': 'doctests'}),
+                         ('targets', 'macOS', {'CACHE_TARGET': 'x86_64-apple-darwin'}), ('targets', 'macOS', {'CACHE_TARGET': 'aarch64-apple-darwin'})]
+              kept = set()
+              for job, host, changes in maestro:
+                  identity = identity_of(job, host, **changes)
+                  if identity['writer'] == 'true':
+                      kept.add((identity['shape'], host))
+              # Each host's Cargo git cache is saved by the archive build, and each host's test setup bundle by test preparation.
+              kept |= {('cargo-git', host) for host in ('Linux', 'macOS', 'Windows') if identity_of('test-build', host)['writer'] == 'true'}
+              kept |= {('test-setup', host) for host in ('Linux', 'macOS') if identity_of('test-prepare', host)['writer'] == 'true'}
+              assert set(measured) == kept, (sorted(set(measured) ^ kept))
+              assert sum(measured.values()) <= 0.9 * 10, sum(measured.values())
+
+          one_snapshot_per_kept_shape_fits_under_the_cache_limit()
+          print('PASS one_snapshot_per_kept_shape_fits_under_the_cache_limit')
 
           def the_shards_and_the_archive_build_report_their_work_units():
               with tempfile.TemporaryDirectory() as temporary:
@@ -2572,6 +2874,18 @@ jobs:
           no_step_reports_flaky_passes_because_tests_never_retry()
           print('PASS no_step_reports_flaky_passes_because_tests_never_retry')
 
+          def step_body(job, name):
+              # A step's own text: from its name to the next item of the job's step list, named or alias.
+              return re.split(r'\n      - ', job.split(f'- name: {name}\n', 1)[1], maxsplit=1)[0]
+
+          def a_step_body_ends_at_the_next_step_even_when_that_step_is_an_alias():
+              job = '      - name: Floor\n        run: *floor\n      - *later-check\n\n      - name: Last\n        run: true\n'
+              assert step_body(job, 'Floor') == '        run: *floor', step_body(job, 'Floor')
+              assert step_body(job, 'Last') == '        run: true\n', step_body(job, 'Last')
+
+          a_step_body_ends_at_the_next_step_even_when_that_step_is_an_alias()
+          print('PASS a_step_body_ends_at_the_next_step_even_when_that_step_is_an_alias')
+
           def every_job_that_saves_a_snapshot_judges_its_cache_floor_after_its_statistics():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               savers = [name for name, text in jobs.items() if '- name: Save compile cache\n' in text]
@@ -2584,7 +2898,7 @@ jobs:
                   assert 'permissions:\n      contents: read\n      actions: read\n' in text.split('steps:', 1)[0], name
                   if name != 'doctests':
                       assert text.index('- name: Save compile cache') < text.index('- name: Compile cache hit-rate floor'), name
-              steps = {name: jobs[name].split('- name: Compile cache hit-rate floor\n', 1)[1].split('\n      - name: ', 1)[0] for name in holders}
+              steps = {name: step_body(jobs[name], 'Compile cache hit-rate floor') for name in holders}
               step = steps['quality']
               for line in ['CACHE_SHAPE: $' + '{{ steps.cache-identity.outputs.shape }}',
                            'CACHE_MATCHED_KEY: $' + '{{ steps.cache-restore.outputs.cache-matched-key }}',
@@ -2597,7 +2911,6 @@ jobs:
               # One owner of the step: the other jobs only alias it, so no shape is judged by a copy.
               for name in holders[1:]:
                   assert steps[name].rstrip('\n') == '        if: *sccache-floor-condition\n        env: *sccache-floor-env\n        run: *sccache-floor', (name, steps[name])
-              assert "output.write(f'prefix={prefix}\\nkey={prefix}{suffix}\\nwriter={str(writer).lower()}\\nshape={shape}\\nnamespace={namespace}\\nseeder={seeder}\\nsize={size}\\n')" in workflow
               assert "seeder = r'-\\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\\d+-'" in workflow
               # The floor reads the key layout from the identity step's outputs, spells none of it, and judges every shape.
               assert 'maestro-compile-v1-' not in step and "'-tests-'" not in step and 'tests-coverage' not in step, step
