@@ -1297,6 +1297,10 @@ jobs:
               return {subject: (state, first, evidence.splitlines()[0])
                       for subject, (state, first, evidence) in judging['listing_of'](number, gh.issues[number - 1]['body']).items()}
 
+          def news(gh, number):
+              """The comments a guard issue shows: the changes it commented, without the hidden records it rebuilds bodies from."""
+              return [comment for comment in gh.issues[number - 1]['comments'] if not judging['RECORD'].match(comment)]
+
           def a_repeat_breach_rewrites_its_open_issue_and_only_a_new_subject_comments():
               gh = issue_tracker(('Test shards unbalanced', listing(('Test shard (16/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'))),
                                  ('Escalation: already open', listing((None, 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'))))
@@ -1308,13 +1312,14 @@ jobs:
               assert listed(gh, 1) == {'Test shard (16/16)': ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/2'),
                                        'Test shard (3/16)': ('Breaching', 'https://example.test/runs/2', 'Run: https://example.test/runs/2')}, gh.issues[0]
               # Only the new subject is news, so the run leaves one comment naming it.
-              assert gh.issues[0]['comments'] == ['Run: https://example.test/runs/2\nNew subjects: `Test shard (3/16)`.\n'], gh.issues[0]
+              assert news(gh, 1) == ['Run: https://example.test/runs/2\nNew subjects: `Test shard (3/16)`.\n'], gh.issues[0]
               assert all('-R' in call and 'owner/repo' in call for call in gh.calls), gh.calls
               # A repeat of listed subjects only rewrites the numbers: twice in one run is one rewrite and no comment.
               gh.calls.clear()
               judging['file_issues']([shard('Test shard (3/16)', run_of(3, 39), 'Run: https://example.test/runs/3\nagain')] * 2, 'owner/repo', gh)
-              assert [call[:3] for call in gh.calls if call[0] == 'issue' and call[1] != 'list'] == [('issue', 'view', '1'), ('issue', 'edit', '1')], gh.calls
-              assert len(gh.issues[0]['comments']) == 1 and listed(gh, 1)['Test shard (3/16)'][2] == 'Run: https://example.test/runs/3', gh.issues[0]
+              assert [call[:3] for call in gh.calls if call[0] == 'issue' and call[1] != 'list'] == [
+                  ('issue', 'view', '1'), ('issue', 'comment', '1'), ('issue', 'edit', '1')], gh.calls
+              assert len(news(gh, 1)) == 1 and listed(gh, 1)['Test shard (3/16)'][2] == 'Run: https://example.test/runs/3', gh.issues[0]
               # An escalation is labelled, the label is made once for the run, and each departure keeps an issue of its own.
               gh.calls.clear()
               escalate = partial(judging['escalation'], run_of(4, 39), baseline=[], lines=['- departed'])
@@ -1323,7 +1328,7 @@ jobs:
               made = [call for call in gh.calls if call[:2] == ('label', 'create')]
               assert len(made) == 1 and made[0][:6] == ('label', 'create', 'escalation', '-R', 'owner/repo', '--force'), made
               assert [(issue['title'], issue['labels']) for issue in gh.issues[2:]] == [('Escalation: new', ['escalation']), ('Escalation: other', ['escalation'])]
-              assert listed(gh, 2) == {None: ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/4')} and not gh.issues[1]['comments']
+              assert listed(gh, 2) == {None: ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/4')} and not news(gh, 2)
 
           a_repeat_breach_rewrites_its_open_issue_and_only_a_new_subject_comments()
           print('PASS a_repeat_breach_rewrites_its_open_issue_and_only_a_new_subject_comments')
@@ -1335,24 +1340,24 @@ jobs:
                   return judging['recovery']('Test over 30 seconds', run_of(number, 39), {test: 'it ran without crossing a slow mark' for test in tests})
               # One subject passing while another still breaches is a number, not news.
               assert judging['file_issues']([passing(2, 'a::one')], 'owner/repo', gh) == ['Test over 30 seconds']
-              assert listed(gh, 1)['a::one'] == ('Passed', 'https://example.test/runs/1', 'Run: https://example.test/runs/2') and not gh.issues[0]['comments']
+              assert listed(gh, 1)['a::one'] == ('Passed', 'https://example.test/runs/1', 'Run: https://example.test/runs/2') and not news(gh, 1)
               # The last breaching subject passing is the recovery, commented once with the run that passed.
               judging['file_issues']([passing(3, 'b::two')], 'owner/repo', gh)
-              assert [comment.splitlines()[0] for comment in gh.issues[0]['comments']] == ['Run: https://example.test/runs/3'], gh.issues[0]
-              assert 'passed this guard: every subject listed here has passed' in gh.issues[0]['comments'][0], gh.issues[0]
+              assert [comment.splitlines()[0] for comment in news(gh, 1)] == ['Run: https://example.test/runs/3'], gh.issues[0]
+              assert 'passed this guard: every subject listed here has passed' in news(gh, 1)[0], gh.issues[0]
               # Later passes only move the latest run, and a breach of a listed subject is a number too.
               judging['file_issues']([passing(4, 'a::one', 'b::two')], 'owner/repo', gh)
               judging['file_issues']([judging['finding']('Test over 30 seconds', 'a::one', run_of(5, 39), 'Run: https://example.test/runs/5\nslow')], 'owner/repo', gh)
-              assert len(gh.issues[0]['comments']) == 1 and listed(gh, 1)['a::one'] == ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/5')
+              assert len(news(gh, 1)) == 1 and listed(gh, 1)['a::one'] == ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/5')
               # A breach is news again once it passes: the recovery after it is commented.
               judging['file_issues']([passing(6, 'a::one')], 'owner/repo', gh)
-              assert [comment.splitlines()[0] for comment in gh.issues[0]['comments']] == ['Run: https://example.test/runs/3', 'Run: https://example.test/runs/6']
+              assert [comment.splitlines()[0] for comment in news(gh, 1)] == ['Run: https://example.test/runs/3', 'Run: https://example.test/runs/6']
               # A pass of a subject the issue does not list, or of a kind with no open issue, says nothing and opens nothing.
               gh.calls.clear()
               assert judging['file_issues']([passing(7, 'c::three'), judging['recovery']('Test shards unbalanced', run_of(7, 39), {'Test shard (1/16)': 'inside'})],
                                             'owner/repo', gh) == []
               assert [call[:2] for call in gh.calls if call[1] != 'list'] == [('issue', 'view')] and len(gh.issues) == 1, gh.calls
-              assert len(gh.issues[0]['comments']) == 2, 'the guard closes no issue of a kind, and this run folded no duplicate in'
+              assert len(news(gh, 1)) == 2, 'the guard closes no issue of a kind, and this run folded no duplicate in'
 
           a_recovery_comments_once_every_listed_subject_has_passed_and_never_closes()
           print('PASS a_recovery_comments_once_every_listed_subject_has_passed_and_never_closes')
@@ -1389,7 +1394,7 @@ jobs:
               kept = [subject for subject, _, _, _ in passed if subject in left]
               assert 0 < len(kept) < len(passed) and kept == [subject for subject, _, _, _ in passed][-len(kept):], kept
               assert all(subject in left for subject, _, _, _ in breaching) and all(subject in left for subject in new), left
-              assert gh.issues[0]['comments'] == ['Run: https://example.test/runs/2\nNew subjects: ' + ', '.join(f'`{subject}`' for subject in new) + '.\n']
+              assert news(gh, 1) == ['Run: https://example.test/runs/2\nNew subjects: ' + ', '.join(f'`{subject}`' for subject in new) + '.\n']
               # Breaching subjects alone past the limit fail the run and open nothing, since a subject still breaching is never dropped.
               gh = issue_tracker()
               try:
@@ -1517,7 +1522,7 @@ jobs:
                   if argv[:2] == ('issue', 'list'):
                       return json.dumps([{'number': 50 + index, 'title': title} for index, title in enumerate(open_issues or {})])
                   if argv[:2] == ('issue', 'view'):
-                      return json.dumps({'body': list((open_issues or {}).values())[int(argv[2]) - 50]})
+                      return json.dumps({'body': list((open_issues or {}).values())[int(argv[2]) - 50], 'comments': []})
                   if argv[:2] == ('issue', 'edit'):
                       edited.append((argv[2], body))
                       return ''
@@ -1596,7 +1601,8 @@ jobs:
               gh, created = fake_repository(ratchet={}, open_issues=open_issues)
               judging['file_issues'](judging['judge']('7', 'owner/repo', gh, SETTINGS), 'owner/repo', gh)
               assert created == [] and [number for number, _ in gh.edited] == ['50', '52'], (created, gh.edited)
-              assert [number for number, _ in gh.comments] == ['50', '52'] and all('every subject listed here has passed' in body for _, body in gh.comments), gh.comments
+              assert [number for number, body in gh.comments if not judging['RECORD'].match(body)] == ['50', '52'] and \
+                  all('every subject listed here has passed' in body for _, body in gh.comments if not judging['RECORD'].match(body)), gh.comments
 
           judge_passes_each_subject_it_judged_once_per_open_kind()
           print('PASS judge_passes_each_subject_it_judged_once_per_open_kind')
@@ -1668,7 +1674,8 @@ jobs:
                                'browser': ('Passed', run(42285912771), f'Run: {run(42343453409)}'),
                                'docs': ('Passed', run(42300656449), f'Run: {run(42342558647)}')}, floor
               # A comment marks a change only: a new subject, or the run after which none is breaching. The recorded issues held 5 to 26 comments each.
-              changes = [[(comment.splitlines()[0].removeprefix(f'Run: {run("")}'), 'new' if 'New subjects' in comment else 'recovered') for comment in issue['comments']]
+              changes = [[(comment.splitlines()[0].removeprefix(f'Run: {run("")}'), 'new' if 'New subjects' in comment else 'recovered')
+                          for comment in issue['comments'] if not judging['RECORD'].match(comment)]
                          for issue in tracker.issues]
               assert changes == [[('42245672751', 'recovered'), ('42273102165', 'new'), ('42291900908', 'new'), ('42296204759', 'new'),
                                   ('42310443432', 'recovered'), ('42318972038', 'recovered'), ('42334480205', 'recovered')],
@@ -1696,11 +1703,11 @@ jobs:
               # The issue that became the kind's keeps both runs' subjects, and only the subject the second run added is news.
               assert listed(gh, 1) == {'Test shard (1/16)': ('Breaching', 'https://example.test/runs/7', 'Run: https://example.test/runs/7'),
                                        'Test shard (2/16)': ('Breaching', 'https://example.test/runs/8', 'Run: https://example.test/runs/8')}, gh.issues[0]
-              assert gh.issues[0]['comments'] == ['Run: https://example.test/runs/8\nNew subjects: `Test shard (2/16)`.\n'], gh.issues[0]
+              assert news(gh, 1) == ['Run: https://example.test/runs/8\nNew subjects: `Test shard (2/16)`.\n'], gh.issues[0]
               # The duplicate the losing run opened stays open with its own copy and a pointer to the issue that holds the kind: a write built
               # from another run's read can drop a subject, so only a later run that reads the survivor back closes it.
               assert [(issue['number'], issue['state']) for issue in gh.issues] == [(1, 'open'), (2, 'open')], gh.issues
-              assert [int(number) for number in re.findall(r'#(\d+)', ' '.join(gh.issues[1]['comments']))] == [1], gh.issues[1]
+              assert [int(number) for number in re.findall(r'#(\d+)', ' '.join(news(gh, 2)))] == [1], gh.issues[1]
               assert set(listed(gh, 2)) == {'Test shard (2/16)'}, gh.issues[1]
               judging['file_issues']([passing(11, 'Test shard (2/16)')], 'owner/repo', gh)
               assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1], gh.issues
@@ -1716,7 +1723,7 @@ jobs:
           def overlapping_writes_to_one_issue_lose_no_subject():
               # Three merge groups finished together: all three judged the kind before any issue existed, so each opened one. The third read
               # the surviving issue before the second had written it, so it wrote the body it read and the second run's subject left that
-              # issue. The duplicate the second run opened still holds it, and the next run folds it back in before closing anything.
+              # body. The record the guard writes first still lists it, and the next run puts it back before closing anything.
               shard = partial(judging['finding'], 'Test shards unbalanced')
               def blamed(number, shard_number):
                   return shard(f'Test shard ({shard_number}/16)', run_of(number, 26),
@@ -1724,23 +1731,24 @@ jobs:
               gh = issue_tracker()
               started = judging['open_numbers']('owner/repo', gh)
               judging['file_issues']([blamed(7, 1)], 'owner/repo', gh, started)
-              read_before_the_write = gh.issues[0]['body']
+              read_before_the_write = {'body': gh.issues[0]['body'], 'comments': list(gh.issues[0]['comments'])}
               judging['file_issues']([blamed(8, 2)], 'owner/repo', gh, started)
               stale = []
               def gh_read_before_the_write(*argv, body=None):
-                  # The third run's view of the surviving issue returns the body it read before the second run wrote over it.
+                  # The third run's view of the surviving issue returns what it read before the second run wrote over it.
                   if argv[:2] == ('issue', 'view') and argv[2] == '1' and not stale:
                       stale.append(argv)
-                      return json.dumps({'body': read_before_the_write})
+                      return json.dumps(read_before_the_write)
                   return gh(*argv, body=body)
               gh_read_before_the_write.issues, gh_read_before_the_write.calls = gh.issues, gh.calls
               judging['file_issues']([blamed(9, 3)], 'owner/repo', gh_read_before_the_write, started)
               assert stale, 'the third run read the surviving issue'
-              # The survivor misses the second run's subject, and the second run's duplicate still lists it.
+              # The survivor's body misses the second run's subject, and the record holds it, so no run has to read a duplicate again.
               assert set(listed(gh, 1)) == {'Test shard (1/16)', 'Test shard (3/16)'}, gh.issues[0]
               assert set(listed(gh, 2)) == {'Test shard (2/16)'}, gh.issues[1]
+              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {'Test shard (1/16)', 'Test shard (2/16)', 'Test shard (3/16)'}, gh.issues[0]
               assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1, 2, 3], gh.issues
-              # A later run folds every duplicate's subjects into the survivor, reads them back there, and only then closes the duplicates.
+              # A later run folds every duplicate's subjects into the survivor, records them, and only then closes the duplicates.
               judging['file_issues']([judging['recovery']('Test shards unbalanced', run_of(11, 39), {'Test shard (1/16)': 'it ran without crossing a slow mark'})],
                                      'owner/repo', gh)
               assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1], gh.issues
@@ -1756,6 +1764,44 @@ jobs:
 
           overlapping_writes_to_one_issue_lose_no_subject()
           print('PASS overlapping_writes_to_one_issue_lose_no_subject')
+
+          def a_stale_writer_cannot_erase_a_subject_whose_duplicate_closed():
+              # Two merge groups finished together and both opened the kind's issue, so the second number holds its own findings as a
+              # duplicate. A third run created its duplicate before either issue existed, read the surviving issue, and wrote the body it read
+              # only after a later run had folded the second in and closed it. That write dropped the folded subject, and a closed duplicate
+              # lists nothing again. The record the guard keeps holds what every write listed, so the next run puts the subject back.
+              shard = partial(judging['finding'], 'Test shards unbalanced')
+              def blamed(number, shard_number):
+                  return shard(f'Test shard ({shard_number}/16)', run_of(number, 26),
+                               f'Run: https://example.test/runs/{number}\nIt took 6 min against a median shard of 2 min.\n')
+              gh = issue_tracker(('Test shards unbalanced', listing(('Test shard (1/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'))),
+                                 ('Test shards unbalanced', listing(('Test shard (2/16)', 'Breaching', 2, 'Run: https://example.test/runs/2\nsecond'))))
+              before_the_fold = {'body': gh.issues[0]['body'], 'comments': list(gh.issues[0]['comments'])}
+              # A later run folds the duplicate in, records what the fold lists, and closes the duplicate.
+              judging['file_issues']([blamed(11, 3)], 'owner/repo', gh)
+              assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1], gh.issues
+              assert set(listed(gh, 1)) == {'Test shard (1/16)', 'Test shard (2/16)', 'Test shard (3/16)'}, gh.issues[0]
+              # The third run read no open issue, so it opens its own and writes the surviving issue it read before the fold.
+              frozen = []
+              def gh_read_before_the_fold(*argv, body=None):
+                  if argv[:2] == ('issue', 'view') and argv[2] == '1' and not frozen:
+                      frozen.append(argv)
+                      return json.dumps(before_the_fold)
+                  return gh(*argv, body=body)
+              judging['file_issues']([blamed(12, 4)], 'owner/repo', gh_read_before_the_fold, {})
+              assert frozen, 'the third run read the surviving issue before the fold'
+              # The write from that read drops both subjects the fold listed, and the closed duplicate cannot list them again.
+              assert set(listed(gh, 1)) == {'Test shard (1/16)', 'Test shard (4/16)'}, gh.issues[0]
+              assert gh.issues[1]['state'] == 'closed', gh.issues
+              # The next run rebuilds the body from the record the guard keeps, so every subject is listed again where it was.
+              judging['file_issues']([blamed(13, 5)], 'owner/repo', gh)
+              assert set(listed(gh, 1)) == {f'Test shard ({number}/16)' for number in (1, 2, 3, 4, 5)}, gh.issues[0]
+              assert listed(gh, 1)['Test shard (2/16)'][:2] == ('Breaching', 'https://example.test/runs/2'), gh.issues[0]
+              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {f'Test shard ({number}/16)' for number in (1, 2, 3, 4, 5)}, gh.issues[0]
+              assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1], gh.issues
+
+          a_stale_writer_cannot_erase_a_subject_whose_duplicate_closed()
+          print('PASS a_stale_writer_cannot_erase_a_subject_whose_duplicate_closed')
 
           def judge_stays_quiet_on_a_healthy_run_and_reports_a_rate_breach():
               ratchet = {}
