@@ -1454,7 +1454,8 @@ jobs:
               stored = []
               for identifier in range(1, 8):
                   left = seeding[1] if seeding and identifier == 7 else len(seeding[0]) if seeding else 0
-                  stored += [{'key': f'maestro-compile-v1-{n:064x}-{identifier}-1-docs-0-abc', 'ref': 'refs/heads/main', 'size_in_bytes': 100 * 1024**2} for n in range(left)]
+                  stored += [{'key': f'maestro-compile-v1-{n:064x}-{identifier}-1-docs-0-abc', 'ref': 'refs/heads/main', 'size_in_bytes': 100 * 1024**2,
+                              'created_at': moment(identifier)} for n in range(left)]
               # Other workflows of the repository share the listing; their wide selections must not count.
               decoys = [dict(run_of(identifier, 30, event), workflow_id=3) for identifier in range(101, 105)]
               for decoy in decoys:
@@ -1966,6 +1967,30 @@ jobs:
 
           the_repository_cache_over_90_percent_of_its_limit_files_an_issue()
           print('PASS the_repository_cache_over_90_percent_of_its_limit_files_an_issue')
+
+          def the_cache_usage_check_sets_aside_the_snapshots_a_push_replaces():
+              run = run_of(7, 30)
+              title = 'Repository cache above 90% of its limit'
+              def entry(kind, digit, identifier, size, ref='refs/heads/main'):
+                  return {'key': f'{kind}-{digit * 64}-{identifier}-1-job-0', 'ref': ref, 'size_in_bytes': int(size * 1024**3), 'created_at': moment(identifier)}
+              def finding_of(caches):
+                  usage = {'active_caches_size_in_bytes': sum(cache['size_in_bytes'] for cache in caches), 'active_caches_count': len(caches)}
+                  return judging['usage_finding'](run, usage, 10, caches)
+              kinds = ['maestro-compile-v1', 'maestro-cargo-git-v1', 'maestro-test-setup-v2']
+              # The generation Maestro keeps at rest (8.33 GiB), and the previous one a push leaves until its pruning jobs finish (3.40 GiB).
+              kept = [entry(kinds[0], 'a', 2, 5.0), entry(kinds[1], 'b', 2, 1.0), entry(kinds[2], 'c', 2, 2.33)]
+              replaced = [entry(kind, digit, 1, size) for kind, digit, size in zip(kinds, 'abc', (2.0, 1.0, 0.4))]
+              assert finding_of(kept + replaced) is None, 'the save window is not the cache at rest'
+              # A generation that does not fit still files, and the issue says how much of the reading is the window.
+              body = finding_of([entry(kinds[0], 'a', 2, 6.17)] + kept[1:] + replaced)['body']
+              assert 'holds 12.90 GiB in 6 entries' in body and '3.40 GiB' in body and 'the 9.50 GiB that stay (95.0%)' in body, body
+              # Only the default branch is pruned, and only the prefixes the pruners name: anything else counts in full.
+              other_ref = [dict(cache, ref='refs/pull/119/merge') for cache in replaced]
+              assert finding_of(kept + other_ref)['title'] == title
+              assert finding_of(kept + [entry('caller-cache', 'a', 1, 3.0), entry('caller-cache', 'a', 2, 0.5)])['title'] == title
+
+          the_cache_usage_check_sets_aside_the_snapshots_a_push_replaces()
+          print('PASS the_cache_usage_check_sets_aside_the_snapshots_a_push_replaces')
 
           def the_cache_limit_is_the_declared_one_since_the_job_token_cannot_read_it():
               # The fake repository answers the storage-limit read with the job token's 403, so a judge that reads it fails here.
@@ -2521,10 +2546,10 @@ jobs:
                   assert f'::warning title=Compile cache floor::Compile cache hit rate {rate:.2f}% is below the 90% floor in shape {shape}: {cause}' in output or (
                       cause == 'cache list is unavailable' and 'no snapshot restored' in output and cause in output), (cause, output)
                   assert '::error' not in output, (cause, output)
-              # Every shape a default-branch push seeds is judged, not only the coverage snapshot: five of them sat at 0% for four days.
-              for job, shape in [('tests', 'tests-plain'), ('checks', 'checks'), ('test-prepare', 'test-prepare'),
-                                 ('targets', 'targets-clippy-aarch64-apple-darwin')]:
-                  seeder = identity_of(job, 'macOS' if job == 'targets' else 'Linux')['seeder']
+              # The floor finds each job's own snapshots, not only the coverage ones: five shapes sat at 0% for four days. Jobs that keep none are covered below.
+              for job, shape in [('tests', 'tests-plain'), ('quality', 'quality'), ('docs', 'docs'), ('checks', 'checks'), ('browser', 'browser'),
+                                 ('browser-tests', 'browser-tests'), ('test-prepare', 'test-prepare'), ('targets', 'targets-clippy-aarch64-unknown-linux-gnu')]:
+                  seeder = identity_of(job)['seeder']
                   result = run_cache_floor(shape, stats_of(610, 100), prefix + '1-' + job, [], seeder=seeder)
                   assert result.returncode == 0 and f'Compile cache hit rate 100.00% (floor 90%) in shape {shape}' in result.stdout, (shape, result.stdout + result.stderr)
                   other = f'maestro-compile-v1-bbb-1-1-{job}-0-abc'
@@ -2582,8 +2607,10 @@ jobs:
                   identity = identity_of(job, host, **changes)
                   if identity['writer'] == 'true':
                       kept.add((identity['shape'], host))
-              compile_rows = {key for key in measured if key[0] not in ('cargo-git', 'test-setup')}
-              assert compile_rows == kept, (sorted(compile_rows ^ kept))
+              # Each host's Cargo git cache is saved by the archive build, and each host's test setup bundle by test preparation.
+              kept |= {('cargo-git', host) for host in ('Linux', 'macOS', 'Windows') if identity_of('test-build', host)['writer'] == 'true'}
+              kept |= {('test-setup', host) for host in ('Linux', 'macOS') if identity_of('test-prepare', host)['writer'] == 'true'}
+              assert set(measured) == kept, (sorted(set(measured) ^ kept))
               assert sum(measured.values()) <= 0.9 * 10, sum(measured.values())
 
           one_snapshot_per_kept_shape_fits_under_the_cache_limit()
@@ -2647,7 +2674,6 @@ jobs:
               # One owner of the step: the other jobs only alias it, so no shape is judged by a copy.
               for name in holders[1:]:
                   assert steps[name].rstrip('\n') == '        if: *sccache-floor-condition\n        env: *sccache-floor-env\n        run: *sccache-floor', (name, steps[name])
-              assert "output.write(f'prefix={prefix}\\nkey={prefix}{suffix}\\nwriter={str(writer).lower()}\\nsnapshot={str(snapshot).lower()}\\nshape={shape}\\nnamespace={namespace}\\nseeder={seeder}\\nsize={size}\\n')" in workflow
               assert "seeder = r'-\\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\\d+-'" in workflow
               # The floor reads the key layout from the identity step's outputs, spells none of it, and judges every shape.
               assert 'maestro-compile-v1-' not in step and "'-tests-'" not in step and 'tests-coverage' not in step, step

@@ -1877,10 +1877,13 @@ repository cache they fill.
   any read. The guard fires at 90% of the storage limit the caller declares,
   because over the limit GitHub evicts the oldest snapshots, which is how the
   2026-10-26 cold groups happened, and the margin gives the guard time to file
-  before that. The usage is read for every judged run. It counts every entry
-  in the cache, including the superseded ones a run leaves until its pruners
-  finish, so a reading right after a push can pass the at-rest total in
-  [One entry per prefix](#one-entry-per-prefix).
+  before that. The usage is read for every judged run. The save window does not
+  count: a push leaves the snapshots it replaces on the default branch until its
+  pruning jobs finish, so the guard sets those aside (the older entries of each
+  compile, Cargo git and test setup prefix on that branch) and judges what stays,
+  the at-rest total in [One entry per prefix](#one-entry-per-prefix). An entry
+  of another ref, or under another name, counts in full. The issue states the
+  reading, the part that is window and the part that stays.
   Source: Maestro held 10,928,201,953 bytes (10.18 GiB) in 22 entries on
   2026-10-30 against its 10 GiB limit, and 10,484,269,311 bytes (9.76 GiB,
   97.6%) on 2026-11-08, when one snapshot for each of twelve shapes needed
