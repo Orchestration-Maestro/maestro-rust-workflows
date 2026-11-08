@@ -701,7 +701,8 @@ def cache_install_selects_pinned_host_asset():
         for _host, _arch, platform in hosts:
             archive = archives / (platform + '.tar.gz')
             url = f'https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-{platform}.tar.gz'
-            subprocess.run(['curl', '--fail', '--location', url, '--output', str(archive)], check=True)
+            subprocess.run(['curl', '--fail', '--location', '--header', '@-', url, '--output', str(archive)],
+                           input='Authorization: Bearer ' + os.environ['GH_TOKEN'] + '\n', text=True, check=True)
         for host, arch, platform in hosts + [('MINGW64_NT-10.0-26100', 'x86_64', ''),
                                              ('Darwin', 'x86_64', ''), ('FreeBSD', 'amd64', '')]:
             for corrupt in ([False, True] if platform else [False]):
@@ -720,7 +721,7 @@ def cache_install_selects_pinned_host_asset():
                         source.write_text('#!/bin/sh\n' + content, encoding='utf-8')
                         subprocess.run(['install', '-m', '0700', str(source), str(shim / tool)], check=True)
                     env = environment(directory) | {
-                        'HOST': host, 'ARCH': arch,
+                        'HOST': host, 'ARCH': arch, 'GH_TOKEN': 'fixture-token',
                         'CORRUPT': str(corrupt).lower(), 'ARCHIVE': str(archives / (platform + '.tar.gz')),
                         'TRACE': str(directory), 'TMPDIR': str(directory), 'CACHE_RESTORE_MATCHED': 'false',
                         'PATH': str(shim) + os.pathsep + os.environ['PATH'], 'REAL_TAR': shutil.which('tar')}
@@ -736,7 +737,9 @@ def cache_install_selects_pinned_host_asset():
                     assert result.returncode == 0, (host, result.stderr)
                     name = f'sccache-v0.18.0-{platform}'
                     assert (directory / 'download').read_text(encoding='utf-8').splitlines() == [
-                        '--fail', '--retry', '3', '--retry-all-errors', '--retry-delay', '30', '--location', f'https://github.com/mozilla/sccache/releases/download/v0.18.0/{name}.tar.gz',
+                        '--fail', '--retry', '3', '--retry-all-errors', '--retry-delay', '30',
+                        '--header', 'Authorization: Bearer fixture-token', '--proto', '=https', '--proto-redir', '=https',
+                        '--location', f'https://github.com/mozilla/sccache/releases/download/v0.18.0/{name}.tar.gz',
                         '--output', (directory / 'extract').read_text(encoding='utf-8').splitlines()[1]]
                     extraction = (directory / 'extract').read_text(encoding='utf-8').splitlines()
                     assert extraction[0] == '-xzf' and extraction[2] == '-C'

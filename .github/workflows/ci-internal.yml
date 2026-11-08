@@ -99,7 +99,9 @@ jobs:
       - name: Shared coverage policy
         run: python3 .github/extract-workflow-steps.py
       - name: Content checks at workflow seam
-        run: python3 .github/ci-internal/content-checks-at-workflow-seam.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I .github/ci-internal/content-checks-at-workflow-seam.py
       - name: Toolchain
         working-directory: fixtures/sample
         run: |
@@ -107,7 +109,10 @@ jobs:
           rustup component add rustfmt clippy llvm-tools-preview
       - name: Coverage release installation
         timeout-minutes: 10
-        run: python3 .github/ci-internal/coverage-release-installation.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -I .github/ci-internal/coverage-release-installation.py
       - name: Archived shards at workflow seam
         run: python3 .github/ci-internal/archived-shards-at-workflow-seam.py
       - name: Example sources in coverage at workflow seam
@@ -115,7 +120,9 @@ jobs:
       - name: Compile cache in every Rust job
         run: python3 .github/ci-internal/compile-cache-in-every-rust-job.py
       - name: Cache storage failures keep builds running
-        run: python3 .github/ci-internal/cache-storage-failures-keep-builds-running.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I .github/ci-internal/cache-storage-failures-keep-builds-running.py
       - name: Isolated Python at workflow seam
         run: python3 .github/ci-internal/isolated-python-at-workflow-seam.py
       - name: Test setup base at workflow seam
@@ -140,17 +147,26 @@ jobs:
         run: python3 .github/ci-internal/release-notification-at-workflow-seam.py
       - name: Search release installation proofs
         timeout-minutes: 10
-        run: python3 .github/ci-internal/search-release-installation-proofs.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -I .github/ci-internal/search-release-installation-proofs.py
 
       - name: Real search tools
         timeout-minutes: 10
-        run: python3 .github/ci-internal/real-search-tools.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -I .github/ci-internal/real-search-tools.py
       - name: Post-landing reports at workflow seam
         run: python3 .github/ci-internal/post-landing-reports-at-workflow-seam.py
 
       - name: Caller checks at workflow seam
         id: cases
-        run: python3 .github/ci-internal/caller-checks-at-workflow-seam.py
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -I .github/ci-internal/caller-checks-at-workflow-seam.py
 
   native:
     name: Native compiler proof (${{ matrix.target }})
@@ -167,6 +183,8 @@ jobs:
       - name: Foreign target failures are detected
         shell: python
         env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
           TARGET: ${{ matrix.target }}
         run: |
           import ast
@@ -375,6 +393,8 @@ jobs:
           fail-on-cache-miss: false
       - name: Compile cache
         env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
           CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
           CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
           CACHE_SIZE: ${{ steps.cache-identity.outputs.size }}
@@ -383,10 +403,19 @@ jobs:
       - name: Browser test tool pin
         run: bash -e -o pipefail "$PROOF_STEPS/Browser test tool pin"
       - name: Browser test mise bootstrap
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         run: bash -e -o pipefail "$PROOF_STEPS/Browser test mise bootstrap"
       - name: Browser test caller tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         run: bash -e -o pipefail "$PROOF_STEPS/Browser test caller tools"
       - name: Browser runtime tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         run: bash -e -o pipefail "$PROOF_STEPS/Browser runtime tools"
       - name: Browser runtime packages
         run: bash -e -o pipefail "$PROOF_STEPS/Browser runtime packages"

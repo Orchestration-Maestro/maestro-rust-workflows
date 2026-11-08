@@ -210,6 +210,10 @@ def execute(name, cwd, extra=None, prelude=''):
         env.update(toolchain_environment(cwd, env))
     env = {key: value for key, value in env.items() if value is not None}
     command = prelude + body(name)
+    if '--header "Authorization: Bearer $GH_TOKEN"' in command or 'mise install' in command:
+        for key in ('GH_TOKEN', 'MISE_GITHUB_TOKEN'):
+            if key in os.environ:
+                env.setdefault(key, os.environ[key])
     if name in ['Browser tools', 'Test tools']:
         command = body('Mise bootstrap') + (body('Browser tool pin') if name == 'Browser tools' else '') + command
     bash = 'bash'
@@ -2783,6 +2787,7 @@ def mise_bootstrap_uses_runner_platform():
         executable('curl', '#!/bin/sh\ntouch corrupt-download-marker\nwhile [ "$1" != --output ]; do shift; done\n'
                    'printf "#!/bin/sh\\ntouch checksum-bypass-marker\\n" > "$2"\n')
         previous = set(directory.glob('maestro-mise.*/*'))
+        shutil.rmtree(directory / 'maestro-release-assets')
         result = execute('Mise bootstrap', directory, wrong)
         assert (directory / 'corrupt-download-marker').is_file(), result.stdout + result.stderr
         assert result.returncode != 0, result.stdout + result.stderr
@@ -5027,6 +5032,7 @@ def mise_bootstrap_checks_release_digest():
         assert paths.read_text(encoding="utf-8") != before  # Wrong version selects verified release.
         before = paths.read_text(encoding="utf-8")
         # A hostile download is data until the production checksum has passed.
+        shutil.rmtree(directory / 'maestro-release-assets')
         curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\n'
                         'printf "#!/bin/sh\\ntouch checksum-bypass-marker\\n" > "$2"\n', encoding="utf-8")
         result = execute('Mise bootstrap', directory, env)
@@ -5203,3 +5209,110 @@ def self_test_leg_loads_helpers_without_running_cases():
 
 self_test_leg_loads_helpers_without_running_cases()
 print('PASS self_test_leg_loads_helpers_without_running_cases')
+
+
+def github_downloads_send_only_the_job_token():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    assert 'GH_TOKEN' not in document['env']
+    assert 'MISE_GITHUB_TOKEN' not in document['env']
+    def check(source):
+        for line in source.splitlines():
+            if not re.search(r'\bcurl(?:\s|$)', line):
+                continue
+            if any(host in line for host in ('https://cdn.playwright.dev/', 'https://registry.npmjs.org/')):
+                assert 'Authorization' not in line, line
+                continue
+            assert '--header "Authorization: Bearer $GH_TOKEN"' in line, line
+            assert "--proto '=https' --proto-redir '=https'" in line, line
+            assert '--location-trusted' not in line, line
+    content = pathlib.Path('.github/workflows/content.yml').read_text(encoding='utf-8')
+    documents = [document, json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=content, text=True))]
+    for current in documents:
+        for job in current['jobs'].values():
+            for step in job.get('steps', []):
+                source = step.get('run', '')
+                env = current.get('env', {}) | job.get('env', {}) | step.get('env', {})
+                if 'curl ' in source:
+                    assert env.get('GH_TOKEN') == '${{ github.token }}', step['name']
+                if 'mise install' in source:
+                    assert env.get('MISE_GITHUB_TOKEN') == '${{ github.token }}', step['name']
+                check(source)
+    try:
+        check('curl --location https://github.com/owner/tool/releases/download/v1/tool -o tool')
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError('an unauthenticated new GitHub download was accepted')
+
+
+github_downloads_send_only_the_job_token()
+print('PASS github_downloads_send_only_the_job_token', flush=True)
+
+
+def verified_release_archives_are_reused_by_later_jobs():
+    import gzip
+    import hashlib
+    import io
+    import tarfile
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        fake = directory / 'bin'
+        fake.mkdir()
+        stream = io.BytesIO()
+        with tarfile.TarFile(fileobj=stream, mode='w') as bundle:
+            for binary in ('rg', 'fd'):
+                content = b'#!/usr/bin/env python3\nprint("fixture tool")\n'
+                member = tarfile.TarInfo(binary)
+                member.size = len(content)
+                bundle.addfile(member, io.BytesIO(content))
+        payload = gzip.compress(stream.getvalue(), mtime=0)
+        digest = hashlib.sha256(payload).hexdigest()
+        (directory / 'payload').write_bytes(payload)
+        curl = fake / 'curl'
+        curl.write_text('''#!/usr/bin/env python3
+import os, pathlib, shutil, sys
+assert sys.argv[sys.argv.index('--header') + 1] == 'Authorization: Bearer fixture-token'
+root = pathlib.Path(os.environ['FIXTURE'])
+with (root / 'requests').open('a') as log: log.write('download\\n')
+shutil.copyfile(root / 'payload', sys.argv[sys.argv.index('--output') + 1])
+''', encoding='utf-8')
+        curl.chmod(0o755)
+        command = body('Search tools')
+        command = re.sub(r'(https://github.com/\S+) [0-9a-f]{64}', r'\1 ' + digest, command)
+        env = os.environ | {'PATH': str(fake) + os.pathsep + os.environ['PATH'], 'FIXTURE': temporary,
+                            'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path',
+                            'GH_TOKEN': 'fixture-token'}
+        def install():
+            return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
+                                  env=env, capture_output=True, text=True)
+        result = install()
+        assert result.returncode == 0, result.stdout + result.stderr
+        requests = (directory / 'requests').read_text(encoding='utf-8')
+        result = install()
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (directory / 'requests').read_text(encoding='utf-8') == requests, 'cache hit downloaded again'
+        (directory / 'maestro-release-assets' / digest).write_bytes(b'corrupt cached archive')
+        result = install()
+        assert result.returncode != 0 and 'archive digest mismatch' in result.stderr, result.stdout + result.stderr
+        assert (directory / 'requests').read_text(encoding='utf-8') == requests
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    builds = document['jobs']['test-build']['steps']
+    upload = next(step for step in builds if step.get('name') == 'Share release assets')
+    assert upload['uses'].startswith('actions/upload-artifact@')
+    assert upload['with']['retention-days'] == 1
+    assert upload['with']['if-no-files-found'] == 'error'
+    assert '${{ runner.os }}-${{ runner.arch }}' in upload['with']['name']
+    assert '${{ inputs.concurrency-key' in upload['with']['name']
+    tests = document['jobs']['tests']['steps']
+    restore = next(i for i, step in enumerate(tests) if step.get('name') == 'Restore release assets')
+    assert tests[restore]['uses'].startswith('actions/download-artifact@')
+    assert tests[restore]['with']['name'] == upload['with']['name']
+    assert tests[restore]['with']['path'] == upload['with']['path'] == '${{ runner.temp }}/maestro-release-assets'
+    assert tests[restore]['if'] == "${{ !inputs.warm-cache && github.job == 'tests' }}"
+    assert restore < next(i for i, step in enumerate(tests) if step.get('name') == 'Coverage tools')
+    assert not any(step.get('name') == 'Release asset cache' for job in document['jobs'].values()
+                   for step in job.get('steps', []))
+
+
+verified_release_archives_are_reused_by_later_jobs()
+print('PASS verified_release_archives_are_reused_by_later_jobs', flush=True)
