@@ -1,4 +1,5 @@
 import ast
+import gzip
 import hashlib
 import io
 import json
@@ -179,12 +180,14 @@ if sys.argv[1] == 'install':
 
 
 def archive_of(path, entries):
-    with tarfile.open(path, 'w:gz') as archive:
+    stream = io.BytesIO()
+    with tarfile.TarFile(fileobj=stream, mode='w') as archive:
         for name, (content, mode) in entries.items():
             info = tarfile.TarInfo(name)
             info.size = len(content)
             info.mode = mode
             archive.addfile(info, io.BytesIO(content))
+    path.write_bytes(gzip.compress(stream.getvalue(), mtime=0))
 
 
 def installation(directory, mismatch=None, compiler='6.0.10'):
