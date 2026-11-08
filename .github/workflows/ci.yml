@@ -500,8 +500,12 @@ jobs:
                       raise SystemExit(f'{path}: check_targets contains unknown target {target!r}')
                   if target not in runners:
                       raise SystemExit(f'{path}: check_targets has no runner for {target!r}')
-                  if os.environ.get('TEST_EVENT') != 'pull_request' or target in ('aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-pc-windows-msvc'):
-                      targets.append(dict(target=target, runner=runners[target]))
+                  if os.environ.get('TEST_EVENT') == 'pull_request' and target != 'x86_64-pc-windows-msvc':
+                      continue
+                  # The native macOS archive already compiles the arm64 target on full runs.
+                  if target == 'aarch64-apple-darwin' and os.environ.get('WARM') != 'true':
+                      continue
+                  targets.append(dict(target=target, runner=runners[target]))
               values.update(targets=json.dumps(targets))
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             wasm_examples=json.dumps([[crate, name] for crate, names in witnesses.items() for name in names]),
