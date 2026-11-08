@@ -1257,10 +1257,13 @@ jobs:
           a_finding_is_identified_by_its_kind_and_its_subject()
           print('PASS a_finding_is_identified_by_its_kind_and_its_subject')
 
+          GUARD_LOGIN = 'github-actions'
+
           def issue_tracker(*open_issues):
               """A repository's issues as the guard reads and writes them, standing in for gh: `open_issues` are (title, body) pairs numbered from 1,
               and the issues the guard opens follow them. `gh.issues` holds each one's body and comments, `gh.calls` every call; any other call fails.
-              The guard posts with the workflow's token, so `gh.login` is the author every comment it writes carries."""
+              The guard posts with the workflow's token, so `gh.login` is the author every comment it writes carries: GUARD_LOGIN is the login a
+              live comment posted by that token showed, so the fixture writes the reader's spelling and never the production constant."""
               issues = [{'number': index + 1, 'title': title, 'body': body, 'comments': [], 'labels': [], 'state': 'open'}
                         for index, (title, body) in enumerate(open_issues)]
               calls = []
@@ -1286,7 +1289,7 @@ jobs:
                   else:
                       raise AssertionError(f'unexpected gh call: {argv}')
                   return ''
-              gh.issues, gh.calls, gh.login = issues, calls, judging['RECORD_AUTHOR']
+              gh.issues, gh.calls, gh.login = issues, calls, GUARD_LOGIN
               return gh
 
           def listing(*sections):
@@ -1312,8 +1315,9 @@ jobs:
               # The open issue is rewritten in place: the repeat keeps the run that first breached it, and the new shard joins the list.
               assert listed(gh, 1) == {'Test shard (16/16)': ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/2'),
                                        'Test shard (3/16)': ('Breaching', 'https://example.test/runs/2', 'Run: https://example.test/runs/2')}, gh.issues[0]
-              # Only the new subject is news, so the run leaves one comment naming it.
+              # Only the new subject is news, so the run leaves one comment naming it, and one record comment for the subject no body listed.
               assert news(gh, 1) == ['Run: https://example.test/runs/2\nNew subjects: `Test shard (3/16)`.\n'], gh.issues[0]
+              assert len(gh.issues[0]['comments']) == 2, gh.issues[0]
               assert all('-R' in call and 'owner/repo' in call for call in gh.calls), gh.calls
               # A repeat of listed subjects only rewrites the numbers: twice in one run is one rewrite and no comment at all, records included.
               gh.calls.clear()
@@ -1332,6 +1336,12 @@ jobs:
               assert len(made) == 1 and made[0][:6] == ('label', 'create', 'escalation', '-R', 'owner/repo', '--force'), made
               assert [(issue['title'], issue['labels']) for issue in gh.issues[2:]] == [('Escalation: new', ['escalation']), ('Escalation: other', ['escalation'])]
               assert listed(gh, 2) == {None: ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/4')} and not news(gh, 2)
+              # An issue written before the guard recorded anything needs no record for a subject its body already lists: a repeat breach of
+              # it comments nothing at all and leaves the comment count at zero.
+              gh = issue_tracker(('Test shards unbalanced', listing(('Test shard (7/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'))))
+              assert judging['file_issues']([shard('Test shard (7/16)', run_of(5, 39), 'Run: https://example.test/runs/5\nrepeat')], 'owner/repo', gh) == \
+                  ['Test shards unbalanced']
+              assert gh.issues[0]['comments'] == [], gh.issues[0]
 
           a_repeat_breach_rewrites_its_open_issue_and_only_a_new_subject_comments()
           print('PASS a_repeat_breach_rewrites_its_open_issue_and_only_a_new_subject_comments')
@@ -1354,8 +1364,15 @@ jobs:
               assert listed(gh, 1) == {'Test shard (1/16)': ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/1'),
                                        'Test shard (2/16)': ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/2')}, gh.issues[0]
               assert not news(gh, 1), gh.issues[0]
-              # The record holds only what the guard wrote itself: this run, which found no record at all.
-              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {'Test shard (1/16)', 'Test shard (2/16)'}, gh.issues[0]
+              # A repeat of a listed subject records nothing: both subjects sit in the body the guard read, so its record stays empty and the
+              # forged markers are the only ones there.
+              assert judging['read_back'](1, 'owner/repo', gh)[1] == {}, gh.issues[0]
+              # A comment the guard itself wrote is a record, and the reader reports the workflow's login as GUARD_LOGIN, so the fixture's own
+              # records are read back with no help from the production constant.
+              gh = issue_tracker(('Test shards unbalanced', both))
+              gh.issues[0]['comments'].append({'author': {'login': GUARD_LOGIN},
+                                               'body': judging['record_comment']({'Test shard (9/16)': ['Breaching', 'https://example.test/runs/1', 'held']})})
+              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {'Test shard (9/16)'}, gh.issues[0]
 
           a_comment_the_guard_did_not_write_never_becomes_its_record()
           print('PASS a_comment_the_guard_did_not_write_never_becomes_its_record')
@@ -1422,6 +1439,26 @@ jobs:
               assert 0 < len(kept) < len(passed) and kept == [subject for subject, _, _, _ in passed][-len(kept):], kept
               assert all(subject in left for subject, _, _, _ in breaching) and all(subject in left for subject in new), left
               assert news(gh, 1) == ['Run: https://example.test/runs/2\nNew subjects: ' + ', '.join(f'`{subject}`' for subject in new) + '.\n']
+              # A passed subject the guard recorded comes back as passed when the body has room again, never as the breach it was first listed
+              # with: the record follows the state it last wrote, so a pruned recovery stays passed and a run never fails on a subject it already
+              # recovered.
+              gh = issue_tracker(('Test over 30 seconds', listing(('a::old', 'Breaching', 1, evidence))))
+              broke = [f'a::broke{index:02}' for index in range(100)]
+              more = [f'a::more{index:02}' for index in range(60)]
+              judging['file_issues']([slow(subject) for subject in broke], 'owner/repo', gh)
+              assert len(judging['read_back'](1, 'owner/repo', gh)[1]) == len(broke), gh.issues[0]
+              judging['file_issues']([judging['recovery']('Test over 30 seconds', run_of(3, 39), {subject: 'it passed' for subject in broke[:60]})],
+                                     'owner/repo', gh)
+              judging['file_issues']([slow(subject) for subject in more], 'owner/repo', gh)
+              dropped = [subject for subject in broke[:60] if subject not in listed(gh, 1)]
+              assert dropped and all(listed(gh, 1)[subject][0] == 'Passed' for subject in broke[:60] if subject in listed(gh, 1)), gh.issues[0]
+              judging['file_issues']([slow('a::again')], 'owner/repo', gh)
+              assert len(gh.issues[0]['body']) <= 65536, len(gh.issues[0]['body'])
+              left = {subject: state for subject, (state, _, _) in listed(gh, 1).items()}
+              assert not [subject for subject in dropped if left.get(subject, 'Passed') != 'Passed'], left
+              assert left['a::again'] == 'Breaching' and all(left[subject] == 'Breaching' for subject in more), left
+              # The record follows the state it last wrote, which is what lets the next run put a dropped subject back as passed.
+              assert judging['read_back'](1, 'owner/repo', gh)[1]['a::broke00'][0] == 'Passed', gh.issues[0]
               # Breaching subjects alone past the limit fail the run and open nothing, since a subject still breaching is never dropped.
               gh = issue_tracker()
               try:
@@ -1770,10 +1807,11 @@ jobs:
               gh_read_before_the_write.issues, gh_read_before_the_write.calls = gh.issues, gh.calls
               judging['file_issues']([blamed(9, 3)], 'owner/repo', gh_read_before_the_write, started)
               assert stale, 'the third run read the surviving issue'
-              # The survivor's body misses the second run's subject, and the record holds it, so no run has to read a duplicate again.
+              # The survivor's body misses the second run's subject, and the record holds it, so no run has to read a duplicate again. The record
+              # holds what the body cannot: the subjects no body listed when a write added them.
               assert set(listed(gh, 1)) == {'Test shard (1/16)', 'Test shard (3/16)'}, gh.issues[0]
               assert set(listed(gh, 2)) == {'Test shard (2/16)'}, gh.issues[1]
-              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {'Test shard (1/16)', 'Test shard (2/16)', 'Test shard (3/16)'}, gh.issues[0]
+              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {'Test shard (2/16)', 'Test shard (3/16)'}, gh.issues[0]
               assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1, 2, 3], gh.issues
               # A later run folds every duplicate's subjects into the survivor, records them, and only then closes the duplicates.
               judging['file_issues']([judging['recovery']('Test shards unbalanced', run_of(11, 39), {'Test shard (1/16)': 'it ran without crossing a slow mark'})],
@@ -1824,7 +1862,7 @@ jobs:
               judging['file_issues']([blamed(13, 5)], 'owner/repo', gh)
               assert set(listed(gh, 1)) == {f'Test shard ({number}/16)' for number in (1, 2, 3, 4, 5)}, gh.issues[0]
               assert listed(gh, 1)['Test shard (2/16)'][:2] == ('Breaching', 'https://example.test/runs/2'), gh.issues[0]
-              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {f'Test shard ({number}/16)' for number in (1, 2, 3, 4, 5)}, gh.issues[0]
+              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {f'Test shard ({number}/16)' for number in (2, 3, 4, 5)}, gh.issues[0]
               assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1], gh.issues
 
           a_stale_writer_cannot_erase_a_subject_whose_duplicate_closed()

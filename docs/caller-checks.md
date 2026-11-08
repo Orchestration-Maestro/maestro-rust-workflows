@@ -1604,14 +1604,16 @@ judged:
 
 - With no open issue, a breach opens one that lists every subject that breached
   in the run.
-- A run records in a hidden comment, the record, the subjects it lists that the
-  guard has not recorded yet, and it writes that comment before it writes the
-  body; the guard rebuilds the body from the record. GitHub has no write that
-  refuses a body built from an older read, so two runs can write one body at the
-  same time, and the run that read it first writes back what it read, dropping a
-  subject the other run had just added. The record keeps that subject: the next
-  run lists it again. Only a comment the guard wrote itself is a record, so a
-  marker in anyone else's comment changes nothing.
+- A run records in a hidden comment, the record, the sections a later run cannot
+  rebuild from the body: the subject the write adds, which the body does not list
+  yet, and a subject whose state changed since the guard recorded it. It writes
+  that comment before it writes the body, and the guard rebuilds the body from the
+  record. GitHub has no write that refuses a body built from an older read, so two
+  runs can write one body at the same time, and the run that read it first writes
+  back what it read, dropping a subject the other run had just added. The record
+  keeps that subject: the next run lists it again. A subject the body already lists
+  needs no entry until its state changes. Only a comment the guard wrote itself is
+  a record, so a marker in anyone else's comment changes nothing.
 - Two runs can finish together and judge a kind before either has opened its
   issue, so both open one. The lower number holds the kind: the guard writes
   that run's subjects onto it and comments a pointer on the duplicate it just
@@ -1624,13 +1626,16 @@ judged:
   (`New subjects: ...`), or the run after which no listed subject is breaching
   (`passed this guard: every subject listed here has passed`). A repeat breach,
   a pass while another subject still breaches, and a breach of a subject that
-  had passed update the body and add no comment. A record is a comment too, so a
-  run writes one only for a subject the guard has not recorded: those runs leave
-  the issue's comment count where it was.
+  had passed update the body and add no comment. A record is a comment too, and a
+  run writes one only for a subject the body does not list yet or for a subject
+  whose state changed: a repeat breach leaves the issue's comment count where it
+  was, and so does the first repeat on an issue written before the guard kept a
+  record.
 
 A body stays within GitHub's 65,536-character limit. When a rewrite would pass
 it, the guard drops subjects that passed, the earliest listed first. The record
-keeps them, so one that breaches again is listed again with the run that first
+keeps their state, so a dropped subject comes back as passed when the body has
+room again, and one that breaches again is listed again with the run that first
 breached it. The guard never drops a breaching subject, so when breaching
 subjects alone would pass the limit, the run fails and the issue stays as it
 was.

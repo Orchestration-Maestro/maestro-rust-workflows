@@ -749,16 +749,25 @@ jobs:
                   return next(item['body'] for item in group if item.get('recovery'))
               return None
 
-          # A write records the subjects the record does not hold yet as a hidden comment before it writes the body, and the record is what
-          # bodies are rebuilt from: GitHub has no write that refuses a body built from an older read, so a body alone can lose a subject,
-          # while a comment, once written, stays. A subject the record already holds needs no comment, so a repeat run adds none. The guard
-          # posts with the workflow's own token, so only its own comments are records: a marker in anyone else's comment is text.
-          RECORD_AUTHOR = 'github-actions[bot]'
+          # A write records, as a hidden comment, the sections a later run cannot rebuild from the body, and it writes that comment before it
+          # writes the body: the subject this write adds, which no body lists yet, and the subject whose state changed since the guard
+          # recorded it, so a passed subject the body drops to fit comes back as passed. GitHub has no write that refuses a body built from
+          # an older read, so a body alone can lose a subject, while a comment, once written, stays. A repeat breach of a listed subject
+          # changes neither, so it adds no comment. The guard posts with the workflow's token, and the reader that reads a record back spells
+          # that token's author `github-actions`, so only that login is a record: a marker in anyone else's comment is text.
+          RECORD_AUTHOR = 'github-actions'
           RECORD = re.compile(r'<!-- ci-guards record: (?P<sections>.*?) -->')
 
           def record_comment(sections):
-              """The hidden comment that records the subjects a write lists for the first time: what a later run reads back to rebuild the body."""
+              """The hidden comment that records the sections a write adds: what a later run reads back to rebuild the body."""
               return f'<!-- ci-guards record: {json.dumps({subject or "": list(section) for subject, section in sections.items()})} -->\n'
+
+          def sections_to_record(body, record, listed):
+              """The sections a write records: the subject it adds, which no body lists yet, and the subject whose state changed since the
+              guard recorded it, so a passed subject the body drops to fit comes back as passed. A subject the body already lists needs no
+              entry until its state changes, so a repeat breach of it records nothing."""
+              return {subject: section for subject, section in listed.items()
+                      if (subject not in body and subject not in record) or (subject in record and record[subject][0] != section[0])}
 
           def read_back(number, repository, gh):
               """An issue's body sections and the subjects its own record comments hold, the last write's entry winning per subject: the record
@@ -794,11 +803,11 @@ jobs:
 
           def file_issues(findings, repository, gh, existing=None):
               """Keep one open issue per kind listing its subjects: open it with the kind's first breach, rewrite it in place on each later run that
-              judges one of them, and comment only on a change. Each write records the subjects the record does not hold before it writes the
-              body, so a run that wrote a body built from an older read leaves that body behind but never drops a subject: the next run
-              rebuilds it from the record. A duplicate holds its run's findings until a later run folds them into the record of the issue that
-              holds the kind and only then closes it. A pass with no open issue or listed subject says nothing. Returns the kinds opened or
-              rewritten."""
+              judges one of them, and comment only on a change. Each write records the sections a later run cannot rebuild from the body before
+              it writes the body, so a run that wrote a body built from an older read leaves that body behind but never drops a subject: the
+              next run rebuilds it from the record. A duplicate holds its run's findings until a later run folds them into the record of the
+              issue that holds the kind and only then closes it. A pass with no open issue or listed subject says nothing. Returns the kinds
+              opened or rewritten."""
               existing = open_numbers(repository, gh) if existing is None else existing
               kinds = {}
               for finding in findings:
@@ -831,10 +840,10 @@ jobs:
                           held.setdefault(subject, section)
                   listed = merged(held, group)
                   after = bounded(kind, listed)
-                  fresh = {subject: section for subject, section in after.items() if subject not in record}
+                  fresh = sections_to_record(body, record, listed)
                   if fresh:
-                      # Only a subject the record does not hold is worth a comment: a repeat's evidence updates the body alone. The record goes
-                      # first, so a body left behind is rebuilt from it and a duplicate's subjects are safe to close over.
+                      # Only a section a later run cannot rebuild from the body is worth a comment: a repeat's evidence updates the body
+                      # alone. The record goes first, so a body left behind is rebuilt from it and a duplicate's subjects are safe to close over.
                       gh('issue', 'comment', str(holder), '-R', repository, '--body-file', '-', body=record_comment(fresh))
                   if body != after:
                       gh('issue', 'edit', str(holder), '-R', repository, '--body-file', '-', body=listing_body(after))
