@@ -1605,10 +1605,16 @@ judged:
 - With no open issue, a breach opens one that lists every subject that breached
   in the run.
 - Two runs can finish together and judge a kind before either has opened its
-  issue, so both open one. The lower number holds the kind: the guard comments a
-  pointer on the duplicate it just opened, closes it, and writes that run's
-  subjects onto the issue that won. Neither run loses its subjects and no
-  duplicate stays open.
+  issue, so both open one. The lower number holds the kind: the guard writes that
+  run's subjects onto it and comments a pointer on the duplicate it just opened.
+  The duplicate keeps its own copy of those findings and stays open. A later run
+  folds its subjects into the issue that holds the kind, reads them back there,
+  and only then closes the duplicate.
+- Two runs can also write one body at the same time, and the run that read the
+  body first writes back what it read, which drops a subject the other run had
+  just added. Nothing is lost that way: a duplicate stays the record until a run
+  has folded it in, and no run closes a duplicate before its subjects are read
+  back on the issue that holds the kind.
 - With an open issue, the guard rewrites its body in place. A breach adds its
   subject, or replaces that subject's evidence and keeps the run that first
   breached it. A pass updates only a subject the issue already lists.
@@ -1625,12 +1631,12 @@ subject, so when breaching subjects alone would pass the limit, the run fails
 and the issue stays as it was.
 
 The guard never closes a kind's issue. Close it once the fix is confirmed; the
-next breach of that kind opens a new one. Its only close is a duplicate it
-opened itself when two runs judged the kind at the same moment, and that one
-points at the issue holding the kind. A pass with no open issue, or for a
-subject the issue does not list, changes nothing. The guard rewrites only a body
-it can read back: an open issue with a kind's title and no subject section fails
-the run and stays untouched.
+next breach of that kind opens a new one. Its only close is a duplicate, and only
+once the issue holding the kind lists that duplicate's subjects; until then the
+duplicate points at that issue. A pass with no open issue, or for a subject the
+issue does not list, changes nothing. The guard rewrites only a body it can read
+back: an open issue with a kind's title and no subject section fails the run and
+stays untouched.
 
 A subject is as wide as the cause: one cache shape is one subject, however many
 jobs judge it, so sixteen test shards on one cold snapshot are one section with
