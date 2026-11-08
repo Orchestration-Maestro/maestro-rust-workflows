@@ -184,17 +184,23 @@ def snapshot_only_default_branch_writers_save():
         assert archive['writer'] == 'true' and docs['writer'] == 'false', (host, archive, docs)
     plain_prefix = snapshot_keys(CACHE_COVERAGE='false')['prefix']
     jobs = ['quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests']
+    # No later job restores the snapshot of these on Linux, so they keep none; another host keeps its own.
+    leaves = ['quality', 'docs', 'browser', 'browser-tests', 'targets']
     for job in jobs:
         for event in ['pull_request', 'merge_group', 'workflow_dispatch', 'push']:
             for ref in ['refs/pull/119/merge', 'refs/heads/feature', 'refs/heads/main', 'refs/tags/main']:
                 observed = snapshot_keys(CACHE_JOB=job, GITHUB_EVENT_NAME=event, GITHUB_REF=ref)
-                expected = 'true' if event == 'push' and ref == 'refs/heads/main' else 'false'
+                expected = 'true' if event == 'push' and ref == 'refs/heads/main' and job not in leaves else 'false'
                 assert observed.get('writer') == expected, (job, event, ref, observed)
+    for job in leaves:
+        assert snapshot_keys(CACHE_JOB=job, HOST_OS='macOS', HOST_ARCH='ARM64')['writer'] == 'true', job
+        assert snapshot_keys(CACHE_JOB=job, HOST_OS='macOS', HOST_ARCH='ARM64')['snapshot'] == 'true', job
+        assert snapshot_keys(CACHE_JOB=job)['snapshot'] == 'false', job
     assert snapshot_keys(GITHUB_EVENT_NAME='pull_request', TEST_EVENT='push')['writer'] == 'false'
     assert snapshot_keys(GITHUB_EVENT_NAME='merge_group', TEST_EVENT='push')['writer'] == 'false'
     assert snapshot_keys(CACHE_DEFAULT_BRANCH='trunk', GITHUB_REF='refs/heads/trunk')['writer'] == 'true'
     assert snapshot_keys(CACHE_DEFAULT_BRANCH='trunk')['writer'] == 'false'
-    for enabled, coverage, expected in [('true', 'true', ['1', 'doctests']),
+    for enabled, coverage, expected in [('true', 'true', ['1']),
                                         ('true', 'false', ['1']), ('false', 'true', ['1'])]:
         writers = [shard for shard in [*map(str, range(1, 17)), 'doctests']
                    if snapshot_keys(CACHE_ENABLED=enabled, CACHE_COVERAGE=coverage, SHARD=shard)['writer'] == 'true']
@@ -207,8 +213,7 @@ def snapshot_only_default_branch_writers_save():
             warm_doctests = snapshot_keys(CACHE_JOB='doctests', CACHE_WARM='true', SHARD='doctests',
                                           CACHE_ENABLED='false', CACHE_COVERAGE='false',
                                           GITHUB_EVENT_NAME=event, GITHUB_REF=ref)
-            expected = 'true' if event == 'push' and ref == 'refs/heads/main' else 'false'
-            assert warm_doctests['writer'] == expected, (event, ref)
+            assert warm_doctests['writer'] == 'false', (event, ref)
             assert warm_doctests['prefix'] == plain_prefix, (event, ref)
     assert snapshot_keys(CACHE_WARM='true', SHARD='warm')['writer'] == 'true'
     assert snapshot_keys(CACHE_WARM='true', SHARD='warm', GITHUB_EVENT_NAME='pull_request')['writer'] == 'false'
@@ -439,6 +444,15 @@ def snapshot_partial_restore_is_discarded():
                 stats(env, '1' if kept else '0', '0' if kept else '1')
                 if not kept:
                     assert 'Compile cache snapshot restore failed; using an empty local cache' in (directory / 'restore-message').read_text(encoding='utf-8')
+
+def skipped_restore_is_not_reported_as_a_failed_one():
+    # A job that keeps no snapshot skips the restore step; the empty local cache it starts is not a failure to restore.
+    for outcome, notice in [('skipped', False), ('failure', True), ('success', True)]:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = pathlib.Path(temporary)
+            with daemon(directory, outcome, ''):
+                reported = 'restore failed' in (directory / 'restore-message').read_text(encoding='utf-8')
+                assert reported == notice, (outcome, reported)
 
 def action(role, directory, server):
     env = environment(directory) | {
@@ -792,6 +806,7 @@ with tempfile.TemporaryDirectory() as temporary:
     warm_artifact = snapshot_native_entries_are_reused()
     print('PASS snapshot_native_entries_are_reused', flush=True)
     for test in [snapshot_missing_entries_build_uncached, snapshot_partial_restore_is_discarded,
+                 skipped_restore_is_not_reported_as_a_failed_one,
                  snapshot_restore_outage_builds_uncached, snapshot_save_outage_keeps_build_success,
                  snapshot_restart_preserves_isolated_local_policy, cache_outage_keeps_compiler_failure,
                  builds_without_the_coverage_wrapper_keep_the_cache, native_c_compiler_defaults_preserve_explicit_compilers,

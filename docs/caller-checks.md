@@ -232,9 +232,10 @@ still instrument workspace builds and send their compiles through the cache.
 
 | Jobs | Host | Restore | Save |
 | --- | --- | --- | --- |
-| Format and lint, Docs, Tests, Doctests, Dependency/source/coverage checks, Wasm and browser build, Chromium browser tests | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
+| Warm coverage build, Build test archive, Prepare test setup, Dependency/source/coverage checks | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
+| Format and lint, Docs, Doctests, Wasm and browser build, Chromium browser tests, declared target checks | Linux | Never | Never; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) |
 | Native test archive builds, test preparation and doctests | arm64 macOS | Every full-suite call that runs the job | Default-branch pushes only |
-| Declared target checks | Linux, arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
+| Declared target checks | arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
 | Declared target checks and native test jobs | x86_64 Windows | Never | Never |
 
 Windows compilation runs uncached because sccache expands response files beyond
@@ -253,12 +254,43 @@ checksum-pinned assets are listed in [Compile cache](../README.md#compile-cache)
 
 Only a default-branch push warm call also runs Format and lint, Docs,
 Doctests, Wasm and browser build, and declared Chromium browser tests.
-They run their existing checks, not substitute builds: the paths and compiler
-output modes match subsequent readers. Doctests use the plain test shape,
-not the instrumented coverage shape. Browser tests and doctests execute during
-these warm calls; the coverage warm build still uses its optional test filter.
-Other warm calls skip these additional jobs. No extra cache writer is enabled
-for pull requests, merge groups, feature branches or manual runs.
+They run their existing checks, not substitute builds. Browser tests and
+doctests execute during these warm calls; the coverage warm build still uses
+its optional test filter. These Linux jobs keep no snapshot, so the warm call
+runs them without saving anything. Other warm calls skip these additional jobs.
+No extra cache writer is enabled for pull requests, merge groups, feature
+branches or manual runs.
+
+### Jobs that keep no snapshot
+
+A Linux job saves a snapshot only when a later job of the same run restores it:
+the warm coverage build, Build test archive and Prepare test setup feed the test
+shards, and the Dependency, source and coverage checks job is the whole build of
+a caller without the archive. Format and lint, Docs, Doctests, Wasm and browser
+build, Chromium browser tests and the Linux target checks restore nothing and
+save nothing, because one snapshot for each of them would not fit the cache
+limit next to the others (see [One entry per prefix](#one-entry-per-prefix)). They
+compile cold, and a job on another host keeps its snapshot. Compile cache
+identity decides this once, in its `snapshot` output. The restore step runs only
+when `snapshot` is `true`, the save step needs the `writer` output that is `true`
+only for a snapshot-keeping job on a default-branch push, and the hit-rate floor
+reports the job's compile count without judging a hit rate it cannot reach.
+
+Cold times measured on Maestro, against the warm time of the same job:
+
+| Job | Cold | Warm |
+| --- | --- | --- |
+| Docs | 7.0 min | 3.9 min |
+| Doctests | 6.8 to 8.0 min | 2.8 min |
+| Wasm and browser build | 8.3 to 12.3 min | 3.1 to 3.5 min |
+| Check (aarch64-unknown-linux-gnu) | 4.7 to 5.5 min | 3.0 min |
+
+Each stays under the merge group's longest path, the arm64 macOS archive build
+and its shards. The extra Linux minutes add no cost on a public repository.
+
+An entry a job saved before it stopped keeping a snapshot stays in the cache
+until GitHub's seven-day expiry removes it, because nothing restores it and the
+pruners keep the newest entry of each prefix.
 
 ### Snapshot size
 
@@ -301,10 +333,11 @@ remove even the newest snapshot of a shape. On 2026-11-03 one Maestro generation
 held 5,606,616,026 bytes: the other compile snapshots, three Cargo git entries
 and one test setup bundle. The setup snapshot adds one entry of about 1.1 GB to
 each generation: at most 1.6 GB of objects, plus about 6 MB of preprocessor
-entries. A generation then stays near 7.2 GB, under the limit. GitHub evicts by
-last access, so the previous generation goes first: once a shape saves its new
-snapshot, no reader restores the old one. The pruning jobs below delete that old
-generation after each shape saves, so it no longer waits for eviction.
+entries. GitHub evicts by last access, so the previous generation goes first:
+once a shape saves its new snapshot, no reader restores the old one. The pruning
+jobs below delete that old generation after each shape saves, so it no longer
+waits for eviction. What one generation adds up to is the budget in
+[One entry per prefix](#one-entry-per-prefix).
 
 ### One entry per prefix
 
@@ -320,14 +353,37 @@ prints a `Cache prune` warning, marks the step failed and leaves the job green,
 and the next pruner tries again. Entries under other names, such as a caller's
 own caches, are never touched.
 
-Measured from Maestro on 2026-11-04, one entry per shape holds about 8.4 GiB of
-its 10 GiB limit: compile snapshots of 0.24 GiB (`quality`), 0.32 GiB (`docs`),
-0.98 GiB (`tests-coverage`), 1.46 GiB (`test-prepare`), 0.23, 0.98 and 0.57 GiB
-(the aarch64 Linux, x86_64 macOS and arm64 macOS target checks), about 0.78 GiB
-(`tests-plain`), 0.65 GiB (`browser`) and 0.68 GiB (`browser-tests`), plus two
-0.40 GiB Cargo git entries and one 0.66 GiB test setup bundle. While a run
-saves, a shape's new entry and the one it replaces exist together until the
-pruner that follows its saving job runs.
+The repository cache holds one generation, so the snapshots every kept shape
+saves, plus the Cargo git entries and the test setup bundles, must add up to under
+90% of the 10 GiB limit, the level at which the usage guard files an issue. Over
+the limit GitHub evicts the newest snapshots of the shapes restored least
+recently, and those shapes then compile cold. One snapshot for each of the
+twelve shapes Maestro compiled needed 11.66 GiB, so the Linux jobs listed in
+[Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) stopped saving. Measured
+from Maestro's default-branch push 42428071607 on 2026-11-08, one entry per kept
+shape holds 8.33 GiB, 83.3% of the limit:
+
+| Entry | Host | GiB |
+| --- | --- | --- |
+| `test-prepare` | Linux | 1.35 |
+| `tests-coverage` | Linux | 0.98 |
+| `test-prepare` | macOS | 1.33 |
+| `tests-plain` | macOS | 0.81 |
+| `targets-clippy-x86_64-apple-darwin` | macOS | 0.37 |
+| `targets-clippy-aarch64-apple-darwin` | macOS | 0.36 |
+| `cargo-git` | Linux | 0.41 |
+| `cargo-git` | macOS | 0.41 |
+| `cargo-git` | Windows | 0.74 |
+| `test-setup` | Linux | 0.82 |
+| `test-setup` | macOS | 0.76 |
+
+A shape that joins Maestro needs a row here, and the self-test fails when a kept
+shape has no row or the rows pass 90%. While a run saves, a shape's new entry
+and the one it replaces exist together until the pruner that follows its saving
+job runs. That job waits for the whole matrix, so a Linux entry can outlive its
+replacement by as long as the macOS leg takes. GitHub evicts by last access, so
+the replaced entry, which nothing has read since the run began, normally goes
+first.
 
 ### Cargo git dependency cache
 
@@ -1753,25 +1809,21 @@ the run link and fix the cause of the kind that regressed.
 
 ### Compile-cache hit-rate floor
 
-Every job that saves a compile snapshot warns when its compile-cache hit rate is
-under 90%: Format and lint, Docs, Build test archive, Prepare test setup, the
-test shards and Doctests, Dependency, source and coverage checks, each Linux and
-macOS target check (the Windows target checks skip the statistics step, so they
-are never judged) and the Wasm and Chromium browser builds. A default-branch push
-seeds every one of these shapes (`tests-coverage`, `tests-plain`, `quality`,
-`docs`, `checks`, `targets-clippy-<target>`, `browser`, `browser-tests` and
-`test-prepare`), so each is judged on merge groups, pull requests and
-default-branch runs alike; only a run in which no cacheable compilation ran is
-not judged. It never fails the build: a change can invalidate the cache itself,
+Every job that keeps a compile snapshot warns when its compile-cache hit rate is
+under 90%: Build test archive, Prepare test setup, the test shards, Dependency,
+source and coverage checks, and each arm64 macOS target check (the Windows target
+checks skip the statistics step, so they are never judged). Format and lint,
+Docs, Doctests, the Wasm and Chromium browser builds and the Linux target checks
+keep no snapshot, so they report their compile count and no hit rate. A
+default-branch push seeds every judged shape (`tests-coverage`, `tests-plain`,
+`checks`, `targets-clippy-<target>` and `test-prepare`), so each is judged on
+merge groups, pull requests and default-branch runs alike; only a run in which no
+cacheable compilation ran is not judged. It never fails the build: a change can invalidate the cache itself,
 such as a toolchain bump, and only a push to the default branch saves a
 snapshot again, so a failing floor would block the merge group on every retry.
 The floor is fixed in `ci.yml`. Source: the archive build of merge-group runs
 40990557025, 40990555729, 40968689273 and 40946549381 hit 100.00%, 100.00%,
-100.00% and 99.67%. Before the check covered every shape, Format and lint, Docs,
-Doctests and the browser builds of Maestro merge groups 40322701820, 40620121647,
-40870001533 and 40993559130 compiled cold, about 4,040 misses per group, because
-the warm-up stayed on a release without their writer, and the first group after a
-default-branch push (40996420703) restored all five at 100%. The warning is an
+100.00% and 99.67%. The warning is an
 annotation that names the shape and one cause. The guards read it from a
 merge-group or main-push run, and from a pull-request run when a caller passes
 one, and list each shape that fell cold in the `Compile cache below its hit-rate
@@ -1824,10 +1876,17 @@ repository cache they fill.
   any read. The guard fires at 90% of the storage limit the caller declares,
   because over the limit GitHub evicts the oldest snapshots, which is how the
   2026-10-26 cold groups happened, and the margin gives the guard time to file
-  before that. The usage is read for every judged run.
+  before that. The usage is read for every judged run. It counts every entry
+  in the cache, including the superseded ones a run leaves until its pruners
+  finish, so a reading right after a push can pass the at-rest total in
+  [One entry per prefix](#one-entry-per-prefix).
   Source: Maestro held 10,928,201,953 bytes (10.18 GiB) in 22 entries on
-  2026-10-30 against its 10 GiB limit. The guide and the finding use GiB. To respond, delete the pull-request entries the issue lists, or
-  shrink what the snapshots hold.
+  2026-10-30 against its 10 GiB limit, and 10,484,269,311 bytes (9.76 GiB,
+  97.6%) on 2026-11-08, when one snapshot for each of twelve shapes needed
+  11.66 GiB and GitHub evicted the newest Linux snapshots. The guide and the
+  finding use GiB. To respond, delete the pull-request entries the issue lists,
+  or shrink what the snapshots hold: a shape that restores nothing later needs no
+  snapshot ([Jobs that keep no snapshot](#jobs-that-keep-no-snapshot)).
 
 Both are kinds without subjects: a repeat rewrites the open issue in place.
 
