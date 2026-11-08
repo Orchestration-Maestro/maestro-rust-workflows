@@ -148,6 +148,9 @@ jobs:
       - name: Post-landing reports at workflow seam
         run: python3 .github/ci-internal/post-landing-reports-at-workflow-seam.py
 
+      - name: Superseded merge groups at workflow seam
+        run: python3 .github/ci-internal/superseded-merge-groups-at-workflow-seam.py
+
       - name: Caller checks at workflow seam
         id: cases
         run: python3 .github/ci-internal/caller-checks-at-workflow-seam.py

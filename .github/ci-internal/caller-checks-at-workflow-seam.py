@@ -5063,10 +5063,9 @@ print('PASS reusable_calls_complete_independently')
 
 def caller_name_stays_in_the_concurrency_group():
     named = [line for line in workflow.splitlines() if re.search(r'github\.workflow\b', line)]
-    match = re.search(r'^  group: .+$', workflow, re.MULTILINE)
-    assert match is not None, 'Missing workflow concurrency group'
-    assert named == [match.group(0)], \
-        'The caller name must not reach artifact names, coverage keys or cache keys'
+    groups = [line for line in workflow.splitlines() if re.match(r' +group: ', line)]
+    assert groups and named == groups, \
+        'The caller name must reach concurrency groups only, never artifact names, coverage keys or cache keys'
     assert "name: coverage-$" + "{{ inputs.concurrency-key || 'root' }}-${{ matrix.shard }}" in workflow
 
 caller_name_stays_in_the_concurrency_group()
