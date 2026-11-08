@@ -182,7 +182,7 @@ jobs:
           namespace['mise_bootstrap_uses_runner_platform']()
           namespace['caller_build_tools_reach_compilers']()
           namespace['foreign_target_failures_are_detected']()
-          namespace['apple_type_errors_fail_pull_requests']()
+          namespace['apple_type_errors_fail_full_checks']()
           if os.environ['TARGET'] == 'x86_64-pc-windows-msvc':
               namespace['windows_known_folders_resolve_inside_isolated_profile']()
               print('PASS windows_known_folders_resolve_inside_isolated_profile')

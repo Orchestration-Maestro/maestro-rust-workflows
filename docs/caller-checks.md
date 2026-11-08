@@ -35,15 +35,16 @@ test_tools = false
 ## Test policy and caller permissions
 
 Pull requests run declaration validation, formatting, Clippy, docs,
-dependency/source checks and declared macOS and Windows target checks. Host
-Clippy and these target checks select changed crates and their workspace
+dependency/source checks and the declared Windows target check. Host
+Clippy and the Windows target check select changed crates and their workspace
 dependents; formatting still checks the whole workspace. Pull requests skip the
 test archive, test setup, test shards, doctests and wasm/browser builds. The
 declared [example witnesses](#wasm-example-witnesses) are the exception: they
 still compile. Every required check name still reports; skipped jobs count as
 success. Merge groups and main pushes run every workspace test with the full
 shard matrix, doctests, coverage and all declared builds and foreign-target
-checks, except that a main push reuses tests when its exact commit already
+compilation. The arm64 macOS archive replaces its separate target check. A main
+push reuses tests when its exact commit already
 passed a completed merge-group run of the same shared workflow revision with the
 full workspace selected. That push skips the test shards and coverage. The
 archive, preparation, Doctests, Wasm and browser build and Chromium browser
@@ -201,8 +202,8 @@ ports on macOS or Windows. Without it nothing runs.
 
 An absent file runs the standard checks without isolation, search tool
 installation or optional jobs. After declaration validation, pull requests
-run formatting, Clippy, docs, dependency/source checks and declared macOS and
-Windows target checks in parallel. Merge groups and main pushes also run the test
+run formatting, Clippy, docs, dependency/source checks and the declared
+Windows target check in parallel. Merge groups and main pushes also run the test
 archive, test setup, full shard matrix, doctests, coverage, wasm/browser builds,
 Chromium tests and all other declared foreign-target checks.
 Pull requests skip these jobs without removing their required check names.
@@ -707,7 +708,7 @@ and once the test stops writing there, the next run is green.
 
 ### Pull-request selection and retries
 
-Pull-request host Clippy, macOS and Windows checks select changed workspace crates,
+Pull-request host Clippy and Windows checks select changed workspace crates,
 literal `include_str!`, `include_bytes!` or `#[path = "..."]` input readers and
 declared test-input readers, plus their direct or transitive workspace dependents. Normal, build,
 development and target-specific dependency edges count. The deepest package root
@@ -721,7 +722,7 @@ select only their compile-input readers and explicit test-input routes when
 included.
 Root manifest and lockfile changes still follow the rules below.
 
-Host Clippy and declared macOS and Windows target checks lint the selected packages
+Host Clippy and the declared Windows target check lint the selected packages
 with `--all-targets`. Merge groups and main pushes lint the whole workspace.
 An empty PR selection performs no host or target Clippy compilation; the named
 checks still report success. An absent base selects every package for lint.
@@ -1370,11 +1371,18 @@ cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warning
 
 There is no Linux fallback for Apple/MSVC targets. Runtime tests on a claimed
 macOS arm64 host use the separate [test shard route](#test-shards).
-Merge groups and main pushes run every opted-in target check.
-Ordinary pull requests run declared `aarch64-apple-darwin`,
-`x86_64-apple-darwin` and `x86_64-pc-windows-msvc` checks in parallel.
-PR macOS and Windows checks use the same selected packages as host lint instead
-of `--workspace`; an empty selection keeps the check result without compiling.
+Merge groups and main pushes run opted-in target checks, except for
+`aarch64-apple-darwin`: its native macOS test archive already compiles that
+target. The separate `x86_64-apple-darwin` check remains because there is no
+native x86_64 macOS test archive. Warm calls keep both Apple checks because they
+do not build native test archives. The four native macOS test shards are unchanged.
+
+Ordinary pull requests run only the declared `x86_64-pc-windows-msvc` target
+check. Apple checks wait for the full run; no macOS compile-only job starts on
+a pull request. Apple dependencies with C build scripts need a cross toolchain
+and an Apple SDK to compile on Linux; this workflow does not install one.
+The PR Windows check uses the same selected packages as host lint instead of
+`--workspace`; an empty selection keeps the check result without compiling.
 Declaration errors fail CI even when dependent jobs skip.
 
 ## Nightly fuzz job
@@ -1920,9 +1928,10 @@ every other pinned check must still run. Job-shape comparisons keep reused runs
 separate from full-suite runs, so the deliberate skips do not report removals.
 
 Pull requests require `Caller declaration`, `Format and lint`, `Docs`,
-`Dependency, source and coverage checks` and each declared native target result:
-`Check (aarch64-apple-darwin)`, `Check (x86_64-apple-darwin)` and
-`Check (x86_64-pc-windows-msvc)`. A failed target check fails the workflow.
+`Dependency, source and coverage checks` and the declared Windows target result,
+`Check (x86_64-pc-windows-msvc)`. Apple target compilation runs on merge groups
+and main pushes, with arm64 covered by the native test archive and x86_64 by
+`Check (x86_64-apple-darwin)`. A failed target check fails the workflow.
 Undeclared targets do not create required results. Pull requests keep the test
 and build job names but skip their work, except that `Wasm and browser build`
 compiles the declared [example witnesses](#wasm-example-witnesses) and reports

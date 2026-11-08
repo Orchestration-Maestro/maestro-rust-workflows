@@ -2964,7 +2964,7 @@ def event_policy_keeps_pull_requests_fast():
 event_policy_keeps_pull_requests_fast()
 print('PASS event_policy_keeps_pull_requests_fast')
 
-def native_checks_run_on_every_pull_request_push():
+def target_checks_avoid_duplicate_apple_compilation():
     import shutil
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     declaration_steps = document['jobs']['declaration']['steps']
@@ -2982,26 +2982,29 @@ def native_checks_run_on_every_pull_request_push():
         shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
         (directory / '.github').mkdir()
         path = directory / '.github/ci.toml'
-        for event in ['pull_request', 'merge_group', 'push']:
-            for targets, pr_targets in [([], []), (declared, declared[1:]),
-                                        (declared[:1], []), (declared[1:3], declared[1:3]),
-                                        (declared[1:2] * 2, declared[1:2] * 2),
-                                        (declared[-1:], [declared[-1]])]:
+        for event, warm in [('pull_request', 'false'), ('merge_group', 'false'),
+                            ('push', 'false'), ('push', 'true')]:
+            for targets, pr_targets, full_targets in [([], [], []),
+                    (declared, declared[-1:], [declared[0], *declared[2:]]),
+                    (declared[:1], [], declared[:1]),
+                    (declared[1:3], [], declared[2:3]),
+                    (declared[1:2] * 2, [], []),
+                    (declared[-1:], declared[-1:], declared[-1:])]:
                 path.write_text('wasm_crates=[]\ncheck_targets=' + json.dumps([target['target'] for target in targets]), encoding='utf-8')
                 output = directory / 'output'
                 output.write_text('', encoding='utf-8')
-                result = execute('Read caller declaration', directory, {'TEST_EVENT': event, 'GITHUB_OUTPUT': str(output)})
+                result = execute('Read caller declaration', directory, {'TEST_EVENT': event, 'WARM': warm, 'GITHUB_OUTPUT': str(output)})
                 assert result.returncode == 0, result.stderr
                 values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-                expected = pr_targets if event == 'pull_request' else targets
+                expected = pr_targets if event == 'pull_request' else targets if warm == 'true' else full_targets
                 assert json.loads(values['targets']) == expected, (event, targets, values['targets'])
         path.write_text('wasm_crates=[]\ncheck_targets=["unsupported-target"]', encoding='utf-8')
         result = execute('Read caller declaration', directory, {'TEST_EVENT': 'pull_request', 'GITHUB_OUTPUT': str(output)})
         assert result.returncode != 0 and 'unknown target' in result.stderr, result.stderr
     assert config['env']['TEST_EVENT'] == selection['env']['TEST_EVENT']
 
-native_checks_run_on_every_pull_request_push()
-print('PASS native_checks_run_on_every_pull_request_push')
+target_checks_avoid_duplicate_apple_compilation()
+print('PASS target_checks_avoid_duplicate_apple_compilation')
 
 def removed_shard_lists_fail_clearly():
     import shutil
@@ -4380,8 +4383,11 @@ def supported_targets_use_native_runners():
         {'target': 'x86_64-apple-darwin', 'runner': 'macos-latest'},
         {'target': 'x86_64-pc-windows-msvc', 'runner': 'windows-latest'},
     ]
-    result, values = declaration(root / 'fixtures/declared')
-    assert result.returncode == 0, result.stderr
+    with output_file() as output:
+        result = execute('Read caller declaration', root / 'fixtures/declared',
+                         {'GITHUB_OUTPUT': str(output), 'TEST_EVENT': 'push', 'WARM': 'true'})
+        assert result.returncode == 0, result.stderr
+        values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
     assert json.loads(values['targets']) == expected
     assert 'runs-on: $' + '{{ matrix.runner }}' in workflow
     assert 'rustup target add "$TARGET"' in body('Check target')
@@ -4717,7 +4723,7 @@ def native_test_failures_are_detected():
 native_test_failures_are_detected()
 print('PASS native_test_failures_are_detected')
 
-def apple_type_errors_fail_pull_requests():
+def apple_type_errors_fail_full_checks():
     import shutil
     target = os.environ.get('TARGET', '')
     if not target.endswith('apple-darwin'):
@@ -4735,7 +4741,7 @@ def apple_type_errors_fail_pull_requests():
             'wasm_crates=[]\ncheck_targets=' + json.dumps([target]) + '\n', encoding='utf-8')
         output = directory / 'output'
         result = execute('Read caller declaration', directory,
-                         {'TEST_EVENT': 'pull_request', 'GITHUB_OUTPUT': str(output)})
+                         {'TEST_EVENT': 'push', 'WARM': 'true', 'GITHUB_OUTPUT': str(output)})
         assert result.returncode == 0, result.stdout + result.stderr
         values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
         assert json.loads(values['targets']) == [{'target': target, 'runner': 'macos-latest'}], values['targets']
@@ -4750,8 +4756,8 @@ def apple_type_errors_fail_pull_requests():
             assert (result.returncode == 0) == expected, result.stdout + result.stderr
             if not expected:
                 assert 'error[E0308]' in result.stderr and 'expected `u16`, found `u32`' in result.stderr, result.stderr
-            print(f'Apple PR target {target}: compiler exit {result.returncode}', flush=True)
-    print('PASS apple_type_errors_fail_pull_requests', flush=True)
+            print(f'Apple full-check target {target}: compiler exit {result.returncode}', flush=True)
+    print('PASS apple_type_errors_fail_full_checks', flush=True)
 
 def browser_recipe_runs_after_wasm():
     import shutil
