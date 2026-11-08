@@ -5312,7 +5312,8 @@ shutil.copyfile(root / 'payload', sys.argv[sys.argv.index('--output') + 1])
     builds = document['jobs']['test-build']['steps']
     upload = next(step for step in builds if step.get('name') == 'Share release assets')
     assert upload['uses'].startswith('actions/upload-artifact@')
-    assert upload['with']['retention-days'] == 1
+    test_archive = next(step for step in builds if step.get('name') == 'Upload test archive')
+    assert upload['with'].get('retention-days') == test_archive['with'].get('retention-days')
     assert upload['with']['if-no-files-found'] == 'error'
     assert '${{ runner.os }}-${{ runner.arch }}' in upload['with']['name']
     assert '${{ inputs.concurrency-key' in upload['with']['name']

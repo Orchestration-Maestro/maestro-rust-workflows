@@ -1001,7 +1001,7 @@ jobs:
                   output.write('HOST_CC=sccache cc\n')
           PYTHON
           fi
-          PATH="$bin:$PATH" sccache --start-server
+          env -u GH_TOKEN -u MISE_GITHUB_TOKEN PATH="$bin:$PATH" sccache --start-server
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
@@ -1572,7 +1572,6 @@ jobs:
           name: release-assets-${{ runner.os }}-${{ runner.arch }}-${{ inputs.concurrency-key || 'root' }}
           path: ${{ runner.temp }}/maestro-release-assets
           if-no-files-found: error
-          retention-days: 1
       # Seconds only steer which shard gets each test binary, never which tests run; the token stays out of the step that compiles the caller.
       - name: Earlier test seconds
         env:

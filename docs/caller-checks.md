@@ -227,7 +227,8 @@ install a newer shell.
 
 No caller setting is needed. Release downloads use the job token. The Rust
 workflow scopes download credentials to installer steps; caller compilation does
-not inherit them. Mise uses `MISE_GITHUB_TOKEN` for GitHub tool installs.
+not inherit them. The compile-cache daemon starts without either download token.
+Mise uses `MISE_GITHUB_TOKEN` for GitHub tool installs.
 
 GitHub release requests send an Authorization header and allow only HTTPS
 requests and redirects. Curl drops the header when GitHub redirects to another
@@ -252,10 +253,12 @@ The download inventory is:
 | Actions, source checkouts, caches and run artifacts | GitHub APIs and their storage services | Actions' built-in authentication or the explicit job token; signed storage URLs |
 
 Test archive builds share checksum-addressed release archives as a run artifact,
-once per runner host and workflow call, with one-day retention. Test shards
-restore that bundle before installing tools and still run each installer's
-original checksum verification. The artifact name includes the operating system,
-architecture and call key; Actions reads it only from the current run. Entries
+once per runner host and workflow call. Release archives and compiled test
+archives use the repository's default artifact retention, so both remain available
+when failed shards are rerun. Test shards restore the bundle before installing
+tools and still run each installer's original checksum verification. The artifact
+name includes the operating system, architecture and call key; Actions reads it
+only from the current run. Entries
 contain downloads, not credentials or installed paths. Using artifacts leaves
 the repository's limited cache storage available for compiled snapshots.
 
