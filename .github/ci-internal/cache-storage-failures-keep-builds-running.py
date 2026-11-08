@@ -701,7 +701,8 @@ def cache_install_selects_pinned_host_asset():
         for _host, _arch, platform in hosts:
             archive = archives / (platform + '.tar.gz')
             url = f'https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-{platform}.tar.gz'
-            subprocess.run(['curl', '--fail', '--location', url, '--output', str(archive)], check=True)
+            subprocess.run(['curl', '--fail', '--location', '--header', '@-', url, '--output', str(archive)],
+                           input='Authorization: Bearer ' + os.environ['GH_TOKEN'] + '\n', text=True, check=True)
         for host, arch, platform in hosts + [('MINGW64_NT-10.0-26100', 'x86_64', ''),
                                              ('Darwin', 'x86_64', ''), ('FreeBSD', 'amd64', '')]:
             for corrupt in ([False, True] if platform else [False]):
@@ -713,14 +714,15 @@ def cache_install_selects_pinned_host_asset():
                     tools = {
                         'uname': 'if [ "$1" = -s ]; then echo "$HOST"; else echo "$ARCH"; fi\n',
                         'curl': 'printf "%s\\n" "$@" > "$TRACE/download"\nwhile [ "$1" != --output ]; do shift; done\nif [ "$CORRUPT" = true ]; then printf corrupt > "$2"; else cp "$ARCHIVE" "$2"; fi\n',
-                        'tar': 'printf "%s\\n" "$@" > "$TRACE/extract"\n"$REAL_TAR" "$@" || exit\nwhile [ "$1" != -C ]; do shift; done\nbin=$2\nprintf \'#!/bin/sh\\nprintf "%%s\\\\n" "$@" >> "$TRACE/server"\\n\' > "$bin/sccache"\nchmod +x "$bin/sccache"\n',
+                        'tar': 'printf "%s\\n" "$@" > "$TRACE/extract"\n"$REAL_TAR" "$@" || exit\nwhile [ "$1" != -C ]; do shift; done\nbin=$2\nprintf \'#!/bin/sh\\nprintf "%%s\\\\n" "$@" >> "$TRACE/server"\\nenv -0 > "$TRACE/server-env"\\n\' > "$bin/sccache"\nchmod +x "$bin/sccache"\n',
                         'mise': 'exit 99\n', 'yq': 'exit 99\n'}
                     for tool, content in tools.items():
                         source = directory / 'source'
                         source.write_text('#!/bin/sh\n' + content, encoding='utf-8')
                         subprocess.run(['install', '-m', '0700', str(source), str(shim / tool)], check=True)
                     env = environment(directory) | {
-                        'HOST': host, 'ARCH': arch,
+                        'HOST': host, 'ARCH': arch, 'GH_TOKEN': 'fixture-token',
+                        'MISE_GITHUB_TOKEN': 'fixture-mise-token', 'COVERAGE_CHECK': 'first line\nsecond line',
                         'CORRUPT': str(corrupt).lower(), 'ARCHIVE': str(archives / (platform + '.tar.gz')),
                         'TRACE': str(directory), 'TMPDIR': str(directory), 'CACHE_RESTORE_MATCHED': 'false',
                         'PATH': str(shim) + os.pathsep + os.environ['PATH'], 'REAL_TAR': shutil.which('tar')}
@@ -736,12 +738,19 @@ def cache_install_selects_pinned_host_asset():
                     assert result.returncode == 0, (host, result.stderr)
                     name = f'sccache-v0.18.0-{platform}'
                     assert (directory / 'download').read_text(encoding='utf-8').splitlines() == [
-                        '--fail', '--retry', '3', '--retry-all-errors', '--retry-delay', '30', '--location', f'https://github.com/mozilla/sccache/releases/download/v0.18.0/{name}.tar.gz',
+                        '--fail', '--retry', '3', '--retry-all-errors', '--retry-delay', '30',
+                        '--header', 'Authorization: Bearer fixture-token', '--proto', '=https', '--proto-redir', '=https',
+                        '--location', f'https://github.com/mozilla/sccache/releases/download/v0.18.0/{name}.tar.gz',
                         '--output', (directory / 'extract').read_text(encoding='utf-8').splitlines()[1]]
                     extraction = (directory / 'extract').read_text(encoding='utf-8').splitlines()
                     assert extraction[0] == '-xzf' and extraction[2] == '-C'
                     assert extraction[4:] == ['--strip-components=1', f'{name}/sccache']
                     assert (directory / 'server').read_text(encoding='utf-8') == '--start-server\n'
+                    server_env = dict(entry.split('=', 1) for entry in (directory / 'server-env').read_text(encoding='utf-8').split('\0') if entry)
+                    assert server_env['COVERAGE_CHECK'] == 'first line\nsecond line'
+                    assert 'GH_TOKEN' not in server_env and 'MISE_GITHUB_TOKEN' not in server_env
+                    assert server_env['SCCACHE_DIR'] == str(directory / 'maestro-sccache')
+                    assert server_env['SCCACHE_CACHE_SIZE'] == '1073741824'
                     exported = dict(line.split('=', 1) for line in (directory / 'env').read_text(encoding='utf-8').splitlines())
                     assert exported['CARGO_BUILD_RUSTC_WRAPPER'] == 'sccache' and exported['CARGO_INCREMENTAL'] == '0'
                     assert 'CARGO_TARGET_DIR' not in exported

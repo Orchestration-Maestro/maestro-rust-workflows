@@ -224,6 +224,52 @@ retained; declaration text is never executed as shell syntax.
 macOS target checks use the runner's built-in Bash. Callers do not need to
 install a newer shell.
 
+## Tool downloads
+
+No caller setting is needed. Release downloads use the job token. The Rust
+workflow scopes download credentials to installer steps; caller compilation does
+not inherit them. The compile-cache daemon starts without either download token.
+Mise uses `MISE_GITHUB_TOKEN` for GitHub tool installs.
+
+GitHub release requests send an Authorization header and allow only HTTPS
+requests and redirects. Curl drops the header when GitHub redirects to another
+host. Release-asset storage (`objects.githubusercontent.com` or
+`release-assets.githubusercontent.com`) uses the signed URL GitHub supplies,
+not a forwarded job token. The pinned checksums are verified before tools run,
+including when an archive is restored.
+
+The download inventory is:
+
+| Download | Hosts | Credentials |
+| --- | --- | --- |
+| sccache; mise bootstrap in Rust and content checks | `github.com`, redirected release-asset storage | Job token on GitHub; signed storage URL |
+| cargo-nextest; cargo-llvm-cov; ripgrep; fd | `github.com`, redirected release-asset storage | Job token on GitHub; signed storage URL |
+| cargo-deny; cargo-hakari; cargo-machete; typos; gitleaks; zizmor; actionlint; cargo-fuzz; shfmt | `github.com`, redirected release-asset storage | Job token on GitHub; signed storage URL |
+| wasm-bindgen browser runtime | `github.com`, redirected release-asset storage | Job token on GitHub; signed storage URL |
+| Chromium | `cdn.playwright.dev`, `storage.googleapis.com` | Public download; no job token |
+| Playwright and Playwright Core | `registry.npmjs.org` | Public download; no job token |
+| Caller tools installed by mise | Hosts selected by the caller's pinned `mise.toml` | Mise uses the job token for GitHub; other hosts use their own authentication |
+| Rust toolchains and components | `static.rust-lang.org` | Public download; no job token |
+| Cargo dependencies | Registry and locked source hosts selected by the caller | Cargo's configured authentication; not a release-asset download |
+| Actions, source checkouts, caches and run artifacts | GitHub APIs and their storage services | Actions' built-in authentication or the explicit job token; signed storage URLs |
+
+Test archive builds share checksum-addressed release archives as a run artifact,
+once per runner host and workflow call. Release archives and compiled test
+archives use the repository's default artifact retention, so both remain available
+when failed shards are rerun. Test shards restore the bundle before installing
+tools and still run each installer's original checksum verification. The artifact
+name includes the operating system, architecture and call key; Actions reads it
+only from the current run. Entries
+contain downloads, not credentials or installed paths. Using artifacts leaves
+the repository's limited cache storage available for compiled snapshots.
+
+Parallel compilation jobs, doctests, warm builds, standalone content checks and
+browser runtime downloads remain independent. Caller-declared mise installs also
+run per job, authenticated for GitHub: their caller-owned mutable state and
+platform-specific paths do not belong in the shared archive artifact. Only the
+workflow's checksum-pinned release archives are shared across test shards.
+No download retry or timeout policy changes with authentication.
+
 ## Compile cache
 
 Cached compiling jobs export `CARGO_BUILD_RUSTC_WRAPPER=sccache`, so callers do not

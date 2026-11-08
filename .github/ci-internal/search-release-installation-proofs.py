@@ -327,6 +327,10 @@ class SearchReleases(unittest.TestCase):
                 actual = [executable, *argv[1:]]
                 actual[actual.index('--location') + 1] = url
                 actual[actual.index('--output') + 1] = str(output)
+                # The loopback peer serves HTTP; keep the release retry policy unchanged.
+                actual[actual.index('--proto') + 1] = '=http'
+                actual[actual.index('--proto-redir') + 1] = '=http'
+                actual[actual.index('--header') + 1] = 'Authorization: Bearer fixture-token'
                 command = shlex.join(actual) + '\nprintf "%s  %s\\n" ' + shlex.quote(digest) + ' ' + shlex.quote(str(output))
                 command += ' | sha256sum --check --status\nprintf "INSTALLED\\n"'
                 result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command], capture_output=True, text=True)
