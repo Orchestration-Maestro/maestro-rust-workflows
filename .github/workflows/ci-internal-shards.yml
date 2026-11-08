@@ -2650,7 +2650,7 @@ jobs:
           print('PASS no_step_reports_flaky_passes_because_tests_never_retry')
 
           def step_body(job, name):
-              # A step's own text: from its name to the next item of the job's step list, whatever that item is (a named step or an alias).
+              # A step's own text: from its name to the next item of the job's step list, named or alias.
               return re.split(r'\n      - ', job.split(f'- name: {name}\n', 1)[1], maxsplit=1)[0]
 
           def a_step_body_ends_at_the_next_step_even_when_that_step_is_an_alias():
