@@ -260,9 +260,9 @@ AWS_SESSION_TOKEN AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK
 AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI
 AWS_WEB_IDENTITY_TOKEN_FILE BEDROCK_EXTENSIVE_MODEL_TEST FIREWORKS_API_KEY'''.split()
 
-def declaration(directory):
+def declaration(directory, extra=None):
     with output_file() as output:
-        result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output)})
+        result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output), **(extra or {})})
         values = dict(line.split('=', 1) for line in output.read_text(encoding="utf-8").splitlines())
         return result, values
 
@@ -1210,9 +1210,10 @@ preparation_runs_beside_host_compilation()
 print('PASS preparation_runs_beside_host_compilation')
 
 def absent_keeps_base_checks():
-    result, values = declaration(root / 'fixtures/sample')
+    # The seam also runs in a merge group, where the runner's event would name a queued pull request.
+    result, values = declaration(root / 'fixtures/sample', {'GITHUB_EVENT_NAME': 'pull_request'})
     assert result.returncode == 0, result.stdout + result.stderr
-    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'emscripten_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}'}
+    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'emscripten_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}', 'merge_group_pull_request': ''}
     assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
     assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
     assert "inputs.working-directory != '.'" in workflow
@@ -5088,10 +5089,9 @@ print('PASS reusable_calls_complete_independently')
 
 def caller_name_stays_in_the_concurrency_group():
     named = [line for line in workflow.splitlines() if re.search(r'github\.workflow\b', line)]
-    match = re.search(r'^  group: .+$', workflow, re.MULTILINE)
-    assert match is not None, 'Missing workflow concurrency group'
-    assert named == [match.group(0)], \
-        'The caller name must not reach artifact names, coverage keys or cache keys'
+    groups = [line for line in workflow.splitlines() if re.match(r' +group: ', line)]
+    assert groups and named == groups, \
+        'The caller name must reach concurrency groups only, never artifact names, coverage keys or cache keys'
     assert "name: coverage-$" + "{{ inputs.concurrency-key || 'root' }}-${{ matrix.shard }}" in workflow
 
 caller_name_stays_in_the_concurrency_group()

@@ -164,6 +164,47 @@ warm build saves a snapshot; a pull-request run cannot prove saving. More cached
 compiles are useful only when that save succeeds and later jobs restore the
 compatible snapshot.
 
+## Superseded merge-group runs
+
+When the merge queue rebuilds a group, the new run cancels the jobs of the run
+it replaces that can hold a macOS runner, and the live group takes those
+runners.
+
+A queued group runs on a ref named `gh-readonly-queue/<base>/pr-<number>-<hash>`.
+A rebuild keeps the number and changes the hash, so the ref alone cannot match
+the old run to the new one. The caller declaration reads the number from the ref
+and publishes it as the `merge_group_pull_request` output. A merge-group ref
+without a number fails the declaration.
+
+The jobs that can hold a macOS runner (`test-build`, `test-prepare`, `tests`,
+`doctests` and `targets`) each hold their own concurrency group. The group name
+is the calling workflow, `mg`, the number, the `concurrency-key`, the job and
+the matrix leg. Both runs of one pull request share it, so the newer run cancels
+the older one. Different pull requests, jobs, legs and callers never share one,
+so live groups never cancel each other. Every leg of those jobs is cancelled,
+whatever its runner: Linux, macOS and Windows alike. The superseded run's other
+jobs finish on their own.
+
+GitHub cancels whichever job already holds a group when another joins, however
+old its run is. A replaced run that reaches a group late would cancel the live
+run. A rebuild deletes the old group's ref, so a step checks that the run's own
+ref still exists. It runs right after the declaration is read, and again as the
+last step of `test-build` and `test-prepare`, the two jobs `tests` waits for. A
+missing ref fails the job and skips the jobs that need it, so a replaced run
+stops before it takes a group. Any other API failure lets the run continue.
+
+Pull requests and pushes are unchanged. Their job groups carry the run ID, so
+no two runs share one and nothing is cancelled.
+
+Limits:
+
+- A pull request that leaves the queue without a rebuild has no later run to
+  claim its group, so its jobs run to completion. Cancel that run by hand.
+- The check reads the ref once per job. A replaced run that passes it can still
+  join a group a few seconds later. It cancels a live job only if that job joined
+  in those seconds, and a live run needs a full build before its `tests` legs
+  join, so the window is small but not closed.
+
 ## Reusable-call concurrency
 
 Every run except a push is grouped by ref. A push run is grouped by
@@ -175,8 +216,10 @@ reusable workflow more than once, give each calling job a distinct, stable
 key (case-insensitive), such as `concurrency-key: quality`. Reuse that key on
 later pushes so a new pull-request run cancels the older invocation of the
 same job, not another job in its own run. Do not use a run ID as the key.
-Merge-queue runs never cancel running checks. The caller must not share the
-same concurrency group with its called workflow; see GitHub's
+A rebuilt merge group cancels the jobs of the run it replaces that can hold a
+macOS runner; see
+[Superseded merge-group runs](#superseded-merge-group-runs). The caller must not
+share the same concurrency group with its called workflow; see GitHub's
 [reusable workflow concurrency rules](https://docs.github.com/en/actions/reference/reusable-workflows-reference#limitations-of-reusable-workflows).
 
 ## Declaration
