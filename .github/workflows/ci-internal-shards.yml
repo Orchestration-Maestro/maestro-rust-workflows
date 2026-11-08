@@ -1259,7 +1259,8 @@ jobs:
 
           def issue_tracker(*open_issues):
               """A repository's issues as the guard reads and writes them, standing in for gh: `open_issues` are (title, body) pairs numbered from 1,
-              and the issues the guard opens follow them. `gh.issues` holds each one's body and comments, `gh.calls` every call; any other call fails."""
+              and the issues the guard opens follow them. `gh.issues` holds each one's body and comments, `gh.calls` every call; any other call fails.
+              The guard posts with the workflow's token, so `gh.login` is the author every comment it writes carries."""
               issues = [{'number': index + 1, 'title': title, 'body': body, 'comments': [], 'labels': [], 'state': 'open'}
                         for index, (title, body) in enumerate(open_issues)]
               calls = []
@@ -1275,17 +1276,17 @@ jobs:
                       return ''
                   issue = issues[int(argv[2]) - 1]
                   if argv[:2] == ('issue', 'view'):
-                      return json.dumps({'body': issue['body'], 'comments': [{'body': text} for text in issue['comments']]})
+                      return json.dumps({'body': issue['body'], 'comments': issue['comments']})
                   if argv[:2] == ('issue', 'edit'):
                       issue['body'] = body
                   elif argv[:2] == ('issue', 'comment'):
-                      issue['comments'].append(body)
+                      issue['comments'].append({'author': {'login': gh.login}, 'body': body})
                   elif argv[:2] == ('issue', 'close'):
                       issue['state'] = 'closed'
                   else:
                       raise AssertionError(f'unexpected gh call: {argv}')
                   return ''
-              gh.issues, gh.calls = issues, calls
+              gh.issues, gh.calls, gh.login = issues, calls, judging['RECORD_AUTHOR']
               return gh
 
           def listing(*sections):
@@ -1299,7 +1300,7 @@ jobs:
 
           def news(gh, number):
               """The comments a guard issue shows: the changes it commented, without the hidden records it rebuilds bodies from."""
-              return [comment for comment in gh.issues[number - 1]['comments'] if not judging['RECORD'].match(comment)]
+              return [comment['body'] for comment in gh.issues[number - 1]['comments'] if not judging['RECORD'].match(comment['body'])]
 
           def a_repeat_breach_rewrites_its_open_issue_and_only_a_new_subject_comments():
               gh = issue_tracker(('Test shards unbalanced', listing(('Test shard (16/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'))),
@@ -1314,12 +1315,14 @@ jobs:
               # Only the new subject is news, so the run leaves one comment naming it.
               assert news(gh, 1) == ['Run: https://example.test/runs/2\nNew subjects: `Test shard (3/16)`.\n'], gh.issues[0]
               assert all('-R' in call and 'owner/repo' in call for call in gh.calls), gh.calls
-              # A repeat of listed subjects only rewrites the numbers: twice in one run is one rewrite and no comment.
+              # A repeat of listed subjects only rewrites the numbers: twice in one run is one rewrite and no comment at all, records included.
               gh.calls.clear()
+              written = len(gh.issues[0]['comments'])
               judging['file_issues']([shard('Test shard (3/16)', run_of(3, 39), 'Run: https://example.test/runs/3\nagain')] * 2, 'owner/repo', gh)
               assert [call[:3] for call in gh.calls if call[0] == 'issue' and call[1] != 'list'] == [
-                  ('issue', 'view', '1'), ('issue', 'comment', '1'), ('issue', 'edit', '1')], gh.calls
-              assert len(news(gh, 1)) == 1 and listed(gh, 1)['Test shard (3/16)'][2] == 'Run: https://example.test/runs/3', gh.issues[0]
+                  ('issue', 'view', '1'), ('issue', 'edit', '1')], gh.calls
+              assert len(gh.issues[0]['comments']) == written and len(news(gh, 1)) == 1, gh.issues[0]
+              assert listed(gh, 1)['Test shard (3/16)'][2] == 'Run: https://example.test/runs/3', gh.issues[0]
               # An escalation is labelled, the label is made once for the run, and each departure keeps an issue of its own.
               gh.calls.clear()
               escalate = partial(judging['escalation'], run_of(4, 39), baseline=[], lines=['- departed'])
@@ -1332,6 +1335,30 @@ jobs:
 
           a_repeat_breach_rewrites_its_open_issue_and_only_a_new_subject_comments()
           print('PASS a_repeat_breach_rewrites_its_open_issue_and_only_a_new_subject_comments')
+
+          def a_comment_the_guard_did_not_write_never_becomes_its_record():
+              # A record is state, so only the comments the guard itself wrote are read: anyone else can carry the marker, and the guard ignores
+              # it. A forged record that lists one subject, marks another Passed, adds one, or is not shaped like a record changes nothing.
+              both = listing(('Test shard (1/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'),
+                             ('Test shard (2/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nsecond'))
+              gh = issue_tracker(('Test shards unbalanced', both))
+              forged = judging['record_comment']({'Test shard (1/16)': ['Passed', 'https://example.test/runs/1', 'forged'],
+                                                 'Test shard (9/16)': ['Breaching', 'https://example.test/runs/1', 'forged']})
+              gh.issues[0]['comments'] += [{'author': {'login': 'a-maintainer'}, 'body': forged},
+                                           {'author': {'login': 'another-bot[bot]'}, 'body': forged},
+                                           {'author': None, 'body': forged},
+                                           {'author': {'login': 'a-maintainer'}, 'body': '<!-- ci-guards record: {"Test shard (1/16)": []} -->\n'}]
+              shard = partial(judging['finding'], 'Test shards unbalanced')
+              judging['file_issues']([shard('Test shard (2/16)', run_of(2, 39), 'Run: https://example.test/runs/2\nagain')], 'owner/repo', gh)
+              # The forged subject never joins the listing, the forged pass never stands, and the listed subject it left out stays listed.
+              assert listed(gh, 1) == {'Test shard (1/16)': ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/1'),
+                                       'Test shard (2/16)': ('Breaching', 'https://example.test/runs/1', 'Run: https://example.test/runs/2')}, gh.issues[0]
+              assert not news(gh, 1), gh.issues[0]
+              # The record holds only what the guard wrote itself: this run, which found no record at all.
+              assert set(judging['read_back'](1, 'owner/repo', gh)[1]) == {'Test shard (1/16)', 'Test shard (2/16)'}, gh.issues[0]
+
+          a_comment_the_guard_did_not_write_never_becomes_its_record()
+          print('PASS a_comment_the_guard_did_not_write_never_becomes_its_record')
 
           def a_recovery_comments_once_every_listed_subject_has_passed_and_never_closes():
               both = listing(('a::one', 'Breaching', 1, 'Run: https://example.test/runs/1\nslow'), ('b::two', 'Breaching', 1, 'Run: https://example.test/runs/1\nslow'))
@@ -1675,7 +1702,7 @@ jobs:
                                'docs': ('Passed', run(42300656449), f'Run: {run(42342558647)}')}, floor
               # A comment marks a change only: a new subject, or the run after which none is breaching. The recorded issues held 5 to 26 comments each.
               changes = [[(comment.splitlines()[0].removeprefix(f'Run: {run("")}'), 'new' if 'New subjects' in comment else 'recovered')
-                          for comment in issue['comments'] if not judging['RECORD'].match(comment)]
+                          for comment in [comment['body'] for comment in issue['comments']] if not judging['RECORD'].match(comment)]
                          for issue in tracker.issues]
               assert changes == [[('42245672751', 'recovered'), ('42273102165', 'new'), ('42291900908', 'new'), ('42296204759', 'new'),
                                   ('42310443432', 'recovered'), ('42318972038', 'recovered'), ('42334480205', 'recovered')],
