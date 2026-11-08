@@ -1269,6 +1269,9 @@ jobs:
               calls = []
               def gh(*argv, body=None):
                   calls.append(argv)
+                  # GitHub refuses an issue body or a comment over 65,536 characters, so a fixture write past it fails as the API's write would.
+                  if body is not None and len(body) > 65536:
+                      raise AssertionError(f'a write of {len(body)} characters passes the 65,536 GitHub accepts')
                   if argv[:2] == ('issue', 'list'):
                       return json.dumps([{'number': issue['number'], 'title': issue['title']} for issue in issues if issue['state'] == 'open'])
                   if argv[:2] == ('issue', 'create'):
@@ -1471,6 +1474,36 @@ jobs:
 
           a_listing_past_the_body_limit_drops_its_earliest_passed_subjects()
           print('PASS a_listing_past_the_body_limit_drops_its_earliest_passed_subjects')
+
+          def a_record_past_the_comment_limit_posts_as_many_comments_as_it_needs():
+              # One write records a section per subject it adds and per subject whose state it changes, so a run that judges many subjects
+              # records more than one comment of 65,536 characters holds: each write posts as many record comments as it needs, and the
+              # reader merges them back, so no section is lost.
+              evidence = 'Run: https://example.test/runs/1\n' + 'x' * 500
+              gh = issue_tracker(('Test over 30 seconds', listing(('a::old', 'Breaching', 1, evidence))))
+              # A run that read the issue before another run added these wrote a body without them, and the record kept them as breaching.
+              stale = [f'a::stale{index:03}' for index in range(100)]
+              gh.issues[0]['comments'].append({'author': {'login': GUARD_LOGIN}, 'body': judging['record_comment'](
+                  {subject: ['Breaching', 'https://example.test/runs/1', evidence] for subject in stale})})
+              fresh = [f'a::fresh{index:03}' for index in range(100)]
+              slow = partial(judging['finding'], 'Test over 30 seconds', run=run_of(2, 39), body=evidence)
+              judging['file_issues']([judging['recovery']('Test over 30 seconds', run_of(2, 39), {subject: 'it passed' for subject in stale})]
+                                     + [slow(subject) for subject in fresh], 'owner/repo', gh)
+              # Every write stayed within the limit the fixture enforces, and the record lost no section: the 100 recovered subjects read
+              # back as passed and the 100 new ones as breaching, though the body has room for the breaching ones alone.
+              record = judging['read_back'](1, 'owner/repo', gh)[1]
+              assert set(record) == set(stale) | set(fresh), sorted(set(record) ^ (set(stale) | set(fresh)))
+              assert [record[subject][0] for subject in stale] == ['Passed'] * 100, record['a::stale000']
+              assert [record[subject][0] for subject in fresh] == ['Breaching'] * 100, record['a::fresh000']
+              assert len(gh.issues[0]['body']) <= 65536 and all(subject in listed(gh, 1) for subject in fresh), listed(gh, 1)
+              # The sections needed more than one record comment, and none of them is a change announcement.
+              records = [comment for comment in gh.issues[0]['comments'] if judging['RECORD'].match(comment['body'])]
+              assert len(records) > 1 and len(records) == len([comment for comment in records if comment['author']['login'] == GUARD_LOGIN])
+              assert news(gh, 1) == ['Run: https://example.test/runs/2\nNew subjects: ' + ', '.join(f'`{subject}`' for subject in fresh) + '.\n'], \
+                  news(gh, 1)
+
+          a_record_past_the_comment_limit_posts_as_many_comments_as_it_needs()
+          print('PASS a_record_past_the_comment_limit_posts_as_many_comments_as_it_needs')
 
           def fake_repository(minutes=30, bands=None, shard_minutes=None, required=None, shard_logs=None, selections=None, event='merge_group',
                                   ratchet=None, floor=None, newer=0, pace=None, build=None, steps=None, extra_jobs=None,

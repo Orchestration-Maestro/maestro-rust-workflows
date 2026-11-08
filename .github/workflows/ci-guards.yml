@@ -716,6 +716,9 @@ jobs:
           # GitHub refuses an issue body over 65,536 characters.
           BODY_LIMIT = 65536
 
+          # GitHub limits a comment to the same 65,536 characters as an issue body, while one write records a section per subject.
+          COMMENT_LIMIT = BODY_LIMIT
+
           def bounded(kind, listing):
               """A listing whose body fits GitHub's limit: subjects that passed leave it, the earliest listed first.
               A subject still breaching is never dropped, so breaching subjects alone past the limit fail the run."""
@@ -761,6 +764,19 @@ jobs:
           def record_comment(sections):
               """The hidden comment that records the sections a write adds: what a later run reads back to rebuild the body."""
               return f'<!-- ci-guards record: {json.dumps({subject or "": list(section) for subject, section in sections.items()})} -->\n'
+
+          def record_comments(sections):
+              """The hidden comments that record the sections a write adds, each within GitHub's comment limit: the reader takes them all back
+              as one record, so a write that adds more sections than one comment holds posts as many comments as it needs."""
+              comments = []
+              for subject, section in sections.items():
+                  if comments and len(record_comment(comments[-1] | {subject: section})) <= COMMENT_LIMIT:
+                      comments[-1][subject] = section
+                  else:
+                      comments.append({subject: section})
+              if any(len(record_comment(comment)) > COMMENT_LIMIT for comment in comments):
+                  raise RuntimeError("a subject's section is longer than one issue comment holds; shorten its evidence")
+              return [record_comment(comment) for comment in comments]
 
           def sections_to_record(body, record, listed):
               """The sections a write records: the subject it adds, which no body lists yet, and the subject whose state changed since the
@@ -843,8 +859,9 @@ jobs:
                   fresh = sections_to_record(body, record, listed)
                   if fresh:
                       # Only a section a later run cannot rebuild from the body is worth a comment: a repeat's evidence updates the body
-                      # alone. The record goes first, so a body left behind is rebuilt from it and a duplicate's subjects are safe to close over.
-                      gh('issue', 'comment', str(holder), '-R', repository, '--body-file', '-', body=record_comment(fresh))
+                      # alone. The records go first, so a body left behind is rebuilt from them and a duplicate's subjects are safe to close over.
+                      for record_body in record_comments(fresh):
+                          gh('issue', 'comment', str(holder), '-R', repository, '--body-file', '-', body=record_body)
                   if body != after:
                       gh('issue', 'edit', str(holder), '-R', repository, '--body-file', '-', body=listing_body(after))
                       comment = change_of(before, after, group)
