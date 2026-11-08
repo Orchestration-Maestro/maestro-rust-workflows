@@ -2710,15 +2710,8 @@ jobs:
             # Only the fuzz job needs cargo-fuzz; the required checks never download it.
             if [ "$binary" = cargo-fuzz ] && [ "${FUZZ_SCAN:-}" != true ]; then continue; fi
             archive=$(mktemp)
-            assets="$RUNNER_TEMP/maestro-release-assets"
-            mkdir -p "$assets"
-            if [ -f "$assets/$digest" ]; then
-              cp "$assets/$digest" "$archive"
-            else
-              curl --fail --retry 3 --retry-all-errors --retry-delay 30 --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location "$url" --output "$archive"
-            fi
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
-            cp "$archive" "$assets/$digest"
             if [ "$binary" = shfmt ]; then
               install -m 0755 "$archive" "$bin/$binary"
               rm -f "$archive"
