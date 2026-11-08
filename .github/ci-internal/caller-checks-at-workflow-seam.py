@@ -2393,7 +2393,8 @@ def fuzz_scan_runs_only_declaration_and_fuzz():
     assert routed == {'declaration', 'fuzz'}, sorted(routed)
     assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: nightly-2026-09-15\n' in job
     assert workflow.count('nightly-') == 1 and workflow.count('/cargo-fuzz/') == 1
-    assert '        env:\n          FUZZ_SCAN: true\n        run: *check-tools\n' in job
+    tools = next(step for step in document['jobs']['fuzz']['steps'] if step.get('name') == 'Check tools')
+    assert tools['env']['FUZZ_SCAN'] is True and tools['run'] == body('Check tools')
     steps = re.findall(r'^      - name: (.+)$', job, re.MULTILINE)
     assert steps.index('Fuzz licences') < steps.index('Fuzz target'), steps
     assert "if: steps.fuzz.outputs.found == 'true'" in job.split('- name: Upload fuzz finding\n', 1)[1].split('- name:', 1)[0]
