@@ -122,31 +122,35 @@ def only_an_opted_in_caller_installs_anything():
     assert order.index('Browser test caller tools') < order.index(SDK) < order.index(TARGET) < order.index('Browser test recipe'), order
 
 
+def recorded(directory, tool, step, extra=None):
+    # Runs a step's body with `tool` replaced by a recorder; the calls it receives are returned one per line.
+    tools = directory / 'bin'
+    tools.mkdir()
+    (tools / tool).write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_LOG"\n', encoding='utf-8')
+    (tools / tool).chmod(0o700)
+    env = os.environ | {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'FAKE_LOG': str(directory / 'log')} | (extra or {})
+    result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', steps(browser)[step]['run']],
+                            cwd=directory, env=env, text=True, capture_output=True)
+    log = directory / 'log'
+    return result, log.read_text(encoding='utf-8').splitlines() if log.exists() else []
+
+
 def the_target_comes_from_rustup():
-    body = steps(browser)[TARGET]['run'].strip()
-    assert body == 'rustup target add ' + EMSCRIPTEN, body
-
-
-def recorded_build(crates):
     with tempfile.TemporaryDirectory() as temporary:
-        directory = pathlib.Path(temporary)
-        tools = directory / 'bin'
-        tools.mkdir()
-        (tools / 'cargo').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_LOG"\n', encoding='utf-8')
-        (tools / 'cargo').chmod(0o700)
-        env = os.environ | {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'FAKE_LOG': str(directory / 'log'),
-                            'EMSCRIPTEN_CRATES': json.dumps(crates)}
-        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', steps(browser)[BUILD]['run']],
-                                cwd=directory, env=env, text=True, capture_output=True)
-        log = directory / 'log'
-        return result, log.read_text(encoding='utf-8').splitlines() if log.exists() else [], directory
+        result, calls = recorded(pathlib.Path(temporary), 'rustup', TARGET)
+        assert result.returncode == 0, result.stderr
+        assert calls == ['target add ' + EMSCRIPTEN], calls
 
 
 def each_crate_builds_for_emscripten_in_order():
-    result, calls, directory = recorded_build(['b', 'a', 'b', '$(touch injected)'])
-    assert result.returncode == 0, result.stderr
-    assert calls == [f'build --locked --target {EMSCRIPTEN} -p {name}' for name in ['b', 'a', 'b', '$(touch injected)']], calls
-    assert not (directory / 'injected').exists()
+    names = ['b', 'a', 'b', '$(touch injected)']
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        result, calls = recorded(directory, 'cargo', BUILD, {'EMSCRIPTEN_CRATES': json.dumps(names)})
+        assert result.returncode == 0, result.stderr
+        assert calls == [f'build --locked --target {EMSCRIPTEN} -p {name}' for name in names], calls
+        # A package name is an argument, never shell text.
+        assert not (directory / 'injected').exists()
 
 
 FAKE_CURL = '''#!/usr/bin/env python3
@@ -169,7 +173,7 @@ with open(os.environ['FAKE_LOG'], 'a', encoding='utf-8') as log:
 if sys.argv[1] == 'install':
     emcc = here / 'upstream/emscripten/emcc'
     emcc.parent.mkdir(parents=True)
-    emcc.write_text('#!/bin/sh\\necho "emcc (Emscripten) 6.0.10 (fake)"\\n', encoding='utf-8')
+    emcc.write_text('#!/bin/sh\\necho "emcc (Emscripten) ' + os.environ['FAKE_EMCC_VERSION'] + ' (fake)"\\n', encoding='utf-8')
     emcc.chmod(0o755)
 '''
 
@@ -183,7 +187,7 @@ def archive_of(path, entries):
             archive.addfile(info, io.BytesIO(content))
 
 
-def installation(directory, mismatch=None):
+def installation(directory, mismatch=None, compiler='6.0.10'):
     # Serves a stand-in for each pinned URL and swaps its pinned digest for the stand-in's, except
     # for the archive at index `mismatch`, which keeps the real digest and so fails verification.
     body = steps(browser)[SDK]['run']
@@ -212,7 +216,7 @@ def installation(directory, mismatch=None):
     env = {key: value for key, value in os.environ.items() if key != 'GH_TOKEN'} | {
         'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'GH_TOKEN': CANARY, 'RUNNER_TEMP': str(temp),
         'GITHUB_PATH': str(directory / 'GITHUB_PATH'), 'GITHUB_ENV': str(directory / 'GITHUB_ENV'),
-        'FAKE_LOG': str(directory / 'log'), 'FAKE_SERVED': str(directory / 'served.json')}
+        'FAKE_EMCC_VERSION': compiler, 'FAKE_LOG': str(directory / 'log'), 'FAKE_SERVED': str(directory / 'served.json')}
     result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body], cwd=directory, env=env, text=True, capture_output=True)
     calls = [json.loads(line) for line in (directory / 'log').read_text(encoding='utf-8').splitlines()]
     return result, calls, urls
@@ -254,16 +258,18 @@ def a_wrong_checksum_stops_the_install_before_the_installer_runs():
             assert not [call for call in calls if 'emsdk' in call], (index, calls)
 
 
-def the_pins_name_one_release():
-    body = steps(browser)[SDK]['run']
-    assert 'tags/6.0.10.tar.gz' in body and 'emsdk" install 6.0.10' in body and 'emsdk" activate 6.0.10' in body
-    assert "grep -F ' 6.0.10 '" in body, 'the step checks the compiler version it installed'
-    # Only github.com requests may carry the token, and the step drops it before any other tool runs.
-    assert body.index('unset GH_TOKEN') < body.index('emsdk" install')
+def a_compiler_of_another_version_stops_the_install():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        result, _, _ = installation(directory, compiler='6.0.9')
+        assert result.returncode != 0
+        # Nothing reaches later steps.
+        assert (directory / 'GITHUB_PATH').read_text(encoding='utf-8') == ''
+        assert (directory / 'GITHUB_ENV').read_text(encoding='utf-8') == ''
 
 
 for check in [the_declaration_checks_types_and_packages, only_an_opted_in_caller_installs_anything, the_target_comes_from_rustup,
               each_crate_builds_for_emscripten_in_order, the_sdk_is_downloaded_with_the_job_token_and_installed_from_verified_archives,
-              a_wrong_checksum_stops_the_install_before_the_installer_runs, the_pins_name_one_release]:
+              a_wrong_checksum_stops_the_install_before_the_installer_runs, a_compiler_of_another_version_stops_the_install]:
     check()
     print('PASS ' + check.__name__, flush=True)

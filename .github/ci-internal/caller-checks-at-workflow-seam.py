@@ -34,7 +34,6 @@ def routed_jobs(document, values):
         'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.tests_reused': 'false',
         'needs.declaration.outputs.targets': '[{}]', 'needs.declaration.outputs.fuzz_targets': '["target"]',
         'needs.declaration.outputs.wasm_crates': '["web"]', 'needs.declaration.outputs.wasm_examples': '[]',
-        'needs.declaration.outputs.emscripten_crates': '[]',
         'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.browser_tests': 'true',
         # Longer names first: evaluate substitutes by prefix.
         'needs.declaration.outputs.test_prepare_inputs': '[]',
@@ -4524,8 +4523,7 @@ def pull_requests_compile_only_the_declared_witnesses():
                'github.event_name': 'pull_request', 'github.ref': 'refs/pull/1/merge', default_ref: 'refs/heads/main',
                'github.repository_id': 'caller', 'inputs.working-directory': '.',
                'needs.declaration.outputs.coverage': 'false', 'needs.declaration.outputs.tests_reused': 'false',
-               'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.emscripten_crates': '[]',
-               'needs.declaration.outputs.browser_build': 'true',
+               'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.browser_build': 'true',
                'needs.declaration.outputs.test_tools': 'false',
                'needs.declaration.outputs.wasm_examples': json.dumps([['witness', 'first']])}
     assert evaluate(job['if'], context), 'a pull request with declared witnesses runs the browser job'
