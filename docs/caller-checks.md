@@ -183,7 +183,8 @@ same concurrency group with its called workflow; see GitHub's
 The `wasm_crates` and `check_targets` arrays are required, including when empty.
 `browser_build` and `test_tools` are optional booleans that default to `false`.
 `wasm_examples` is an optional table that maps package names to example names
-and defaults to `{}`. The [schema](../.github/ci.schema.json) describes the
+and defaults to `{}`. `emscripten_crates` is an optional array of package names
+and defaults to `[]`. The [schema](../.github/ci.schema.json) describes the
 parsed TOML shape; there is no version key or older-format reader.
 
 `check_targets` also selects native test hosts: `aarch64-apple-darwin` adds
@@ -213,7 +214,8 @@ member or non-boolean tool/build flag fails declaration validation. An empty
 present document is invalid. Integer and string booleans are not accepted.
 
 Names are exact, without whitespace or Unicode normalization. Each wasm name
-must match a package in the caller's locked Cargo metadata. Each `wasm_examples`
+must match a package in the caller's locked Cargo metadata, as must each
+`emscripten_crates` name. Each `wasm_examples`
 example must be an example target of its package. Each target must match the
 caller compiler's target list and the runner table below. An unknown package,
 unknown target or recognized target without a runner fails with a file/key
@@ -1179,6 +1181,56 @@ Declaration validation fails with the file and key when a package is not in the
 locked Cargo metadata or an example is not a target of its package. Repetitions
 are kept. Declaration text reaches cargo as arguments and never runs as shell
 syntax.
+
+## Emscripten builds
+
+Quick start: list the packages that compile for `wasm32-unknown-emscripten`.
+Maestro installs the pinned Emscripten SDK and the target's standard library,
+then builds each package.
+
+```toml
+wasm_crates = []
+check_targets = []
+emscripten_crates = ["my-sandbox-runtime"]
+```
+
+`emscripten_crates` is an optional array of exact locked package names, in
+build order. It defaults to `[]`. Repetitions are kept, and the names reach
+cargo as arguments, never as shell syntax. A name outside the locked Cargo
+metadata fails declaration validation with the file and key. With an empty list
+or no key, no job installs or builds anything for Emscripten.
+
+On merge groups and main pushes, a non-empty list adds these steps to the Wasm
+and browser build job. Pull requests skip them, and the job runs even when
+`wasm_crates` is empty:
+
+| Step | What it does |
+| --- | --- |
+| Emscripten SDK | Installs Emscripten 6.0.10 and puts `emcc` on the `PATH`. |
+| Emscripten target | Runs `rustup target add wasm32-unknown-emscripten` for the caller's toolchain. |
+| Build emscripten crates | Runs `cargo build --locked --target wasm32-unknown-emscripten -p "$CRATE"` for each package. |
+
+The Chromium browser tests job installs the same SDK and target before the
+caller's `browser-test` recipe, so a recipe can build for Emscripten itself. It
+does not build the listed packages.
+
+The SDK comes from the emsdk 6.0.10 release archive on github.com. That request
+is the only one that carries the job token, and the step drops the token before
+the installer runs. Each archive is verified by SHA-256 before it is unpacked:
+
+| Archive | SHA-256 |
+| --- | --- |
+| emsdk 6.0.10 release | `09cbafdf00e5a7b4275fc27229d69befafc5ca6070543124219977101310dade` |
+| Node 24.19.0, Linux x64 | `14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647` |
+| Emscripten 6.0.10 toolchain binaries, Linux x64 | `a51dd2829bdf725d268974728e032533b106ea01cb482a62288ec12627a7abbe` |
+
+The two archives the installer would fetch itself are downloaded and verified
+first, then placed in its download folder, so the installer never reads an
+unchecked file. The step then checks that `emcc` reports 6.0.10 and exports
+`EMSDK` and `EMSDK_NODE` for later steps. The SDK is MIT and NCSA licensed.
+
+The caller owns the binding step and the browser application. The shared
+workflow only provides the toolchain and the build of the listed packages.
 
 ## Chromium browser tests
 

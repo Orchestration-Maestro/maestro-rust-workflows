@@ -131,6 +131,7 @@ jobs:
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       wasm_examples: ${{ steps.config.outputs.wasm_examples }}
+      emscripten_crates: ${{ steps.config.outputs.emscripten_crates }}
       targets: ${{ steps.config.outputs.targets }}
       browser_test_crates: ${{ steps.config.outputs.browser_test_crates }}
       browser_tests: ${{ steps.selection.outputs.browser_tests }}
@@ -200,17 +201,20 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', wasm_examples='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', wasm_examples='[]', emscripten_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'wasm_examples', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'wasm_examples', 'emscripten_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   replacement = '; test_prepare_setups replaces test_prepare_packages' if 'test_prepare_packages' in unknown else ''
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}' + replacement)
               for key in ('wasm_crates', 'check_targets'):
                   if key not in config or not isinstance(config[key], list) or any(type(item) is not str for item in config[key]):
                       raise SystemExit(f'{path}: {key} must be an array of strings')
+              emscripten = config.get('emscripten_crates', [])
+              if not isinstance(emscripten, list) or any(type(item) is not str for item in emscripten):
+                  raise SystemExit(f'{path}: emscripten_crates must be an array of strings')
               witnesses = config.get('wasm_examples', {})
               if not isinstance(witnesses, dict) or any(not isinstance(names, list) or any(type(name) is not str for name in names) for names in witnesses.values()):
                   raise SystemExit(f'{path}: wasm_examples must map package names to arrays of strings')
@@ -361,6 +365,9 @@ jobs:
                   for name in names:
                       if name not in examples[crate]:
                           raise SystemExit(f'{path}: wasm_examples[{json.dumps(crate)}] contains unknown example {name!r}')
+              for crate in emscripten:
+                  if crate not in packages:
+                      raise SystemExit(f'{path}: emscripten_crates contains unknown package {crate!r}')
               for crate in browser_tests:
                   if crate not in packages:
                       raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
@@ -509,6 +516,7 @@ jobs:
               values.update(targets=json.dumps(targets))
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             wasm_examples=json.dumps([[crate, name] for crate, names in witnesses.items() for name in names]),
+                            emscripten_crates=json.dumps(emscripten),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
           # The test jobs carry a Windows leg, but Windows is not a native test host until its cold setup fits the job limit.
@@ -3257,7 +3265,7 @@ jobs:
     needs: declaration
     # A push that reuses merge-queue tests still builds, to seed this shape's snapshot.
     # A pull request runs the job only for declared example witnesses; the other steps skip.
-    if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.wasm_examples != '[]') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.wasm_examples != '[]') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -3311,6 +3319,40 @@ jobs:
         if: needs.declaration.outputs.test_tools == 'true' || (needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true'))
         env: *release-auth
         run: *caller-tools
+      - name: Emscripten SDK
+        timeout-minutes: 10
+        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
+        env: &emscripten-sdk-env
+          GH_TOKEN: ${{ github.token }}
+        run: &emscripten-sdk |
+          # emsdk 6.0.10 from its release archive, then the two archives its installer fetches for that release
+          # (node and the toolchain binaries). Each is checksummed and placed where the installer looks first.
+          emsdk=$(mktemp -d "$RUNNER_TEMP/maestro-emsdk.XXXXXX")
+          archive=$(mktemp)
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location https://github.com/emscripten-core/emsdk/archive/refs/tags/6.0.10.tar.gz --output "$archive"
+          unset GH_TOKEN
+          printf '%s  %s\n' 09cbafdf00e5a7b4275fc27229d69befafc5ca6070543124219977101310dade "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$emsdk" --strip-components=1
+          rm "$archive"
+          mkdir "$emsdk/downloads"
+          while read -r url digest name; do
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --proto '=https' --proto-redir '=https' --location "$url" --output "$emsdk/downloads/$name"
+            printf '%s  %s\n' "$digest" "$emsdk/downloads/$name" | sha256sum --check --status
+          done <<'ARCHIVES'
+          https://storage.googleapis.com/webassembly/emscripten-releases-builds/deps/node-v24.19.0-linux-x64.tar.xz 14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647 node-v24.19.0-linux-x64.tar.xz
+          https://storage.googleapis.com/webassembly/emscripten-releases-builds/linux/666337b525e673e769121856d175f6f52b8ead64/wasm-binaries.tar.xz a51dd2829bdf725d268974728e032533b106ea01cb482a62288ec12627a7abbe 666337b525e673e769121856d175f6f52b8ead64-wasm-binaries.tar.xz
+          ARCHIVES
+          EMSDK_KEEP_DOWNLOADS=1 "$emsdk/emsdk" install 6.0.10
+          "$emsdk/emsdk" activate 6.0.10
+          node="$emsdk/node/24.19.0_64bit/bin/node"
+          PATH="$emsdk/upstream/emscripten:$PATH" EMSDK="$emsdk" EMSDK_NODE="$node" emcc --version | head -n 1 | grep -F ' 6.0.10 '
+          echo "$emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+          echo "EMSDK=$emsdk" >> "$GITHUB_ENV"
+          echo "EMSDK_NODE=$node" >> "$GITHUB_ENV"
+      - name: Emscripten target
+        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
+        run: &emscripten-target |
+          rustup target add wasm32-unknown-emscripten
       - name: Build wasm crates
         if: &browser-sweep (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
         env:
@@ -3325,6 +3367,18 @@ jobs:
               subprocess.run(['rustup', 'target', 'add', 'wasm32-unknown-unknown'], check=True)
           for crate in crates:
               subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
+          PYTHON
+      - name: Build emscripten crates
+        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
+        env:
+          EMSCRIPTEN_CRATES: ${{ needs.declaration.outputs.emscripten_crates }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+          for crate in json.loads(os.environ['EMSCRIPTEN_CRATES']):
+              subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-emscripten', '-p', crate], check=True)
           PYTHON
       - name: Build wasm examples
         env:
@@ -3430,6 +3484,14 @@ jobs:
       - name: Browser test caller tools
         env: *release-auth
         run: *caller-tools
+      - name: Emscripten SDK
+        timeout-minutes: 10
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        env: *emscripten-sdk-env
+        run: *emscripten-sdk
+      - name: Emscripten target
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        run: *emscripten-target
       - name: Browser runtime tools
         env: *release-auth
         run: |

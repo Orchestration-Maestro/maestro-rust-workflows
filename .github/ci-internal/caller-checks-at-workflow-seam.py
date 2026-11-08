@@ -1212,7 +1212,7 @@ print('PASS preparation_runs_beside_host_compilation')
 def absent_keeps_base_checks():
     result, values = declaration(root / 'fixtures/sample')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}'}
+    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'emscripten_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}'}
     assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
     assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
     assert "inputs.working-directory != '.'" in workflow
