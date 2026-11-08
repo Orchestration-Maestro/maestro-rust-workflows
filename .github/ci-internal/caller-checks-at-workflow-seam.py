@@ -582,8 +582,13 @@ def browser_test_job_is_single_and_optional():
     assert 'runs-on: ubuntu-latest\n' in job and 'matrix:' not in job
     assert body('Browser test recipe').strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"')
     assert 'mise exec' not in body('Browser test recipe')
-    assert 'if:' not in job.split('- name: Browser test caller tools', 1)[1].split('- name:', 1)[0]
-    assert job.index('run: *caller-tools') < job.index('name: Browser runtime tools') < job.index('name: Browser test recipe')
+    steps = {step['name']: step for step in document['jobs']['browser-tests']['steps']}
+    tools = steps['Browser test caller tools']
+    assert 'if' not in tools
+    assert tools['run'] == body('Test tools')
+    assert tools['env'] == {'GH_TOKEN': '${{ github.token }}', 'MISE_GITHUB_TOKEN': '${{ github.token }}'}
+    names = list(steps)
+    assert names.index('Browser test caller tools') < names.index('Browser runtime tools') < names.index('Browser test recipe')
     assert 'browser_test_crates = ["declared"]' in (root / 'fixtures/declared/.github/ci.toml').read_text(encoding='utf-8')
 
 browser_test_job_is_single_and_optional()
@@ -2619,28 +2624,34 @@ def locked_manifests_precede_all_test_routes():
 locked_manifests_precede_all_test_routes()
 
 def caller_tools_precede_compiling_operations():
-    jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
-                           workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    jobs = document['jobs']
     for job, consumer in [('quality', 'Lint'), ('docs', 'Docs'), ('test-build', 'Build test archive'), ('test-prepare', 'Prepare test setup'), ('tests', 'Isolated tests'),
                           ('targets', 'Check target'), ('browser', 'Build wasm crates')]:
         section = jobs[job]
-        assert ('needs: [declaration, test-build, test-prepare]' if job == 'tests' else 'needs: declaration') in section, job
-        bootstrap = next(s for s in section.split('      - name: ')[1:] if 'run: *mise-bootstrap' in s or 'run: &mise-bootstrap' in s)
-        install = next(s for s in section.split('      - name: ')[1:] if 'run: *caller-tools' in s or 'run: &caller-tools' in s)
-        assert section.index(bootstrap) < section.index(install) < section.index('- name: ' + consumer), job
-        condition = "needs.declaration.outputs.test_tools == 'true'"
-        if job == 'browser':
-            condition += " || (needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true'))"
-        for step in [bootstrap, install]:
-            assert 'if: ' + condition + '\n' in step, job
-            assert 'timeout-minutes: 10' in step, job
-        assert section.count('mise-bootstrap') == 1 and section.count('caller-tools') == 1, job
+        assert section['needs'] == (['declaration', 'test-build', 'test-prepare'] if job == 'tests' else 'declaration'), job
+        steps = section['steps']
+        bootstrap = [step for step in steps if step.get('run') == body('Mise bootstrap')]
+        install = [step for step in steps if step.get('run') == body('Test tools')]
+        assert len(bootstrap) == len(install) == 1, job
+        assert steps.index(bootstrap[0]) < steps.index(install[0]) < next(i for i, step in enumerate(steps) if step['name'] == consumer), job
+        for step in [bootstrap[0], install[0]]:
+            assert step['timeout-minutes'] == 10, job
+            assert step['env'] == {'GH_TOKEN': '${{ github.token }}', 'MISE_GITHUB_TOKEN': '${{ github.token }}'}, job
+            for tools, build, coverage, reused in itertools.product([False, True], repeat=4):
+                values = dict(zip(('needs.declaration.outputs.' + key for key in
+                                   ['test_tools', 'browser_build', 'coverage', 'tests_reused']),
+                                  ('true' if flag else 'false' for flag in [tools, build, coverage, reused]), strict=True))
+                expected = tools or (job == 'browser' and build and (coverage or reused))
+                assert bool(evaluate(step['if'], values)) == expected, (job, step['name'], values)
     for job in ['declaration', 'checks', 'advisories', 'tests-result']:
-        assert 'mise-bootstrap' not in jobs[job] and 'caller-tools' not in jobs[job], job
+        assert not any(step.get('run') in [body('Mise bootstrap'), body('Test tools')]
+                       for step in jobs[job].get('steps', [])), job
     assert workflow.count('mise install') == 1
     assert body('Test tools') == body('Browser tools')
     assert 'tools.just' not in body('Test tools')
-    assert "needs.declaration.outputs.browser_build == 'true'" in jobs['browser'].split('- name: Browser tool pin', 1)[1].split('- name:', 1)[0]
+    pin = next(step for step in jobs['browser']['steps'] if step['name'] == 'Browser tool pin')
+    assert "needs.declaration.outputs.browser_build == 'true'" in pin['if']
 
 caller_tools_precede_compiling_operations()
 print('PASS caller_tools_precede_compiling_operations')
@@ -2820,12 +2831,13 @@ def test_tools_defaults_preserve_behavior():
             result, values = declaration(directory)
             assert result.returncode != 0 and 'test_tools must be a boolean' in result.stderr, result.stdout + result.stderr
         assert workflow.count('digest=8f5f6660') == 1
-        browser = workflow.split('  browser:\n', 1)[1]
-        assert "if: needs.declaration.outputs.test_tools == 'true' || (needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true'))\n        run: *mise-bootstrap" in browser
-        tests = workflow.split('  tests:\n', 1)[1].split('  targets:', 1)[0]
+        document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
         for name in ['Mise bootstrap', 'Test tools']:
-            step = next(s for s in tests.split('      - name: ')[1:] if s.splitlines()[0] == name)
-            assert "if: needs.declaration.outputs.test_tools == 'true'" in step
+            step = next(s for s in document['jobs']['tests']['steps'] if s.get('name') == name)
+            assert step['run'] == body(name)
+            assert step['env'] == {'GH_TOKEN': '${{ github.token }}', 'MISE_GITHUB_TOKEN': '${{ github.token }}'}
+            for tools in ['false', 'true']:
+                assert bool(evaluate(step['if'], {'needs.declaration.outputs.test_tools': tools})) == (tools == 'true')
 
 def reserved_ports_are_validated_and_applied_only_when_set():
     import shutil
