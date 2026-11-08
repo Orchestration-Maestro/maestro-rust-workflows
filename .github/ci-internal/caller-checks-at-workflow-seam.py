@@ -4695,7 +4695,8 @@ def windows_known_folders_resolve_inside_isolated_profile():
                 assert marker.read_text(encoding='utf-8') == 'disposable'
                 print(f'PASS {variable}: {path}', flush=True)
         '''), encoding='utf-8')
-        setup = body('Isolated tests').split('cargo fetch --locked', 1)[0]
+        # The step reads the ambient PATH its `Ambient path` step recorded; nothing was added after it here.
+        setup = 'export AMBIENT_PATH="$PATH"\n' + body('Isolated tests').split('cargo fetch --locked', 1)[0]
         script = directory / 'probe.sh'
         script.write_text(setup + '\nrun_isolated ' + shlex.quote(pathlib.Path(sys.executable).as_posix()) +
                           ' ' + shlex.quote(probe.as_posix()) + '\n', encoding='utf-8', newline='\n')
@@ -4728,7 +4729,8 @@ def windows_system_locations_accept_mixed_case_names():
         for name, value in variables.items():
             probe += f'assert os.environ.get({name!r}) == {value!r}, ({name!r}, os.environ.get({name!r}))\n'
         probe += "assert 'UNRELATED_AMBIENT_CANARY' not in os.environ\n"
-        setup = body('Isolated tests').split('cargo fetch --locked', 1)[0]
+        # The step reads the ambient PATH its `Ambient path` step recorded; nothing was added after it here.
+        setup = 'export AMBIENT_PATH="$PATH"\n' + body('Isolated tests').split('cargo fetch --locked', 1)[0]
         script = directory / 'probe.sh'
         script.write_text(setup + '\nrun_isolated ' + shlex.quote(pathlib.Path(sys.executable).as_posix()) +
                           ' -c ' + shlex.quote(probe) + '\n', encoding='utf-8', newline='\n')
