@@ -208,6 +208,9 @@ def execute(name, cwd, extra=None, prelude=''):
         env.setdefault('TEST_HOSTS', json.dumps({'ubuntu-latest': int(env['TEST_SHARD_COUNT'])}))
     if name in ['Tests', 'Isolated tests']:
         env.update(toolchain_environment(cwd, env))
+    if name == 'Isolated tests':
+        # The route reads the recorded ambient path; unless a case sets one, nothing was added after it.
+        env.setdefault('AMBIENT_PATH', env['PATH'])
     env = {key: value for key, value in env.items() if value is not None}
     command = prelude + body(name)
     if name in ['Browser tools', 'Test tools']:
@@ -220,6 +223,9 @@ def execute(name, cwd, extra=None, prelude=''):
         # Git Bash prepends its own utilities during startup; restore the caller's order.
         env['MAESTRO_SEAM_PATH'] = env['PATH']
         command = 'export PATH="$(cygpath -u -p "$MAESTRO_SEAM_PATH")"\n' + command
+        if 'AMBIENT_PATH' in env:
+            env['MAESTRO_SEAM_AMBIENT'] = env.pop('AMBIENT_PATH')
+            command = 'export AMBIENT_PATH="$(cygpath -u -p "$MAESTRO_SEAM_AMBIENT")"\n' + command
     if os.environ.get('MAESTRO_LOCAL_CAPPED'):
         command = command.replace('env -i ', 'env -i CARGO_BUILD_JOBS=3 ')
         env['CARGO_BUILD_JOBS'] = '3'
@@ -1284,6 +1290,7 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
                                          ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
                                          test_prepare_output=os.environ.get('TEST_PREPARE_OUTPUT'),
                                          test_archive=os.environ.get('TEST_ARCHIVE'),
+                                         path=os.environ.get('PATH'),
                                          coverage_env={{name: value for name, value in os.environ.items() if name.startswith('CARGO_LLVM_COV')}},
                                          diagnostics=os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'))) + '\\n')
         if args[:1] != ['fetch'] and os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'):
@@ -1508,6 +1515,58 @@ cargo_git_cache_restores_before_every_fetch()
 print('PASS cargo_git_cache_restores_before_every_fetch')
 archive_signal_reaches_only_archived_shards()
 print('PASS archive_signal_reaches_only_archived_shards')
+
+def search_programs_reach_isolated_tests_only_through_their_exports():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        tools, log = install_recording_runner(directory)
+        # The runner image's own directory, a pinned search directory, a pinned directory without them.
+        bins = {name: directory / name for name in ['system', 'search', 'build']}
+        programs = {'system': ['fd'], 'search': ['rg', 'fd'], 'build': ['just']}
+        for name, executables in programs.items():
+            bins[name].mkdir()
+            for executable in executables:
+                (bins[name] / executable).write_text('#!/bin/sh\n', encoding='utf-8')
+                (bins[name] / executable).chmod(0o755)
+        ambient = os.pathsep.join([str(tools), str(bins['system']), os.environ['PATH']])
+        # The tool steps run after the ambient path is recorded and add the pinned directories to it.
+        current = os.pathsep.join([str(bins['search']), str(bins['build']), ambient])
+        result = execute('Isolated tests', directory, {
+            'PATH': current, 'AMBIENT_PATH': ambient, 'TOOLS': str(tools), 'RUNNER_TEMP': temporary,
+            'SHARD': '1', 'WARM_CACHE': 'false', 'COLLECT_COVERAGE': 'false', 'TEST_ARCHIVE': '',
+            'TEST_PACKAGES': '["sample"]', 'CARGO_COVERAGE_MIN_LINES': ''})
+        assert result.returncode == 0, result.stdout + result.stderr
+        commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+        assert [c['args'][0] for c in commands] == ['fetch', 'nextest', 'test'], commands
+        normal = lambda path: os.path.normcase(os.path.normpath(path))
+        for command in commands[1:]:
+            entries = [normal(entry) for entry in command['path'].split(os.pathsep)]
+            assert normal(str(bins['search'])) not in entries, command['path']
+            assert normal(str(bins['build'])) in entries, command['path']
+            assert normal(str(bins['system'])) in entries, command['path']
+    # Setup and preparation still reach the pinned directories through the path.
+    for name in ['Search tools', 'Test tools']:
+        assert 'GITHUB_PATH' in body(name), name
+
+search_programs_reach_isolated_tests_only_through_their_exports()
+print('PASS search_programs_reach_isolated_tests_only_through_their_exports')
+
+def ambient_path_is_recorded_before_any_tool_step():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = [step['name'] for step in document['jobs']['tests']['steps']]
+    recorder = next(step for step in document['jobs']['tests']['steps'] if step['name'] == 'Ambient path')
+    assert 'if' not in recorder, recorder
+    for later in ['Search tools', 'Mise bootstrap', 'Test tools', 'Isolated tests']:
+        assert steps.index('Ambient path') < steps.index(later), later
+    assert document['jobs']['doctests']['steps'] == document['jobs']['tests']['steps']
+    with tempfile.TemporaryDirectory() as temporary:
+        environment = pathlib.Path(temporary) / 'environment'
+        result = execute('Ambient path', pathlib.Path(temporary), {'GITHUB_ENV': str(environment)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert environment.read_text(encoding='utf-8').startswith('AMBIENT_PATH='), environment.read_text(encoding='utf-8')
+
+ambient_path_is_recorded_before_any_tool_step()
+print('PASS ambient_path_is_recorded_before_any_tool_step')
 
 def warm_filter_runs_only_in_warm_mode():
     for value in warm_filters:

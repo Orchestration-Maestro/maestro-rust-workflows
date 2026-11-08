@@ -181,6 +181,8 @@ same concurrency group with its called workflow; see GitHub's
 
 The `wasm_crates` and `check_targets` arrays are required, including when empty.
 `browser_build` and `test_tools` are optional booleans that default to `false`.
+With `test_tools = true`, the test run reaches the pinned `rg` and `fd` only
+through `MAESTRO_TEST_RG` and `MAESTRO_TEST_FD`, never through `PATH`.
 `wasm_examples` is an optional table that maps package names to example names
 and defaults to `{}`. The [schema](../.github/ci.schema.json) describes the
 parsed TOML shape; there is no version key or older-format reader.
@@ -944,7 +946,9 @@ Opted-in tests install ripgrep 15.2.0 and fd 10.5.0 from pinned release archives
 for their host: Linux x86_64 musl, macOS arm64 or Windows x86_64 MSVC.
 Installation verifies their published SHA-256
 digests before extraction. The dedicated binary directory exposes `rg` and
-`fd` directly on `PATH`. Every tool-installation step has a 10-minute timeout
+`fd` on the `PATH` of the setup and prepare steps. The test run does not
+inherit it: see [Caller-pinned build and test tools](#caller-pinned-build-and-test-tools).
+Every tool-installation step has a 10-minute timeout
 to fail stalled downloads or installs. Before tests start, a presence guard rejects exported provider API/OAuth
 keys, GitHub/Hugging Face tokens, cloud project/profile/region selectors,
 cloud credential paths/URIs and the extensive-model selector listed in the
@@ -1023,6 +1027,16 @@ The nextest shard and doctest argv, credential guards,
 fresh directories and the child environment allowlist are unchanged. Only the
 installed tools' executable paths are added, not mise's environment settings.
 Windows paths are published in native format for later steps.
+
+The test run reaches the pinned `rg` and `fd` only through `MAESTRO_TEST_RG` and
+`MAESTRO_TEST_FD`, which your test setup exports. The `Ambient path` step
+records `PATH` before any tool step runs. The isolated test command then removes
+each directory a tool step added afterwards that holds `rg` or `fd`, whether it
+comes from the shared search tools or from your `mise.toml` pins. A test that
+looks up `rg` or `fd` on `PATH` fails in the shared job, as it does on a machine
+without them. Setup and prepare steps keep the full `PATH`. Directories that
+were on `PATH` before the tool steps, and added directories that hold neither
+program, stay. Linux, macOS and Windows follow the same rule.
 
 ## Documentation
 

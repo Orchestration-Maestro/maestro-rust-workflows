@@ -2244,6 +2244,8 @@ jobs:
           if [[ "$SHARD" == doctests || ( -z "${TEST_ARCHIVE:-}" && "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
             cargo test --locked --doc "${packages[@]}"
           fi
+      - name: Ambient path
+        run: echo "AMBIENT_PATH=$PATH" >> "$GITHUB_ENV"
       - name: Search tools
         timeout-minutes: 10
         if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'
@@ -2377,8 +2379,18 @@ jobs:
             mkdir -p "$isolation/home/AppData/"{Roaming,Local}
             system+=(USERPROFILE="$isolation/home" APPDATA="$isolation/home/AppData/Roaming" LOCALAPPDATA="$isolation/home/AppData/Local")
           fi
+          # The pinned rg and fd reach the tests through MAESTRO_TEST_RG and MAESTRO_TEST_FD only: a
+          # directory the tool steps added to PATH leaves it when it holds either program.
+          : "${AMBIENT_PATH:?The ambient PATH was not recorded}"
+          IFS=: read -r -a entries <<< "$PATH"
+          kept=()
+          for entry in "${entries[@]}"; do
+            if [[ ":$AMBIENT_PATH:" != *":$entry:"* ]] && { [ -e "$entry/rg" ] || [ -e "$entry/fd" ]; }; then continue; fi
+            kept+=("$entry")
+          done
+          test_path=$(IFS=:; printf '%s' "${kept[*]}")
           run_isolated() {
-          env -i "${system[@]}" PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+          env -i "${system[@]}" PATH="${TOOLS:+$TOOLS:}$test_path" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
             HOME="$isolation/home" TMPDIR="$isolation/tmp" TMP="$isolation/tmp" TEMP="$isolation/tmp" \
             XDG_CONFIG_HOME="$isolation/config" XDG_DATA_HOME="$isolation/data" \
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \
