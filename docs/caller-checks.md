@@ -1612,6 +1612,22 @@ judged:
 
 - With no open issue, a breach opens one that lists every subject that breached
   in the run.
+- A run records in hidden comments, the record, the sections a later run cannot
+  rebuild from the body: the subject the write adds, which the body does not list
+  yet, and a subject whose state changed since the guard recorded it. It writes
+  the record before it writes the body, in as many comments as GitHub's
+  65,536-character comment limit needs, and the guard rebuilds the body from all
+  of them. GitHub has no write that refuses a body built from an older read, so two
+  runs can write one body at the same time, and the run that read it first writes
+  back what it read, dropping a subject the other run had just added. The record
+  keeps that subject: the next run lists it again. A subject the body already lists
+  needs no entry until its state changes. Only a comment the guard wrote itself is
+  a record, so a marker in anyone else's comment changes nothing.
+- Two runs can finish together and judge a kind before either has opened its
+  issue, so both open one. The lower number holds the kind: the guard writes
+  that run's subjects onto it and comments a pointer on the duplicate it just
+  opened. The duplicate keeps its own copy of those findings and stays open
+  until a later run folds its subjects into the record and closes it.
 - With an open issue, the guard rewrites its body in place. A breach adds its
   subject, or replaces that subject's evidence and keeps the run that first
   breached it. A pass updates only a subject the issue already lists.
@@ -1619,19 +1635,27 @@ judged:
   (`New subjects: ...`), or the run after which no listed subject is breaching
   (`passed this guard: every subject listed here has passed`). A repeat breach,
   a pass while another subject still breaches, and a breach of a subject that
-  had passed update the body and add no comment.
+  had passed update the body and announce nothing. A record is a comment too, and
+  a run records only a subject the body does not list yet or a subject whose state
+  changed: a repeat breach leaves the issue's comment count where it was, and so
+  does the first repeat on an issue written before the guard kept a record.
 
 A body stays within GitHub's 65,536-character limit. When a rewrite would pass
-it, the guard drops subjects that passed, the earliest listed first, and lists
-any of them that breaches again as new. The guard never drops a breaching
-subject, so when breaching subjects alone would pass the limit, the run fails
-and the issue stays as it was.
+it, the guard drops subjects that passed, the earliest listed first. The record
+keeps the state it holds for a subject, so a recorded subject the body drops comes
+back as passed when the body has room again, and one that breaches again is listed
+again with the run that first breached it. A subject the record never held is not
+rebuilt once the body drops it, so only a recorded pass survives the limit. The
+guard never drops a breaching subject, so when breaching subjects alone would pass
+the limit, the run fails and the issue stays as it was.
 
-The guard never closes an issue. Close it once the fix is confirmed; the next
-breach of that kind opens a new one. A pass with no open issue, or for a subject
-the issue does not list, changes nothing. The guard rewrites only a body it can
-read back: an open issue with a kind's title and no subject section fails the
-run and stays untouched.
+The guard never closes a kind's issue. Close it once the fix is confirmed; the
+next breach of that kind opens a new one. Its only close is a duplicate, and only
+once the record holds that duplicate's subjects; until then the duplicate points
+at that issue. A pass with no open issue, or for a subject the issue does not
+list, changes nothing. A body the guard did not write still stops the run before
+any write: an open issue with a kind's title and no subject section is refused,
+untouched.
 
 A subject is as wide as the cause: one cache shape is one subject, however many
 jobs judge it, so sixteen test shards on one cold snapshot are one section with
