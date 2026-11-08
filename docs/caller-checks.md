@@ -88,8 +88,9 @@ identities, missing or expired artifacts, unreadable evidence and API errors all
 keep the full suite. Runs whose merge group left no evidence keep the full suite.
 Fixture checkout/event overrides, scan calls and `warm-cache` calls do not use
 the result lookup.
-The independent `warm-cache` call still runs on every main push and seeds its
-existing cache shapes, including its normal doctest and browser commands.
+The independent `warm-cache` call still runs on every main push and seeds the
+cache shapes that keep a snapshot; its normal doctest and browser commands run
+without saving one ([Jobs that keep no snapshot](#jobs-that-keep-no-snapshot)).
 
 Below, main-push test and coverage behaviour describes pushes without a matching
 merge-queue result. The independent `warm-cache` call runs on every main push.

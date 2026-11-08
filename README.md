@@ -134,8 +134,7 @@ and reusable calls without splitting the shared restore prefix. GitHub's
 branch/default-branch visibility and newest-compatible-prefix lookup apply.
 Only pushes to the caller's default branch save snapshots. Pull-request and
 merge-group jobs restore but never save. Each test shape has one writer per
-call: the warm build or the archive build, plus the separate plain doctest leg
-when the numeric shards use coverage or a default-branch push warms. Other
+call: the warm build or the archive build; the plain doctest leg writes none. Other
 cached compiling jobs each write their own shape, except the Linux jobs that
 no later job restores: Format and lint, Docs, Doctests, Wasm and browser build,
 Chromium browser tests and the Linux target checks keep no snapshot and compile
