@@ -5228,16 +5228,26 @@ def github_downloads_send_only_the_job_token():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     assert 'GH_TOKEN' not in document['env']
     assert 'MISE_GITHUB_TOKEN' not in document['env']
+    def hosts(text):
+        return set(re.findall(r'https?://([^/\s"\'$:]+)', text))
+
+    def downloads(source):
+        lines = [line for line in source.splitlines() if re.search(r'\bcurl(?:\s|$)', line)]
+        # A download whose URL is a shell variable reads it from the URLs the step lists outside its curl lines.
+        listed = hosts('\n'.join(line for line in source.splitlines() if line not in lines))
+        return [(line, hosts(line) or listed) for line in lines]
+
     def check(source):
-        for line in source.splitlines():
-            if not re.search(r'\bcurl(?:\s|$)', line):
-                continue
-            if any(host in line for host in ('https://cdn.playwright.dev/', 'https://registry.npmjs.org/')):
-                assert 'Authorization' not in line, line
-                continue
-            assert '--header "Authorization: Bearer $GH_TOKEN"' in line, line
-            assert "--proto '=https' --proto-redir '=https'" in line, line
-            assert '--location-trusted' not in line, line
+        # The job token goes to github.com and to no other host.
+        for line, targets in downloads(source):
+            assert targets, line
+            if targets == {'github.com'}:
+                assert '--header "Authorization: Bearer $GH_TOKEN"' in line, line
+                assert "--proto '=https' --proto-redir '=https'" in line, line
+                assert '--location-trusted' not in line, line
+            else:
+                assert 'github.com' not in targets, line
+                assert 'Authorization' not in line and 'GH_TOKEN' not in line, line
     content = pathlib.Path('.github/workflows/content.yml').read_text(encoding='utf-8')
     documents = [document, json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=content, text=True))]
     for current in documents:
@@ -5245,17 +5255,43 @@ def github_downloads_send_only_the_job_token():
             for step in job.get('steps', []):
                 source = step.get('run', '')
                 env = current.get('env', {}) | job.get('env', {}) | step.get('env', {})
-                if 'curl ' in source:
+                if any(targets == {'github.com'} for _, targets in downloads(source)):
                     assert env.get('GH_TOKEN') == '${{ github.token }}', step['name']
                 if 'mise install' in source:
                     assert env.get('MISE_GITHUB_TOKEN') == '${{ github.token }}', step['name']
                 check(source)
-    try:
-        check('curl --location https://github.com/owner/tool/releases/download/v1/tool -o tool')
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError('an unauthenticated new GitHub download was accepted')
+    def rejected(source):
+        try:
+            check(source)
+        except AssertionError:
+            return True
+        return False
+
+    token = '''--header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' '''
+    assert rejected('curl --location https://github.com/owner/tool/releases/download/v1/tool -o tool'), 'an unauthenticated new GitHub download was accepted'
+    # A download from another host is classified by its own URL, literal or listed in the step, and never carries the token.
+    check("curl --proto '=https' --proto-redir '=https' --location https://storage.googleapis.com/bucket/node.tar.xz -o node.tar.xz")
+    check(
+        'curl ' + token + '--location https://github.com/owner/tool/archive/1.tar.gz -o tool.tar.gz\n'
+        'unset GH_TOKEN\n'
+        'while read -r url name; do\n'
+        '  curl --fail --location "$url" --output "$name"\n'
+        'done <<\'ARCHIVES\'\n'
+        'https://storage.googleapis.com/bucket/node.tar.xz node.tar.xz\n'
+        'ARCHIVES\n'
+    )
+    assert rejected('curl ' + token + '--location https://storage.googleapis.com/bucket/node.tar.xz -o node.tar.xz'), 'the job token went to another host'
+    assert rejected(
+        'while read -r url name; do\n'
+        '  curl ' + token + '--location "$url" --output "$name"\n'
+        'done <<\'ARCHIVES\'\n'
+        'https://storage.googleapis.com/bucket/node.tar.xz node.tar.xz\n'
+        'ARCHIVES\n'
+    ), 'the job token went to a listed host'
+    assert rejected(
+        'curl --fail --location "$url" --output "$name"\n'
+        'url=https://github.com/owner/tool/releases/download/v1/tool\n'
+    ), 'an unauthenticated listed GitHub download was accepted'
 
 
 github_downloads_send_only_the_job_token()
