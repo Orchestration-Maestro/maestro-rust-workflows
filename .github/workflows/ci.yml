@@ -526,6 +526,18 @@ jobs:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
           PYTHON
+      - &superseded-check
+        name: Stop when the merge group was replaced
+        if: ${{ github.event_name == 'merge_group' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A queue rebuild deletes the old group's ref. A job of the replaced run must not join a concurrency group the live run holds.
+          # Only a missing ref stops the run; an API failure says nothing about the group.
+          if ! reply=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/${GITHUB_REF#refs/}" 2>&1) && [[ "$reply" == *'HTTP 404'* ]]; then
+            echo "::error::${GITHUB_REF} no longer exists: the merge queue replaced this group"
+            exit 1
+          fi
       - name: Test evidence identity
         id: evidence-scope
         if: github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan)
@@ -1688,6 +1700,7 @@ jobs:
         if: *sccache-floor-condition
         env: *sccache-floor-env
         run: *sccache-floor
+      - *superseded-check
 
   test-prepare:
     permissions:
@@ -2117,6 +2130,7 @@ jobs:
         if: *sccache-floor-condition
         env: *sccache-floor-env
         run: *sccache-floor
+      - *superseded-check
 
   tests:
     needs: [declaration, test-build, test-prepare]

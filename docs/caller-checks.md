@@ -165,8 +165,7 @@ compatible snapshot.
 ## Superseded merge-group runs
 
 When the merge queue rebuilds a group, the new run cancels the test and Apple
-jobs of the run it replaces. The live group gets those runners as soon as the
-new run's declaration job finishes.
+jobs of the run it replaces, and the live group takes those runners.
 
 A queued group runs on a ref named `gh-readonly-queue/<base>/pr-<number>-<hash>`.
 A rebuild keeps the number and changes the hash, so the ref alone cannot match
@@ -182,11 +181,25 @@ the older one. Different pull requests, jobs, legs and callers never share one,
 so live groups never cancel each other. Every leg of those jobs is cancelled,
 the Linux ones too. The superseded run's other jobs finish on their own.
 
+GitHub cancels whichever job already holds a group when another joins, however
+old its run is. A replaced run that reaches a group late would cancel the live
+run. A rebuild deletes the old group's ref, so a step checks that the run's own
+ref still exists. It runs right after the declaration is read, and again as the
+last step of `test-build` and `test-prepare`, the two jobs `tests` waits for. A
+missing ref fails the job and skips the jobs that need it, so a replaced run
+stops before it takes a group. Any other API failure lets the run continue.
+
 Pull requests and pushes are unchanged. Their job groups carry the run ID, so
 no two runs share one and nothing is cancelled.
 
-Limit: a pull request that leaves the queue without a rebuild has no later run
-to claim its group, so its jobs run to completion. Cancel that run by hand.
+Limits:
+
+- A pull request that leaves the queue without a rebuild has no later run to
+  claim its group, so its jobs run to completion. Cancel that run by hand.
+- The check reads the ref once per job. A replaced run that passes it can still
+  join a group a few seconds later. It cancels a live job only if that job joined
+  in those seconds, and a live run needs a full build before its `tests` legs
+  join, so the window is small but not closed.
 
 ## Reusable-call concurrency
 

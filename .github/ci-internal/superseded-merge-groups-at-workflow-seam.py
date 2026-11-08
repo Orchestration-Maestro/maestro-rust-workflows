@@ -4,6 +4,7 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
 import tempfile
 
 workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
@@ -81,6 +82,8 @@ def evaluate(tree, contexts):
     if kind == '!':
         return not evaluate(tree[1], contexts)
     if kind == 'call':
+        if tree[1] == 'cancelled':
+            return False
         assert tree[1] == 'format', tree
         template, *values = (evaluate(argument, contexts) for argument in tree[2])
         return re.sub(r'\{(\d+)\}', lambda found: str(values[int(found[1])]), template)
@@ -169,8 +172,62 @@ def an_unreadable_queue_ref_stops_the_declaration():
     result, outputs = merge_group_pull_request('merge_group', queue_ref(4358, '988f4a7' + '0' * 33))
     assert result.returncode == 0 and outputs['merge_group_pull_request'] == '4358', (result.stderr, outputs)
 
+REPOSITORY = 'Orchestration-Maestro/maestro'
+STEP_NAME = 'Stop when the merge group was replaced'
+
+def stop_step(job):
+    """The job's steps that carry the replaced-group check, by position."""
+    return [(index, step) for index, step in enumerate(jobs[job]['steps']) if step.get('name') == STEP_NAME]
+
+def run_stop_step(reply, status, ref):
+    """Run the check's own script with a stand-in `gh` that answers like the API; return the exit status, output and the call made."""
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        calls = directory / 'calls'
+        gh = directory / 'gh'
+        gh.write_text(f'#!{sys.executable}\nimport sys\nopen({str(calls)!r}, "w").write(" ".join(sys.argv[1:]))\n'
+                      f'sys.stderr.write({reply!r})\nsys.exit({status})\n', encoding='utf-8')
+        gh.chmod(0o755)
+        env = {key: value for key, value in os.environ.items() if not key.startswith('GITHUB_')} | {
+            'PATH': f'{directory}{os.pathsep}{os.environ["PATH"]}', 'GITHUB_REPOSITORY': REPOSITORY, 'GITHUB_REF': ref}
+        step = stop_step('declaration')[0][1]
+        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', step['run']], cwd=directory, env=env, text=True, capture_output=True)
+        return result, calls.read_text(encoding='utf-8')
+
+def a_replaced_group_stops_and_a_live_group_continues():
+    ref = queue_ref(7)
+    gone, call = run_stop_step('gh: Not Found (HTTP 404)', 1, ref)
+    assert gone.returncode != 0 and ref in gone.stdout + gone.stderr, (gone.stdout, gone.stderr)
+    assert call == f'api repos/{REPOSITORY}/git/ref/{ref.removeprefix("refs/")}', call
+    live, _ = run_stop_step('', 0, ref)
+    assert live.returncode == 0, (live.stdout, live.stderr)
+    # An API outage says nothing about the group, so the run goes on.
+    outage, _ = run_stop_step('gh: Bad Gateway (HTTP 502)', 1, ref)
+    assert outage.returncode == 0, (outage.stdout, outage.stderr)
+
+def a_replaced_run_never_joins_a_group_the_live_run_holds():
+    # The check sits right after the declaration read and as the last step of the two jobs that gate `tests`.
+    declaration = jobs['declaration']['steps']
+    (index, step), = stop_step('declaration')
+    assert declaration[index - 1]['name'] == 'Read caller declaration', declaration[index - 1]['name']
+    assert step['if'] == "${{ github.event_name == 'merge_group' }}", step
+    for name in ['test-build', 'test-prepare']:
+        (index, copy), = stop_step(name)
+        assert index == len(jobs[name]['steps']) - 1 and copy == step, (name, index)
+    # A run that failed the check skips every job that needs the declaration, and its `tests` legs never start.
+    for name in LEGS:
+        assert 'declaration' in str(jobs[name]['needs']) and 'always()' not in str(jobs[name].get('if')), name
+    tests_if = expression(jobs['tests']['if'])
+    def starts(build, prepare):
+        contexts = {'github': {'repository_id': '1'}, 'inputs': {'working-directory': ''}, 'needs': {
+            'declaration': {'outputs': {'coverage': 'true'}}, 'test-build': {'result': build}, 'test-prepare': {'result': prepare}}}
+        return bool(evaluate(tests_if, contexts))
+    assert starts('success', 'success') and starts('success', 'skipped')
+    assert not starts('success', 'failure') and not starts('failure', 'success') and not starts('failure', 'failure')
+
 for check in [a_rebuilt_group_cancels_the_macos_jobs_of_the_run_it_replaces, live_groups_never_cancel_each_other,
               pull_requests_and_pushes_keep_their_runs_uncancelled, only_the_macos_job_legs_carry_a_group,
-              an_unreadable_queue_ref_stops_the_declaration]:
+              an_unreadable_queue_ref_stops_the_declaration, a_replaced_group_stops_and_a_live_group_continues,
+              a_replaced_run_never_joins_a_group_the_live_run_holds]:
     check()
     print('PASS ' + check.__name__, flush=True)
