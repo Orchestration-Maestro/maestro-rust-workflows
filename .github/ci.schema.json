@@ -27,6 +27,14 @@
       },
       "default": {}
     },
+    "emscripten_crates": {
+      "description": "Exact caller Cargo package names built for wasm32-unknown-emscripten, in execution order. Repetitions are retained. A non-empty list installs the pinned Emscripten SDK and the target's standard library in the browser jobs; an empty list installs neither.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
     "check_targets": {
       "description": "Exact caller compiler targets with a supported native runner, in execution order.",
       "type": "array",

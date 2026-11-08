@@ -124,6 +124,8 @@ jobs:
         run: python3 .github/ci-internal/test-setup-candidates-at-workflow-seam.py
       - name: Browser runtime packages at workflow seam
         run: python3 .github/ci-internal/browser-runtime-packages-at-workflow-seam.py
+      - name: Emscripten SDK at workflow seam
+        run: python3 .github/ci-internal/emscripten-sdk-at-workflow-seam.py
       - name: Test seconds at workflow seam
         run: python3 .github/ci-internal/test-seconds-at-workflow-seam.py
       - name: Files left by tests at workflow seam
