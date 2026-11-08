@@ -2649,6 +2649,18 @@ jobs:
           no_step_reports_flaky_passes_because_tests_never_retry()
           print('PASS no_step_reports_flaky_passes_because_tests_never_retry')
 
+          def step_body(job, name):
+              # A step's own text: from its name to the next item of the job's step list, whatever that item is (a named step or an alias).
+              return re.split(r'\n      - ', job.split(f'- name: {name}\n', 1)[1], maxsplit=1)[0]
+
+          def a_step_body_ends_at_the_next_step_even_when_that_step_is_an_alias():
+              job = '      - name: Floor\n        run: *floor\n      - *later-check\n\n      - name: Last\n        run: true\n'
+              assert step_body(job, 'Floor') == '        run: *floor', step_body(job, 'Floor')
+              assert step_body(job, 'Last') == '        run: true\n', step_body(job, 'Last')
+
+          a_step_body_ends_at_the_next_step_even_when_that_step_is_an_alias()
+          print('PASS a_step_body_ends_at_the_next_step_even_when_that_step_is_an_alias')
+
           def every_job_that_saves_a_snapshot_judges_its_cache_floor_after_its_statistics():
               jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
               savers = [name for name, text in jobs.items() if '- name: Save compile cache\n' in text]
@@ -2661,7 +2673,7 @@ jobs:
                   assert 'permissions:\n      contents: read\n      actions: read\n' in text.split('steps:', 1)[0], name
                   if name != 'doctests':
                       assert text.index('- name: Save compile cache') < text.index('- name: Compile cache hit-rate floor'), name
-              steps = {name: jobs[name].split('- name: Compile cache hit-rate floor\n', 1)[1].split('\n      - name: ', 1)[0] for name in holders}
+              steps = {name: step_body(jobs[name], 'Compile cache hit-rate floor') for name in holders}
               step = steps['quality']
               for line in ['CACHE_SHAPE: $' + '{{ steps.cache-identity.outputs.shape }}',
                            'CACHE_MATCHED_KEY: $' + '{{ steps.cache-restore.outputs.cache-matched-key }}',
