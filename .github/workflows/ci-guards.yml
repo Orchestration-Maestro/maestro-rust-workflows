@@ -682,10 +682,18 @@ jobs:
                              f"Run: {run['html_url']}\nThese pinned jobs did not run: " + ', '.join(f'`{name}`' for name in missing) +
                              '.\nA job was renamed, removed or skipped; restore it or update the pinned list.\n')
 
+          def open_numbers(repository, gh):
+              """Every open issue's number by title, lowest first: a guard issue is titled by its kind, and two runs that finished at the same
+              moment can open that title twice, so the lowest number holds the kind and the rest are duplicates."""
+              listed = json.loads(gh('issue', 'list', '-R', repository, '--state', 'open', '--limit', '1000', '--json', 'number,title'))
+              numbers = {}
+              for item in sorted(listed, key=lambda item: item['number']):
+                  numbers.setdefault(item['title'], []).append(item['number'])
+              return numbers
+
           def open_findings(repository, gh):
-              """The repository's open issues by title: a guard issue is titled by its kind."""
-              return {item['title']: item['number'] for item in json.loads(gh('issue', 'list', '-R', repository, '--state', 'open',
-                                                                             '--limit', '1000', '--json', 'number,title'))}
+              """The repository's open issues by title, each title's lowest number: a guard issue is titled by its kind."""
+              return {title: numbers[0] for title, numbers in open_numbers(repository, gh).items()}
 
           # The opening of every guard issue; one section per subject of its kind follows it.
           LISTED = ('The CI guards rewrite this issue in place on every run that judges one of its subjects, and comment only on a change: '
@@ -745,10 +753,35 @@ jobs:
                   return next(item['body'] for item in group if item.get('recovery'))
               return None
 
+          def listed_subjects(number, repository, gh):
+              """The subjects an open guard issue lists, as its body has them."""
+              return listing_of(number, json.loads(gh('issue', 'view', str(number), '-R', repository, '--json', 'body'))['body'])
+
+          def opened(kind, group, repository, gh, made):
+              """Open the kind's issue with this run's findings, then look again for a run that finished at the same moment and opened the
+              same kind first: the lower number holds the kind, and the duplicate this run just opened closes with a pointer to it, so no
+              duplicate stays open. Returns the issue that holds the kind, and the subjects its body lists."""
+              after = bounded(kind, merged({}, group))
+              labels = list(dict.fromkeys(label for item in group for label in item.get('labels', [])))
+              for label in labels:
+                  if label not in made:
+                      gh('label', 'create', label, '-R', repository, '--force', '--description', 'Out of the pattern: a CI guard found a departure to investigate')
+                      made.add(label)
+              labelled = [argument for label in labels for argument in ('--label', label)]
+              ours = int(gh('issue', 'create', '-R', repository, '--title', kind, *labelled, '--body-file', '-',
+                            body=listing_body(after)).strip().rsplit('/', 1)[-1])
+              holder = open_numbers(repository, gh).get(kind, [ours])[0]
+              if holder == ours:
+                  return ours, after
+              gh('issue', 'comment', str(ours), '-R', repository, '--body-file', '-',
+                 body=f'Duplicate of #{holder}: another run judged this kind at the same moment and the lower number holds it.\n')
+              gh('issue', 'close', str(ours), '-R', repository)
+              return holder, listed_subjects(holder, repository, gh)
+
           def file_issues(findings, repository, gh, existing=None):
               """Keep one open issue per kind listing its subjects: open it with the kind's first breach, rewrite it in place on each later run that
-              judges one of them, and comment only on a change. Nothing is ever closed, and a pass with no open issue or listed subject says nothing.
-              Returns the kinds opened or rewritten."""
+              judges one of them, and comment only on a change. A duplicate the run opened itself closes with a pointer to the issue that holds the
+              kind, and a pass with no open issue or listed subject says nothing. Returns the kinds opened or rewritten."""
               existing = open_findings(repository, gh) if existing is None else existing
               kinds = {}
               for finding in findings:
@@ -756,25 +789,23 @@ jobs:
               filed, made = [], set()
               for kind, group in kinds.items():
                   number = existing.get(kind)
-                  before = listing_of(number, json.loads(gh('issue', 'view', str(number), '-R', repository, '--json', 'body'))['body']) if number else {}
+                  if number is None:
+                      # A run that is only passing subjects of a kind with no open issue says nothing and opens nothing.
+                      if all(item.get('recovery') for item in group):
+                          continue
+                      number, before = opened(kind, group, repository, gh, made)
+                      filed.append(kind)
+                  else:
+                      before = listed_subjects(number, repository, gh)
                   after = bounded(kind, merged(before, group))
                   if after == before:
                       continue
-                  if number:
-                      gh('issue', 'edit', str(number), '-R', repository, '--body-file', '-', body=listing_body(after))
-                      comment = change_of(before, after, group)
-                      if comment:
-                          gh('issue', 'comment', str(number), '-R', repository, '--body-file', '-', body=comment)
-                  else:
-                      labels = list(dict.fromkeys(label for item in group for label in item.get('labels', [])))
-                      for label in labels:
-                          if label not in made:
-                              gh('label', 'create', label, '-R', repository, '--force', '--description', 'Out of the pattern: a CI guard found a departure to investigate')
-                              made.add(label)
-                      labelled = [argument for label in labels for argument in ('--label', label)]
-                      gh('issue', 'create', '-R', repository, '--title', kind, *labelled, '--body-file', '-', body=listing_body(after))
+                  gh('issue', 'edit', str(number), '-R', repository, '--body-file', '-', body=listing_body(after))
+                  comment = change_of(before, after, group)
+                  if comment:
+                      gh('issue', 'comment', str(number), '-R', repository, '--body-file', '-', body=comment)
                   filed.append(kind)
-              return filed
+              return list(dict.fromkeys(filed))
 
           def judge(run_id, repository, gh, settings, existing=None):
               """Every finding for one completed run, and a recovery for each open kind with subjects it judged and passed; also lowers the stored ratchet level of the run's band

@@ -1260,16 +1260,17 @@ jobs:
           def issue_tracker(*open_issues):
               """A repository's issues as the guard reads and writes them, standing in for gh: `open_issues` are (title, body) pairs numbered from 1,
               and the issues the guard opens follow them. `gh.issues` holds each one's body and comments, `gh.calls` every call; any other call fails."""
-              issues = [{'number': index + 1, 'title': title, 'body': body, 'comments': [], 'labels': []} for index, (title, body) in enumerate(open_issues)]
+              issues = [{'number': index + 1, 'title': title, 'body': body, 'comments': [], 'labels': [], 'state': 'open'}
+                        for index, (title, body) in enumerate(open_issues)]
               calls = []
               def gh(*argv, body=None):
                   calls.append(argv)
                   if argv[:2] == ('issue', 'list'):
-                      return json.dumps([{'number': issue['number'], 'title': issue['title']} for issue in issues])
+                      return json.dumps([{'number': issue['number'], 'title': issue['title']} for issue in issues if issue['state'] == 'open'])
                   if argv[:2] == ('issue', 'create'):
                       issues.append({'number': len(issues) + 1, 'title': argv[argv.index('--title') + 1], 'body': body, 'comments': [],
-                                     'labels': [argv[index + 1] for index, item in enumerate(argv) if item == '--label']})
-                      return ''
+                                     'labels': [argv[index + 1] for index, item in enumerate(argv) if item == '--label'], 'state': 'open'})
+                      return f'https://example.test/issues/{len(issues)}\n'
                   if argv[:2] == ('label', 'create'):
                       return ''
                   issue = issues[int(argv[2]) - 1]
@@ -1279,6 +1280,8 @@ jobs:
                       issue['body'] = body
                   elif argv[:2] == ('issue', 'comment'):
                       issue['comments'].append(body)
+                  elif argv[:2] == ('issue', 'close'):
+                      issue['state'] = 'closed'
                   else:
                       raise AssertionError(f'unexpected gh call: {argv}')
                   return ''
@@ -1349,7 +1352,7 @@ jobs:
               assert judging['file_issues']([passing(7, 'c::three'), judging['recovery']('Test shards unbalanced', run_of(7, 39), {'Test shard (1/16)': 'inside'})],
                                             'owner/repo', gh) == []
               assert [call[:2] for call in gh.calls if call[1] != 'list'] == [('issue', 'view')] and len(gh.issues) == 1, gh.calls
-              assert len(gh.issues[0]['comments']) == 2, 'the guard never closes an issue itself, and the tracker fails on any close'
+              assert len(gh.issues[0]['comments']) == 2, 'the guard closes only a duplicate it opened itself, and this run opened none'
 
           a_recovery_comments_once_every_listed_subject_has_passed_and_never_closes()
           print('PASS a_recovery_comments_once_every_listed_subject_has_passed_and_never_closes')
@@ -1675,6 +1678,39 @@ jobs:
 
           one_cause_keeps_one_issue_per_kind_through_the_recorded_fan_out()
           print('PASS one_cause_keeps_one_issue_per_kind_through_the_recorded_fan_out')
+
+          def two_runs_that_read_before_either_opened_keep_one_issue():
+              # Two merge groups finished together (maestro runs 42464709437 and 42464708050): both judged the kind before either had
+              # opened its issue, so both opened one and the second stayed open, never updated again. The lower number holds the kind,
+              # the duplicate closes with a pointer to it, and the subjects the losing run judged are written onto that issue.
+              shard = partial(judging['finding'], 'Test shards unbalanced')
+              def blamed(number, minutes, median, shard_number):
+                  return shard(f'Test shard ({shard_number}/16)', run_of(number, 26),
+                               f'Run: https://example.test/runs/{number}\nIt took {minutes} min against a median shard of {median} min.\n')
+              gh = issue_tracker()
+              before_either = judging['open_findings']('owner/repo', gh)
+              assert judging['file_issues']([blamed(7, 6.3, 2.4, 1)], 'owner/repo', gh, before_either) == ['Test shards unbalanced']
+              judging['file_issues']([blamed(8, 5.2, 2.5, 2)], 'owner/repo', gh, before_either)
+              assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1], gh.issues
+              assert [(issue['number'], issue['comments']) for issue in gh.issues if issue['state'] == 'closed'] == [
+                  (2, ['Duplicate of #1: another run judged this kind at the same moment and the lower number holds it.\n'])], gh.issues
+              # The issue that became the kind's keeps both runs' subjects, and only the subject the second run added is news.
+              assert listed(gh, 1) == {'Test shard (1/16)': ('Breaching', 'https://example.test/runs/7', 'Run: https://example.test/runs/7'),
+                                       'Test shard (2/16)': ('Breaching', 'https://example.test/runs/8', 'Run: https://example.test/runs/8')}, gh.issues[0]
+              assert gh.issues[0]['comments'] == ['Run: https://example.test/runs/8\nNew subjects: `Test shard (2/16)`.\n'], gh.issues[0]
+              # A run that is the only one judging its kind closes nothing, and an older duplicate left open is not the kind's issue.
+              gh = issue_tracker()
+              judging['file_issues']([blamed(9, 6.3, 2.4, 3)], 'owner/repo', gh, judging['open_findings']('owner/repo', gh))
+              assert [(issue['number'], issue['state']) for issue in gh.issues] == [(1, 'open')] and not [call for call in gh.calls if call[:2] == ('issue', 'close')], gh.calls
+              gh = issue_tracker(('Test shards unbalanced', listing(('Test shard (1/16)', 'Breaching', 1, 'Run: https://example.test/runs/1\nfirst'))),
+                                 ('Test shards unbalanced', listing(('Test shard (2/16)', 'Breaching', 2, 'Run: https://example.test/runs/2\nsecond'))))
+              assert judging['open_findings']('owner/repo', gh) == {'Test shards unbalanced': 1}
+              judging['file_issues']([blamed(10, 4.3, 2.3, 3)], 'owner/repo', gh, judging['open_findings']('owner/repo', gh))
+              assert [issue['number'] for issue in gh.issues if issue['state'] == 'open'] == [1, 2], gh.issues
+              assert listed(gh, 1)['Test shard (3/16)'] == ('Breaching', 'https://example.test/runs/10', 'Run: https://example.test/runs/10'), gh.issues[0]
+
+          two_runs_that_read_before_either_opened_keep_one_issue()
+          print('PASS two_runs_that_read_before_either_opened_keep_one_issue')
 
           def judge_stays_quiet_on_a_healthy_run_and_reports_a_rate_breach():
               ratchet = {}
