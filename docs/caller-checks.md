@@ -225,9 +225,9 @@ install a newer shell.
 
 ## Tool downloads
 
-No caller setting is needed. Release downloads use the job token in their
-installer steps; caller compilation does not inherit it. Mise receives
-`MISE_GITHUB_TOKEN` while installing caller tools.
+No caller setting is needed. Release downloads use the job token. The Rust
+workflow scopes download credentials to installer steps; caller compilation does
+not inherit them. Mise uses `MISE_GITHUB_TOKEN` for GitHub tool installs.
 
 GitHub release requests send an Authorization header and allow only HTTPS
 requests and redirects. Curl drops the header when GitHub redirects to another
