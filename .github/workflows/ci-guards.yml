@@ -394,17 +394,34 @@ jobs:
                   raise ValueError(f'cache-storage-limit-gib must be the repository cache storage limit in GiB, a positive number, not {declared!r}')
               return limit
 
+          def replaced_size(caches):
+              """Bytes of default-branch snapshots a newer entry of the same prefix replaces: a push leaves them until its pruning jobs finish, so they are the save window, not the cache at rest."""
+              # The prefixes and the keep-newest rule of the pruning jobs in the shared workflow.
+              prefix = re.compile(r'(?:maestro-compile-v1|maestro-cargo-git-v1|maestro-test-setup-v2)-[0-9a-f]{64}-')
+              named = [(match[0], cache) for cache in caches if cache['ref'] == 'refs/heads/main' and (match := prefix.match(cache['key']))]
+              newest, size = {}, 0
+              for name, cache in sorted(named, key=lambda item: datetime.datetime.fromisoformat(item[1]['created_at']), reverse=True):
+                  if newest.setdefault(name, cache) is not cache:
+                      size += cache['size_in_bytes']
+              return size
+
           def usage_finding(run, usage, limit_gb, caches):
-              """The repository cache over 90% of its storage limit, with its largest entries by ref."""
+              """The repository cache at rest over 90% of its storage limit, with its largest entries by ref."""
               limit, used = limit_gb * 1024**3, usage['active_caches_size_in_bytes']
-              if used <= limit * 0.9:
+              window = replaced_size(caches)
+              if used - window <= limit * 0.9:
                   return None
               largest = '\n'.join(f"- {cache['ref']}: {cache['size_in_bytes'] / 1024**3:.2f} GiB {cache['key']}"
                                   for cache in sorted(caches, key=lambda cache: cache['size_in_bytes'], reverse=True)[:5])
+              held = f"The repository cache holds {used / 1024**3:.2f} GiB in {usage['active_caches_count']} entries against its {limit_gb:g} GiB limit"
+              if window:
+                  held += (f"; {window / 1024**3:.2f} GiB of them are snapshots that newer entries replace and the pruning jobs delete, "
+                           f"and the {(used - window) / 1024**3:.2f} GiB that stay ({(used - window) / limit:.1%}) are over the 90% threshold")
+              else:
+                  held += f" ({used / limit:.1%}); the threshold is 90%"
               return finding('Repository cache above 90% of its limit', None, run,
                              f"Run: {run['html_url']}\n{run['name']} ({run['event']}, {run['head_branch']})\n\n"
-                             f"The repository cache holds {used / 1024**3:.2f} GiB in {usage['active_caches_count']} entries against its {limit_gb:g} GiB limit "
-                             f"({used / limit:.1%}); the threshold is 90%. Over the limit, GitHub evicts the oldest snapshots.\n\nLargest entries by ref:\n{largest}\n")
+                             f"{held}. Over the limit, GitHub evicts the oldest snapshots.\n\nLargest entries by ref:\n{largest}\n")
 
           def spread_of(history, pad, ceiling=None):
               """The range of earlier values widened by `pad`, never below zero or above the ceiling; None below three values."""

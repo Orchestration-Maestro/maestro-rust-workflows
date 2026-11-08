@@ -30,6 +30,8 @@ def snapshot_jobs_share_one_owner():
                     assert condition == '', 'Windows still needs the shared default-branch writer decision'
                 elif stage == 'Compile cache statistics':
                     assert condition == 'always() && ' + host
+                elif stage == 'Restore compile cache' and name == 'targets':
+                    assert condition == host + " && steps.cache-identity.outputs.snapshot == 'true'"
                 elif stage == 'Save compile cache':
                     assert condition == host + " && steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'"
                 elif stage == 'Compile cache identity' and name in ('test-build', 'test-prepare'):

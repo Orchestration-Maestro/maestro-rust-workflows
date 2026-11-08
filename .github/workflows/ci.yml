@@ -935,16 +935,19 @@ jobs:
           seeder = r'-\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\d+-'
           call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
           suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX']) + '-' + call
-          writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
+          # A Linux job that no later job restores keeps no snapshot: the repository cache holds one snapshot per
+          # other shape, and a snapshot for each of these would not fit the cache limit next to them.
+          snapshot = not (os.environ['HOST_OS'] == 'Linux' and os.environ['CACHE_JOB'] in ('quality', 'docs', 'doctests', 'browser', 'browser-tests', 'targets'))
+          writer = snapshot and os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
           if os.environ['CACHE_JOB'] in ('tests', 'doctests') and not (os.environ['CACHE_JOB'] == 'doctests' and os.environ['CACHE_WARM'] == 'true'):
-              shard = os.environ.get('SHARD', '')
-              writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['HOST_OS'] == 'Linux' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
+              writer = writer and os.environ.get('SHARD', '') in ('warm', '1')
           # Prepare test setup also builds every wasm example extension; its working set passed 1 GiB.
           size = 1610612736 if shape == 'test-prepare' else 1073741824
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\nshape={shape}\nnamespace={namespace}\nseeder={seeder}\nsize={size}\n')
+              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\nsnapshot={str(snapshot).lower()}\nshape={shape}\nnamespace={namespace}\nseeder={seeder}\nsize={size}\n')
           PYTHON
       - name: Restore compile cache
+        if: steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -991,7 +994,7 @@ jobs:
           rm "$archive"
           test -x "$bin/sccache"
           echo "$bin" >> "$GITHUB_PATH"
-          if [ "$CACHE_RESTORE_OUTCOME" = failure ] || { [ "$CACHE_RESTORE_MATCHED" != true ] && [ "$CACHE_RESTORE_MATCHED" != false ]; }; then
+          if [ "$CACHE_RESTORE_OUTCOME" = failure ] || { [ "$CACHE_RESTORE_OUTCOME" != skipped ] && [ "$CACHE_RESTORE_MATCHED" != true ] && [ "$CACHE_RESTORE_MATCHED" != false ]; }; then
             rm -rf "$RUNNER_TEMP/maestro-sccache"
             echo 'Compile cache snapshot restore failed; using an empty local cache'
           fi
@@ -1222,6 +1225,7 @@ jobs:
           CACHE_PREFIX: ${{ steps.cache-identity.outputs.prefix }}
           CACHE_NAMESPACE: ${{ steps.cache-identity.outputs.namespace }}
           CACHE_SEEDER: ${{ steps.cache-identity.outputs.seeder }}
+          CACHE_SNAPSHOT: ${{ steps.cache-identity.outputs.snapshot }}
           GH_TOKEN: ${{ github.token }}
         run: &sccache-floor |
           python3 -I - <<'PYTHON'
@@ -1242,6 +1246,9 @@ jobs:
           if not executed or not int(executed[1]) or not rate:
               finish('Compile cache hit rate not judged: no cacheable compilation ran')
           rate = float(rate[1])
+          if os.environ['CACHE_SNAPSHOT'] != 'true':
+              print(f'::notice title=Work units::compiles: {executed[1]}')
+              finish(f'Compile cache hit rate not judged: shape {shape} keeps no snapshot')
           # The guards read the compile units and the hit rate of every build from this notice.
           print(f'::notice title=Work units::compiles: {executed[1]}; hit-rate: {rate:.2f}')
           if rate >= floor:
@@ -1302,6 +1309,7 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
+        if: steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -2217,7 +2225,7 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
-        if: runner.os != 'Windows' && (inputs.warm-cache || matrix.shard == 'doctests')
+        if: runner.os != 'Windows' && (inputs.warm-cache || matrix.shard == 'doctests') && steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -3195,7 +3203,7 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
-        if: *sccache-target-host
+        if: runner.os != 'Windows' && steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -3290,6 +3298,7 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
+        if: steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -3468,6 +3477,7 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
+        if: steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
