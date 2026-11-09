@@ -1440,7 +1440,8 @@ A pull request that touches none of these skips the three steps. The build
 starts from an empty compile cache, because Wasm and browser build keeps no
 snapshot; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot). A
 change in another directory that a listed package depends on does not match;
-the merge group builds it. The Chromium browser tests job does not run on pull
+the merge group builds it. A package at the repository root owns every file, so
+every pull request builds it. The Chromium browser tests job does not run on pull
 requests.
 
 ## Chromium browser tests
