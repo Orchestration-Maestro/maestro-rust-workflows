@@ -8,7 +8,7 @@ def snapshot_jobs_share_one_owner():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     assert document['permissions'] == {'contents': 'read'}
     writers = {'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests', 'doctests'}
-    assert set(document['jobs']) == {'declaration', 'advisories', 'fuzz', 'tests-result'} | writers | {name + '-prune' for name in writers}
+    assert set(document['jobs']) == {'declaration', 'replaced-groups', 'advisories', 'fuzz', 'tests-result'} | writers | {name + '-prune' for name in writers}
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                            workflow.split('\njobs:\n', 1)[1], re.M | re.S))
     owners = {'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
@@ -77,7 +77,9 @@ def every_cache_writer_has_one_pruner_without_caller_code():
     writers = {name for name, job in jobs.items()
                if any(step.get('uses', '').startswith('actions/cache/save@') for step in job.get('steps', []))}
     assert writers == {'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'doctests', 'checks', 'targets', 'browser', 'browser-tests'}
-    pruners = {name: job for name, job in jobs.items() if job.get('permissions', {}).get('actions') == 'write'}
+    pruners = {name: job for name, job in jobs.items() if name.endswith('-prune')}
+    # The replaced-group canceller holds the only other write grant; its own seam proves it runs no caller code.
+    assert {name for name, job in jobs.items() if job.get('permissions', {}).get('actions') == 'write'} == set(pruners) | {'replaced-groups'}
     # Each writer is followed by exactly one pruner, and only pruners may delete caches.
     assert sorted(job['needs'] for job in pruners.values()) == sorted(writers), pruners.keys()
     steps = next(iter(pruners.values()))['steps']

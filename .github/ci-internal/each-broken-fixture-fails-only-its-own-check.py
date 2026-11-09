@@ -27,7 +27,7 @@ def only_cache_housekeeping_fails_open():
     transfers = ['Restore compile cache', 'Save compile cache', 'Restore test setup cache', 'Save test setup cache',
                  'Test setup candidates', 'Download test setup candidates',
                  'Restore Cargo git cache', 'Save Cargo git cache']
-    transferred = pruned = 0
+    transferred = pruned = cancelled = 0
     for step in re.split(r'^      - name: ', workflow, flags=re.M)[1:]:
         if not re.search(r'^        continue-on-error:', step, re.M):
             continue
@@ -35,6 +35,9 @@ def only_cache_housekeeping_fails_open():
         if name == 'Prune superseded caches':
             # Pruning runs after the build, so a failed deletion costs a superseded entry and never a check.
             pruned += 1
+        elif name == 'Cancel replaced merge groups':
+            # A failed cancellation leaves a dropped group's run going and never fails the live group that tried.
+            cancelled += 1
         else:
             assert name in transfers, name
             # The candidate steps are transfers of earlier runs' bundles; a failed lookup or download leaves the restored bundle as the only base.
@@ -43,6 +46,7 @@ def only_cache_housekeeping_fails_open():
         assert '        continue-on-error: true\n' in step
     assert transferred == 31
     assert pruned == 1
+    assert cancelled == 1
     assert not re.search(r'^    continue-on-error:', workflow, re.M)
 
 only_cache_housekeeping_fails_open()

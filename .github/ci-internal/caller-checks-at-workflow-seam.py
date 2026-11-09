@@ -1210,10 +1210,9 @@ preparation_runs_beside_host_compilation()
 print('PASS preparation_runs_beside_host_compilation')
 
 def absent_keeps_base_checks():
-    # The seam also runs in a merge group, where the runner's event would name a queued pull request.
-    result, values = declaration(root / 'fixtures/sample', {'GITHUB_EVENT_NAME': 'pull_request'})
+    result, values = declaration(root / 'fixtures/sample')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'emscripten_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}', 'merge_group_pull_request': ''}
+    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'emscripten_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}'}
     assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
     assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
     assert "inputs.working-directory != '.'" in workflow
@@ -3110,7 +3109,7 @@ partitions_run_every_test_once_and_doctests()
 print('PASS partitions_run_every_test_once_and_doctests')
 
 def local_callers_grant_cache_pruning():
-    # Only the pruning jobs take the write grant; a call that lacks it cannot start.
+    # The pruning jobs and the replaced-group canceller take the write grant; a call that lacks it cannot start.
     for path in sorted((root / '.github/workflows').glob('*.yml')):
         document = json.loads(subprocess.check_output(
             ['yq', '-o=json', '-'], input=path.read_text(encoding='utf-8'), text=True))
@@ -5067,7 +5066,8 @@ def workflow_failures_remain_required():
     assert 'pull_request:' in workflow and 'merge_group:' in workflow
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     routed = routed_jobs(document, {})
-    assert routed == set(document['jobs']) - {'advisories', 'fuzz'}, sorted(routed)
+    # The replaced-group canceller runs in merge groups only.
+    assert routed == set(document['jobs']) - {'advisories', 'fuzz', 'replaced-groups'}, sorted(routed)
     assert 'browser' not in routed_jobs(document, {'needs.declaration.outputs.coverage': 'false'})
     # An advisory scan runs only the declaration and its own job.
     routed = routed_jobs(document, {'inputs.advisory-scan': True})
@@ -5140,8 +5140,8 @@ def reusable_calls_complete_independently():
     match = re.search(r'^  group: (.+)$', workflow, re.MULTILINE)
     assert match is not None, 'Missing workflow concurrency group'
     group = match.group(1)
-    assert group == 'rust-ci-$' + "{{ github.event_name == 'push' && format('{0}-{1}', github.workflow, github.sha) || github.ref }}$" + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
-        'The push group must name the caller and the commit, other runs the ref, and keyed calls the key'
+    assert group == 'rust-ci-$' + "{{ (github.event_name == 'push' || github.event_name == 'merge_group') && format('{0}-{1}', github.workflow, github.sha) || github.ref }}$" + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
+        'Push and merge-group runs must name the caller and commit, other runs the ref, and keyed calls the key'
     keys = []
     for job in ['sample', 'declared', 'test-tools']:
         section = re.split(r'\n  \S', internal.split(f'  {job}:\n', 1)[1], maxsplit=1)[0]
