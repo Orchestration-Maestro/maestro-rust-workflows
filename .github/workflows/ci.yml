@@ -129,6 +129,7 @@ jobs:
       test_counts: ${{ steps.selection.outputs.test_counts }}
       test_shard_count: ${{ steps.config.outputs.test_shard_count }}
       test_shards: ${{ steps.selection.outputs.test_shards }}
+      tested_runners: ${{ steps.selection.outputs.tested_runners }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       wasm_examples: ${{ steps.config.outputs.wasm_examples }}
       emscripten_crates: ${{ steps.config.outputs.emscripten_crates }}
@@ -537,7 +538,8 @@ jobs:
           native_tests = {'aarch64-apple-darwin': ('macos-latest', 4)}
           count = int(values['test_shard_count'])
           hosts = {'ubuntu-latest': count}
-          if config is not None and os.environ.get('TEST_EVENT') != 'pull_request' and os.environ.get('WARM') != 'true':
+          # Merge groups test Linux only; native hosts run in the full suite after landing.
+          if config is not None and os.environ.get('TEST_EVENT') not in ('pull_request', 'merge_group') and os.environ.get('WARM') != 'true':
               hosts.update({runner: min(shards, count) for target, (runner, shards) in native_tests.items() if target in config['check_targets']})
           values.update(test_hosts=json.dumps(hosts))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
@@ -648,7 +650,7 @@ jobs:
           PYTHON
       - name: Reuse merge queue tests
         if: steps.queue.outputs.tests_reused == 'true'
-        run: echo 'Exact commit already passed this workflow in the merge queue; tests skipped. Archive and preparation still seed compile caches. Cache warm-up remains independent.'
+        run: echo 'Exact commit already passed this workflow in the merge queue; Linux tests skipped, native hosts still tested. Archive and preparation still seed compile caches. Cache warm-up remains independent.'
       - name: Select test packages
         id: selection
         env:
@@ -856,9 +858,13 @@ jobs:
               output.write('coverage=' + str(event != 'pull_request' and os.environ.get('TESTS_REUSED') != 'true').lower() + '\n')
               # A reused queue result keeps every host: its archive and preparation seed the snapshots each merge group restores.
               hosts = json.loads(os.environ['TEST_HOSTS'])
-              shards = [dict(runner=runner, shard=shard, count=count) for runner, count in hosts.items() for shard in range(1, count + 1)]
+              # The queue result covers Linux only, so a reused push still tests every other host.
+              tested = {} if event == 'pull_request' else {runner: count for runner, count in hosts.items()
+                                                           if os.environ.get('TESTS_REUSED') != 'true' or runner != 'ubuntu-latest'}
+              shards = [dict(runner=runner, shard=shard, count=count) for runner, count in tested.items() for shard in range(1, count + 1)]
               output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('test_runners=' + json.dumps(list(hosts)) + '\n')
+              output.write('tested_runners=' + json.dumps(list(tested)) + '\n')
               output.write('test_counts=' + json.dumps(hosts) + '\n')
               output.write('check_advisories=' + str(check_advisories).lower() + '\n')
           PYTHON
@@ -1797,7 +1803,7 @@ jobs:
             ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
           key: ${{ steps.git-cache-identity.outputs.key }}
       - name: Upload test archive
-        if: needs.declaration.outputs.tests_reused != 'true'
+        if: contains(fromJSON(needs.declaration.outputs.tested_runners), matrix.runner)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: &test-archive-name test-archive-${{ inputs.concurrency-key || 'root' }}${{ matrix.runner != 'ubuntu-latest' && format('-{0}', matrix.runner) || '' }}
@@ -2234,7 +2240,7 @@ jobs:
           path: ${{ runner.temp }}/test-setup.tar
           key: ${{ steps.setup-identity.outputs.key }}
       - name: Upload test setup
-        if: needs.declaration.outputs.tests_reused != 'true'
+        if: contains(fromJSON(needs.declaration.outputs.tested_runners), matrix.runner)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: *test-setup-name
@@ -2269,7 +2275,7 @@ jobs:
       contents: read
       actions: read
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.runner == 'ubuntu-latest' && format('Test shard ({0}/{1})', matrix.shard, matrix.count) || format('Test shard ({0} {1}/{2})', matrix.runner, matrix.shard, matrix.count) }}
-    if: ${{ !inputs.browser-only && !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && needs.declaration.outputs.coverage == 'true' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && needs.declaration.outputs.tested_runners != '' && needs.declaration.outputs.tested_runners != '[]' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -2722,12 +2728,12 @@ jobs:
       actions: read
     name: ${{ matrix.runner == 'ubuntu-latest' && 'Doctests' || format('Doctests ({0})', matrix.runner) }}
     needs: declaration
-    if: ${{ !inputs.browser-only && needs.declaration.outputs.coverage == 'true' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && needs.declaration.outputs.tested_runners != '' && needs.declaration.outputs.tested_runners != '[]' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        runner: ${{ fromJSON(needs.declaration.outputs.test_runners) }}
+        runner: ${{ fromJSON(needs.declaration.outputs.tested_runners) }}
         shard: [doctests]
         # Zero uses the declared shard count in the shared test environment.
         count: [0]
@@ -2750,14 +2756,13 @@ jobs:
           RESULT: ${{ needs.tests.result }}
           DOCTEST_RESULT: ${{ needs.doctests.result }}
           DECLARATION_RESULT: ${{ needs.declaration.result }}
-          COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
+          TESTED_RUNNERS: ${{ needs.declaration.outputs.tested_runners }}
         shell: python
         run: |
+          import json
           import os
           assert os.environ['DECLARATION_RESULT'] == 'success'
-          expected = {'false': 'skipped', 'true': 'success'}
-          assert os.environ['COLLECT_COVERAGE'] in expected
-          required = expected[os.environ['COLLECT_COVERAGE']]
+          required = 'success' if json.loads(os.environ['TESTED_RUNNERS']) else 'skipped'
           assert os.environ['RESULT'] == required
           assert os.environ['DOCTEST_RESULT'] == required
       - name: Download shard coverage

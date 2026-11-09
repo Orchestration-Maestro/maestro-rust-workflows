@@ -41,19 +41,24 @@ dependents; formatting still checks the whole workspace. Pull requests skip the
 test archive, test setup, test shards, doctests and wasm/browser builds. The
 declared [example witnesses](#wasm-example-witnesses) are the exception: they
 still compile. Every required check name still reports; skipped jobs count as
-success. Merge groups and main pushes run every workspace test with the full
-shard matrix, doctests, coverage and all declared builds and foreign-target
-compilation. The arm64 macOS archive replaces its separate target check. A main
-push reuses tests when its exact commit already
-passed a completed merge-group run of the same shared workflow revision with the
-full workspace selected. That push skips the test shards, doctests and
-coverage. The archive and preparation jobs still run on every test host,
-including a claimed macOS host, and save the compiled-cache snapshots the next
-merge group restores. A merge group cannot save them itself: only
-default-branch pushes write snapshots. The Wasm and browser build and Chromium
-browser tests jobs also still run, so browser tests run a second time on that
-commit. The archive keeps the same instrumentation and cache shape as that
-group.
+success. Merge groups run the full Linux shard matrix, Linux doctests,
+coverage and all declared builds and foreign-target checks except the native
+arm64 macOS route. They keep `Check (x86_64-apple-darwin)`. Main pushes also
+run the claimed macOS host's test archive, preparation, four test shards and
+doctests. The arm64 macOS archive replaces its separate target check there.
+A macOS test failure after landing goes through the existing
+[post-landing safeguard](#full-suite-after-landing).
+
+A main push reuses Linux tests when its exact commit already passed a completed
+merge-group run of the same shared workflow revision with the full workspace
+selected. That push skips Linux test shards, Linux doctests and coverage, but
+still runs the macOS tests and doctests the group skipped. The archive and
+preparation jobs still run on every test host and save compiled-cache snapshots;
+they upload test archives and setup only for hosts whose tests run. A merge
+group cannot save snapshots itself: only default-branch pushes write them. The
+Wasm and browser build and Chromium browser tests jobs also still run, so browser
+tests run a second time on that commit. The Linux archive keeps the same
+instrumentation and cache shape as the merge group.
 Formatting, lint, docs, dependency/source checks and target checks still run. No
 caller setting changes this policy.
 
@@ -242,8 +247,9 @@ and defaults to `[]`. The [schema](../.github/ci.schema.json) describes the
 parsed TOML shape; there is no version key or older-format reader.
 
 `check_targets` also selects native test hosts: `aarch64-apple-darwin` adds
-`macos-latest`. These test legs run on merge groups and main pushes only; pull
-requests and warm calls keep Linux-only tests. The other supported targets,
+`macos-latest`. These test legs run after landing on main pushes, including
+pushes that reuse the merge group's Linux results. Merge groups, pull requests
+and warm calls keep Linux-only tests. The other supported targets,
 including `x86_64-pc-windows-msvc`, remain compile-only. The test jobs already
 carry a Windows leg, but `windows-latest` joins the native test hosts only once
 its cold preparation fits the job's 45-minute step limit.
@@ -258,9 +264,11 @@ ports on macOS or Windows. Without it nothing runs.
 An absent file runs the standard checks without isolation, search tool
 installation or optional jobs. After declaration validation, pull requests
 run formatting, Clippy, docs, dependency/source checks and the declared
-Windows target check in parallel. Merge groups and main pushes also run the test
-archive, test setup, full shard matrix, doctests, coverage, wasm/browser builds,
-Chromium tests and all other declared foreign-target checks.
+Windows target check in parallel. Merge groups and main pushes also run the Linux
+test archive, test setup, full shard matrix, doctests, coverage, wasm/browser
+builds, Chromium tests and declared foreign-target checks. The native macOS
+test route runs only after landing on main; merge groups keep the x86_64 macOS
+compile check. Main pushes may reuse the Linux results as described above.
 Pull requests skip these jobs without removing their required check names.
 An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
@@ -390,8 +398,8 @@ Cold times measured on Maestro, against the warm time of the same job:
 | Wasm and browser build | 8.3 to 12.3 min | 3.1 to 3.5 min |
 | Check (aarch64-unknown-linux-gnu) | 4.7 to 5.5 min | 3.0 min |
 
-Each stays under the merge group's longest path, the arm64 macOS archive build
-and its shards. The extra Linux minutes add no cost on a public repository.
+The table records Linux job costs; macOS tests run after landing. The extra
+Linux minutes add no cost on a public repository.
 
 An entry a job saved before it stopped keeping a snapshot stays in the cache
 until GitHub's seven-day expiry removes it, because nothing restores it and the
@@ -541,7 +549,8 @@ for merge groups and main pushes. These events always select every workspace
 package. Pull requests skip both test shards and doctests.
 Native shards are named `Test shard (<runner> k/n)`, with `Doctests (<runner>)`
 for their doctests. Linux names remain `Test shard (k/N)` and `Doctests`.
-Native legs run only on full events that do not reuse merge-queue tests.
+Native legs run only on main pushes, including those that reuse merge-queue
+Linux results.
 
 `test_shard_count` sets the number of shards. It is an optional whole number
 from 1 to 60 and defaults to 16. Any other value, including a float, a string or
@@ -563,10 +572,11 @@ with their opted-in tools. Only the Linux numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including native shards and every `Doctests` leg, to succeed on full runs.
 Native legs run plain nextest without coverage instrumentation. On a main push
-that reuses merge-queue tests it requires skipped test shards and skipped
-`Doctests` legs. On pull requests it requires a
-successful declaration and skipped test and doctest jobs, regardless of package
-selection. On full runs it downloads all reports, counts each source line once
+that reuses merge-queue Linux results, the aggregate requires successful native
+shards and `Doctests` legs when the caller claims native test hosts. Without
+native hosts, it requires skipped test and doctest jobs. On pull requests it
+requires a successful declaration and skipped test and doctest jobs, regardless
+of package selection. On full runs it downloads all reports, counts each source line once
 (covered if any shard hits it), and enforces `coverage_min_lines` on the union.
 Missing reports or low coverage fail.
 Undeclared callers use the same test shards but retain their single coverage job
@@ -617,8 +627,9 @@ shard. When a caller has fewer test binaries than shards, the extra shards hold
 no binary: they run nothing and upload an empty coverage report, so the union
 still receives one report per shard. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
-runs doctests once on every merge group and main push, except a main push that
-reuses merge-queue tests. It does not wait for the archive build.
+runs doctests once per tested host on every merge group and main push. On a main
+push that reuses merge-queue Linux results, the Linux leg skips and the claimed
+native legs still run. It does not wait for the archive build.
 
 Native hosts follow the same route: one `Build test archive (<runner>)` job and
 one `Prepare test setup (<runner>)` job per claimed host, each with its own
@@ -905,8 +916,9 @@ Every enabled shard fetches locked dependencies.
 
 Merge groups and main pushes always run the full workspace suite, doctests,
 declared Chromium tests and coverage, except a main push that reuses
-merge-queue tests: it takes the suite from the merge group, skips the shards and
-doctests, turns coverage off, and runs the declared Chromium tests only. They do
+merge-queue tests: it takes the Linux suite from the merge group, skips the
+Linux shards and doctests, turns coverage off, and runs the declared Chromium
+tests and the claimed native hosts' shards and doctests. They do
 not narrow tests using a diff or previous coverage. The queue is the merge gate;
 a suite failure stops the merge.
 Main-push failure reporting and revert handling remain in the post-landing
@@ -1145,9 +1157,10 @@ runner fails its test step, so coverage uploads run only after success; a missin
 report after success fails the upload separately. On full runs the required aggregate accepts
 only successful matrix legs, including `Doctests`, and requires one report per
 numeric shard when merging coverage. On a main push that reuses merge-queue
-tests the shards and the `Doctests` legs are skipped, and the aggregate
-requires both to be skipped. On pull requests the aggregate requires a
-successful declaration and skipped test and doctest jobs.
+Linux results, Linux shards and `Doctests` skip; claimed native test hosts still
+run their shards and doctests, and the aggregate requires success. Without
+native hosts, it requires skipped test and doctest jobs. On pull requests the
+aggregate requires a successful declaration and skipped test and doctest jobs.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
@@ -1603,10 +1616,11 @@ cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warning
 There is no Linux fallback for Apple/MSVC targets. Runtime tests on a claimed
 macOS arm64 host use the separate [test shard route](#test-shards).
 Merge groups and main pushes run opted-in target checks, except for
-`aarch64-apple-darwin`: its native macOS test archive already compiles that
-target. The separate `x86_64-apple-darwin` check remains because there is no
-native x86_64 macOS test archive. Warm calls keep both Apple checks because they
-do not build native test archives. The four native macOS test shards are unchanged.
+`aarch64-apple-darwin`: the main push's native macOS test archive compiles that
+target after landing. Merge groups compile macOS through the separate
+`x86_64-apple-darwin` check. Warm calls keep both Apple checks because they do
+not build native test archives. The four native macOS test shards and macOS
+doctests run on main pushes, not in merge groups.
 
 Ordinary pull requests run only the declared `x86_64-pc-windows-msvc` target
 check. Apple checks wait for the full run; no macOS compile-only job starts on
@@ -1807,8 +1821,8 @@ guard matches a job against a pinned name after the last ` / `, so
 `suite / Caller declaration` counts as `Caller declaration`. The reuse,
 required-checks, time-per-unit, shard-balance and slow-test guards read those
 names. When the `Reuse merge queue tests` step in `Caller declaration`
-succeeded, the skipped test shards and doctests leave the pinned list, exactly
-as they do in a run with no prefix.
+succeeded, the skipped Linux test shards and Linux doctests leave the pinned
+list, exactly as they do in a run with no prefix. Native test jobs still run.
 
 Pin the reference to a reviewed commit and list the listener workflow in
 `privileged_trigger_workflows`, as for the post-landing reporter. Issues are
@@ -2188,15 +2202,15 @@ rename a job on purpose, change the pin and the ruleset in one change.
 
 On a main push that reuses merge-queue tests, the successful `Reuse merge queue
 tests` step in `Caller declaration` records the decision. The required-checks
-guard permits shard and doctest skips only with that marker. The archive and
+guard permits Linux shard and doctest skips only with that marker. The archive and
 every other pinned check must still run. Job-shape comparisons keep reused runs
 separate from full-suite runs, so the deliberate skips do not report removals.
 
 Pull requests require `Caller declaration`, `Format and lint`, `Docs`,
 `Dependency, source and coverage checks` and the declared Windows target result,
-`Check (x86_64-pc-windows-msvc)`. Apple target compilation runs on merge groups
-and main pushes, with arm64 covered by the native test archive and x86_64 by
-`Check (x86_64-apple-darwin)`. A failed target check fails the workflow.
+`Check (x86_64-pc-windows-msvc)`. `Check (x86_64-apple-darwin)` runs on merge
+groups and main pushes. The native test archive covers arm64 Apple compilation
+on main pushes only. A failed target check fails the workflow.
 Undeclared targets do not create required results. Pull requests keep the test
 and build job names but skip their work, except that `Wasm and browser build`
 compiles the declared [example witnesses](#wasm-example-witnesses) and reports

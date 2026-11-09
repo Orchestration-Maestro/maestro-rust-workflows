@@ -164,7 +164,7 @@ def a_replaced_run_never_starts_its_test_shards():
     tests_if = expression(jobs['tests']['if'])
     def starts(build, prepare):
         contexts = {'github': {'repository_id': '1'}, 'inputs': {'working-directory': ''}, 'needs': {
-            'declaration': {'outputs': {'coverage': 'true'}}, 'test-build': {'result': build}, 'test-prepare': {'result': prepare}}}
+            'declaration': {'outputs': {'tested_runners': '["ubuntu-latest"]'}}, 'test-build': {'result': build}, 'test-prepare': {'result': prepare}}}
         return bool(evaluate(tests_if, contexts))
     assert starts('success', 'success') and starts('success', 'skipped')
     assert not starts('success', 'failure') and not starts('failure', 'success') and not starts('failure', 'failure')

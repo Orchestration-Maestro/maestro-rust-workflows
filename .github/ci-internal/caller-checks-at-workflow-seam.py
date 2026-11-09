@@ -23,7 +23,7 @@ def evaluate(condition, values):
         expression = expression.replace(key, repr(value))
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     expression = re.sub(r'!(?!=)', ' not ', expression).strip()
-    return eval(expression, {'__builtins__': {}})
+    return eval(expression, {'__builtins__': {}, 'contains': lambda items, item: item in items, 'fromJSON': json.loads})
 
 def routed_jobs(document, values):
     # Every gate is open except the two scans; values set the inputs a case proves.
@@ -32,6 +32,7 @@ def routed_jobs(document, values):
         'github.event_name': 'push', 'github.ref': 'refs/heads/main', default_ref: 'refs/heads/main',
         'github.repository_id': 'caller', 'inputs.working-directory': '.',
         'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.tests_reused': 'false',
+        'needs.declaration.outputs.tested_runners': '["ubuntu-latest"]',
         'needs.declaration.outputs.targets': '[{}]', 'needs.declaration.outputs.fuzz_targets': '["target"]',
         'needs.declaration.outputs.wasm_crates': '["web"]', 'needs.declaration.outputs.wasm_examples': '[]',
         'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.browser_tests': 'true',
@@ -1169,20 +1170,20 @@ def doctests_run_independently_and_remain_required():
     jobs = document['jobs']
     assert jobs['doctests']['needs'] == 'declaration'
     assert evaluate(jobs['doctests']['name'], {'matrix.runner': 'ubuntu-latest', "format('Doctests ({0})', 'ubuntu-latest')": 'unused'}) == 'Doctests'
-    assert 'test_runners' in jobs['doctests']['strategy']['matrix']['runner']
+    assert 'tested_runners' in jobs['doctests']['strategy']['matrix']['runner']
     assert jobs['doctests']['strategy']['matrix']['shard'] == ['doctests']
     assert jobs['doctests']['strategy']['matrix']['count'] == [0]
     assert set(jobs['doctests']['strategy']['matrix']) == {'runner', 'shard', 'count'}, 'one doctest leg per runner'
     for key in ['steps', 'defaults', 'env']:
         assert jobs['doctests'][key] == jobs['tests'][key], key
     assert set(jobs['tests-result']['needs']) == {'tests', 'doctests', 'declaration'}
-    for coverage, tests in [('true', 'success'), ('false', 'skipped')]:
+    for tested, tests in [('["ubuntu-latest"]', 'success'), ('["macos-latest"]', 'success'), ('[]', 'skipped')]:
         for docs in ['success', 'failure', 'cancelled', 'skipped']:
             result = subprocess.run(['python3', '-c', body('All test shards passed')],
                                     env=os.environ | {'RESULT': tests, 'DOCTEST_RESULT': docs,
-                                    'COLLECT_COVERAGE': coverage, 'DECLARATION_RESULT': 'success'},
+                                    'TESTED_RUNNERS': tested, 'DECLARATION_RESULT': 'success'},
                                     capture_output=True, text=True)
-            assert (result.returncode == 0) == (docs == tests), (coverage, docs, result.stderr)
+            assert (result.returncode == 0) == (docs == tests), (tested, docs, result.stderr)
 
 doctests_run_independently_and_remain_required()
 print('PASS doctests_run_independently_and_remain_required')
@@ -1199,7 +1200,7 @@ def preparation_runs_beside_host_compilation():
     assert 'target/test-setup' in body('Prepare test setup')
     assert 'tar -C target' in body('Restore test setup')
     for name in ['test-prepare', 'test-build', 'doctests']:
-        assert 'test_runners' in jobs[name]['strategy']['matrix']['runner'], name
+        assert ('tested_runners' if name == 'doctests' else 'test_runners') in jobs[name]['strategy']['matrix']['runner'], name
         assert 'matrix.runner' in jobs[name]['runs-on'], name
     for job in ['test-prepare', 'test-build', 'tests']:
         free = next(step for step in jobs[job]['steps'] if step['name'] == 'Free instrumented build space')
@@ -1659,6 +1660,7 @@ def warm_push_seeds_non_test_shapes():
                             'inputs.fuzz-scan': excluded == 'fuzz',
                             'github.repository_id': 'caller', 'inputs.working-directory': '.',
                             'needs.declaration.outputs.coverage': 'true',
+                            'needs.declaration.outputs.tested_runners': '["ubuntu-latest"]',
                             'needs.declaration.outputs.wasm_crates': '["web"]',
                             'needs.declaration.outputs.browser_build': 'true',
                             'needs.declaration.outputs.browser_tests': 'true'})
@@ -1855,7 +1857,8 @@ def coverage_matrix_splits_doctests_from_partitions():
                 assert result.returncode == 0, result.stderr
                 selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                 legs = json.loads(selected['test_shards'])
-                assert legs == [{'runner': 'ubuntu-latest', 'shard': shard, 'count': 16} for shard in range(1, 17)], (event, selected)
+                assert legs == ([] if event == 'pull_request' else [
+                    {'runner': 'ubuntu-latest', 'shard': shard, 'count': 16} for shard in range(1, 17)]), (event, selected)
 
 coverage_matrix_splits_doctests_from_partitions()
 print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -2074,15 +2077,15 @@ def diagnostic_upload_is_unconditional_and_scoped():
     assert 'name: $' + '{{ steps.diagnostics.outputs.artifact_name }}\n' in upload
     assert 'timeout-minutes: 45\n' in steps['Isolated tests']
     assert "if: $" + "{{ env.WARM_CACHE != 'true' && needs.declaration.outputs.enabled != 'true' }}\n" in steps['Tests']
-    for coverage in ['false', 'true']:
+    for tested in ['[]', '["ubuntu-latest"]', '["macos-latest"]']:
         for status in ['success', 'failure', 'cancelled', 'skipped']:
             for docs in ['success', 'failure', 'cancelled', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': docs, 'COLLECT_COVERAGE': coverage,
+                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': docs, 'TESTED_RUNNERS': tested,
                                                           'DECLARATION_RESULT': 'success'},
                                         capture_output=True, text=True)
-                expected = 'success' if coverage == 'true' else 'skipped'
-                assert (result.returncode == 0) == (status == expected and docs == expected), (coverage, status, docs, result.stderr)
+                expected = 'skipped' if tested == '[]' else 'success'
+                assert (result.returncode == 0) == (status == expected and docs == expected), (tested, status, docs, result.stderr)
 
 diagnostic_upload_is_unconditional_and_scoped()
 print('PASS diagnostic_upload_is_unconditional_and_scoped')
@@ -2962,6 +2965,7 @@ def event_policy_keeps_pull_requests_fast():
                            default_ref: 'refs/heads/main', 'github.ref': 'refs/heads/main',
                            'github.repository_id': 'caller', 'inputs.working-directory': '.',
                            'needs.declaration.outputs.coverage': values['coverage'],
+                           'needs.declaration.outputs.tested_runners': values['tested_runners'],
                            'needs.declaration.outputs.tests_reused': 'false',
                            'needs.declaration.outputs.targets': '[{}]',
                            'needs.declaration.outputs.wasm_crates': '["sample"]',
@@ -3042,15 +3046,16 @@ def removed_shard_lists_fail_clearly():
     assert 'tests-result' in routed_jobs(document, {'success()': False, 'failure()': True})
     # An implicit success() covers the whole condition, not only its first operand.
     assert 'declaration' not in routed_jobs(document, {'success()': False, 'inputs.working-directory': 'sub'})
-    for coverage, required in [('false', 'skipped'), ('true', 'success'), ('', None)]:
+    # A main push that reuses the queue's Linux result still runs and requires the native shards.
+    for tested, required in [('[]', 'skipped'), ('["ubuntu-latest"]', 'success'), ('["macos-latest"]', 'success'), ('', None)]:
         for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
             for status in ['success', 'failure', 'cancelled', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': required or 'skipped', 'COLLECT_COVERAGE': coverage,
+                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': required or 'skipped', 'TESTED_RUNNERS': tested,
                                                           'DECLARATION_RESULT': declaration_status},
                                         capture_output=True, text=True)
                 expected = declaration_status == 'success' and required is not None and status == required
-                assert (result.returncode == 0) == expected, f'{coverage} {declaration_status} {status}\n' + result.stdout + result.stderr
+                assert (result.returncode == 0) == expected, f'{tested} {declaration_status} {status}\n' + result.stdout + result.stderr
 
 removed_shard_lists_fail_clearly()
 print('PASS removed_shard_lists_fail_clearly')
@@ -3416,13 +3421,14 @@ def changed_packages_include_reverse_dependencies():
         git('commit', '-qm', 'source')
         values = select()
         assert json.loads(values['packages']) == ['a', 'b', 'c'] and values['coverage'] == 'false'
-        assert json.loads(values['test_shards']) == [{'runner': 'ubuntu-latest', 'shard': shard, 'count': 16} for shard in range(1, 17)], values
+        assert json.loads(values['test_shards']) == [], values
         document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
         context = {'cancelled()': False, 'needs.test-build.result': 'success',
                    'needs.test-prepare.result': 'skipped', 'inputs.warm-cache': False,
                    'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
                    'github.repository_id': 'caller', 'inputs.working-directory': '.',
                    'needs.declaration.outputs.coverage': values['coverage'],
+                   'needs.declaration.outputs.tested_runners': values['tested_runners'],
                    'needs.declaration.outputs.tests_reused': 'false'}
         for job in ['test-build', 'tests']:
             assert not evaluate(document['jobs'][job]['if'], context), job
@@ -3882,6 +3888,7 @@ def main_reuses_only_exact_successful_merge_queue_tests():
             selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
             assert selected['coverage'] == str(not reused).lower(), (name, selected)
             conditions = context | {'needs.declaration.outputs.coverage': selected['coverage'],
+                'needs.declaration.outputs.tested_runners': selected['tested_runners'],
                 'needs.declaration.outputs.tests_reused': values['tests_reused'],
                 'needs.declaration.outputs.enabled': 'true', 'needs.declaration.outputs.browser_tests': 'true',
                 'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.wasm_crates': '["web"]',
@@ -3903,12 +3910,13 @@ def main_reuses_only_exact_successful_merge_queue_tests():
             assert evaluate(identity['env']['CACHE_COVERAGE'], conditions), 'main must seed the merge-group cache shape'
             for job in ['quality', 'docs', 'tests', 'doctests', 'browser', 'browser-tests', 'targets']:
                 warm = conditions | {'inputs.warm-cache': True, 'needs.declaration.outputs.coverage': 'true',
+                                     'needs.declaration.outputs.tested_runners': '["ubuntu-latest"]',
                                      'needs.declaration.outputs.targets': '["windows"]'}
                 assert evaluate(document['jobs'][job]['if'], warm), job
             # The result takes the doctest legs with the shards: skipped when reused, successful otherwise.
             for doctests in ['success', 'failure', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                    env=os.environ | {'DECLARATION_RESULT': 'success', 'COLLECT_COVERAGE': selected['coverage'],
+                    env=os.environ | {'DECLARATION_RESULT': 'success', 'TESTED_RUNNERS': selected['tested_runners'],
                                       'TESTS_REUSED': values['tests_reused'],
                                       'RESULT': 'skipped' if reused else 'success', 'DOCTEST_RESULT': doctests},
                     capture_output=True, text=True)
@@ -3960,7 +3968,7 @@ print('PASS main_setup_writers_prepare_even_with_exact_bundle')
 def pull_request_test_results_must_be_skipped():
     for status in ['success', 'failure', 'cancelled', 'skipped']:
         result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'skipped', 'COLLECT_COVERAGE': 'false',
+                                env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'skipped', 'TESTED_RUNNERS': '[]',
                                                   'DECLARATION_RESULT': 'success'},
                                 capture_output=True, text=True)
         expected = status == 'skipped'
@@ -4333,10 +4341,11 @@ def real_search_tools_are_exercised():
 real_search_tools_are_exercised()
 print('PASS real_search_tools_are_exercised')
 
-def native_test_hosts_follow_claims_and_full_suite_events():
+def native_test_hosts_follow_claims_and_run_after_landing():
     import shutil
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     jobs = document['jobs']
+    assert jobs['declaration']['outputs']['tested_runners'] == '$' + '{{ steps.selection.outputs.tested_runners }}'
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
@@ -4348,15 +4357,20 @@ def native_test_hosts_follow_claims_and_full_suite_events():
         for targets, native in [(['aarch64-apple-darwin', 'x86_64-pc-windows-msvc'], ['macos-latest']),
                                 (['x86_64-pc-windows-msvc'], []),
                                 (['x86_64-apple-darwin', 'aarch64-unknown-linux-gnu'], [])]:
-            for count in [2, 16]:
+            for count, native_count in [(2, 2), (16, 4)]:
                 (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=' + json.dumps(targets) + f'\ntest_shard_count={count}\n', encoding='utf-8')
-                for event, warm in [('pull_request', 'false'), ('merge_group', 'false'), ('push', 'false'), ('push', 'true')]:
+                # Explicit expected routes: ordinary queue work is Linux-only; main adds the claimed native host.
+                for event, warm, hosts, fresh, reused_hosts in [
+                        ('pull_request', 'false', ['ubuntu-latest'], [], []),
+                        ('merge_group', 'false', ['ubuntu-latest'], ['ubuntu-latest'], []),
+                        ('push', 'false', ['ubuntu-latest', *native], ['ubuntu-latest', *native], native),
+                        ('push', 'true', ['ubuntu-latest'], ['ubuntu-latest'], [])]:
                     output = directory / 'config-output'
                     output.write_text('', encoding='utf-8')
                     result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output), 'TEST_EVENT': event, 'WARM': warm})
                     assert result.returncode == 0, result.stderr
                     values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-                    hosts = ['ubuntu-latest'] + (native if event != 'pull_request' and warm == 'false' else [])
+                    # Merge groups test Linux only; native hosts run in the main push after landing.
                     assert list(json.loads(values['test_hosts'])) == hosts, (targets, event, warm, values)
                     for reused in ['false', 'true']:
                         result = select_packages(directory, {'GITHUB_OUTPUT': str(directory / 'selection-output'), 'TEST_EVENT': event,
@@ -4367,17 +4381,39 @@ def native_test_hosts_follow_claims_and_full_suite_events():
                         (directory / 'selection-output').unlink()
                         # A reused queue result keeps every host: its archive and preparation seed that host's snapshots.
                         assert json.loads(selected['test_runners']) == hosts, (targets, event, reused, selected)
+                        # The queue result covers Linux only, so a reused push still tests every other host.
+                        tested = reused_hosts if reused == 'true' else fresh
+                        assert json.loads(selected['tested_runners']) == tested, (targets, event, reused, selected)
                         legs = json.loads(selected['test_shards'])
-                        for runner in hosts:
-                            expected = count if runner == 'ubuntu-latest' else min(4, count)
+                        for runner in tested:
+                            expected = count if runner == 'ubuntu-latest' else native_count
                             assert [leg for leg in legs if leg['runner'] == runner] == [
                                 {'runner': runner, 'shard': shard, 'count': expected} for shard in range(1, expected + 1)]
-                        assert len(legs) == count + (len(hosts) - 1) * min(4, count)
+                        assert {leg['runner'] for leg in legs} == set(tested), (targets, event, reused, selected)
                         # The archive build splits each host's binaries into as many archives as that host has shard legs.
-                        assert json.loads(selected['test_counts']) == {
-                            runner: len([leg for leg in legs if leg['runner'] == runner]) for runner in hosts}, (targets, event, reused, selected)
-    for name in ['test-prepare', 'test-build', 'doctests']:
+                        counts = {runner: count if runner == 'ubuntu-latest' else native_count for runner in hosts}
+                        assert json.loads(selected['test_counts']) == counts, (targets, event, reused, selected)
+                        # Shards and doctests run exactly where the selection tests, and the tests aggregate expects them there.
+                        context = {'github.event_name': event, 'inputs.warm-cache': False,
+                                   'needs.declaration.outputs.coverage': selected['coverage'], 'needs.declaration.outputs.tests_reused': reused,
+                                   'needs.declaration.outputs.tested_runners': selected['tested_runners']}
+                        routed = routed_jobs(document, context)
+                        assert {'tests', 'doctests'} <= routed if tested else not {'tests', 'doctests'} & routed, (targets, event, reused, routed)
+                        for runner in hosts:
+                            for job, name in [('test-build', 'Upload test archive'), ('test-prepare', 'Upload test setup')]:
+                                step = next(step for step in jobs[job]['steps'] if step['name'] == name)
+                                uploads = evaluate(step['if'], context | {'matrix.runner': runner})
+                                assert uploads == (runner in tested), (job, runner, event, reused)
+    # An unavailable declaration output must not start a warm job after its dependencies skipped.
+    for tested in ['', '[]']:
+        for warm in [False, True]:
+            routed = routed_jobs(document, {'inputs.warm-cache': warm,
+                                 'needs.declaration.outputs.tested_runners': tested,
+                                 'needs.test-build.result': 'skipped', 'needs.test-prepare.result': 'skipped'})
+            assert not {'tests', 'doctests'} & routed, (tested, warm, routed)
+    for name in ['test-prepare', 'test-build']:
         assert 'test_runners' in jobs[name]['strategy']['matrix']['runner']
+    assert 'tested_runners' in jobs['doctests']['strategy']['matrix']['runner']
     assert 'test_counts' in jobs['test-build']['env']['TEST_SHARD_COUNT'] and 'matrix.runner' in jobs['test-build']['env']['TEST_SHARD_COUNT']
     assert 'test_shards' in jobs['tests']['strategy']['matrix']['include']
     for job, names in [('test-build', ['Upload test archive']), ('test-prepare', ['Upload test setup', 'Test setup candidates', 'Download test setup candidates']),
@@ -4388,8 +4424,8 @@ def native_test_hosts_follow_claims_and_full_suite_events():
             assert "format('-{0}', matrix.runner)" in artifact, (job, name)
     assert 'matrix.runner' in next(step for step in jobs['tests']['steps'] if step['name'] == 'Print test diagnostics')['env']['TEST_RUNNER']
 
-native_test_hosts_follow_claims_and_full_suite_events()
-print('PASS native_test_hosts_follow_claims_and_full_suite_events')
+native_test_hosts_follow_claims_and_run_after_landing()
+print('PASS native_test_hosts_follow_claims_and_run_after_landing')
 
 def every_snapshot_a_merge_group_restores_has_a_writer_on_a_reused_main_push():
     # A merge group restores only default-branch snapshots, and a landing's main push reuses the group's
