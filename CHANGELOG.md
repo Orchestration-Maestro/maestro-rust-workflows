@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.26](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.25...v0.19.26) (2026-11-09)
+
+
+### Continuous Integration
+
+* pin scan workflows to v0.19.25 ([#435](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/435)) ([8dbe2f9](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/8dbe2f983683c3b88a926269618694376e1074a7))
+
+
+### Bug Fixes
+
+* **ci:** accept emscripten crates from additional manifests ([#438](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/438)) ([8fdb3ef](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/8fdb3eff5b2a880aa836887056e992c8dc3511a9))
+
 ## [0.19.25](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.24...v0.19.25) (2026-11-09)
 
 
