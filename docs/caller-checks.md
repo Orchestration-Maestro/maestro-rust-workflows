@@ -543,7 +543,8 @@ for merge groups and main pushes. These events always select every workspace
 package. Pull requests skip both test shards and doctests.
 Native shards are named `Test shard (<runner> k/n)`, with `Doctests (<runner>)`
 for their doctests. Linux names remain `Test shard (k/N)` and `Doctests`.
-Native legs run only on full events that do not reuse merge-queue tests.
+Native legs run only on main pushes, including those that reuse merge-queue
+Linux results.
 
 `test_shard_count` sets the number of shards. It is an optional whole number
 from 1 to 60 and defaults to 16. Any other value, including a float, a string or
@@ -565,10 +566,11 @@ with their opted-in tools. Only the Linux numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including native shards and every `Doctests` leg, to succeed on full runs.
 Native legs run plain nextest without coverage instrumentation. On a main push
-that reuses merge-queue tests it requires skipped test shards and skipped
-`Doctests` legs. On pull requests it requires a
-successful declaration and skipped test and doctest jobs, regardless of package
-selection. On full runs it downloads all reports, counts each source line once
+that reuses merge-queue Linux results, the aggregate requires successful native
+shards and `Doctests` legs when the caller claims native test hosts. Without
+native hosts, it requires skipped test and doctest jobs. On pull requests it
+requires a successful declaration and skipped test and doctest jobs, regardless
+of package selection. On full runs it downloads all reports, counts each source line once
 (covered if any shard hits it), and enforces `coverage_min_lines` on the union.
 Missing reports or low coverage fail.
 Undeclared callers use the same test shards but retain their single coverage job
@@ -1147,9 +1149,10 @@ runner fails its test step, so coverage uploads run only after success; a missin
 report after success fails the upload separately. On full runs the required aggregate accepts
 only successful matrix legs, including `Doctests`, and requires one report per
 numeric shard when merging coverage. On a main push that reuses merge-queue
-tests the shards and the `Doctests` legs are skipped, and the aggregate
-requires both to be skipped. On pull requests the aggregate requires a
-successful declaration and skipped test and doctest jobs.
+Linux results, Linux shards and `Doctests` skip; claimed native test hosts still
+run their shards and doctests, and the aggregate requires success. Without
+native hosts, it requires skipped test and doctest jobs. On pull requests the
+aggregate requires a successful declaration and skipped test and doctest jobs.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
@@ -2197,9 +2200,9 @@ separate from full-suite runs, so the deliberate skips do not report removals.
 
 Pull requests require `Caller declaration`, `Format and lint`, `Docs`,
 `Dependency, source and coverage checks` and the declared Windows target result,
-`Check (x86_64-pc-windows-msvc)`. Apple target compilation runs on merge groups
-and main pushes, with arm64 covered by the native test archive and x86_64 by
-`Check (x86_64-apple-darwin)`. A failed target check fails the workflow.
+`Check (x86_64-pc-windows-msvc)`. `Check (x86_64-apple-darwin)` runs on merge
+groups and main pushes. The native test archive covers arm64 Apple compilation
+on main pushes only. A failed target check fails the workflow.
 Undeclared targets do not create required results. Pull requests keep the test
 and build job names but skip their work, except that `Wasm and browser build`
 compiles the declared [example witnesses](#wasm-example-witnesses) and reports

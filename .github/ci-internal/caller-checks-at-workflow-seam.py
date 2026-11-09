@@ -2078,15 +2078,15 @@ def diagnostic_upload_is_unconditional_and_scoped():
     assert 'name: $' + '{{ steps.diagnostics.outputs.artifact_name }}\n' in upload
     assert 'timeout-minutes: 45\n' in steps['Isolated tests']
     assert "if: $" + "{{ env.WARM_CACHE != 'true' && needs.declaration.outputs.enabled != 'true' }}\n" in steps['Tests']
-    for coverage in ['false', 'true']:
+    for tested in ['[]', '["ubuntu-latest"]', '["macos-latest"]']:
         for status in ['success', 'failure', 'cancelled', 'skipped']:
             for docs in ['success', 'failure', 'cancelled', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': docs, 'COLLECT_COVERAGE': coverage,
+                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': docs, 'TESTED_RUNNERS': tested,
                                                           'DECLARATION_RESULT': 'success'},
                                         capture_output=True, text=True)
-                expected = 'success' if coverage == 'true' else 'skipped'
-                assert (result.returncode == 0) == (status == expected and docs == expected), (coverage, status, docs, result.stderr)
+                expected = 'skipped' if tested == '[]' else 'success'
+                assert (result.returncode == 0) == (status == expected and docs == expected), (tested, status, docs, result.stderr)
 
 diagnostic_upload_is_unconditional_and_scoped()
 print('PASS diagnostic_upload_is_unconditional_and_scoped')
@@ -3422,13 +3422,14 @@ def changed_packages_include_reverse_dependencies():
         git('commit', '-qm', 'source')
         values = select()
         assert json.loads(values['packages']) == ['a', 'b', 'c'] and values['coverage'] == 'false'
-        assert json.loads(values['test_shards']) == [{'runner': 'ubuntu-latest', 'shard': shard, 'count': 16} for shard in range(1, 17)], values
+        assert json.loads(values['test_shards']) == [], values
         document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
         context = {'cancelled()': False, 'needs.test-build.result': 'success',
                    'needs.test-prepare.result': 'skipped', 'inputs.warm-cache': False,
                    'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
                    'github.repository_id': 'caller', 'inputs.working-directory': '.',
                    'needs.declaration.outputs.coverage': values['coverage'],
+                   'needs.declaration.outputs.tested_runners': values['tested_runners'],
                    'needs.declaration.outputs.tests_reused': 'false'}
         for job in ['test-build', 'tests']:
             assert not evaluate(document['jobs'][job]['if'], context), job
