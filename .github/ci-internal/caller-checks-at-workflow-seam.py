@@ -5090,10 +5090,10 @@ def browser_test_setup_and_recipe_fail_closed(directory, env, values, cli):
 def workflow_failures_remain_required():
     internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding="utf-8")
     assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
-    assert 'needs: [sample, declared, test-tools]' in internal
+    jobs = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=internal, text=True))['jobs']
+    assert {'sample', 'declared', 'test-tools'} <= set(jobs['quality']['needs'])
     assert 'working-directory: fixtures/test-tools' in internal
-    consumers = internal.split('  consumers:\n', 1)[1]
-    assert 'needs: [seams, native, fuzz-issues, browser-qualification, shard-seams]' in consumers
+    assert {'seams', 'native', 'fuzz-issues', 'browser-qualification', 'shard-seams'} <= set(jobs['consumers']['needs'])
     assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
     assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
     for name in ['targets', 'browser', 'tests']:
@@ -5110,9 +5110,6 @@ def workflow_failures_remain_required():
     assert routed == {'declaration', 'advisories'}, sorted(routed)
 
 def browser_test_result_stays_required():
-    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
-    assert 'needs: [sample, declared, test-tools]' in internal
-    assert "all(job['result'] == 'success'" in internal
     assert not re.search(r'^    continue-on-error:', workflow, re.MULTILINE)
     job = workflow.split('  browser-tests:\n', 1)[1]
     assert "needs.declaration.outputs.browser_tests == 'true'" in job
@@ -5185,8 +5182,6 @@ def reusable_calls_complete_independently():
         assert key, f'{job} must select its own stable concurrency key'
         keys.append(key.group(1).casefold())
     assert len(set(keys)) == 3, 'Concurrency groups are case-insensitive'
-    assert 'needs: [sample, declared, test-tools]' in internal
-    assert "all(job['result'] == 'success'" in internal
     assert "cancel-in-progress: $" + "{{ github.event_name == 'pull_request' }}" in workflow
 
 reusable_calls_complete_independently()
@@ -5477,3 +5472,291 @@ shutil.copyfile(root / 'payload', sys.argv[sys.argv.index('--output') + 1])
 
 verified_release_archives_are_reused_by_later_jobs()
 print('PASS verified_release_archives_are_reused_by_later_jobs', flush=True)
+
+
+@contextlib.contextmanager
+def release_self_test_fixture(version_file="version.txt"):
+    from unittest.mock import patch
+    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+    script = body('Check release base self-test', internal)
+    code = re.search(r"python3 -I - <<'PYTHON'\n(.*?)\nPYTHON", script, re.S)[1]
+    repository = 'owner/workflows'
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        for name in ['.github/release-please/config.json', '.github/release-please/manifest.json', 'CHANGELOG.md']:
+            path = directory / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((root / name).read_bytes())
+        (directory / 'version.txt').write_text('0.0.0\n', encoding='utf-8')
+        config_path = directory / '.github/release-please/config.json'
+        config = json.loads(config_path.read_text(encoding='utf-8'))
+        config['packages']['.']['version-file'] = version_file
+        config_path.write_text(json.dumps(config), encoding='utf-8')
+        fixture_git(directory, 'init', '--quiet')
+        fixture_git(directory, 'add', '.')
+        fixture_git(directory, 'commit', '-qm', 'base')
+        base = fixture_git(directory, 'rev-parse', 'HEAD')
+        good = {'head_sha': base, 'event': 'push', 'status': 'completed', 'conclusion': 'success',
+                'path': '.github/workflows/ci-internal.yml', 'head_repository': {'full_name': repository}}
+        def run(files=None, pages=None, event='pull_request', head=None, tree_case=None):
+            fixture_git(directory, 'read-tree', base)
+            for name, content in (files or {'version.txt': '0.20.0\n'}).items():
+                path = directory / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding='utf-8')
+                fixture_git(directory, 'add', name)
+            fixture_git(directory, 'commit', '-qm', 'release')
+            revision = fixture_git(directory, 'rev-parse', 'HEAD')
+            # The selection job checks out the trusted base, not the PR's scripts or config.
+            fixture_git(directory, 'checkout', '--quiet', base)
+            payload = {'pull_request': {'base': {'sha': base}, 'head': {'sha': revision,
+                'ref': 'release-please--branches--main', 'repo': {'full_name': repository}} | (head or {})},
+                'repository': {'default_branch': 'main'}}
+            event_path, output = directory / 'event', directory / 'output'
+            event_path.write_text(json.dumps(payload), encoding='utf-8')
+            output.write_text('', encoding='utf-8')
+            calls = []
+            real_output = subprocess.check_output
+
+            def api(argv, **kwargs):
+                if argv[0] != 'gh':
+                    return real_output(argv, **kwargs)
+                calls.append(argv)
+                endpoint = argv[-1]
+                prefix = f'repos/{repository}/'
+                if endpoint == prefix + f'actions/workflows/ci-internal.yml/runs?event=push&status=success&head_sha={base}&per_page=100':
+                    if pages == 'error':
+                        raise subprocess.CalledProcessError(1, argv)
+                    return pages if isinstance(pages, str) else json.dumps(pages if pages is not None else [{'workflow_runs': [good]}])
+                case = tree_case or {}
+                if case.get('api_error'):
+                    raise subprocess.CalledProcessError(1, argv)
+                tree = fixture_git(directory, 'rev-parse', base + '^{tree}')
+                if endpoint == prefix + f'actions/artifacts?name=self-test-evidence-{tree}&per_page=100':
+                    artifact = {'id': 7, 'name': 'self-test-evidence-' + case.get('artifact_tree', tree),
+                                'expired': case.get('expired', False), 'workflow_run': {'id': 42}}
+                    artifacts = case.get('artifacts', [artifact] if tree_case is not None else [])
+                    return json.dumps([{'artifacts': [item for item in artifacts if item['name'] == 'self-test-evidence-' + tree]}])
+                if endpoint == prefix + 'actions/runs/42':
+                    candidate = good | {'id': 42, 'run_attempt': 2, 'head_sha': 'c' * 40, 'event': 'pull_request'}
+                    return json.dumps(candidate | case.get('run', {}))
+                assert endpoint == prefix + 'actions/artifacts/7/zip', argv
+                import io
+                import zipfile
+                evidence = {'workflow_ref': repository + '/.github/workflows/ci-internal.yml@refs/pull/1/merge',
+                            'workflow_sha': 'c' * 40, 'tree': fixture_git(directory, 'rev-parse', base + '^{tree}'),
+                            'full_test_set': True} | case.get('evidence', {})
+                stream = io.BytesIO()
+                with zipfile.ZipFile(stream, 'w') as bundle:
+                    bundle.writestr(case.get('filename', 'self-test-tree.json'), case.get('content', json.dumps(evidence)))
+                return case.get('archive', stream.getvalue())
+
+            with contextlib.chdir(directory), patch.dict(os.environ, {'GITHUB_EVENT_NAME': event,
+                    'GITHUB_EVENT_PATH': str(event_path), 'GITHUB_REPOSITORY': repository, 'GITHUB_OUTPUT': str(output)}), \
+                    patch('subprocess.check_output', side_effect=api):
+                exec(compile(code, 'Check release base self-test', 'exec'), {})
+            values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            return values['tests_reused'], calls
+
+        yield run, good
+
+
+def metadata_only_release_reuses_exact_green_base():
+    with release_self_test_fixture() as (run, good):
+        reused, calls = run({'.github/release-please/manifest.json': '{".":"0.20.0"}',
+                            'CHANGELOG.md': 'Release notes\n', 'version.txt': '0.20.0\n'},
+                           [{'workflow_runs': []}, {'workflow_runs': [good]}])
+        assert reused == 'true' and calls, (reused, calls)
+    with release_self_test_fixture('release-version.txt') as (run, _):
+        assert run({'release-version.txt': '0.20.0\n'})[0] == 'true'
+        assert run({'version.txt': '0.20.0\n'})[0] == 'false'
+
+
+metadata_only_release_reuses_exact_green_base()
+print('PASS metadata_only_release_reuses_exact_green_base', flush=True)
+
+
+def release_with_non_metadata_changes_runs_full_self_test():
+    with release_self_test_fixture() as (run, _):
+        for name in ['.github/workflows/ci-internal.yml', '.github/release-please/config.json',
+                     'fixtures/sample/src/lib.rs', 'docs/caller-checks.md', 'unexpected\nversion.txt']:
+            reused, calls = run({'version.txt': '0.20.0\n', name: 'changed\n'})
+            assert reused == 'false' and not calls, (name, reused, calls)
+
+
+release_with_non_metadata_changes_runs_full_self_test()
+print('PASS release_with_non_metadata_changes_runs_full_self_test', flush=True)
+
+
+def release_without_exact_green_base_runs_full_self_test():
+    with release_self_test_fixture() as (run, good):
+        replies = [[{'workflow_runs': []}], 'error', 'not JSON', [{}]]
+        for field, value in [('head_sha', 'b' * 40), ('event', 'pull_request'), ('status', 'in_progress'),
+                             ('conclusion', 'failure'), ('conclusion', 'cancelled'),
+                             ('path', '.github/workflows/ci.yml'), ('head_repository', None),
+                             ('head_repository', {'full_name': 'other/repository'})]:
+            replies.append([{'workflow_runs': [good | {field: value}]}])
+        for reply in replies:
+            reused, calls = run(pages=reply)
+            assert reused == 'false' and calls, (reply, reused, calls)
+
+
+release_without_exact_green_base_runs_full_self_test()
+print('PASS release_without_exact_green_base_runs_full_self_test', flush=True)
+
+
+def only_same_repository_release_pull_requests_reuse_self_test():
+    with release_self_test_fixture() as (run, _):
+        for event, head in [('push', None), ('merge_group', None), ('pull_request', {'ref': 'ci/fix'}),
+                            ('pull_request', {'repo': {'full_name': 'fork/workflows'}})]:
+            reused, calls = run(event=event, head=head)
+            assert reused == 'false' and not calls, (event, head, reused, calls)
+
+
+only_same_repository_release_pull_requests_reuse_self_test()
+print('PASS only_same_repository_release_pull_requests_reuse_self_test', flush=True)
+
+
+def release_reuse_keeps_required_checks_and_skips_only_proven_work():
+    import sys
+    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=internal, text=True))
+    jobs = document['jobs']
+    assert jobs['selection']['permissions'] == {'contents': 'read', 'actions': 'read'}
+    assert jobs['selection']['outputs']['tests_reused'] == '${{ steps.base.outputs.tests_reused }}'
+    steps = {step['name']: step for step in jobs['selection']['steps']}
+    assert steps['Check release base self-test']['env'] == {'GH_TOKEN': '${{ github.token }}'}
+    checkout = steps['Checkout tested base']['with']
+    assert checkout['ref'] == '${{ github.event.pull_request.base.sha || github.sha }}'
+    assert checkout['fetch-depth'] == 0 and checkout['persist-credentials'] is False
+    work = {'sample', 'declared', 'test-tools', 'fuzz', 'shard-seams', 'seams', 'native', 'fuzz-issues', 'browser-qualification'}
+    assert set(jobs) == work | {'selection', 'quality', 'consumers'}, set(jobs)
+    for reused in ['true', 'false']:
+        context = {'needs.selection.outputs.tests_reused': reused}
+        marker = steps['Reuse release base self-test']
+        assert evaluate(marker['if'], {'steps.base.outputs.tests_reused': reused}) == (reused == 'true')
+        for name in work:
+            needs = jobs[name]['needs']
+            assert 'selection' in ([needs] if isinstance(needs, str) else needs), name
+            assert evaluate(jobs[name]['if'], context) == (reused == 'false'), name
+        for name, check in [('quality', 'Required repository quality'), ('consumers', 'Required consumer tests')]:
+            job = jobs[name]
+            expected_needs = {'selection', 'sample', 'declared', 'test-tools'} if name == 'quality' else {
+                'selection', 'quality', 'seams', 'native', 'fuzz-issues', 'browser-qualification', 'shard-seams'}
+            assert set(job['needs']) == expected_needs, job['needs']
+            assert job['name'] == check and evaluate(job['if'], {'always()': True}), job
+            step = job['steps'][0]
+            assert step['env']['REUSED'] == '${{ needs.selection.outputs.tests_reused }}'
+            assert step['env']['RESULTS'] == '${{ toJSON(needs) }}'
+            results = {need: {'result': 'skipped' if reused == 'true' else 'success'} for need in job['needs']}
+            results['selection'] = {'result': 'success'}
+            if name == 'consumers':
+                results['quality'] = {'result': 'success'}
+
+            def aggregate(values, step=step, reused=reused):
+                return subprocess.run([sys.executable, '-I', '-c', step['run']], capture_output=True, text=True,
+                    env=os.environ | {'RESULTS': json.dumps(values), 'REUSED': reused})
+
+            passed = aggregate(results)
+            assert passed.returncode == 0, passed.stderr
+            for need in results:
+                for status in ['failure', 'cancelled', 'success' if reused == 'true' and need not in {'selection', 'quality'} else 'skipped']:
+                    failed = aggregate(results | {need: {'result': status}})
+                    assert failed.returncode != 0, (name, reused, need, status)
+
+
+release_reuse_keeps_required_checks_and_skips_only_proven_work()
+print('PASS release_reuse_keeps_required_checks_and_skips_only_proven_work', flush=True)
+
+
+def release_reuses_tested_tree_while_base_push_is_running():
+    with release_self_test_fixture() as (run, good):
+        # The merged PR finished before the new main push and release PR started.
+        running = good | {'status': 'in_progress', 'conclusion': None}
+        reused, calls = run(pages=[{'workflow_runs': [running]}], tree_case={})
+        assert reused == 'true' and any('actions/artifacts/7/zip' in call[-1] for call in calls), (reused, calls)
+        reused, calls = run({'fixtures/sample/src/lib.rs': 'changed\n'}, pages=[{'workflow_runs': []}], tree_case={})
+        assert reused == 'false' and not calls, (reused, calls)
+
+
+release_reuses_tested_tree_while_base_push_is_running()
+print('PASS release_reuses_tested_tree_while_base_push_is_running', flush=True)
+
+
+def release_tree_reuse_rejects_unproven_evidence():
+    cases = [{'evidence': {'tree': 'b' * 40}}, {'evidence': {'full_test_set': False}},
+             {'evidence': {'full_test_set': 'true'}}, {'evidence': {'workflow_sha': ''}},
+             {'evidence': {'workflow_ref': 'other/workflows/.github/workflows/ci-internal.yml@refs/heads/main'}},
+             {'evidence': {'workflow_ref': 'owner/workflows/.github/workflows/ci.yml@refs/heads/main'}},
+             {'evidence': {'workflow_ref': 'owner/workflows/.github/workflows/ci-internal.yml'}},
+             {'evidence': {'workflow_ref': 'owner/workflows/.github/workflows/ci-internal.yml@'}},
+             {'artifacts': []}, {'expired': True},
+             {'content': 'not JSON'}, {'content': '{}'}, {'content': 'x' * 4097},
+             {'filename': '../self-test-tree.json'}, {'archive': b'not a zip'}, {'api_error': True}]
+    for field, value in [('status', 'in_progress'), ('conclusion', 'failure'), ('conclusion', 'cancelled'),
+                         ('path', '.github/workflows/ci.yml'), ('head_repository', None),
+                         ('head_repository', {'full_name': 'other/workflows'})]:
+        cases.append({'run': {field: value}})
+    with release_self_test_fixture() as (run, _):
+        for case in cases:
+            reused, calls = run(pages=[{'workflow_runs': []}], tree_case=case)
+            assert reused == 'false' and calls, (case, reused, calls)
+
+
+release_tree_reuse_rejects_unproven_evidence()
+print('PASS release_tree_reuse_rejects_unproven_evidence', flush=True)
+
+
+def full_self_test_records_checked_out_tree_only_after_all_proofs():
+    import sys
+    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=internal, text=True))
+    jobs = document['jobs']
+    job = jobs['consumers']
+    assert 'quality' in job['needs']
+    steps = {step['name']: step for step in job['steps']}
+    checkout = steps['Checkout tested tree']
+    record = steps['Record self-test evidence']
+    upload = steps['Upload self-test evidence']
+    for reused in ['true', 'false']:
+        for step in [checkout, record, upload]:
+            assert evaluate(step['if'], {'needs.selection.outputs.tests_reused': reused}) == (reused == 'false')
+    assert checkout['with']['persist-credentials'] is False
+    assert upload['uses'].startswith('actions/upload-artifact@')
+    assert record['env'] == {'WORKFLOW_REF': '${{ github.workflow_ref }}', 'WORKFLOW_SHA': '${{ github.workflow_sha }}'}
+    assert upload['with'] == {'name': 'self-test-evidence-${{ steps.evidence.outputs.tree }}',
+                             'path': '${{ runner.temp }}/self-test-tree.json', 'if-no-files-found': 'error', 'overwrite': True}
+    script = body('Record self-test evidence', internal)
+    code = re.search(r"python3 -I - <<'PYTHON'\n(.*?)\nPYTHON", script, re.S)[1]
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        fixture_git(directory, 'init', '--quiet')
+        (directory / 'source').write_text('tested\n', encoding='utf-8')
+        fixture_git(directory, 'add', 'source')
+        fixture_git(directory, 'commit', '-qm', 'tested merge tree')
+        expected = fixture_git(directory, 'rev-parse', 'HEAD^{tree}')
+        env = {'RUNNER_TEMP': temporary, 'GITHUB_OUTPUT': temporary + '/output',
+               'WORKFLOW_REF': 'owner/workflows/.github/workflows/ci-internal.yml@refs/pull/1/merge',
+               'WORKFLOW_SHA': fixture_git(directory, 'rev-parse', 'HEAD')}
+        result = subprocess.run([sys.executable, '-I', '-c', code], cwd=directory, env=os.environ | env,
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (directory / 'output').read_text(encoding='utf-8') == f'tree={expected}\n'
+        evidence = json.loads((directory / 'self-test-tree.json').read_text(encoding='utf-8'))
+        assert evidence == {'workflow_ref': env['WORKFLOW_REF'], 'workflow_sha': env['WORKFLOW_SHA'],
+                            'tree': expected, 'full_test_set': True}, evidence
+
+
+full_self_test_records_checked_out_tree_only_after_all_proofs()
+print('PASS full_self_test_records_checked_out_tree_only_after_all_proofs', flush=True)
+
+
+def release_tree_lookup_ignores_other_tree_names():
+    with release_self_test_fixture() as (run, _):
+        reused, calls = run(pages=[{'workflow_runs': []}], tree_case={'artifact_tree': 'b' * 40})
+        assert reused == 'false' and calls, (reused, calls)
+        assert not any('actions/runs/42' in call[-1] or 'actions/artifacts/7/zip' in call[-1] for call in calls), calls
+
+
+release_tree_lookup_ignores_other_tree_names()
+print('PASS release_tree_lookup_ignores_other_tree_names', flush=True)

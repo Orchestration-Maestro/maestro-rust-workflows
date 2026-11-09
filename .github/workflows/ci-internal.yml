@@ -10,7 +10,98 @@ permissions:
   contents: read
 
 jobs:
+  selection:
+    name: Self-test selection
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ubuntu-latest
+    outputs:
+      tests_reused: ${{ steps.base.outputs.tests_reused }}
+    steps:
+      - name: Checkout tested base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check release base self-test
+        id: base
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -I - <<'PYTHON'
+          import io
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import zipfile
+          repository = os.environ['GITHUB_REPOSITORY']
+          workflow_path = repository + '/.github/workflows/ci-internal.yml'
+          def api(path, paginate=False, binary=False):
+              flags = ['--paginate', '--slurp'] if paginate else []
+              result = subprocess.check_output(['gh', 'api', *flags, f'repos/{repository}/{path}'], text=not binary)
+              return result if binary else json.loads(result)
+          def successful(run):
+              return (run['status'] == 'completed' and run['conclusion'] == 'success'
+                  and run['path'] == '.github/workflows/ci-internal.yml'
+                  and (run.get('head_repository') or {}).get('full_name') == repository)
+          reused = False
+          try:
+              if os.environ['GITHUB_EVENT_NAME'] == 'pull_request':
+                  event = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text(encoding='utf-8'))
+                  pr = event['pull_request']
+                  branch = 'release-please--branches--' + event['repository']['default_branch']
+                  if pr['head']['ref'] == branch and pr['head']['repo']['full_name'] == repository:
+                      config = json.loads(pathlib.Path('.github/release-please/config.json').read_text(encoding='utf-8'))
+                      package = config['packages']['.']
+                      metadata = {'.github/release-please/manifest.json', package['version-file'],
+                                  package.get('changelog-path', config.get('changelog-path', 'CHANGELOG.md'))}
+                      base = pr['base']['sha']
+                      changed = subprocess.check_output(['git', 'diff', '--no-renames', '--name-only', '-z',
+                                                         base, pr['head']['sha'], '--']).decode('utf-8').split('\0')[:-1]
+                      if changed and set(changed) <= metadata:
+                          path = 'actions/workflows/ci-internal.yml/runs'
+                          pages = api(f'{path}?event=push&status=success&head_sha={base}&per_page=100', True)
+                          reused = any(successful(run) and run['head_sha'] == base and run['event'] == 'push'
+                              for page in pages for run in page['workflow_runs'])
+                          if not reused:
+                              tree = subprocess.check_output(['git', 'rev-parse', base + '^{tree}'], text=True).strip()
+                              name = 'self-test-evidence-' + tree
+                              listed = api(f'actions/artifacts?name={name}&per_page=100', True)
+                              for artifact in (item for page in listed for item in page['artifacts']):
+                                  if artifact['name'] != name or artifact['expired']:
+                                      continue
+                                  run = api(f"actions/runs/{artifact['workflow_run']['id']}")
+                                  if not successful(run):
+                                      continue
+                                  archive = api(f"actions/artifacts/{artifact['id']}/zip", binary=True)
+                                  with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+                                      if bundle.namelist() != ['self-test-tree.json'] or bundle.infolist()[0].file_size > 4096:
+                                          raise ValueError('Invalid self-test evidence archive')
+                                      evidence = json.loads(bundle.read('self-test-tree.json'))
+                                  reference, ref = evidence['workflow_ref'].rsplit('@', 1)
+                                  if (reference == workflow_path and ref
+                                          and re.fullmatch('[0-9a-f]{40}', evidence['workflow_sha'])
+                                          and evidence['tree'] == tree and evidence['full_test_set'] is True):
+                                      reused = True
+                                      break
+          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError, OSError, zipfile.BadZipFile):
+              print('Release base evidence unavailable; running the full self-test')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('tests_reused=' + str(reused).lower() + '\n')
+          PYTHON
+      - name: Reuse release base self-test
+        if: steps.base.outputs.tests_reused == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: echo "Base $BASE_SHA has a successful CI self-test commit or tree match; release metadata reuses that result."
+
   sample:
+    needs: selection
+    if: needs.selection.outputs.tests_reused != 'true'
     permissions:
       contents: read
       actions: write
@@ -21,6 +112,8 @@ jobs:
       concurrency-key: sample
 
   declared:
+    needs: selection
+    if: needs.selection.outputs.tests_reused != 'true'
     permissions:
       contents: read
       actions: write
@@ -32,6 +125,8 @@ jobs:
       test-event: merge_group
 
   test-tools:
+    needs: selection
+    if: needs.selection.outputs.tests_reused != 'true'
     permissions:
       contents: read
       actions: write
@@ -43,6 +138,8 @@ jobs:
       test-event: merge_group
 
   fuzz:
+    needs: selection
+    if: needs.selection.outputs.tests_reused != 'true'
     permissions:
       contents: read
       actions: write
@@ -55,26 +152,34 @@ jobs:
 
   quality:
     name: Required repository quality
-    needs: [sample, declared, test-tools]
+    needs: [selection, sample, declared, test-tools]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: All callers passed every check
         env:
           RESULTS: ${{ toJSON(needs) }}
+          REUSED: ${{ needs.selection.outputs.tests_reused }}
         shell: python
         run: |
           import json
           import os
-          assert all(job['result'] == 'success' for job in json.loads(os.environ['RESULTS']).values())
+          results = json.loads(os.environ['RESULTS'])
+          assert results.pop('selection')['result'] == 'success'
+          expected = 'skipped' if os.environ['REUSED'] == 'true' else 'success'
+          assert all(job['result'] == expected for job in results.values())
 
   shard-seams:
+    needs: selection
+    if: needs.selection.outputs.tests_reused != 'true'
     name: Shard count seam proofs
     permissions:
       contents: read
     uses: ./.github/workflows/ci-internal-shards.yml
 
   seams:
+    needs: selection
+    if: needs.selection.outputs.tests_reused != 'true'
     name: Workflow seam proofs
     outputs:
       targets: ${{ steps.cases.outputs.targets }}
@@ -175,7 +280,8 @@ jobs:
 
   native:
     name: Native compiler proof (${{ matrix.target }})
-    needs: seams
+    needs: [selection, seams]
+    if: needs.selection.outputs.tests_reused != 'true'
     strategy:
       matrix:
         include: ${{ fromJSON(needs.seams.outputs.targets) }}
@@ -221,7 +327,8 @@ jobs:
 
   fuzz-issues:
     name: Fuzz findings and issues
-    needs: fuzz
+    needs: [selection, fuzz]
+    if: needs.selection.outputs.tests_reused != 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -347,6 +454,8 @@ jobs:
               print('PASS fuzz_issue_body_fits_platform_limit', flush=True)
 
   browser-qualification:
+    needs: selection
+    if: needs.selection.outputs.tests_reused != 'true'
     name: Maestro browser qualification
     runs-on: ubuntu-latest
     defaults:
@@ -524,15 +633,53 @@ jobs:
 
   consumers:
     name: Required consumer tests
-    needs: [seams, native, fuzz-issues, browser-qualification, shard-seams]
+    needs: [selection, quality, seams, native, fuzz-issues, browser-qualification, shard-seams]
     if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Every workflow proof passed
         env:
           RESULTS: ${{ toJSON(needs) }}
+          REUSED: ${{ needs.selection.outputs.tests_reused }}
         shell: python
         run: |
           import json
           import os
-          assert all(job['result'] == 'success' for job in json.loads(os.environ['RESULTS']).values())
+          results = json.loads(os.environ['RESULTS'])
+          assert results.pop('selection')['result'] == 'success'
+          assert results.pop('quality')['result'] == 'success'
+          expected = 'skipped' if os.environ['REUSED'] == 'true' else 'success'
+          assert all(job['result'] == expected for job in results.values())
+      - name: Checkout tested tree
+        if: needs.selection.outputs.tests_reused != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Record self-test evidence
+        id: evidence
+        if: needs.selection.outputs.tests_reused != 'true'
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          python3 -I - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          import subprocess
+          tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+          evidence = {'workflow_ref': os.environ['WORKFLOW_REF'], 'workflow_sha': os.environ['WORKFLOW_SHA'],
+                      'tree': tree, 'full_test_set': True}
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'self-test-tree.json'
+          path.write_text(json.dumps(evidence) + '\n', encoding='utf-8')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'tree={tree}\n')
+          PYTHON
+      - name: Upload self-test evidence
+        if: needs.selection.outputs.tests_reused != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: self-test-evidence-${{ steps.evidence.outputs.tree }}
+          path: ${{ runner.temp }}/self-test-tree.json
+          if-no-files-found: error
+          overwrite: true
