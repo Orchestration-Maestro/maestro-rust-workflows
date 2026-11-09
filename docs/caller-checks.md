@@ -1304,9 +1304,10 @@ emscripten_crates = ["my-sandbox-runtime"]
 
 `emscripten_crates` is an optional array of exact locked package names, in
 build order. It defaults to `[]`. Repetitions are kept, and the names reach
-cargo as arguments, never as shell syntax. A name outside the locked Cargo
-metadata fails declaration validation with the file and key. With an empty list
-or no key, no job installs or builds anything for Emscripten.
+cargo as arguments, never as shell syntax. A name outside the root or the
+additional locked metadata fails declaration validation with the file and key.
+With an empty list or no key, no job installs or builds anything for
+Emscripten.
 
 A package that lives in its own locked workspace works the same way once that
 workspace's manifest is in `additional_locked_manifests`. The name is checked
