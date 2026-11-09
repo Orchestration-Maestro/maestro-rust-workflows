@@ -262,7 +262,8 @@ present document is invalid. Integer and string booleans are not accepted.
 
 Names are exact, without whitespace or Unicode normalization. Each wasm name
 must match a package in the caller's locked Cargo metadata, as must each
-`emscripten_crates` name. Each `wasm_examples`
+`emscripten_crates` name (which may also come from an additional locked
+manifest). Each `wasm_examples`
 example must be an example target of its package. Each target must match the
 caller compiler's target list and the runner table below. An unknown package,
 unknown target or recognized target without a runner fails with a file/key
@@ -1303,9 +1304,27 @@ emscripten_crates = ["my-sandbox-runtime"]
 
 `emscripten_crates` is an optional array of exact locked package names, in
 build order. It defaults to `[]`. Repetitions are kept, and the names reach
-cargo as arguments, never as shell syntax. A name outside the locked Cargo
-metadata fails declaration validation with the file and key. With an empty list
-or no key, no job installs or builds anything for Emscripten.
+cargo as arguments, never as shell syntax. A name outside the root or the
+additional locked metadata fails declaration validation with the file and key.
+With an empty list or no key, no job installs or builds anything for
+Emscripten.
+
+A package that lives in its own locked workspace works the same way once that
+workspace's manifest is in `additional_locked_manifests`. The name is checked
+against that manifest's own `cargo metadata --no-deps --locked`, and the build
+passes `--manifest-path` for it:
+
+```toml
+wasm_crates = []
+check_targets = []
+additional_locked_manifests = ["runtime/Cargo.toml"]
+emscripten_crates = ["my-sandbox-runtime", "my-host"]
+```
+
+Here `my-sandbox-runtime` is a package of `runtime/Cargo.toml` and `my-host`
+belongs to the root workspace. Listing a manifest twice, or under another
+spelling, still names one package. Two different packages with the same name
+fail validation, because the build would reach only one of them.
 
 On merge groups and main pushes, a non-empty list adds these steps to the Wasm
 and browser build job. Pull requests skip them, and the job runs even when
@@ -1315,7 +1334,7 @@ and browser build job. Pull requests skip them, and the job runs even when
 | --- | --- |
 | Emscripten SDK | Installs Emscripten 6.0.10 and puts `emcc` on the `PATH`. |
 | Emscripten target | Runs `rustup target add wasm32-unknown-emscripten` for the caller's toolchain. |
-| Build emscripten crates | Runs `cargo build --locked --target wasm32-unknown-emscripten -p "$CRATE"` for each package. |
+| Build emscripten crates | Runs `cargo build --locked --target wasm32-unknown-emscripten -p "$CRATE"` for each package, adding `--manifest-path` for a package from an additional manifest. |
 
 The Chromium browser tests job installs the same SDK and target before the
 caller's `browser-test` recipe, so a recipe can build for Emscripten itself. It

@@ -60,6 +60,38 @@ def declared(directory, text):
     return result, dict(line.split('=', 1) for line in lines if '=' in line)
 
 
+def isolated(directory):
+    # A package of its own locked workspace is accepted only through the manifest that declares it.
+    manifest = directory / 'isolated/Cargo.toml'
+    (manifest.parent / 'src').mkdir(parents=True)
+    (manifest.parent / 'src/lib.rs').write_text('', encoding='utf-8')
+    manifest.write_text('[workspace]\n[package]\nname = "isolated"\nversion = "0.1.0"\nedition = "2021"\nlicense = "MIT"\n', encoding='utf-8')
+    subprocess.run(['cargo', 'generate-lockfile', '--offline', '--manifest-path', str(manifest)], check=True, capture_output=True)
+    listed = 'additional_locked_manifests=["isolated/Cargo.toml"]\n'
+    result, values = declared(directory, listed + 'emscripten_crates=["witness", "isolated", "other"]\n')
+    assert result.returncode == 0, result.stderr
+    assert json.loads(values['emscripten_crates']) == [['witness', None], ['isolated', 'isolated/Cargo.toml'], ['other', None]], values
+    # One package reached twice (repeated entry, spelling alias, member of the root workspace) has one owner.
+    for entries, expected in [(['isolated/Cargo.toml'] * 2, [['isolated', 'isolated/Cargo.toml']]),
+                              (['isolated/Cargo.toml', './isolated/../isolated/Cargo.toml'], [['isolated', 'isolated/Cargo.toml']]),
+                              (['witness/Cargo.toml', 'isolated/Cargo.toml'], [['witness', None]])]:
+        result, values = declared(directory, f'additional_locked_manifests={json.dumps(entries)}\nemscripten_crates={json.dumps([name for name, _ in expected])}\n')
+        assert result.returncode == 0, (entries, result.stderr)
+        assert json.loads(values['emscripten_crates']) == expected, (entries, values)
+    result, _ = declared(directory, 'emscripten_crates=["isolated"]\n')
+    assert result.returncode != 0
+    assert result.stderr.strip() == ".github/ci.toml: emscripten_crates contains unknown package 'isolated'", result.stderr
+    result, _ = declared(directory, listed + 'emscripten_crates=["missing"]\n')
+    assert result.returncode != 0
+    assert result.stderr.strip() == ".github/ci.toml: emscripten_crates contains unknown package 'missing'", result.stderr
+    # A name that two manifests share would build one of them silently.
+    manifest.write_text(manifest.read_text(encoding='utf-8').replace('"isolated"', '"witness"'), encoding='utf-8')
+    subprocess.run(['cargo', 'generate-lockfile', '--offline', '--manifest-path', str(manifest)], check=True, capture_output=True)
+    result, _ = declared(directory, listed + 'emscripten_crates=["witness"]\n')
+    assert result.returncode != 0
+    assert result.stderr.strip() == ".github/ci.toml: emscripten_crates package 'witness' is in more than one manifest", result.stderr
+
+
 def the_declaration_checks_types_and_packages():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
@@ -71,7 +103,7 @@ def the_declaration_checks_types_and_packages():
         # Order and repetitions are retained, like wasm_crates.
         result, values = declared(directory, 'emscripten_crates=["witness", "other", "witness"]\n')
         assert result.returncode == 0, result.stderr
-        assert json.loads(values['emscripten_crates']) == ['witness', 'other', 'witness'], values
+        assert json.loads(values['emscripten_crates']) == [['witness', None], ['other', None], ['witness', None]], values
         for value in ['"witness"', '["witness", 1]', '{witness=true}']:
             result, _ = declared(directory, 'emscripten_crates=' + value + '\n')
             assert result.returncode != 0, value
@@ -81,6 +113,7 @@ def the_declaration_checks_types_and_packages():
             assert result.returncode != 0, name
             assert result.stderr.strip() == f'.github/ci.toml: emscripten_crates contains unknown package {name!r}', result.stderr
         assert not (directory / 'injected').exists()
+        isolated(directory)
     schema = json.loads((root / '.github/ci.schema.json').read_text(encoding='utf-8'))
     assert schema['properties']['emscripten_crates']['type'] == 'array'
     assert schema['properties']['emscripten_crates']['items'] == {'type': 'string'}
@@ -144,12 +177,13 @@ def the_target_comes_from_rustup():
 
 
 def each_crate_builds_for_emscripten_in_order():
-    names = ['b', 'a', 'b', '$(touch injected)']
+    names = [['b', None], ['a', 'x/Cargo.toml'], ['b', None], ['$(touch injected)', None], ['c', '$(touch injected)/Cargo.toml']]
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         result, calls = recorded(directory, 'cargo', BUILD, {'EMSCRIPTEN_CRATES': json.dumps(names)})
         assert result.returncode == 0, result.stderr
-        assert calls == [f'build --locked --target {EMSCRIPTEN} -p {name}' for name in names], calls
+        assert calls == [f'build --locked --target {EMSCRIPTEN} ' + (f'--manifest-path {manifest} ' if manifest else '') + f'-p {name}'
+                         for name, manifest in names], calls
         # A package name is an argument, never shell text.
         assert not (directory / 'injected').exists()
 
