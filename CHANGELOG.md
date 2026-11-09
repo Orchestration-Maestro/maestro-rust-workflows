@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.29](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.28...v0.19.29) (2026-11-09)
+
+
+### Continuous Integration
+
+* pin maestro-rust-workflows callers to v0.19.28 ([#449](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/449)) ([e868755](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/e86875599962af7e4f2a3e79dd6b7d4711892f75))
+
+
+### Bug Fixes
+
+* **ci:** build the listed Emscripten crates on pull requests that reach them ([#451](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/451)) ([8c91a2b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/8c91a2b676685a72cc1c5f2f2b9544703e75224a))
+
 ## [0.19.28](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.27...v0.19.28) (2026-11-09)
 
 
