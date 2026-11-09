@@ -1321,8 +1321,9 @@ emscripten_crates = ["my-sandbox-runtime", "my-host"]
 ```
 
 Here `my-sandbox-runtime` is a package of `runtime/Cargo.toml` and `my-host`
-belongs to the root workspace. A name that two of these manifests both define
-fails validation, because it would build only one of them.
+belongs to the root workspace. Listing a manifest twice, or under another
+spelling, still names one package. Two different packages with the same name
+fail validation, because the build would reach only one of them.
 
 On merge groups and main pushes, a non-empty list adds these steps to the Wasm
 and browser build job. Pull requests skip them, and the job runs even when

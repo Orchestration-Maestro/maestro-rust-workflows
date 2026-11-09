@@ -71,6 +71,13 @@ def isolated(directory):
     result, values = declared(directory, listed + 'emscripten_crates=["witness", "isolated", "other"]\n')
     assert result.returncode == 0, result.stderr
     assert json.loads(values['emscripten_crates']) == [['witness', None], ['isolated', 'isolated/Cargo.toml'], ['other', None]], values
+    # One package reached twice (repeated entry, spelling alias, member of the root workspace) has one owner.
+    for entries, expected in [(['isolated/Cargo.toml'] * 2, [['isolated', 'isolated/Cargo.toml']]),
+                              (['isolated/Cargo.toml', './isolated/../isolated/Cargo.toml'], [['isolated', 'isolated/Cargo.toml']]),
+                              (['witness/Cargo.toml', 'isolated/Cargo.toml'], [['witness', None]])]:
+        result, values = declared(directory, f'additional_locked_manifests={json.dumps(entries)}\nemscripten_crates={json.dumps([name for name, _ in expected])}\n')
+        assert result.returncode == 0, (entries, result.stderr)
+        assert json.loads(values['emscripten_crates']) == expected, (entries, values)
     result, _ = declared(directory, 'emscripten_crates=["isolated"]\n')
     assert result.returncode != 0
     assert result.stderr.strip() == ".github/ci.toml: emscripten_crates contains unknown package 'isolated'", result.stderr

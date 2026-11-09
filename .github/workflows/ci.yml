@@ -373,7 +373,7 @@ jobs:
                           listed = metadata if manifest is None else json.loads(subprocess.check_output(
                               ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked', '--manifest-path', manifest], text=True))
                           for package in listed['packages']:
-                              owners.setdefault(package['name'], []).append(manifest)
+                              owners.setdefault(package['name'], {}).setdefault(str(pathlib.Path(package['manifest_path']).resolve()), manifest)
                   except (subprocess.CalledProcessError, OSError, ValueError) as error:
                       raise SystemExit(f'{path}: caller metadata/toolchain failed') from error
               builds = []
@@ -382,7 +382,7 @@ jobs:
                       raise SystemExit(f'{path}: emscripten_crates contains unknown package {crate!r}')
                   if len(owners[crate]) > 1:
                       raise SystemExit(f'{path}: emscripten_crates package {crate!r} is in more than one manifest')
-                  builds.append([crate, owners[crate][0]])
+                  builds.append([crate, next(iter(owners[crate].values()))])
               for crate in browser_tests:
                   if crate not in packages:
                       raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
