@@ -1516,7 +1516,7 @@ print('PASS cargo_git_cache_restores_before_every_fetch')
 archive_signal_reaches_only_archived_shards()
 print('PASS archive_signal_reaches_only_archived_shards')
 
-def search_programs_reach_isolated_tests_only_through_their_exports():
+def tool_step_search_directories_leave_isolated_test_path():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         tools, log = install_recording_runner(directory)
@@ -1548,8 +1548,8 @@ def search_programs_reach_isolated_tests_only_through_their_exports():
     for name in ['Search tools', 'Test tools']:
         assert 'GITHUB_PATH' in body(name), name
 
-search_programs_reach_isolated_tests_only_through_their_exports()
-print('PASS search_programs_reach_isolated_tests_only_through_their_exports')
+tool_step_search_directories_leave_isolated_test_path()
+print('PASS tool_step_search_directories_leave_isolated_test_path')
 
 def ambient_path_is_recorded_before_any_tool_step():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
@@ -4695,7 +4695,8 @@ def windows_known_folders_resolve_inside_isolated_profile():
                 assert marker.read_text(encoding='utf-8') == 'disposable'
                 print(f'PASS {variable}: {path}', flush=True)
         '''), encoding='utf-8')
-        # The step reads the ambient PATH its `Ambient path` step recorded; nothing was added after it here.
+        # `Isolated tests` reads the PATH that the `Ambient path` step records; Git Bash's PATH
+        # stands in for it here.
         setup = 'export AMBIENT_PATH="$PATH"\n' + body('Isolated tests').split('cargo fetch --locked', 1)[0]
         script = directory / 'probe.sh'
         script.write_text(setup + '\nrun_isolated ' + shlex.quote(pathlib.Path(sys.executable).as_posix()) +
@@ -4729,7 +4730,8 @@ def windows_system_locations_accept_mixed_case_names():
         for name, value in variables.items():
             probe += f'assert os.environ.get({name!r}) == {value!r}, ({name!r}, os.environ.get({name!r}))\n'
         probe += "assert 'UNRELATED_AMBIENT_CANARY' not in os.environ\n"
-        # The step reads the ambient PATH its `Ambient path` step recorded; nothing was added after it here.
+        # `Isolated tests` reads the PATH that the `Ambient path` step records; Git Bash's PATH
+        # stands in for it here.
         setup = 'export AMBIENT_PATH="$PATH"\n' + body('Isolated tests').split('cargo fetch --locked', 1)[0]
         script = directory / 'probe.sh'
         script.write_text(setup + '\nrun_isolated ' + shlex.quote(pathlib.Path(sys.executable).as_posix()) +

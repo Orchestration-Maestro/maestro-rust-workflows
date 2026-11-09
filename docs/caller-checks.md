@@ -181,8 +181,8 @@ same concurrency group with its called workflow; see GitHub's
 
 The `wasm_crates` and `check_targets` arrays are required, including when empty.
 `browser_build` and `test_tools` are optional booleans that default to `false`.
-With `test_tools = true`, the test run reaches the pinned `rg` and `fd` only
-through `MAESTRO_TEST_RG` and `MAESTRO_TEST_FD`, never through `PATH`.
+The test run reaches the pinned `rg` and `fd` only through `MAESTRO_TEST_RG`
+and `MAESTRO_TEST_FD`, never through `PATH`.
 `wasm_examples` is an optional table that maps package names to example names
 and defaults to `{}`. The [schema](../.github/ci.schema.json) describes the
 parsed TOML shape; there is no version key or older-format reader.
@@ -1033,10 +1033,10 @@ The test run reaches the pinned `rg` and `fd` only through `MAESTRO_TEST_RG` and
 records `PATH` before any tool step runs. The isolated test command then removes
 each directory a tool step added afterwards that holds `rg` or `fd`, whether it
 comes from the shared search tools or from your `mise.toml` pins. A test that
-looks up `rg` or `fd` on `PATH` fails in the shared job, as it does on a machine
-without them. Setup and prepare steps keep the full `PATH`. Directories that
-were on `PATH` before the tool steps, and added directories that hold neither
-program, stay. Linux, macOS and Windows follow the same rule.
+looks up `rg` or `fd` on `PATH` fails unless the runner image itself provides
+it. Setup and prepare steps keep the full `PATH`. Directories that were on
+`PATH` before the tool steps, and added directories that hold neither program,
+stay. Linux, macOS and Windows follow the same rule.
 
 ## Documentation
 
