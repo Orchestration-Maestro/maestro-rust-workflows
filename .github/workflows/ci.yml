@@ -2489,8 +2489,8 @@ jobs:
             mkdir -p "$isolation/home/AppData/"{Roaming,Local}
             system+=(USERPROFILE="$isolation/home" APPDATA="$isolation/home/AppData/Roaming" LOCALAPPDATA="$isolation/home/AppData/Local")
           fi
-          # The pinned rg and fd reach the tests through MAESTRO_TEST_RG and MAESTRO_TEST_FD only: a
-          # directory the tool steps added to PATH leaves it when it holds either program.
+          # The pinned rg and fd reach the tests only as the files test_prepare copied into
+          # TEST_PREPARE_OUTPUT: a directory the tool steps added to PATH leaves it when it holds either program.
           : "${AMBIENT_PATH:?The ambient PATH was not recorded}"
           IFS=: read -r -a entries <<< "$PATH"
           kept=()

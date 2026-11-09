@@ -226,8 +226,8 @@ share the same concurrency group with its called workflow; see GitHub's
 
 The `wasm_crates` and `check_targets` arrays are required, including when empty.
 `browser_build` and `test_tools` are optional booleans that default to `false`.
-The test run reaches the pinned `rg` and `fd` only through `MAESTRO_TEST_RG`
-and `MAESTRO_TEST_FD`, never through `PATH`.
+The test run reaches the pinned `rg` and `fd` only through files the
+`test_prepare` command copied into `TEST_PREPARE_OUTPUT`, never through `PATH`.
 `wasm_examples` is an optional table that maps package names to example names
 and defaults to `{}`. `emscripten_crates` is an optional array of package names
 and defaults to `[]`. The [schema](../.github/ci.schema.json) describes the
@@ -1096,7 +1096,8 @@ for their host: Linux x86_64 musl, macOS arm64 or Windows x86_64 MSVC.
 Installation verifies their published SHA-256
 digests before extraction. The dedicated binary directory exposes `rg` and
 `fd` on the `PATH` of the setup and prepare steps. The test run does not
-inherit it: see [Caller-pinned build and test tools](#caller-pinned-build-and-test-tools).
+inherit it, so `test_prepare` copies the programs into `TEST_PREPARE_OUTPUT`:
+see [Caller-pinned build and test tools](#caller-pinned-build-and-test-tools).
 Every tool-installation step has a 10-minute timeout
 to fail stalled downloads or installs. Before tests start, a presence guard rejects exported provider API/OAuth
 keys, GitHub/Hugging Face tokens, cloud project/profile/region selectors,
@@ -1177,15 +1178,22 @@ fresh directories and the child environment allowlist are unchanged. Only the
 installed tools' executable paths are added, not mise's environment settings.
 Windows paths are published in native format for later steps.
 
-The test run reaches the pinned `rg` and `fd` only through `MAESTRO_TEST_RG` and
-`MAESTRO_TEST_FD`, which your test setup exports. The `Ambient path` step
-records `PATH` before any tool step runs. The isolated test command then removes
-each directory a tool step added afterwards that holds `rg` or `fd`, whether it
-comes from the shared search tools or from your `mise.toml` pins. A test that
-looks up `rg` or `fd` on `PATH` fails unless the runner image itself provides
-it. Setup and prepare steps keep the full `PATH`. Directories that were on
-`PATH` before the tool steps, and added directories that hold neither program,
-stay. Linux, macOS and Windows follow the same rule.
+The test run reaches the pinned `rg` and `fd` only through files your
+`test_prepare` command copies into `TEST_PREPARE_OUTPUT`, for example
+`cp "$(command -v rg)" "$TEST_PREPARE_OUTPUT/"`. Nextest setup scripts run
+inside the test run, so they and the tests read those copies. A setup script
+can export the paths as `MAESTRO_TEST_RG` and `MAESTRO_TEST_FD` for tests that
+expect them. List the files that fix the program versions, such as `mise.toml`,
+in `test_prepare_inputs` so the copies follow their pins.
+
+The `Ambient path` step records `PATH` before any tool step runs. The isolated
+test command then removes each directory a tool step added afterwards that holds
+`rg` or `fd`, whether it comes from the shared search tools or from your
+`mise.toml` pins. A test that looks up `rg` or `fd` on `PATH` fails unless the
+runner image itself provides it. The tool steps and `test_prepare` keep the full
+`PATH`; nextest setup scripts and tests get the filtered one. Directories that
+were on `PATH` before the tool steps, and added directories that hold neither
+program, stay. Linux, macOS and Windows follow the same rule.
 
 ## Documentation
 

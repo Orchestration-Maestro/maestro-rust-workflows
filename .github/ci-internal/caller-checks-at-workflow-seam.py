@@ -4340,6 +4340,49 @@ def credential_names_fail_closed():
 credential_names_fail_closed()
 print('PASS credential_names_fail_closed')
 
+def pinned_search_directory(directory):
+    """Link the pinned `rg` and `fd` into `directory/pins` and return that directory."""
+    pins = directory / 'pins'
+    pins.mkdir()
+    for binary in ['rg', 'fd']:
+        (pins / binary).symlink_to(shutil.which(binary))
+    return pins
+
+def declared_test_prepare(fixture, search_path):
+    """Run the fixture's own `test_prepare` command, as the prepare step does, with `search_path` on PATH."""
+    import tomllib
+    output = fixture / 'target/test-setup'
+    output.mkdir(parents=True, exist_ok=True)
+    command = tomllib.loads((fixture / '.github/ci.toml').read_text(encoding='utf-8'))['test_prepare']
+    return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command], cwd=fixture, text=True, capture_output=True,
+                          env=os.environ | {'PATH': search_path, 'TEST_PREPARE_OUTPUT': str(output)})
+
+def ambient_path_without_search_programs():
+    """The ambient PATH with every directory that holds `fd` left out."""
+    return os.pathsep.join(entry for entry in os.environ['PATH'].split(os.pathsep) if not shutil.which('fd', path=entry))
+
+def prepare_declared_search_tools(fixture, search_path):
+    result = declared_test_prepare(fixture, search_path)
+    assert result.returncode == 0, result.stderr
+
+def declared_test_prepare_copies_the_pinned_search_programs():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        pins = pinned_search_directory(directory)
+        fixture = root / 'fixtures/declared'
+        ambient = ambient_path_without_search_programs()
+        copied = declared_test_prepare(fixture, str(pins) + os.pathsep + ambient)
+        assert copied.returncode == 0, copied.stderr
+        for tool, version in [('rg', 'ripgrep'), ('fd', 'fd')]:
+            version_line = subprocess.check_output([str(fixture / 'target/test-setup' / tool), '--version'], text=True)
+            assert version_line.startswith(version), version_line
+        # A host that has not installed the programs fails the preparation, never the tests later.
+        missing = declared_test_prepare(fixture, ambient)
+        assert missing.returncode != 0, missing.stdout + missing.stderr
+
+declared_test_prepare_copies_the_pinned_search_programs()
+print('PASS declared_test_prepare_copies_the_pinned_search_programs')
+
 def isolated_tests_ignore_ambient_state():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
@@ -4352,6 +4395,8 @@ def isolated_tests_ignore_ambient_state():
         env = {'HOME': str(home), 'CARGO_HOME': os.environ.get('CARGO_HOME', str(pathlib.Path.home() / '.cargo')),
                'RUSTUP_HOME': os.environ.get('RUSTUP_HOME', str(pathlib.Path.home() / '.rustup')),
                'RUNNER_TEMP': temporary, 'UNRELATED_AMBIENT_CANARY': 'must-not-inherit'}
+        pins = pinned_search_directory(directory)
+        prepare_declared_search_tools(root / 'fixtures/declared', str(pins) + os.pathsep + os.environ['PATH'])
         result = execute('Isolated tests', root / 'fixtures/declared', env)
         assert result.returncode == 0, result.stdout + result.stderr
         assert sentinel.read_text(encoding="utf-8") == 'original-auth-canary'
@@ -4378,13 +4423,16 @@ print('PASS isolated_tests_ignore_ambient_state')
 def real_search_tools_are_exercised():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
-        bin_dir = directory / 'bin'
-        bin_dir.mkdir()
-        import shutil
-        for binary in ['rg', 'fd']:
-            (bin_dir / binary).symlink_to(shutil.which(binary))
-        result = execute('Isolated tests', root / 'fixtures/declared',
-                         {'RUNNER_TEMP': temporary, 'PATH': f'{bin_dir}:/usr/bin:' + os.environ['PATH']})
+        pins = pinned_search_directory(directory)
+        # The pins are the only search programs on PATH.
+        ambient = ambient_path_without_search_programs()
+        fixture = directory / 'caller'
+        shutil.copytree(root / 'fixtures/declared', fixture, ignore=shutil.ignore_patterns('target'))
+        env = {'RUNNER_TEMP': temporary, 'PATH': str(pins) + os.pathsep + ambient, 'AMBIENT_PATH': ambient}
+        unprepared = execute('Isolated tests', fixture, env)
+        assert unprepared.returncode != 0 and 'FAIL' in unprepared.stdout + unprepared.stderr, unprepared.stdout + unprepared.stderr
+        prepare_declared_search_tools(fixture, env['PATH'])
+        result = execute('Isolated tests', fixture, env)
         assert result.returncode == 0, result.stdout + result.stderr
         assert 'search_commands_read_fixture_files' in result.stdout + result.stderr
 
