@@ -847,10 +847,8 @@ jobs:
               output.write('packages=' + json.dumps(names) + '\n')
               output.write('coverage_scope=' + ('full workspace' if selected == members else 'selected packages: ' + ', '.join(names)) + '\n')
               output.write('coverage=' + str(event != 'pull_request' and os.environ.get('TESTS_REUSED') != 'true').lower() + '\n')
+              # A reused queue result keeps every host: its archive and preparation seed the snapshots each merge group restores.
               hosts = json.loads(os.environ['TEST_HOSTS'])
-              # A reused queue result seeds only the Linux compile cache.
-              if os.environ.get('TESTS_REUSED') == 'true':
-                  hosts = {'ubuntu-latest': hosts['ubuntu-latest']}
               shards = [dict(runner=runner, shard=shard, count=count) for runner, count in hosts.items() for shard in range(1, count + 1)]
               output.write('test_shards=' + json.dumps(shards) + '\n')
               output.write('test_runners=' + json.dumps(list(hosts)) + '\n')
@@ -952,9 +950,10 @@ jobs:
           digest = hashlib.sha256(json.dumps(identity, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
           namespace = 'maestro-compile-v1-'
           prefix = f'{namespace}{digest}-'
-          seeder = r'-\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\d+-'
+          # The host system in the key keeps a job's legs apart: one leg never takes another host's snapshot for its own.
+          seeder = r'-\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\d+-' + re.escape(os.environ['HOST_OS']) + '-'
           call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
-          suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX']) + '-' + call
+          suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX', 'HOST_OS']) + '-' + call
           # A Linux job that no later job restores keeps no snapshot: the repository cache holds one snapshot per
           # other shape, and a snapshot for each of these would not fit the cache limit next to them.
           snapshot = not (os.environ['HOST_OS'] == 'Linux' and os.environ['CACHE_JOB'] in ('quality', 'docs', 'doctests', 'browser', 'browser-tests', 'targets'))
@@ -2663,8 +2662,7 @@ jobs:
       actions: read
     name: ${{ matrix.runner == 'ubuntu-latest' && 'Doctests' || format('Doctests ({0})', matrix.runner) }}
     needs: declaration
-    # A push that reuses merge-queue tests still runs doctests, to seed this shape's snapshot.
-    if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && needs.declaration.outputs.coverage == 'true' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     concurrency:
       group: ${{ format('rust-ci-job-{0}-{1}{2}-doctests-{3}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.runner) }}
       cancel-in-progress: ${{ github.event_name == 'merge_group' }}
@@ -2696,7 +2694,6 @@ jobs:
           DOCTEST_RESULT: ${{ needs.doctests.result }}
           DECLARATION_RESULT: ${{ needs.declaration.result }}
           COLLECT_COVERAGE: ${{ needs.declaration.outputs.coverage }}
-          TESTS_REUSED: ${{ needs.declaration.outputs.tests_reused }}
         shell: python
         run: |
           import os
@@ -2705,7 +2702,7 @@ jobs:
           assert os.environ['COLLECT_COVERAGE'] in expected
           required = expected[os.environ['COLLECT_COVERAGE']]
           assert os.environ['RESULT'] == required
-          assert os.environ['DOCTEST_RESULT'] == ('success' if os.environ.get('TESTS_REUSED') == 'true' else required)
+          assert os.environ['DOCTEST_RESULT'] == required
       - name: Download shard coverage
         if: needs.declaration.outputs.enabled == 'true' && needs.declaration.outputs.coverage == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0

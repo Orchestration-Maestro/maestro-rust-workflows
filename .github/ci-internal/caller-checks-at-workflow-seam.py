@@ -3890,8 +3890,10 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                 'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True,
                 'matrix.runner': 'ubuntu-latest'}
-            for job in ['test-build', 'test-prepare', 'browser', 'doctests', 'browser-tests']:
+            for job in ['test-build', 'test-prepare', 'browser', 'browser-tests']:
                 assert evaluate(document['jobs'][job]['if'], conditions), (name, job, 'main must seed compiled objects')
+            # Doctests save no snapshot, so a reused queue result skips them with the shards.
+            assert bool(evaluate(document['jobs']['doctests']['if'], conditions)) == (not reused), name
             for job, upload in [('test-build', 'Upload test archive'), ('test-prepare', 'Upload test setup')]:
                 step = next(step for step in document['jobs'][job]['steps'] if step['name'] == upload)
                 assert bool(evaluate(step.get('if', 'True'), conditions)) == (not reused), (name, upload)
@@ -3904,14 +3906,14 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 warm = conditions | {'inputs.warm-cache': True, 'needs.declaration.outputs.coverage': 'true',
                                      'needs.declaration.outputs.targets': '["windows"]'}
                 assert evaluate(document['jobs'][job]['if'], warm), job
-            # Doctests run on every main push, so a failed or missing doctest leg fails the result even when shards reuse.
+            # The result takes the doctest legs with the shards: skipped when reused, successful otherwise.
             for doctests in ['success', 'failure', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
                     env=os.environ | {'DECLARATION_RESULT': 'success', 'COLLECT_COVERAGE': selected['coverage'],
                                       'TESTS_REUSED': values['tests_reused'],
                                       'RESULT': 'skipped' if reused else 'success', 'DOCTEST_RESULT': doctests},
                     capture_output=True, text=True)
-                assert (result.returncode == 0) == (doctests == 'success'), (name, doctests, result.stderr)
+                assert (result.returncode == 0) == (doctests == ('skipped' if reused else 'success')), (name, doctests, result.stderr)
 
 main_reuses_only_exact_successful_merge_queue_tests()
 print('PASS main_reuses_only_exact_successful_merge_queue_tests')
@@ -4364,17 +4366,17 @@ def native_test_hosts_follow_claims_and_full_suite_events():
                         assert result.returncode == 0, result.stderr
                         selected = dict(line.split('=', 1) for line in (directory / 'selection-output').read_text(encoding='utf-8').splitlines())
                         (directory / 'selection-output').unlink()
-                        runners = ['ubuntu-latest'] if reused == 'true' else hosts
-                        assert json.loads(selected['test_runners']) == runners, (targets, event, reused, selected)
+                        # A reused queue result keeps every host: its archive and preparation seed that host's snapshots.
+                        assert json.loads(selected['test_runners']) == hosts, (targets, event, reused, selected)
                         legs = json.loads(selected['test_shards'])
-                        for runner in runners:
+                        for runner in hosts:
                             expected = count if runner == 'ubuntu-latest' else min(4, count)
                             assert [leg for leg in legs if leg['runner'] == runner] == [
                                 {'runner': runner, 'shard': shard, 'count': expected} for shard in range(1, expected + 1)]
-                        assert len(legs) == count + (len(runners) - 1) * min(4, count)
+                        assert len(legs) == count + (len(hosts) - 1) * min(4, count)
                         # The archive build splits each host's binaries into as many archives as that host has shard legs.
                         assert json.loads(selected['test_counts']) == {
-                            runner: len([leg for leg in legs if leg['runner'] == runner]) for runner in runners}, (targets, event, reused, selected)
+                            runner: len([leg for leg in legs if leg['runner'] == runner]) for runner in hosts}, (targets, event, reused, selected)
     for name in ['test-prepare', 'test-build', 'doctests']:
         assert 'test_runners' in jobs[name]['strategy']['matrix']['runner']
     assert 'test_counts' in jobs['test-build']['env']['TEST_SHARD_COUNT'] and 'matrix.runner' in jobs['test-build']['env']['TEST_SHARD_COUNT']
@@ -4389,6 +4391,73 @@ def native_test_hosts_follow_claims_and_full_suite_events():
 
 native_test_hosts_follow_claims_and_full_suite_events()
 print('PASS native_test_hosts_follow_claims_and_full_suite_events')
+
+def every_snapshot_a_merge_group_restores_has_a_writer_on_a_reused_main_push():
+    # A merge group restores only default-branch snapshots, and a landing's main push reuses the group's
+    # tests, so a snapshot that push does not save leaves every later group on that host compiling cold.
+    import shutil
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    hosts = {'ubuntu-latest': ('Linux', 'X64'), 'ubuntu-24.04-arm': ('Linux', 'ARM64'), 'macos-latest': ('macOS', 'ARM64'),
+             'macos-15-intel': ('macOS', 'X64'), 'windows-latest': ('Windows', 'X64')}
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        (directory / '.github').mkdir()
+        (directory / '.github/ci.toml').write_text(
+            'wasm_crates=[]\ncheck_targets=["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-gnu"]\n', encoding='utf-8')
+        fixture_git(directory, 'init', '--quiet')
+        fixture_git(directory, 'add', '.')
+        fixture_git(directory, 'commit', '-qm', 'seed fixture')
+
+        def snapshots(event, reused, step):
+            # The prefix of every snapshot the event's jobs pass to the named cache step, with the leg that does it.
+            result, values = declaration(directory, {'TEST_EVENT': event, 'WARM': 'false'})
+            assert result.returncode == 0, result.stderr
+            with output_file() as output:
+                result = select_packages(directory, {'GITHUB_OUTPUT': str(output), 'TEST_EVENT': event, 'BASE_REF': '',
+                                                     'TEST_HOSTS': values['test_hosts'], 'TESTS_REUSED': reused})
+                assert result.returncode == 0, result.stderr
+                values |= dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            ref = 'refs/heads/main' if event == 'push' else 'refs/heads/gh-readonly-queue/main/pr-1-' + 'a' * 40
+            context = {'github.event_name': event, 'github.ref': ref, 'needs.declaration.outputs.coverage': values['coverage'],
+                       'needs.declaration.outputs.tests_reused': reused, 'needs.declaration.outputs.targets': values['targets']}
+            found = {}
+            for job in sorted(routed_jobs(document, context)):
+                steps = {item.get('name'): item for item in document['jobs'][job].get('steps', [])}
+                if 'Compile cache identity' not in steps:
+                    continue
+                matrix = document['jobs'][job].get('strategy', {}).get('matrix', {})
+                def listed(expression):
+                    return json.loads(values[re.search(r'needs\.declaration\.outputs\.(\w+)', expression)[1]])
+                axes = {key: listed(value) if isinstance(value, str) else value for key, value in matrix.items() if key != 'include'}
+                legs = [dict(zip(axes, combination, strict=True)) for combination in itertools.product(*axes.values())] if axes else []
+                legs += listed(matrix['include']) if 'include' in matrix else []
+                for index, leg in enumerate(legs or [{'runner': document['jobs'][job]['runs-on']}]):
+                    system, architecture = hosts[leg['runner']]
+                    with output_file() as output:
+                        result = execute('Compile cache identity', directory, {
+                            'CALLER_REPOSITORY': 'owner/caller', 'CALLER_DIRECTORY': '.', 'HOST_OS': system, 'HOST_ARCH': architecture,
+                            'CACHE_JOB': job, 'CACHE_INDEX': str(index), 'CACHE_CALL': '', 'CACHE_TARGET': leg.get('target', ''),
+                            'CACHE_COVERAGE': str(evaluate(steps['Compile cache identity']['env']['CACHE_COVERAGE'], context)).lower(),
+                            'CACHE_ENABLED': values['enabled'], 'CACHE_WARM': 'false', 'CACHE_DEFAULT_BRANCH': 'main',
+                            'SHARD': str(leg.get('shard', '')), 'GITHUB_EVENT_NAME': event, 'GITHUB_REF': ref,
+                            'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_OUTPUT': str(output)})
+                        assert result.returncode == 0, result.stderr
+                        identity = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                    gates = {'steps.cache-identity.outputs.snapshot': identity['snapshot'], 'steps.cache-identity.outputs.writer': identity['writer'],
+                             'steps.cache-seal.outputs.eligible': 'true', 'runner.os': system, 'inputs.warm-cache': False,
+                             'matrix.shard': str(leg.get('shard', '')), 'needs.declaration.outputs.enabled': values['enabled']}
+                    if evaluate(steps[step].get('if', 'True'), gates):
+                        found.setdefault(identity['prefix'], f"{job} on {leg['runner']}, shape {identity['shape']}")
+            return found
+
+        restored = snapshots('merge_group', 'false', 'Restore compile cache')
+        written = snapshots('push', 'true', 'Save compile cache')
+        assert any('macos-latest' in leg for leg in restored.values()), restored
+        assert not restored.keys() - written.keys(), [restored[prefix] for prefix in restored.keys() - written.keys()]
+
+every_snapshot_a_merge_group_restores_has_a_writer_on_a_reused_main_push()
+print('PASS every_snapshot_a_merge_group_restores_has_a_writer_on_a_reused_main_push')
 
 def supported_targets_use_native_runners():
     targets_job = workflow.split('  targets:\n', 1)[1].split('\n  browser:', 1)[0]
