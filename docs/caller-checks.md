@@ -609,8 +609,8 @@ shard. When a caller has fewer test binaries than shards, the extra shards hold
 no binary: they run nothing and upload an empty coverage report, so the union
 still receives one report per shard. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
-runs doctests once on every merge group and main push, without waiting for the
-archive build.
+runs doctests once on every merge group and main push, except a main push that
+reuses merge-queue tests. It does not wait for the archive build.
 
 Native hosts follow the same route: one `Build test archive (<runner>)` job and
 one `Prepare test setup (<runner>)` job per claimed host, each with its own

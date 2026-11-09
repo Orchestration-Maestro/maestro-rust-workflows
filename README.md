@@ -59,7 +59,8 @@ tests took on an earlier run, or by test count when no earlier run timed them.
 The `warm-cache` call instead compiles and runs its warm test filter in one job.
 A caller can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
 [test shards](docs/caller-checks.md#test-shards). Doctests run in a
-parallel `Doctests` matrix leg on merge groups and main pushes.
+parallel `Doctests` matrix leg on merge groups and main pushes, except a main
+push that reuses merge-queue tests.
 Each claimed native host gets up to four shards, capped at `test_shard_count`,
 and its own `Doctests (<runner>)` leg on full events. Native shards are named
 `Test shard (<runner> k/n)`; Linux job names stay unchanged.
