@@ -896,8 +896,11 @@ readers, including for Markdown changes.
 Every enabled shard fetches locked dependencies.
 
 Merge groups and main pushes always run the full workspace suite, doctests,
-declared Chromium tests and coverage. They do not narrow tests using a diff or
-previous coverage. The queue is the merge gate; a suite failure stops the merge.
+declared Chromium tests and coverage, except a main push that reuses
+merge-queue tests: it takes the suite from the merge group, skips the shards and
+doctests, turns coverage off, and runs the declared Chromium tests only. They do
+not narrow tests using a diff or previous coverage. The queue is the merge gate;
+a suite failure stops the merge.
 Main-push failure reporting and revert handling remain in the post-landing
 workflow.
 
