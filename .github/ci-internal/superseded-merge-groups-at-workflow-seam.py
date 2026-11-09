@@ -69,6 +69,9 @@ def evaluate(tree, contexts):
     if kind == '!':
         return not evaluate(tree[1], contexts)
     if kind == 'call':
+        if tree[1] == 'format':
+            template, *arguments = [evaluate(argument, contexts) for argument in tree[2]]
+            return template.format(*arguments)
         assert tree[1] == 'cancelled', tree
         return False
     left = evaluate(tree[1], contexts)
@@ -216,6 +219,25 @@ def a_rebuilt_or_closed_group_loses_its_run_and_live_groups_keep_theirs():
     for run in [closed, dropped, replaced, reused]:
         assert f"{run['id']}" in result.stdout and run['head_branch'] in result.stdout, result.stdout
 
+def a_reused_ref_starts_its_successor_before_the_replaced_run_finishes():
+    old = queue_run(101, 4362, SHA, '1' * 40)
+    successor = queue_run(THIS_RUN, 4362, SHA, '2' * 40)
+    assert old['head_branch'] == successor['head_branch']
+    def group(run):
+        contexts = {'github': {'event_name': 'merge_group', 'workflow': 'CI',
+                               'ref': 'refs/heads/' + run['head_branch'], 'sha': run['head_sha']},
+                    'inputs': {'concurrency-key': ''}}
+        return re.sub(r'\$\{\{(.*?)\}\}', lambda match: str(evaluate(parse(match[1]), contexts)),
+                      document['concurrency']['group']).casefold()
+    # Hold the old run's workflow slot: a successor with the same group cannot start any job, including its canceller.
+    occupied = {group(old): old['id']}
+    assert not evaluate(expression(document['concurrency']['cancel-in-progress']),
+                        {'github': {'event_name': 'merge_group'}})
+    assert group(successor) not in occupied, 'The reused ref blocks the successor behind the run it must cancel'
+    result, cancelled = run_canceller(queue_replies([], [old, successor],
+                                                  {successor['head_branch']: successor['head_sha']}))
+    assert result.returncode == 0 and cancelled == [old['id']], (result.stdout, result.stderr, cancelled)
+
 def the_canceller_cancels_only_what_the_api_shows_replaced():
     gone = queue_run(101, 4396, 'c' * 40, '1' * 40)
     unread = queue_run(102, 4398, 'c' * 40, '2' * 40)
@@ -256,6 +278,7 @@ def the_canceller_starts_at_once_in_merge_groups_only():
 
 for check in [a_replaced_group_stops_and_a_live_group_continues, a_replaced_run_never_starts_its_test_shards,
               a_rebuilt_or_closed_group_loses_its_run_and_live_groups_keep_theirs,
+              a_reused_ref_starts_its_successor_before_the_replaced_run_finishes,
               the_canceller_cancels_only_what_the_api_shows_replaced, the_canceller_starts_at_once_in_merge_groups_only]:
     check()
     print('PASS ' + check.__name__, flush=True)

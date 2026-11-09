@@ -5140,8 +5140,8 @@ def reusable_calls_complete_independently():
     match = re.search(r'^  group: (.+)$', workflow, re.MULTILINE)
     assert match is not None, 'Missing workflow concurrency group'
     group = match.group(1)
-    assert group == 'rust-ci-$' + "{{ github.event_name == 'push' && format('{0}-{1}', github.workflow, github.sha) || github.ref }}$" + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
-        'The push group must name the caller and the commit, other runs the ref, and keyed calls the key'
+    assert group == 'rust-ci-$' + "{{ (github.event_name == 'push' || github.event_name == 'merge_group') && format('{0}-{1}', github.workflow, github.sha) || github.ref }}$" + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
+        'Push and merge-group runs must name the caller and commit, other runs the ref, and keyed calls the key'
     keys = []
     for job in ['sample', 'declared', 'test-tools']:
         section = re.split(r'\n  \S', internal.split(f'  {job}:\n', 1)[1], maxsplit=1)[0]

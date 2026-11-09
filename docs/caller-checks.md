@@ -207,24 +207,22 @@ for. A missing or moved ref fails the job and skips the jobs that need it, so a
 run replaced before its builds end never starts its test shards. Any other API
 failure lets the run continue.
 
-Limits:
+Merge-group runs are grouped by the calling workflow's name and commit, so a
+new run starts its canceller even when the queue reuses the old run's ref name.
 
-- Cancellation happens when a new group starts. A pull request removed from the
-  end of the queue starts no new group, so the jobs its run already started run
-  to completion, but test shards that had not started never start. The next
-  group's run cancels it, or cancel it by hand.
-- Runs are grouped by ref, so when the queue reuses a name, the new run waits
-  for the old one. Another new group's run cancels the old run; without one,
-  the old run's own check keeps its test shards from starting, so it ends
-  sooner.
+Cancellation happens when a new group starts. A pull request removed from the
+end of the queue starts no new group, so the jobs its run already started run
+to completion, but test shards that had not started never start. The next
+group's run cancels it, or cancel it by hand.
 
 ## Reusable-call concurrency
 
-Every run except a push is grouped by ref. A push run is grouped by
-the calling workflow's name and the pushed commit, so two caller workflows on
-one commit run at the same time and later landings never wait for each
-other. The optional workflow input `concurrency-key` defaults to an empty
-string, which adds nothing to the group. If a workflow calls this
+Push and merge-group runs are grouped by the calling workflow's name and
+commit; other runs are grouped by ref. Two caller workflows on one commit run
+at the same time, later landings never wait for each other, and a rebuilt merge
+group starts even when the queue reuses its ref name. The optional workflow
+input `concurrency-key` defaults to an empty string, which adds nothing to the
+group. If a workflow calls this
 reusable workflow more than once, give each calling job a distinct, stable
 key (case-insensitive), such as `concurrency-key: quality`. Reuse that key on
 later pushes so a new pull-request run cancels the older invocation of the
