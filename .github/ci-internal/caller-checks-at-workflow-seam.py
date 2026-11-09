@@ -4034,6 +4034,19 @@ def declared_test_inputs_select_their_readers():
         git('add', '.')
         git('commit', '-qm', 'route')
         assert select() == ['a', 'b', 'c', 'd']
+        # A route over member directories adds its reader to the changed crate's own selection, so a test that
+        # reads every crate's sources runs on a change to any one of them.
+        git('reset', '--hard', base)
+        (directory / '.github/ci.toml').write_text(declared.replace('{"shared/"=["d"], ', '{"a/"=["d"], "b/"=["d"], '), encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'member route')
+        base = git('rev-parse', 'HEAD')
+        for name, expected in [('a/src/lib.rs', ['a', 'b', 'c', 'd']), ('b/src/lib.rs', ['b', 'c', 'd']), ('c/src/lib.rs', ['c'])]:
+            (directory / name).write_text('pub fn changed() {}\n', encoding='utf-8')
+            git('add', '.')
+            git('commit', '-qm', 'source')
+            assert select() == expected, (name, select())
+            git('reset', '--hard', base)
 
 declared_test_inputs_select_their_readers()
 print('PASS declared_test_inputs_select_their_readers')

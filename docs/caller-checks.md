@@ -968,11 +968,13 @@ a suite failure stops the merge.
 Main-push failure reporting and revert handling remain in the post-landing
 workflow.
 
-`test_inputs` maps repository-relative files or directories outside the
-workspace members to the exact package names whose tests read them. A change
-under a declared path selects those packages and their reverse dependencies,
-including Markdown files there. An empty list marks a path no workspace test
-reads, such as a separate fuzz workspace. Paths must stay inside the repository
+`test_inputs` maps repository-relative files or directories to the exact
+package names whose tests read them. A change under a declared path selects
+those packages and their reverse dependencies, including Markdown files there.
+A path inside a member directory also selects the member that owns the file, so
+a test that reads every crate's sources lists the crates' parent directory. An
+empty list marks a path no workspace test reads, such as a separate fuzz
+workspace. Paths must stay inside the repository
 and names must be workspace packages; anything else fails the declaration.
 
 ```toml
