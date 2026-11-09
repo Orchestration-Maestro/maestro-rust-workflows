@@ -116,6 +116,30 @@ and main pushes. Every shard must provide its report, and the aggregate applies
 the floor to their union. Pull requests collect no coverage and need no previous
 run's coverage artifacts.
 
+## Release PR self-test reuse
+
+Release pull requests need no extra configuration. When a PR from this
+repository's `release-please--branches--main` branch changes only release
+metadata, `CI self-test` reuses a successful run on its exact base commit.
+The allowed files are the release manifest and the version file and changelog
+named by the base commit's release configuration. The default changelog is
+`CHANGELOG.md`. For example, a release changing only that changelog,
+`.github/release-please/manifest.json` and `version.txt` can reuse its base run.
+
+Reuse requires a completed, successful `push` run of `ci-internal.yml` in the
+same repository on that exact base SHA. Missing, failed or unfinished runs,
+unreadable evidence and lookup errors keep the full self-test. A change outside
+the metadata files also keeps the full self-test. Other PRs, merge groups and
+main pushes keep their normal runs; caller repositories and release-pin updates
+are unchanged.
+
+`Self-test selection` records the decision in `Reuse release base self-test`.
+On reuse, the fixture and proof jobs skip their work. Both required checks,
+`Required repository quality` and `Required consumer tests`, still run and accept
+those skips only when selection succeeded and proved reuse. Without reuse,
+every job they require must succeed. Failures and cancellations still fail the
+required checks.
+
 ## Native C compilation
 
 Linux and macOS compilation jobs use the existing compiler cache for native C

@@ -5441,3 +5441,172 @@ shutil.copyfile(root / 'payload', sys.argv[sys.argv.index('--output') + 1])
 
 verified_release_archives_are_reused_by_later_jobs()
 print('PASS verified_release_archives_are_reused_by_later_jobs', flush=True)
+
+
+@contextlib.contextmanager
+def release_self_test_fixture(version_file="version.txt"):
+    from unittest.mock import patch
+    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+    script = body('Check release base self-test', internal)
+    code = re.search(r"python3 -I - <<'PYTHON'\n(.*?)\nPYTHON", script, re.S)[1]
+    repository = 'owner/workflows'
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        for name in ['.github/release-please/config.json', '.github/release-please/manifest.json', 'version.txt', 'CHANGELOG.md']:
+            path = directory / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((root / name).read_bytes())
+        config_path = directory / '.github/release-please/config.json'
+        config = json.loads(config_path.read_text(encoding='utf-8'))
+        config['packages']['.']['version-file'] = version_file
+        config_path.write_text(json.dumps(config), encoding='utf-8')
+        fixture_git(directory, 'init', '--quiet')
+        fixture_git(directory, 'add', '.')
+        fixture_git(directory, 'commit', '-qm', 'base')
+        base = fixture_git(directory, 'rev-parse', 'HEAD')
+        good = {'head_sha': base, 'event': 'push', 'status': 'completed', 'conclusion': 'success',
+                'path': '.github/workflows/ci-internal.yml', 'head_repository': {'full_name': repository}}
+        def run(files=None, pages=None, event='pull_request', head=None):
+            fixture_git(directory, 'read-tree', base)
+            for name, content in (files or {'version.txt': '0.20.0\n'}).items():
+                path = directory / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding='utf-8')
+                fixture_git(directory, 'add', name)
+            fixture_git(directory, 'commit', '-qm', 'release')
+            revision = fixture_git(directory, 'rev-parse', 'HEAD')
+            # The selection job checks out the trusted base, not the PR's scripts or config.
+            fixture_git(directory, 'checkout', '--quiet', base)
+            payload = {'pull_request': {'base': {'sha': base}, 'head': {'sha': revision,
+                'ref': 'release-please--branches--main', 'repo': {'full_name': repository}} | (head or {})},
+                'repository': {'default_branch': 'main'}}
+            event_path, output = directory / 'event', directory / 'output'
+            event_path.write_text(json.dumps(payload), encoding='utf-8')
+            output.write_text('', encoding='utf-8')
+            calls = []
+            real_output = subprocess.check_output
+
+            def api(argv, **kwargs):
+                if argv[0] != 'gh':
+                    return real_output(argv, **kwargs)
+                calls.append(argv)
+                assert argv == ['gh', 'api', '--paginate', '--slurp', f'repos/{repository}/actions/workflows/ci-internal.yml/runs'
+                                f'?event=push&status=success&head_sha={base}&per_page=100'], argv
+                if pages == 'error':
+                    raise subprocess.CalledProcessError(1, argv)
+                return pages if isinstance(pages, str) else json.dumps(pages if pages is not None else [{'workflow_runs': [good]}])
+
+            with contextlib.chdir(directory), patch.dict(os.environ, {'GITHUB_EVENT_NAME': event,
+                    'GITHUB_EVENT_PATH': str(event_path), 'GITHUB_REPOSITORY': repository, 'GITHUB_OUTPUT': str(output)}), \
+                    patch('subprocess.check_output', side_effect=api):
+                exec(compile(code, 'Check release base self-test', 'exec'), {})
+            values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            return values['tests_reused'], calls
+
+        yield run, good
+
+
+def metadata_only_release_reuses_exact_green_base():
+    with release_self_test_fixture() as (run, good):
+        reused, calls = run({'.github/release-please/manifest.json': '{".":"0.20.0"}',
+                            'CHANGELOG.md': 'Release notes\n', 'version.txt': '0.20.0\n'},
+                           [{'workflow_runs': []}, {'workflow_runs': [good]}])
+        assert reused == 'true' and calls, (reused, calls)
+    with release_self_test_fixture('release-version.txt') as (run, _):
+        assert run({'release-version.txt': '0.20.0\n'})[0] == 'true'
+        assert run({'version.txt': '0.20.0\n'})[0] == 'false'
+
+
+metadata_only_release_reuses_exact_green_base()
+print('PASS metadata_only_release_reuses_exact_green_base', flush=True)
+
+
+def release_with_non_metadata_changes_runs_full_self_test():
+    with release_self_test_fixture() as (run, _):
+        for name in ['.github/workflows/ci-internal.yml', '.github/release-please/config.json',
+                     'fixtures/sample/src/lib.rs', 'docs/caller-checks.md', 'unexpected\nversion.txt']:
+            reused, calls = run({'version.txt': '0.20.0\n', name: 'changed\n'})
+            assert reused == 'false' and not calls, (name, reused, calls)
+
+
+release_with_non_metadata_changes_runs_full_self_test()
+print('PASS release_with_non_metadata_changes_runs_full_self_test', flush=True)
+
+
+def release_without_exact_green_base_runs_full_self_test():
+    with release_self_test_fixture() as (run, good):
+        replies = [[{'workflow_runs': []}], 'error', 'not JSON', [{}]]
+        for field, value in [('head_sha', 'b' * 40), ('event', 'pull_request'), ('status', 'in_progress'),
+                             ('conclusion', 'failure'), ('conclusion', 'cancelled'),
+                             ('path', '.github/workflows/ci.yml'), ('head_repository', None),
+                             ('head_repository', {'full_name': 'other/repository'})]:
+            replies.append([{'workflow_runs': [good | {field: value}]}])
+        for reply in replies:
+            reused, calls = run(pages=reply)
+            assert reused == 'false' and calls, (reply, reused, calls)
+
+
+release_without_exact_green_base_runs_full_self_test()
+print('PASS release_without_exact_green_base_runs_full_self_test', flush=True)
+
+
+def only_same_repository_release_pull_requests_reuse_self_test():
+    with release_self_test_fixture() as (run, _):
+        for event, head in [('push', None), ('merge_group', None), ('pull_request', {'ref': 'ci/fix'}),
+                            ('pull_request', {'repo': {'full_name': 'fork/workflows'}})]:
+            reused, calls = run(event=event, head=head)
+            assert reused == 'false' and not calls, (event, head, reused, calls)
+
+
+only_same_repository_release_pull_requests_reuse_self_test()
+print('PASS only_same_repository_release_pull_requests_reuse_self_test', flush=True)
+
+
+def release_reuse_keeps_required_checks_and_skips_only_proven_work():
+    import sys
+    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=internal, text=True))
+    jobs = document['jobs']
+    assert jobs['selection']['permissions'] == {'contents': 'read', 'actions': 'read'}
+    assert jobs['selection']['outputs']['tests_reused'] == '${{ steps.base.outputs.tests_reused }}'
+    steps = {step['name']: step for step in jobs['selection']['steps']}
+    assert steps['Check release base self-test']['env'] == {'GH_TOKEN': '${{ github.token }}'}
+    checkout = steps['Checkout tested base']['with']
+    assert checkout['ref'] == '${{ github.event.pull_request.base.sha || github.sha }}'
+    assert checkout['fetch-depth'] == 0 and checkout['persist-credentials'] is False
+    work = {'sample', 'declared', 'test-tools', 'fuzz', 'shard-seams', 'seams', 'native', 'fuzz-issues', 'browser-qualification'}
+    assert set(jobs) == work | {'selection', 'quality', 'consumers'}, set(jobs)
+    for reused in ['true', 'false']:
+        context = {'needs.selection.outputs.tests_reused': reused}
+        marker = steps['Reuse release base self-test']
+        assert evaluate(marker['if'], {'steps.base.outputs.tests_reused': reused}) == (reused == 'true')
+        for name in work:
+            needs = jobs[name]['needs']
+            assert 'selection' in ([needs] if isinstance(needs, str) else needs), name
+            assert evaluate(jobs[name]['if'], context) == (reused == 'false'), name
+        for name, check in [('quality', 'Required repository quality'), ('consumers', 'Required consumer tests')]:
+            job = jobs[name]
+            expected_needs = {'selection', 'sample', 'declared', 'test-tools'} if name == 'quality' else {
+                'selection', 'seams', 'native', 'fuzz-issues', 'browser-qualification', 'shard-seams'}
+            assert set(job['needs']) == expected_needs, job['needs']
+            assert job['name'] == check and evaluate(job['if'], {'always()': True}), job
+            step = job['steps'][0]
+            assert step['env']['REUSED'] == '${{ needs.selection.outputs.tests_reused }}'
+            assert step['env']['RESULTS'] == '${{ toJSON(needs) }}'
+            results = {need: {'result': 'skipped' if reused == 'true' else 'success'} for need in job['needs']}
+            results['selection'] = {'result': 'success'}
+
+            def aggregate(values, step=step, reused=reused):
+                return subprocess.run([sys.executable, '-I', '-c', step['run']], capture_output=True, text=True,
+                    env=os.environ | {'RESULTS': json.dumps(values), 'REUSED': reused})
+
+            passed = aggregate(results)
+            assert passed.returncode == 0, passed.stderr
+            for need in results:
+                for status in ['failure', 'cancelled', 'success' if reused == 'true' and need != 'selection' else 'skipped']:
+                    failed = aggregate(results | {need: {'result': status}})
+                    assert failed.returncode != 0, (name, reused, need, status)
+
+
+release_reuse_keeps_required_checks_and_skips_only_proven_work()
+print('PASS release_reuse_keeps_required_checks_and_skips_only_proven_work', flush=True)
