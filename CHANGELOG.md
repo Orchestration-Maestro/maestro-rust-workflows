@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.19.27](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.26...v0.19.27) (2026-11-09)
+
+
+### Continuous Integration
+
+* pin maestro-rust-workflows callers to v0.19.26 ([#439](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/439)) ([7215516](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/7215516e0bc69f44fc53229bb13171bcea0a3165))
+* run macOS test shards after landing instead of in merge groups ([#442](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/442)) ([f55f73f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/f55f73f794bc71f5d2b62934805c4b4235e8af04))
+
+
+### Bug Fixes
+
+* **ci:** cancel replaced merge-group runs at startup ([#443](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/443)) ([d24a5b6](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/d24a5b63da88faedda4153d56440f4ebb6446b0f))
+
 ## [0.19.26](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.25...v0.19.26) (2026-11-09)
 
 
