@@ -366,9 +366,23 @@ jobs:
                   for name in names:
                       if name not in examples[crate]:
                           raise SystemExit(f'{path}: wasm_examples[{json.dumps(crate)}] contains unknown example {name!r}')
+              owners = {}
+              if emscripten:
+                  try:
+                      for manifest in (None, *config.get('additional_locked_manifests', [])):
+                          listed = metadata if manifest is None else json.loads(subprocess.check_output(
+                              ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked', '--manifest-path', manifest], text=True))
+                          for package in listed['packages']:
+                              owners.setdefault(package['name'], []).append(manifest)
+                  except (subprocess.CalledProcessError, OSError, ValueError) as error:
+                      raise SystemExit(f'{path}: caller metadata/toolchain failed') from error
+              builds = []
               for crate in emscripten:
-                  if crate not in packages:
+                  if crate not in owners:
                       raise SystemExit(f'{path}: emscripten_crates contains unknown package {crate!r}')
+                  if len(owners[crate]) > 1:
+                      raise SystemExit(f'{path}: emscripten_crates package {crate!r} is in more than one manifest')
+                  builds.append([crate, owners[crate][0]])
               for crate in browser_tests:
                   if crate not in packages:
                       raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
@@ -517,7 +531,7 @@ jobs:
               values.update(targets=json.dumps(targets))
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             wasm_examples=json.dumps([[crate, name] for crate, names in witnesses.items() for name in names]),
-                            emscripten_crates=json.dumps(emscripten),
+                            emscripten_crates=json.dumps(builds),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
           # The test jobs carry a Windows leg, but Windows is not a native test host until its cold setup fits the job limit.
@@ -3420,8 +3434,8 @@ jobs:
           import json
           import os
           import subprocess
-          for crate in json.loads(os.environ['EMSCRIPTEN_CRATES']):
-              subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-emscripten', '-p', crate], check=True)
+          for crate, manifest in json.loads(os.environ['EMSCRIPTEN_CRATES']):
+              subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-emscripten', *(['--manifest-path', manifest] if manifest else []), '-p', crate], check=True)
           PYTHON
       - name: Build wasm examples
         env:
