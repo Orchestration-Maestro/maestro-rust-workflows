@@ -4357,16 +4357,20 @@ def native_test_hosts_follow_claims_and_run_after_landing():
         for targets, native in [(['aarch64-apple-darwin', 'x86_64-pc-windows-msvc'], ['macos-latest']),
                                 (['x86_64-pc-windows-msvc'], []),
                                 (['x86_64-apple-darwin', 'aarch64-unknown-linux-gnu'], [])]:
-            for count in [2, 16]:
+            for count, native_count in [(2, 2), (16, 4)]:
                 (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=' + json.dumps(targets) + f'\ntest_shard_count={count}\n', encoding='utf-8')
-                for event, warm in [('pull_request', 'false'), ('merge_group', 'false'), ('push', 'false'), ('push', 'true')]:
+                # Explicit expected routes: ordinary queue work is Linux-only; main adds the claimed native host.
+                for event, warm, hosts, fresh, reused_hosts in [
+                        ('pull_request', 'false', ['ubuntu-latest'], [], []),
+                        ('merge_group', 'false', ['ubuntu-latest'], ['ubuntu-latest'], []),
+                        ('push', 'false', ['ubuntu-latest', *native], ['ubuntu-latest', *native], native),
+                        ('push', 'true', ['ubuntu-latest'], ['ubuntu-latest'], [])]:
                     output = directory / 'config-output'
                     output.write_text('', encoding='utf-8')
                     result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output), 'TEST_EVENT': event, 'WARM': warm})
                     assert result.returncode == 0, result.stderr
                     values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                     # Merge groups test Linux only; native hosts run in the main push after landing.
-                    hosts = ['ubuntu-latest'] + (native if event == 'push' and warm == 'false' else [])
                     assert list(json.loads(values['test_hosts'])) == hosts, (targets, event, warm, values)
                     for reused in ['false', 'true']:
                         result = select_packages(directory, {'GITHUB_OUTPUT': str(directory / 'selection-output'), 'TEST_EVENT': event,
@@ -4378,16 +4382,16 @@ def native_test_hosts_follow_claims_and_run_after_landing():
                         # A reused queue result keeps every host: its archive and preparation seed that host's snapshots.
                         assert json.loads(selected['test_runners']) == hosts, (targets, event, reused, selected)
                         # The queue result covers Linux only, so a reused push still tests every other host.
-                        tested = [] if event == 'pull_request' else [runner for runner in hosts if reused == 'false' or runner != 'ubuntu-latest']
+                        tested = reused_hosts if reused == 'true' else fresh
                         assert json.loads(selected['tested_runners']) == tested, (targets, event, reused, selected)
                         legs = json.loads(selected['test_shards'])
                         for runner in tested:
-                            expected = count if runner == 'ubuntu-latest' else min(4, count)
+                            expected = count if runner == 'ubuntu-latest' else native_count
                             assert [leg for leg in legs if leg['runner'] == runner] == [
                                 {'runner': runner, 'shard': shard, 'count': expected} for shard in range(1, expected + 1)]
                         assert {leg['runner'] for leg in legs} == set(tested), (targets, event, reused, selected)
                         # The archive build splits each host's binaries into as many archives as that host has shard legs.
-                        counts = {runner: count if runner == 'ubuntu-latest' else min(4, count) for runner in hosts}
+                        counts = {runner: count if runner == 'ubuntu-latest' else native_count for runner in hosts}
                         assert json.loads(selected['test_counts']) == counts, (targets, event, reused, selected)
                         # Shards and doctests run exactly where the selection tests, and the tests aggregate expects them there.
                         context = {'github.event_name': event, 'inputs.warm-cache': False,
