@@ -5055,10 +5055,10 @@ def browser_test_setup_and_recipe_fail_closed(directory, env, values, cli):
 def workflow_failures_remain_required():
     internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding="utf-8")
     assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
-    assert 'needs: [sample, declared, test-tools]' in internal
+    jobs = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=internal, text=True))['jobs']
+    assert {'sample', 'declared', 'test-tools'} <= set(jobs['quality']['needs'])
     assert 'working-directory: fixtures/test-tools' in internal
-    consumers = internal.split('  consumers:\n', 1)[1]
-    assert 'needs: [seams, native, fuzz-issues, browser-qualification, shard-seams]' in consumers
+    assert {'seams', 'native', 'fuzz-issues', 'browser-qualification', 'shard-seams'} <= set(jobs['consumers']['needs'])
     assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
     assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
     for name in ['targets', 'browser', 'tests']:
@@ -5074,9 +5074,6 @@ def workflow_failures_remain_required():
     assert routed == {'declaration', 'advisories'}, sorted(routed)
 
 def browser_test_result_stays_required():
-    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
-    assert 'needs: [sample, declared, test-tools]' in internal
-    assert "all(job['result'] == 'success'" in internal
     assert not re.search(r'^    continue-on-error:', workflow, re.MULTILINE)
     job = workflow.split('  browser-tests:\n', 1)[1]
     assert "needs.declaration.outputs.browser_tests == 'true'" in job
@@ -5149,8 +5146,6 @@ def reusable_calls_complete_independently():
         assert key, f'{job} must select its own stable concurrency key'
         keys.append(key.group(1).casefold())
     assert len(set(keys)) == 3, 'Concurrency groups are case-insensitive'
-    assert 'needs: [sample, declared, test-tools]' in internal
-    assert "all(job['result'] == 'success'" in internal
     assert "cancel-in-progress: $" + "{{ github.event_name == 'pull_request' }}" in workflow
 
 reusable_calls_complete_independently()

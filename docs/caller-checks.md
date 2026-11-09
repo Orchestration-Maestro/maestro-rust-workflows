@@ -153,8 +153,10 @@ runs; caller repositories and release-pin updates are unchanged.
 successful evidence. On reuse, the fixture and proof jobs skip their work. Both
 required checks, `Required repository quality` and `Required consumer tests`,
 still run and accept those skips only when selection succeeded and proved reuse.
-Without reuse, every job they require must succeed. Failures and cancellations
-still fail the required checks.
+Without reuse, repository quality requires the sample, declared caller and
+caller test tools to succeed. Consumer tests require repository quality and every
+workflow proof to succeed. Failures and cancellations still fail the required
+checks.
 
 ## Native C compilation
 
