@@ -149,12 +149,12 @@ errors keep the full self-test. A change outside the metadata files also keeps
 the full self-test. Other PRs, merge groups and main pushes keep their normal
 runs; caller repositories and release-pin updates are unchanged.
 
-`Self-test selection` records the decision in `Reuse release base self-test`.
-On reuse, the fixture and proof jobs skip their work. Both required checks,
-`Required repository quality` and `Required consumer tests`, still run and accept
-those skips only when selection succeeded and proved reuse. Without reuse,
-every job they require must succeed. Failures and cancellations still fail the
-required checks.
+`Self-test selection` shows `Reuse release base self-test` only when it reuses
+successful evidence. On reuse, the fixture and proof jobs skip their work. Both
+required checks, `Required repository quality` and `Required consumer tests`,
+still run and accept those skips only when selection succeeded and proved reuse.
+Without reuse, every job they require must succeed. Failures and cancellations
+still fail the required checks.
 
 ## Native C compilation
 
