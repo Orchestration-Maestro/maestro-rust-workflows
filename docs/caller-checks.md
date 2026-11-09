@@ -621,8 +621,9 @@ shard. When a caller has fewer test binaries than shards, the extra shards hold
 no binary: they run nothing and upload an empty coverage report, so the union
 still receives one report per shard. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
-runs doctests once on every merge group and main push, except a main push that
-reuses merge-queue tests. It does not wait for the archive build.
+runs doctests once per tested host on every merge group and main push. On a main
+push that reuses merge-queue Linux results, the Linux leg skips and the claimed
+native legs still run. It does not wait for the archive build.
 
 Native hosts follow the same route: one `Build test archive (<runner>)` job and
 one `Prepare test setup (<runner>)` job per claimed host, each with its own
@@ -909,8 +910,9 @@ Every enabled shard fetches locked dependencies.
 
 Merge groups and main pushes always run the full workspace suite, doctests,
 declared Chromium tests and coverage, except a main push that reuses
-merge-queue tests: it takes the suite from the merge group, skips the shards and
-doctests, turns coverage off, and runs the declared Chromium tests only. They do
+merge-queue tests: it takes the Linux suite from the merge group, skips the
+Linux shards and doctests, turns coverage off, and runs the declared Chromium
+tests and the claimed native hosts' shards and doctests. They do
 not narrow tests using a diff or previous coverage. The queue is the merge gate;
 a suite failure stops the merge.
 Main-push failure reporting and revert handling remain in the post-landing
@@ -2194,7 +2196,7 @@ rename a job on purpose, change the pin and the ruleset in one change.
 
 On a main push that reuses merge-queue tests, the successful `Reuse merge queue
 tests` step in `Caller declaration` records the decision. The required-checks
-guard permits shard and doctest skips only with that marker. The archive and
+guard permits Linux shard and doctest skips only with that marker. The archive and
 every other pinned check must still run. Job-shape comparisons keep reused runs
 separate from full-suite runs, so the deliberate skips do not report removals.
 
