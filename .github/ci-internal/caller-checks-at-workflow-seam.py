@@ -213,6 +213,10 @@ def execute(name, cwd, extra=None, prelude=''):
         env.setdefault('AMBIENT_PATH', env['PATH'])
     env = {key: value for key, value in env.items() if value is not None}
     command = prelude + body(name)
+    if '--header "Authorization: Bearer $GH_TOKEN"' in command or 'mise install' in command:
+        for key in ('GH_TOKEN', 'MISE_GITHUB_TOKEN'):
+            if key in os.environ:
+                env.setdefault(key, os.environ[key])
     if name in ['Browser tools', 'Test tools']:
         command = body('Mise bootstrap') + (body('Browser tool pin') if name == 'Browser tools' else '') + command
     bash = 'bash'
@@ -262,9 +266,9 @@ AWS_SESSION_TOKEN AWS_REGION AWS_DEFAULT_REGION AWS_BEARER_TOKEN_BEDROCK
 AWS_CONTAINER_CREDENTIALS_RELATIVE_URI AWS_CONTAINER_CREDENTIALS_FULL_URI
 AWS_WEB_IDENTITY_TOKEN_FILE BEDROCK_EXTENSIVE_MODEL_TEST FIREWORKS_API_KEY'''.split()
 
-def declaration(directory):
+def declaration(directory, extra=None):
     with output_file() as output:
-        result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output)})
+        result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output), **(extra or {})})
         values = dict(line.split('=', 1) for line in output.read_text(encoding="utf-8").splitlines())
         return result, values
 
@@ -584,8 +588,13 @@ def browser_test_job_is_single_and_optional():
     assert 'runs-on: ubuntu-latest\n' in job and 'matrix:' not in job
     assert body('Browser test recipe').strip().endswith('just browser-test 2>&1 | tee "$RUNNER_TEMP/browser-test.log"')
     assert 'mise exec' not in body('Browser test recipe')
-    assert 'if:' not in job.split('- name: Browser test caller tools', 1)[1].split('- name:', 1)[0]
-    assert job.index('run: *caller-tools') < job.index('name: Browser runtime tools') < job.index('name: Browser test recipe')
+    steps = {step['name']: step for step in document['jobs']['browser-tests']['steps']}
+    tools = steps['Browser test caller tools']
+    assert 'if' not in tools
+    assert tools['run'] == body('Test tools')
+    assert tools['env'] == {'GH_TOKEN': '${{ github.token }}', 'MISE_GITHUB_TOKEN': '${{ github.token }}'}
+    names = list(steps)
+    assert names.index('Browser test caller tools') < names.index('Browser runtime tools') < names.index('Browser test recipe')
     assert 'browser_test_crates = ["declared"]' in (root / 'fixtures/declared/.github/ci.toml').read_text(encoding='utf-8')
 
 browser_test_job_is_single_and_optional()
@@ -1207,9 +1216,10 @@ preparation_runs_beside_host_compilation()
 print('PASS preparation_runs_beside_host_compilation')
 
 def absent_keeps_base_checks():
-    result, values = declaration(root / 'fixtures/sample')
+    # The seam also runs in a merge group, where the runner's event would name a queued pull request.
+    result, values = declaration(root / 'fixtures/sample', {'GITHUB_EVENT_NAME': 'pull_request'})
     assert result.returncode == 0, result.stdout + result.stderr
-    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}'}
+    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'emscripten_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}', 'merge_group_pull_request': ''}
     assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
     assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
     assert "inputs.working-directory != '.'" in workflow
@@ -2448,7 +2458,8 @@ def fuzz_scan_runs_only_declaration_and_fuzz():
     assert routed == {'declaration', 'fuzz'}, sorted(routed)
     assert 'fail-fast: false' in job and '      RUSTUP_TOOLCHAIN: nightly-2026-09-15\n' in job
     assert workflow.count('nightly-') == 1 and workflow.count('/cargo-fuzz/') == 1
-    assert '        env:\n          FUZZ_SCAN: true\n        run: *check-tools\n' in job
+    tools = next(step for step in document['jobs']['fuzz']['steps'] if step.get('name') == 'Check tools')
+    assert tools['env']['FUZZ_SCAN'] is True and tools['run'] == body('Check tools')
     steps = re.findall(r'^      - name: (.+)$', job, re.MULTILINE)
     assert steps.index('Fuzz licences') < steps.index('Fuzz target'), steps
     assert "if: steps.fuzz.outputs.found == 'true'" in job.split('- name: Upload fuzz finding\n', 1)[1].split('- name:', 1)[0]
@@ -2673,28 +2684,34 @@ def locked_manifests_precede_all_test_routes():
 locked_manifests_precede_all_test_routes()
 
 def caller_tools_precede_compiling_operations():
-    jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
-                           workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    jobs = document['jobs']
     for job, consumer in [('quality', 'Lint'), ('docs', 'Docs'), ('test-build', 'Build test archive'), ('test-prepare', 'Prepare test setup'), ('tests', 'Isolated tests'),
                           ('targets', 'Check target'), ('browser', 'Build wasm crates')]:
         section = jobs[job]
-        assert ('needs: [declaration, test-build, test-prepare]' if job == 'tests' else 'needs: declaration') in section, job
-        bootstrap = next(s for s in section.split('      - name: ')[1:] if 'run: *mise-bootstrap' in s or 'run: &mise-bootstrap' in s)
-        install = next(s for s in section.split('      - name: ')[1:] if 'run: *caller-tools' in s or 'run: &caller-tools' in s)
-        assert section.index(bootstrap) < section.index(install) < section.index('- name: ' + consumer), job
-        condition = "needs.declaration.outputs.test_tools == 'true'"
-        if job == 'browser':
-            condition += " || (needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true'))"
-        for step in [bootstrap, install]:
-            assert 'if: ' + condition + '\n' in step, job
-            assert 'timeout-minutes: 10' in step, job
-        assert section.count('mise-bootstrap') == 1 and section.count('caller-tools') == 1, job
+        assert section['needs'] == (['declaration', 'test-build', 'test-prepare'] if job == 'tests' else 'declaration'), job
+        steps = section['steps']
+        bootstrap = [step for step in steps if step.get('run') == body('Mise bootstrap')]
+        install = [step for step in steps if step.get('run') == body('Test tools')]
+        assert len(bootstrap) == len(install) == 1, job
+        assert steps.index(bootstrap[0]) < steps.index(install[0]) < next(i for i, step in enumerate(steps) if step['name'] == consumer), job
+        for step in [bootstrap[0], install[0]]:
+            assert step['timeout-minutes'] == 10, job
+            assert step['env'] == {'GH_TOKEN': '${{ github.token }}', 'MISE_GITHUB_TOKEN': '${{ github.token }}'}, job
+            for tools, build, coverage, reused in itertools.product([False, True], repeat=4):
+                values = dict(zip(('needs.declaration.outputs.' + key for key in
+                                   ['test_tools', 'browser_build', 'coverage', 'tests_reused']),
+                                  ('true' if flag else 'false' for flag in [tools, build, coverage, reused]), strict=True))
+                expected = tools or (job == 'browser' and build and (coverage or reused))
+                assert bool(evaluate(step['if'], values)) == expected, (job, step['name'], values)
     for job in ['declaration', 'checks', 'advisories', 'tests-result']:
-        assert 'mise-bootstrap' not in jobs[job] and 'caller-tools' not in jobs[job], job
+        assert not any(step.get('run') in [body('Mise bootstrap'), body('Test tools')]
+                       for step in jobs[job].get('steps', [])), job
     assert workflow.count('mise install') == 1
     assert body('Test tools') == body('Browser tools')
     assert 'tools.just' not in body('Test tools')
-    assert "needs.declaration.outputs.browser_build == 'true'" in jobs['browser'].split('- name: Browser tool pin', 1)[1].split('- name:', 1)[0]
+    pin = next(step for step in jobs['browser']['steps'] if step['name'] == 'Browser tool pin')
+    assert "needs.declaration.outputs.browser_build == 'true'" in pin['if']
 
 caller_tools_precede_compiling_operations()
 print('PASS caller_tools_precede_compiling_operations')
@@ -2842,6 +2859,7 @@ def mise_bootstrap_uses_runner_platform():
         executable('curl', '#!/bin/sh\ntouch corrupt-download-marker\nwhile [ "$1" != --output ]; do shift; done\n'
                    'printf "#!/bin/sh\\ntouch checksum-bypass-marker\\n" > "$2"\n')
         previous = set(directory.glob('maestro-mise.*/*'))
+        shutil.rmtree(directory / 'maestro-release-assets')
         result = execute('Mise bootstrap', directory, wrong)
         assert (directory / 'corrupt-download-marker').is_file(), result.stdout + result.stderr
         assert result.returncode != 0, result.stdout + result.stderr
@@ -2873,12 +2891,13 @@ def test_tools_defaults_preserve_behavior():
             result, values = declaration(directory)
             assert result.returncode != 0 and 'test_tools must be a boolean' in result.stderr, result.stdout + result.stderr
         assert workflow.count('digest=8f5f6660') == 1
-        browser = workflow.split('  browser:\n', 1)[1]
-        assert "if: needs.declaration.outputs.test_tools == 'true' || (needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true'))\n        run: *mise-bootstrap" in browser
-        tests = workflow.split('  tests:\n', 1)[1].split('  targets:', 1)[0]
+        document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
         for name in ['Mise bootstrap', 'Test tools']:
-            step = next(s for s in tests.split('      - name: ')[1:] if s.splitlines()[0] == name)
-            assert "if: needs.declaration.outputs.test_tools == 'true'" in step
+            step = next(s for s in document['jobs']['tests']['steps'] if s.get('name') == name)
+            assert step['run'] == body(name)
+            assert step['env'] == {'GH_TOKEN': '${{ github.token }}', 'MISE_GITHUB_TOKEN': '${{ github.token }}'}
+            for tools in ['false', 'true']:
+                assert bool(evaluate(step['if'], {'needs.declaration.outputs.test_tools': tools})) == (tools == 'true')
 
 def reserved_ports_are_validated_and_applied_only_when_set():
     import shutil
@@ -3023,7 +3042,7 @@ def event_policy_keeps_pull_requests_fast():
 event_policy_keeps_pull_requests_fast()
 print('PASS event_policy_keeps_pull_requests_fast')
 
-def native_checks_run_on_every_pull_request_push():
+def target_checks_avoid_duplicate_apple_compilation():
     import shutil
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     declaration_steps = document['jobs']['declaration']['steps']
@@ -3041,26 +3060,29 @@ def native_checks_run_on_every_pull_request_push():
         shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
         (directory / '.github').mkdir()
         path = directory / '.github/ci.toml'
-        for event in ['pull_request', 'merge_group', 'push']:
-            for targets, pr_targets in [([], []), (declared, declared[1:]),
-                                        (declared[:1], []), (declared[1:3], declared[1:3]),
-                                        (declared[1:2] * 2, declared[1:2] * 2),
-                                        (declared[-1:], [declared[-1]])]:
+        for event, warm in [('pull_request', 'false'), ('merge_group', 'false'),
+                            ('push', 'false'), ('push', 'true')]:
+            for targets, pr_targets, full_targets in [([], [], []),
+                    (declared, declared[-1:], [declared[0], *declared[2:]]),
+                    (declared[:1], [], declared[:1]),
+                    (declared[1:3], [], declared[2:3]),
+                    (declared[1:2] * 2, [], []),
+                    (declared[-1:], declared[-1:], declared[-1:])]:
                 path.write_text('wasm_crates=[]\ncheck_targets=' + json.dumps([target['target'] for target in targets]), encoding='utf-8')
                 output = directory / 'output'
                 output.write_text('', encoding='utf-8')
-                result = execute('Read caller declaration', directory, {'TEST_EVENT': event, 'GITHUB_OUTPUT': str(output)})
+                result = execute('Read caller declaration', directory, {'TEST_EVENT': event, 'WARM': warm, 'GITHUB_OUTPUT': str(output)})
                 assert result.returncode == 0, result.stderr
                 values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-                expected = pr_targets if event == 'pull_request' else targets
+                expected = pr_targets if event == 'pull_request' else targets if warm == 'true' else full_targets
                 assert json.loads(values['targets']) == expected, (event, targets, values['targets'])
         path.write_text('wasm_crates=[]\ncheck_targets=["unsupported-target"]', encoding='utf-8')
         result = execute('Read caller declaration', directory, {'TEST_EVENT': 'pull_request', 'GITHUB_OUTPUT': str(output)})
         assert result.returncode != 0 and 'unknown target' in result.stderr, result.stderr
     assert config['env']['TEST_EVENT'] == selection['env']['TEST_EVENT']
 
-native_checks_run_on_every_pull_request_push()
-print('PASS native_checks_run_on_every_pull_request_push')
+target_checks_avoid_duplicate_apple_compilation()
+print('PASS target_checks_avoid_duplicate_apple_compilation')
 
 def removed_shard_lists_fail_clearly():
     import shutil
@@ -4439,8 +4461,11 @@ def supported_targets_use_native_runners():
         {'target': 'x86_64-apple-darwin', 'runner': 'macos-latest'},
         {'target': 'x86_64-pc-windows-msvc', 'runner': 'windows-latest'},
     ]
-    result, values = declaration(root / 'fixtures/declared')
-    assert result.returncode == 0, result.stderr
+    with output_file() as output:
+        result = execute('Read caller declaration', root / 'fixtures/declared',
+                         {'GITHUB_OUTPUT': str(output), 'TEST_EVENT': 'push', 'WARM': 'true'})
+        assert result.returncode == 0, result.stderr
+        values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
     assert json.loads(values['targets']) == expected
     assert 'runs-on: $' + '{{ matrix.runner }}' in workflow
     assert 'rustup target add "$TARGET"' in body('Check target')
@@ -4780,7 +4805,7 @@ def native_test_failures_are_detected():
 native_test_failures_are_detected()
 print('PASS native_test_failures_are_detected')
 
-def apple_type_errors_fail_pull_requests():
+def apple_type_errors_fail_full_checks():
     import shutil
     target = os.environ.get('TARGET', '')
     if not target.endswith('apple-darwin'):
@@ -4798,7 +4823,7 @@ def apple_type_errors_fail_pull_requests():
             'wasm_crates=[]\ncheck_targets=' + json.dumps([target]) + '\n', encoding='utf-8')
         output = directory / 'output'
         result = execute('Read caller declaration', directory,
-                         {'TEST_EVENT': 'pull_request', 'GITHUB_OUTPUT': str(output)})
+                         {'TEST_EVENT': 'push', 'WARM': 'true', 'GITHUB_OUTPUT': str(output)})
         assert result.returncode == 0, result.stdout + result.stderr
         values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
         assert json.loads(values['targets']) == [{'target': target, 'runner': 'macos-latest'}], values['targets']
@@ -4813,8 +4838,8 @@ def apple_type_errors_fail_pull_requests():
             assert (result.returncode == 0) == expected, result.stdout + result.stderr
             if not expected:
                 assert 'error[E0308]' in result.stderr and 'expected `u16`, found `u32`' in result.stderr, result.stderr
-            print(f'Apple PR target {target}: compiler exit {result.returncode}', flush=True)
-    print('PASS apple_type_errors_fail_pull_requests', flush=True)
+            print(f'Apple full-check target {target}: compiler exit {result.returncode}', flush=True)
+    print('PASS apple_type_errors_fail_full_checks', flush=True)
 
 def browser_recipe_runs_after_wasm():
     import shutil
@@ -5090,6 +5115,7 @@ def mise_bootstrap_checks_release_digest():
         assert paths.read_text(encoding="utf-8") != before  # Wrong version selects verified release.
         before = paths.read_text(encoding="utf-8")
         # A hostile download is data until the production checksum has passed.
+        shutil.rmtree(directory / 'maestro-release-assets')
         curl.write_text('#!/bin/sh\nwhile [ "$1" != --output ]; do shift; done\n'
                         'printf "#!/bin/sh\\ntouch checksum-bypass-marker\\n" > "$2"\n', encoding="utf-8")
         result = execute('Mise bootstrap', directory, env)
@@ -5126,10 +5152,9 @@ print('PASS reusable_calls_complete_independently')
 
 def caller_name_stays_in_the_concurrency_group():
     named = [line for line in workflow.splitlines() if re.search(r'github\.workflow\b', line)]
-    match = re.search(r'^  group: .+$', workflow, re.MULTILINE)
-    assert match is not None, 'Missing workflow concurrency group'
-    assert named == [match.group(0)], \
-        'The caller name must not reach artifact names, coverage keys or cache keys'
+    groups = [line for line in workflow.splitlines() if re.match(r' +group: ', line)]
+    assert groups and named == groups, \
+        'The caller name must reach concurrency groups only, never artifact names, coverage keys or cache keys'
     assert "name: coverage-$" + "{{ inputs.concurrency-key || 'root' }}-${{ matrix.shard }}" in workflow
 
 caller_name_stays_in_the_concurrency_group()
@@ -5266,3 +5291,147 @@ def self_test_leg_loads_helpers_without_running_cases():
 
 self_test_leg_loads_helpers_without_running_cases()
 print('PASS self_test_leg_loads_helpers_without_running_cases')
+
+
+def github_downloads_send_only_the_job_token():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    assert 'GH_TOKEN' not in document['env']
+    assert 'MISE_GITHUB_TOKEN' not in document['env']
+    def hosts(text):
+        return set(re.findall(r'https?://([^/\s"\'$:]+)', text))
+
+    def downloads(source):
+        lines = [line for line in source.splitlines() if re.search(r'\bcurl(?:\s|$)', line)]
+        # A download whose URL is a shell variable reads it from the URLs the step lists outside its curl lines.
+        listed = hosts('\n'.join(line for line in source.splitlines() if line not in lines))
+        return [(line, hosts(line) or listed) for line in lines]
+
+    def check(source):
+        # The job token goes to github.com and to no other host.
+        for line, targets in downloads(source):
+            assert targets, line
+            if targets == {'github.com'}:
+                assert '--header "Authorization: Bearer $GH_TOKEN"' in line, line
+                assert "--proto '=https' --proto-redir '=https'" in line, line
+                assert '--location-trusted' not in line, line
+            else:
+                assert 'github.com' not in targets, line
+                assert 'Authorization' not in line and 'GH_TOKEN' not in line, line
+    content = pathlib.Path('.github/workflows/content.yml').read_text(encoding='utf-8')
+    documents = [document, json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=content, text=True))]
+    for current in documents:
+        for job in current['jobs'].values():
+            for step in job.get('steps', []):
+                source = step.get('run', '')
+                env = current.get('env', {}) | job.get('env', {}) | step.get('env', {})
+                if any(targets == {'github.com'} for _, targets in downloads(source)):
+                    assert env.get('GH_TOKEN') == '${{ github.token }}', step['name']
+                if 'mise install' in source:
+                    assert env.get('MISE_GITHUB_TOKEN') == '${{ github.token }}', step['name']
+                check(source)
+    def rejected(source):
+        try:
+            check(source)
+        except AssertionError:
+            return True
+        return False
+
+    token = '''--header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' '''
+    assert rejected('curl --location https://github.com/owner/tool/releases/download/v1/tool -o tool'), 'an unauthenticated new GitHub download was accepted'
+    # A download from another host is classified by its own URL, literal or listed in the step, and never carries the token.
+    check("curl --proto '=https' --proto-redir '=https' --location https://storage.googleapis.com/bucket/node.tar.xz -o node.tar.xz")
+    check(
+        'curl ' + token + '--location https://github.com/owner/tool/archive/1.tar.gz -o tool.tar.gz\n'
+        'unset GH_TOKEN\n'
+        'while read -r url name; do\n'
+        '  curl --fail --location "$url" --output "$name"\n'
+        'done <<\'ARCHIVES\'\n'
+        'https://storage.googleapis.com/bucket/node.tar.xz node.tar.xz\n'
+        'ARCHIVES\n'
+    )
+    assert rejected('curl ' + token + '--location https://storage.googleapis.com/bucket/node.tar.xz -o node.tar.xz'), 'the job token went to another host'
+    assert rejected(
+        'while read -r url name; do\n'
+        '  curl ' + token + '--location "$url" --output "$name"\n'
+        'done <<\'ARCHIVES\'\n'
+        'https://storage.googleapis.com/bucket/node.tar.xz node.tar.xz\n'
+        'ARCHIVES\n'
+    ), 'the job token went to a listed host'
+    assert rejected(
+        'curl --fail --location "$url" --output "$name"\n'
+        'url=https://github.com/owner/tool/releases/download/v1/tool\n'
+    ), 'an unauthenticated listed GitHub download was accepted'
+
+
+github_downloads_send_only_the_job_token()
+print('PASS github_downloads_send_only_the_job_token', flush=True)
+
+
+def verified_release_archives_are_reused_by_later_jobs():
+    import gzip
+    import hashlib
+    import io
+    import tarfile
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        fake = directory / 'bin'
+        fake.mkdir()
+        stream = io.BytesIO()
+        with tarfile.TarFile(fileobj=stream, mode='w') as bundle:
+            for binary in ('rg', 'fd'):
+                content = b'#!/usr/bin/env python3\nprint("fixture tool")\n'
+                member = tarfile.TarInfo(binary)
+                member.size = len(content)
+                bundle.addfile(member, io.BytesIO(content))
+        payload = gzip.compress(stream.getvalue(), mtime=0)
+        digest = hashlib.sha256(payload).hexdigest()
+        (directory / 'payload').write_bytes(payload)
+        curl = fake / 'curl'
+        curl.write_text('''#!/usr/bin/env python3
+import os, pathlib, shutil, sys
+assert sys.argv[sys.argv.index('--header') + 1] == 'Authorization: Bearer fixture-token'
+root = pathlib.Path(os.environ['FIXTURE'])
+with (root / 'requests').open('a') as log: log.write('download\\n')
+shutil.copyfile(root / 'payload', sys.argv[sys.argv.index('--output') + 1])
+''', encoding='utf-8')
+        curl.chmod(0o755)
+        command = body('Search tools')
+        command = re.sub(r'(https://github.com/\S+) [0-9a-f]{64}', r'\1 ' + digest, command)
+        env = os.environ | {'PATH': str(fake) + os.pathsep + os.environ['PATH'], 'FIXTURE': temporary,
+                            'RUNNER_TEMP': temporary, 'GITHUB_PATH': temporary + '/path',
+                            'GH_TOKEN': 'fixture-token'}
+        def install():
+            return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command],
+                                  env=env, capture_output=True, text=True)
+        result = install()
+        assert result.returncode == 0, result.stdout + result.stderr
+        requests = (directory / 'requests').read_text(encoding='utf-8')
+        result = install()
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (directory / 'requests').read_text(encoding='utf-8') == requests, 'cache hit downloaded again'
+        (directory / 'maestro-release-assets' / digest).write_bytes(b'corrupt cached archive')
+        result = install()
+        assert result.returncode != 0 and 'archive digest mismatch' in result.stderr, result.stdout + result.stderr
+        assert (directory / 'requests').read_text(encoding='utf-8') == requests
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    builds = document['jobs']['test-build']['steps']
+    upload = next(step for step in builds if step.get('name') == 'Share release assets')
+    assert upload['uses'].startswith('actions/upload-artifact@')
+    test_archive = next(step for step in builds if step.get('name') == 'Upload test archive')
+    assert upload['with'].get('retention-days') == test_archive['with'].get('retention-days')
+    assert upload['with']['if-no-files-found'] == 'error'
+    assert '${{ runner.os }}-${{ runner.arch }}' in upload['with']['name']
+    assert '${{ inputs.concurrency-key' in upload['with']['name']
+    tests = document['jobs']['tests']['steps']
+    restore = next(i for i, step in enumerate(tests) if step.get('name') == 'Restore release assets')
+    assert tests[restore]['uses'].startswith('actions/download-artifact@')
+    assert tests[restore]['with']['name'] == upload['with']['name']
+    assert tests[restore]['with']['path'] == upload['with']['path'] == '${{ runner.temp }}/maestro-release-assets'
+    assert tests[restore]['if'] == "${{ !inputs.warm-cache && github.job == 'tests' }}"
+    assert restore < next(i for i, step in enumerate(tests) if step.get('name') == 'Coverage tools')
+    assert not any(step.get('name') == 'Release asset cache' for job in document['jobs'].values()
+                   for step in job.get('steps', []))
+
+
+verified_release_archives_are_reused_by_later_jobs()
+print('PASS verified_release_archives_are_reused_by_later_jobs', flush=True)

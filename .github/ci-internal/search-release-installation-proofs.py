@@ -179,8 +179,8 @@ for job, names in {
  'checks': ['Check tools', 'Compile cache'],
  'fuzz': ['Check tools'], 'advisories': ['Check tools'],
  'targets': ['Compile cache', 'Mise bootstrap', 'Test tools'],
- 'browser': ['Compile cache', 'Browser mise bootstrap', 'Browser tools'],
- 'browser-tests': ['Compile cache'],
+ 'browser': ['Compile cache', 'Browser mise bootstrap', 'Browser tools', 'Emscripten SDK'],
+ 'browser-tests': ['Compile cache', 'Emscripten SDK'],
 }.items():
     for name in names:
         permit('ci', job, name, 'timeout-minutes', '10')
@@ -200,6 +200,9 @@ for job, names in {
         permit('ci', job, name, '--retry', '3')
 for occurrence in range(1, 5):
     permit('ci', 'browser-tests', 'Browser runtime tools', '--retry', '3', occurrence)
+for job in ['browser', 'browser-tests']:
+    for occurrence in range(1, 3):
+        permit('ci', job, 'Emscripten SDK', '--retry', '3', occurrence)
 for name in ['Tests', 'Isolated tests']:
     permit('ci', 'tests', name, 'timeout-minutes', '45')
 permit('ci', 'test-prepare', 'Prepare test setup', 'timeout-minutes', '45')
@@ -327,6 +330,10 @@ class SearchReleases(unittest.TestCase):
                 actual = [executable, *argv[1:]]
                 actual[actual.index('--location') + 1] = url
                 actual[actual.index('--output') + 1] = str(output)
+                # The loopback peer serves HTTP; keep the release retry policy unchanged.
+                actual[actual.index('--proto') + 1] = '=http'
+                actual[actual.index('--proto-redir') + 1] = '=http'
+                actual[actual.index('--header') + 1] = 'Authorization: Bearer fixture-token'
                 command = shlex.join(actual) + '\nprintf "%s  %s\\n" ' + shlex.quote(digest) + ' ' + shlex.quote(str(output))
                 command += ' | sha256sum --check --status\nprintf "INSTALLED\\n"'
                 result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command], capture_output=True, text=True)
@@ -351,7 +358,7 @@ class SearchReleases(unittest.TestCase):
     def test_every_pinned_tool_download_retains_the_transport_retry_policy(self):
         for path in ['.github/workflows/ci.yml', '.github/workflows/content.yml']:
             commands = [shlex.split(line) for line in files[path].splitlines() if line.strip().startswith('curl ')]
-            self.assertEqual(len(commands), 9 if path.endswith('/ci.yml') else 1)
+            self.assertEqual(len(commands), 11 if path.endswith('/ci.yml') else 1)
             for argv in commands:
                 with self.subTest(path=path, argv=argv):
                     self.assertIn('--retry-all-errors', argv)
@@ -360,7 +367,7 @@ class SearchReleases(unittest.TestCase):
 
     def test_workflow_controls_match_authority(self):
         report = require_recorded_controls(files)
-        self.assertEqual(len(report.splitlines()), 162)
+        self.assertEqual(len(report.splitlines()), 176)
         print(report)
 
     def assert_policy(self, sources, admitted):
@@ -398,7 +405,7 @@ class SearchReleases(unittest.TestCase):
     def test_download_retry_changes_are_rejected_per_call(self):
         source = files['.github/workflows/ci.yml']
         positions = [match.start() for match in re.finditer('--retry 3', source)]
-        self.assertEqual(len(positions), 9)
+        self.assertEqual(len(positions), 11)
         self.assert_policy(files, True)
         for offset in positions:
             for replacement in ['', '--retry 2', '--retry 3 --retry 3']:
@@ -642,7 +649,7 @@ class SearchReleases(unittest.TestCase):
 
     def test_inventory_requires_a_reason_for_each_occurrence(self):
         report = require_recorded_controls(files, authority)
-        self.assertEqual(len(report.splitlines()), 162)
+        self.assertEqual(len(report.splitlines()), 176)
         for row in authority:
             self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
         for row in [next(iter(authority)), next(reversed(authority))]:

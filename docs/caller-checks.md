@@ -35,15 +35,16 @@ test_tools = false
 ## Test policy and caller permissions
 
 Pull requests run declaration validation, formatting, Clippy, docs,
-dependency/source checks and declared macOS and Windows target checks. Host
-Clippy and these target checks select changed crates and their workspace
+dependency/source checks and the declared Windows target check. Host
+Clippy and the Windows target check select changed crates and their workspace
 dependents; formatting still checks the whole workspace. Pull requests skip the
 test archive, test setup, test shards, doctests and wasm/browser builds. The
 declared [example witnesses](#wasm-example-witnesses) are the exception: they
 still compile. Every required check name still reports; skipped jobs count as
 success. Merge groups and main pushes run every workspace test with the full
 shard matrix, doctests, coverage and all declared builds and foreign-target
-checks, except that a main push reuses tests when its exact commit already
+compilation. The arm64 macOS archive replaces its separate target check. A main
+push reuses tests when its exact commit already
 passed a completed merge-group run of the same shared workflow revision with the
 full workspace selected. That push skips the test shards and coverage. The
 archive, preparation, Doctests, Wasm and browser build and Chromium browser
@@ -88,8 +89,9 @@ identities, missing or expired artifacts, unreadable evidence and API errors all
 keep the full suite. Runs whose merge group left no evidence keep the full suite.
 Fixture checkout/event overrides, scan calls and `warm-cache` calls do not use
 the result lookup.
-The independent `warm-cache` call still runs on every main push and seeds its
-existing cache shapes, including its normal doctest and browser commands.
+The independent `warm-cache` call still runs on every main push and seeds the
+cache shapes that keep a snapshot; its normal doctest and browser commands run
+without saving one ([Jobs that keep no snapshot](#jobs-that-keep-no-snapshot)).
 
 Below, main-push test and coverage behaviour describes pushes without a matching
 merge-queue result. The independent `warm-cache` call runs on every main push.
@@ -162,6 +164,47 @@ warm build saves a snapshot; a pull-request run cannot prove saving. More cached
 compiles are useful only when that save succeeds and later jobs restore the
 compatible snapshot.
 
+## Superseded merge-group runs
+
+When the merge queue rebuilds a group, the new run cancels the jobs of the run
+it replaces that can hold a macOS runner, and the live group takes those
+runners.
+
+A queued group runs on a ref named `gh-readonly-queue/<base>/pr-<number>-<hash>`.
+A rebuild keeps the number and changes the hash, so the ref alone cannot match
+the old run to the new one. The caller declaration reads the number from the ref
+and publishes it as the `merge_group_pull_request` output. A merge-group ref
+without a number fails the declaration.
+
+The jobs that can hold a macOS runner (`test-build`, `test-prepare`, `tests`,
+`doctests` and `targets`) each hold their own concurrency group. The group name
+is the calling workflow, `mg`, the number, the `concurrency-key`, the job and
+the matrix leg. Both runs of one pull request share it, so the newer run cancels
+the older one. Different pull requests, jobs, legs and callers never share one,
+so live groups never cancel each other. Every leg of those jobs is cancelled,
+whatever its runner: Linux, macOS and Windows alike. The superseded run's other
+jobs finish on their own.
+
+GitHub cancels whichever job already holds a group when another joins, however
+old its run is. A replaced run that reaches a group late would cancel the live
+run. A rebuild deletes the old group's ref, so a step checks that the run's own
+ref still exists. It runs right after the declaration is read, and again as the
+last step of `test-build` and `test-prepare`, the two jobs `tests` waits for. A
+missing ref fails the job and skips the jobs that need it, so a replaced run
+stops before it takes a group. Any other API failure lets the run continue.
+
+Pull requests and pushes are unchanged. Their job groups carry the run ID, so
+no two runs share one and nothing is cancelled.
+
+Limits:
+
+- A pull request that leaves the queue without a rebuild has no later run to
+  claim its group, so its jobs run to completion. Cancel that run by hand.
+- The check reads the ref once per job. A replaced run that passes it can still
+  join a group a few seconds later. It cancels a live job only if that job joined
+  in those seconds, and a live run needs a full build before its `tests` legs
+  join, so the window is small but not closed.
+
 ## Reusable-call concurrency
 
 Every run except a push is grouped by ref. A push run is grouped by
@@ -173,8 +216,10 @@ reusable workflow more than once, give each calling job a distinct, stable
 key (case-insensitive), such as `concurrency-key: quality`. Reuse that key on
 later pushes so a new pull-request run cancels the older invocation of the
 same job, not another job in its own run. Do not use a run ID as the key.
-Merge-queue runs never cancel running checks. The caller must not share the
-same concurrency group with its called workflow; see GitHub's
+A rebuilt merge group cancels the jobs of the run it replaces that can hold a
+macOS runner; see
+[Superseded merge-group runs](#superseded-merge-group-runs). The caller must not
+share the same concurrency group with its called workflow; see GitHub's
 [reusable workflow concurrency rules](https://docs.github.com/en/actions/reference/reusable-workflows-reference#limitations-of-reusable-workflows).
 
 ## Declaration
@@ -184,7 +229,8 @@ The `wasm_crates` and `check_targets` arrays are required, including when empty.
 The test run reaches the pinned `rg` and `fd` only through `MAESTRO_TEST_RG`
 and `MAESTRO_TEST_FD`, never through `PATH`.
 `wasm_examples` is an optional table that maps package names to example names
-and defaults to `{}`. The [schema](../.github/ci.schema.json) describes the
+and defaults to `{}`. `emscripten_crates` is an optional array of package names
+and defaults to `[]`. The [schema](../.github/ci.schema.json) describes the
 parsed TOML shape; there is no version key or older-format reader.
 
 `check_targets` also selects native test hosts: `aarch64-apple-darwin` adds
@@ -203,8 +249,8 @@ ports on macOS or Windows. Without it nothing runs.
 
 An absent file runs the standard checks without isolation, search tool
 installation or optional jobs. After declaration validation, pull requests
-run formatting, Clippy, docs, dependency/source checks and declared macOS and
-Windows target checks in parallel. Merge groups and main pushes also run the test
+run formatting, Clippy, docs, dependency/source checks and the declared
+Windows target check in parallel. Merge groups and main pushes also run the test
 archive, test setup, full shard matrix, doctests, coverage, wasm/browser builds,
 Chromium tests and all other declared foreign-target checks.
 Pull requests skip these jobs without removing their required check names.
@@ -214,7 +260,8 @@ member or non-boolean tool/build flag fails declaration validation. An empty
 present document is invalid. Integer and string booleans are not accepted.
 
 Names are exact, without whitespace or Unicode normalization. Each wasm name
-must match a package in the caller's locked Cargo metadata. Each `wasm_examples`
+must match a package in the caller's locked Cargo metadata, as must each
+`emscripten_crates` name. Each `wasm_examples`
 example must be an example target of its package. Each target must match the
 caller compiler's target list and the runner table below. An unknown package,
 unknown target or recognized target without a runner fails with a file/key
@@ -225,6 +272,52 @@ retained; declaration text is never executed as shell syntax.
 macOS target checks use the runner's built-in Bash. Callers do not need to
 install a newer shell.
 
+## Tool downloads
+
+No caller setting is needed. Release downloads use the job token. The Rust
+workflow scopes download credentials to installer steps; caller compilation does
+not inherit them. The compile-cache daemon starts without either download token.
+Mise uses `MISE_GITHUB_TOKEN` for GitHub tool installs.
+
+GitHub release requests send an Authorization header and allow only HTTPS
+requests and redirects. Curl drops the header when GitHub redirects to another
+host. Release-asset storage (`objects.githubusercontent.com` or
+`release-assets.githubusercontent.com`) uses the signed URL GitHub supplies,
+not a forwarded job token. The pinned checksums are verified before tools run,
+including when an archive is restored.
+
+The download inventory is:
+
+| Download | Hosts | Credentials |
+| --- | --- | --- |
+| sccache; mise bootstrap in Rust and content checks | `github.com`, redirected release-asset storage | Job token on GitHub; signed storage URL |
+| cargo-nextest; cargo-llvm-cov; ripgrep; fd | `github.com`, redirected release-asset storage | Job token on GitHub; signed storage URL |
+| cargo-deny; cargo-hakari; cargo-machete; typos; gitleaks; zizmor; actionlint; cargo-fuzz; shfmt | `github.com`, redirected release-asset storage | Job token on GitHub; signed storage URL |
+| wasm-bindgen browser runtime | `github.com`, redirected release-asset storage | Job token on GitHub; signed storage URL |
+| Chromium | `cdn.playwright.dev`, `storage.googleapis.com` | Public download; no job token |
+| Playwright and Playwright Core | `registry.npmjs.org` | Public download; no job token |
+| Caller tools installed by mise | Hosts selected by the caller's pinned `mise.toml` | Mise uses the job token for GitHub; other hosts use their own authentication |
+| Rust toolchains and components | `static.rust-lang.org` | Public download; no job token |
+| Cargo dependencies | Registry and locked source hosts selected by the caller | Cargo's configured authentication; not a release-asset download |
+| Actions, source checkouts, caches and run artifacts | GitHub APIs and their storage services | Actions' built-in authentication or the explicit job token; signed storage URLs |
+
+Test archive builds share checksum-addressed release archives as a run artifact,
+once per runner host and workflow call. Release archives and compiled test
+archives use the repository's default artifact retention, so both remain available
+when failed shards are rerun. Test shards restore the bundle before installing
+tools and still run each installer's original checksum verification. The artifact
+name includes the operating system, architecture and call key; Actions reads it
+only from the current run. Entries
+contain downloads, not credentials or installed paths. Using artifacts leaves
+the repository's limited cache storage available for compiled snapshots.
+
+Parallel compilation jobs, doctests, warm builds, standalone content checks and
+browser runtime downloads remain independent. Caller-declared mise installs also
+run per job, authenticated for GitHub: their caller-owned mutable state and
+platform-specific paths do not belong in the shared archive artifact. Only the
+workflow's checksum-pinned release archives are shared across test shards.
+No download retry or timeout policy changes with authentication.
+
 ## Compile cache
 
 Cached compiling jobs export `CARGO_BUILD_RUSTC_WRAPPER=sccache`, so callers do not
@@ -234,9 +327,10 @@ still instrument workspace builds and send their compiles through the cache.
 
 | Jobs | Host | Restore | Save |
 | --- | --- | --- | --- |
-| Format and lint, Docs, Tests, Doctests, Dependency/source/coverage checks, Wasm and browser build, Chromium browser tests | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
+| Warm coverage build, Build test archive, Prepare test setup, Dependency/source/coverage checks | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
+| Format and lint, Docs, Doctests, Wasm and browser build, Chromium browser tests, declared target checks | Linux | Never | Never; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) |
 | Native test archive builds, test preparation and doctests | arm64 macOS | Every full-suite call that runs the job | Default-branch pushes only |
-| Declared target checks | Linux, arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
+| Declared target checks | arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
 | Declared target checks and native test jobs | x86_64 Windows | Never | Never |
 
 Windows compilation runs uncached because sccache expands response files beyond
@@ -255,12 +349,43 @@ checksum-pinned assets are listed in [Compile cache](../README.md#compile-cache)
 
 Only a default-branch push warm call also runs Format and lint, Docs,
 Doctests, Wasm and browser build, and declared Chromium browser tests.
-They run their existing checks, not substitute builds: the paths and compiler
-output modes match subsequent readers. Doctests use the plain test shape,
-not the instrumented coverage shape. Browser tests and doctests execute during
-these warm calls; the coverage warm build still uses its optional test filter.
-Other warm calls skip these additional jobs. No extra cache writer is enabled
-for pull requests, merge groups, feature branches or manual runs.
+They run their existing checks, not substitute builds. Browser tests and
+doctests execute during these warm calls; the coverage warm build still uses
+its optional test filter. These Linux jobs keep no snapshot, so the warm call
+runs them without saving anything. Other warm calls skip these additional jobs.
+No extra cache writer is enabled for pull requests, merge groups, feature
+branches or manual runs.
+
+### Jobs that keep no snapshot
+
+A Linux job saves a snapshot only when a later job of the same run restores it:
+the warm coverage build, Build test archive and Prepare test setup feed the test
+shards, and the Dependency, source and coverage checks job is the whole build of
+a caller without the archive. Format and lint, Docs, Doctests, Wasm and browser
+build, Chromium browser tests and the Linux target checks restore nothing and
+save nothing, because one snapshot for each of them would not fit the cache
+limit next to the others (see [One entry per prefix](#one-entry-per-prefix)). They
+compile cold, and a job on another host keeps its snapshot. Compile cache
+identity decides this once, in its `snapshot` output. The restore step runs only
+when `snapshot` is `true`, the save step needs the `writer` output that is `true`
+only for a snapshot-keeping job on a default-branch push, and the hit-rate floor
+reports the job's compile count without judging a hit rate it cannot reach.
+
+Cold times measured on Maestro, against the warm time of the same job:
+
+| Job | Cold | Warm |
+| --- | --- | --- |
+| Docs | 7.0 min | 3.9 min |
+| Doctests | 6.8 to 8.0 min | 2.8 min |
+| Wasm and browser build | 8.3 to 12.3 min | 3.1 to 3.5 min |
+| Check (aarch64-unknown-linux-gnu) | 4.7 to 5.5 min | 3.0 min |
+
+Each stays under the merge group's longest path, the arm64 macOS archive build
+and its shards. The extra Linux minutes add no cost on a public repository.
+
+An entry a job saved before it stopped keeping a snapshot stays in the cache
+until GitHub's seven-day expiry removes it, because nothing restores it and the
+pruners keep the newest entry of each prefix.
 
 ### Snapshot size
 
@@ -303,10 +428,11 @@ remove even the newest snapshot of a shape. On 2026-11-03 one Maestro generation
 held 5,606,616,026 bytes: the other compile snapshots, three Cargo git entries
 and one test setup bundle. The setup snapshot adds one entry of about 1.1 GB to
 each generation: at most 1.6 GB of objects, plus about 6 MB of preprocessor
-entries. A generation then stays near 7.2 GB, under the limit. GitHub evicts by
-last access, so the previous generation goes first: once a shape saves its new
-snapshot, no reader restores the old one. The pruning jobs below delete that old
-generation after each shape saves, so it no longer waits for eviction.
+entries. GitHub evicts by last access, so the previous generation goes first:
+once a shape saves its new snapshot, no reader restores the old one. The pruning
+jobs below delete that old generation after each shape saves, so it no longer
+waits for eviction. What one generation adds up to is the budget in
+[One entry per prefix](#one-entry-per-prefix).
 
 ### One entry per prefix
 
@@ -322,14 +448,37 @@ prints a `Cache prune` warning, marks the step failed and leaves the job green,
 and the next pruner tries again. Entries under other names, such as a caller's
 own caches, are never touched.
 
-Measured from Maestro on 2026-11-04, one entry per shape holds about 8.4 GiB of
-its 10 GiB limit: compile snapshots of 0.24 GiB (`quality`), 0.32 GiB (`docs`),
-0.98 GiB (`tests-coverage`), 1.46 GiB (`test-prepare`), 0.23, 0.98 and 0.57 GiB
-(the aarch64 Linux, x86_64 macOS and arm64 macOS target checks), about 0.78 GiB
-(`tests-plain`), 0.65 GiB (`browser`) and 0.68 GiB (`browser-tests`), plus two
-0.40 GiB Cargo git entries and one 0.66 GiB test setup bundle. While a run
-saves, a shape's new entry and the one it replaces exist together until the
-pruner that follows its saving job runs.
+The repository cache holds one generation, so the snapshots every kept shape
+saves, plus the Cargo git entries and the test setup bundles, must add up to under
+90% of the 10 GiB limit, the level at which the usage guard files an issue. Over
+the limit GitHub evicts the newest snapshots of the shapes restored least
+recently, and those shapes then compile cold. One snapshot for each of the
+twelve shapes Maestro compiled needed 11.66 GiB, so the Linux jobs listed in
+[Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) stopped saving. Measured
+from Maestro's default-branch push 42428071607 on 2026-11-08, one entry per kept
+shape holds 8.33 GiB, 83.3% of the limit:
+
+| Entry | Host | GiB |
+| --- | --- | --- |
+| `test-prepare` | Linux | 1.35 |
+| `tests-coverage` | Linux | 0.98 |
+| `test-prepare` | macOS | 1.33 |
+| `tests-plain` | macOS | 0.81 |
+| `targets-clippy-x86_64-apple-darwin` | macOS | 0.37 |
+| `targets-clippy-aarch64-apple-darwin` | macOS | 0.36 |
+| `cargo-git` | Linux | 0.41 |
+| `cargo-git` | macOS | 0.41 |
+| `cargo-git` | Windows | 0.74 |
+| `test-setup` | Linux | 0.82 |
+| `test-setup` | macOS | 0.76 |
+
+A shape that joins Maestro needs a row here, and the self-test fails when a kept
+shape has no row or the rows pass 90%. While a run saves, a shape's new entry
+and the one it replaces exist together until the pruner that follows its saving
+job runs. That job waits for the whole matrix, so a Linux entry can outlive its
+replacement by as long as the macOS leg takes. GitHub evicts by last access, so
+the replaced entry, which nothing has read since the run began, normally goes
+first.
 
 ### Cargo git dependency cache
 
@@ -709,7 +858,7 @@ and once the test stops writing there, the next run is green.
 
 ### Pull-request selection and retries
 
-Pull-request host Clippy, macOS and Windows checks select changed workspace crates,
+Pull-request host Clippy and Windows checks select changed workspace crates,
 literal `include_str!`, `include_bytes!` or `#[path = "..."]` input readers and
 declared test-input readers, plus their direct or transitive workspace dependents. Normal, build,
 development and target-specific dependency edges count. The deepest package root
@@ -723,7 +872,7 @@ select only their compile-input readers and explicit test-input routes when
 included.
 Root manifest and lockfile changes still follow the rules below.
 
-Host Clippy and declared macOS and Windows target checks lint the selected packages
+Host Clippy and the declared Windows target check lint the selected packages
 with `--all-targets`. Merge groups and main pushes lint the whole workspace.
 An empty PR selection performs no host or target Clippy compilation; the named
 checks still report success. An absent base selects every package for lint.
@@ -1147,6 +1296,56 @@ locked Cargo metadata or an example is not a target of its package. Repetitions
 are kept. Declaration text reaches cargo as arguments and never runs as shell
 syntax.
 
+## Emscripten builds
+
+Quick start: list the packages that compile for `wasm32-unknown-emscripten`.
+Maestro installs the pinned Emscripten SDK and the target's standard library,
+then builds each package.
+
+```toml
+wasm_crates = []
+check_targets = []
+emscripten_crates = ["my-sandbox-runtime"]
+```
+
+`emscripten_crates` is an optional array of exact locked package names, in
+build order. It defaults to `[]`. Repetitions are kept, and the names reach
+cargo as arguments, never as shell syntax. A name outside the locked Cargo
+metadata fails declaration validation with the file and key. With an empty list
+or no key, no job installs or builds anything for Emscripten.
+
+On merge groups and main pushes, a non-empty list adds these steps to the Wasm
+and browser build job. Pull requests skip them, and the job runs even when
+`wasm_crates` is empty:
+
+| Step | What it does |
+| --- | --- |
+| Emscripten SDK | Installs Emscripten 6.0.10 and puts `emcc` on the `PATH`. |
+| Emscripten target | Runs `rustup target add wasm32-unknown-emscripten` for the caller's toolchain. |
+| Build emscripten crates | Runs `cargo build --locked --target wasm32-unknown-emscripten -p "$CRATE"` for each package. |
+
+The Chromium browser tests job installs the same SDK and target before the
+caller's `browser-test` recipe, so a recipe can build for Emscripten itself. It
+does not build the listed packages.
+
+The SDK comes from the emsdk 6.0.10 release archive on github.com. That request
+is the only one that carries the job token, and the step drops the token before
+the installer runs. Each archive is verified by SHA-256 before it is unpacked:
+
+| Archive | SHA-256 |
+| --- | --- |
+| emsdk 6.0.10 release | `09cbafdf00e5a7b4275fc27229d69befafc5ca6070543124219977101310dade` |
+| Node 24.19.0, Linux x64 | `14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647` |
+| Emscripten 6.0.10 toolchain binaries, Linux x64 | `a51dd2829bdf725d268974728e032533b106ea01cb482a62288ec12627a7abbe` |
+
+The two archives the installer would fetch itself are downloaded and verified
+first, then placed in its download folder, so the installer never reads an
+unchecked file. The step then checks that `emcc` reports 6.0.10 and exports
+`EMSDK` and `EMSDK_NODE` for later steps. The SDK is MIT and NCSA licensed.
+
+The caller owns the binding step and the browser application. The shared
+workflow only provides the toolchain and the build of the listed packages.
+
 ## Chromium browser tests
 
 `browser_test_crates` is an optional array of exact locked workspace package
@@ -1384,11 +1583,18 @@ cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warning
 
 There is no Linux fallback for Apple/MSVC targets. Runtime tests on a claimed
 macOS arm64 host use the separate [test shard route](#test-shards).
-Merge groups and main pushes run every opted-in target check.
-Ordinary pull requests run declared `aarch64-apple-darwin`,
-`x86_64-apple-darwin` and `x86_64-pc-windows-msvc` checks in parallel.
-PR macOS and Windows checks use the same selected packages as host lint instead
-of `--workspace`; an empty selection keeps the check result without compiling.
+Merge groups and main pushes run opted-in target checks, except for
+`aarch64-apple-darwin`: its native macOS test archive already compiles that
+target. The separate `x86_64-apple-darwin` check remains because there is no
+native x86_64 macOS test archive. Warm calls keep both Apple checks because they
+do not build native test archives. The four native macOS test shards are unchanged.
+
+Ordinary pull requests run only the declared `x86_64-pc-windows-msvc` target
+check. Apple checks wait for the full run; no macOS compile-only job starts on
+a pull request. Apple dependencies with C build scripts need a cross toolchain
+and an Apple SDK to compile on Linux; this workflow does not install one.
+The PR Windows check uses the same selected packages as host lint instead of
+`--workspace`; an empty selection keeps the check result without compiling.
 Declaration errors fail CI even when dependent jobs skip.
 
 ## Nightly fuzz job
@@ -1618,6 +1824,22 @@ judged:
 
 - With no open issue, a breach opens one that lists every subject that breached
   in the run.
+- A run records in hidden comments, the record, the sections a later run cannot
+  rebuild from the body: the subject the write adds, which the body does not list
+  yet, and a subject whose state changed since the guard recorded it. It writes
+  the record before it writes the body, in as many comments as GitHub's
+  65,536-character comment limit needs, and the guard rebuilds the body from all
+  of them. GitHub has no write that refuses a body built from an older read, so two
+  runs can write one body at the same time, and the run that read it first writes
+  back what it read, dropping a subject the other run had just added. The record
+  keeps that subject: the next run lists it again. A subject the body already lists
+  needs no entry until its state changes. Only a comment the guard wrote itself is
+  a record, so a marker in anyone else's comment changes nothing.
+- Two runs can finish together and judge a kind before either has opened its
+  issue, so both open one. The lower number holds the kind: the guard writes
+  that run's subjects onto it and comments a pointer on the duplicate it just
+  opened. The duplicate keeps its own copy of those findings and stays open
+  until a later run folds its subjects into the record and closes it.
 - With an open issue, the guard rewrites its body in place. A breach adds its
   subject, or replaces that subject's evidence and keeps the run that first
   breached it. A pass updates only a subject the issue already lists.
@@ -1625,19 +1847,27 @@ judged:
   (`New subjects: ...`), or the run after which no listed subject is breaching
   (`passed this guard: every subject listed here has passed`). A repeat breach,
   a pass while another subject still breaches, and a breach of a subject that
-  had passed update the body and add no comment.
+  had passed update the body and announce nothing. A record is a comment too, and
+  a run records only a subject the body does not list yet or a subject whose state
+  changed: a repeat breach leaves the issue's comment count where it was, and so
+  does the first repeat on an issue written before the guard kept a record.
 
 A body stays within GitHub's 65,536-character limit. When a rewrite would pass
-it, the guard drops subjects that passed, the earliest listed first, and lists
-any of them that breaches again as new. The guard never drops a breaching
-subject, so when breaching subjects alone would pass the limit, the run fails
-and the issue stays as it was.
+it, the guard drops subjects that passed, the earliest listed first. The record
+keeps the state it holds for a subject, so a recorded subject the body drops comes
+back as passed when the body has room again, and one that breaches again is listed
+again with the run that first breached it. A subject the record never held is not
+rebuilt once the body drops it, so only a recorded pass survives the limit. The
+guard never drops a breaching subject, so when breaching subjects alone would pass
+the limit, the run fails and the issue stays as it was.
 
-The guard never closes an issue. Close it once the fix is confirmed; the next
-breach of that kind opens a new one. A pass with no open issue, or for a subject
-the issue does not list, changes nothing. The guard rewrites only a body it can
-read back: an open issue with a kind's title and no subject section fails the
-run and stays untouched.
+The guard never closes a kind's issue. Close it once the fix is confirmed; the
+next breach of that kind opens a new one. Its only close is a duplicate, and only
+once the record holds that duplicate's subjects; until then the duplicate points
+at that issue. A pass with no open issue, or for a subject the issue does not
+list, changes nothing. A body the guard did not write still stops the run before
+any write: an open issue with a kind's title and no subject section is refused,
+untouched.
 
 A subject is as wide as the cause: one cache shape is one subject, however many
 jobs judge it, so sixteen test shards on one cold snapshot are one section with
@@ -1767,25 +1997,21 @@ the run link and fix the cause of the kind that regressed.
 
 ### Compile-cache hit-rate floor
 
-Every job that saves a compile snapshot warns when its compile-cache hit rate is
-under 90%: Format and lint, Docs, Build test archive, Prepare test setup, the
-test shards and Doctests, Dependency, source and coverage checks, each Linux and
-macOS target check (the Windows target checks skip the statistics step, so they
-are never judged) and the Wasm and Chromium browser builds. A default-branch push
-seeds every one of these shapes (`tests-coverage`, `tests-plain`, `quality`,
-`docs`, `checks`, `targets-clippy-<target>`, `browser`, `browser-tests` and
-`test-prepare`), so each is judged on merge groups, pull requests and
-default-branch runs alike; only a run in which no cacheable compilation ran is
-not judged. It never fails the build: a change can invalidate the cache itself,
+Every job that keeps a compile snapshot warns when its compile-cache hit rate is
+under 90%: Build test archive, Prepare test setup, the test shards, Dependency,
+source and coverage checks, and each arm64 macOS target check (the Windows target
+checks skip the statistics step, so they are never judged). Format and lint,
+Docs, Doctests, the Wasm and Chromium browser builds and the Linux target checks
+keep no snapshot, so they report their compile count and no hit rate. A
+default-branch push seeds every judged shape (`tests-coverage`, `tests-plain`,
+`checks`, `targets-clippy-<target>` and `test-prepare`), so each is judged on
+merge groups, pull requests and default-branch runs alike; only a run in which no
+cacheable compilation ran is not judged. It never fails the build: a change can invalidate the cache itself,
 such as a toolchain bump, and only a push to the default branch saves a
 snapshot again, so a failing floor would block the merge group on every retry.
 The floor is fixed in `ci.yml`. Source: the archive build of merge-group runs
 40990557025, 40990555729, 40968689273 and 40946549381 hit 100.00%, 100.00%,
-100.00% and 99.67%. Before the check covered every shape, Format and lint, Docs,
-Doctests and the browser builds of Maestro merge groups 40322701820, 40620121647,
-40870001533 and 40993559130 compiled cold, about 4,040 misses per group, because
-the warm-up stayed on a release without their writer, and the first group after a
-default-branch push (40996420703) restored all five at 100%. The warning is an
+100.00% and 99.67%. The warning is an
 annotation that names the shape and one cause. The guards read it from a
 merge-group or main-push run, and from a pull-request run when a caller passes
 one, and list each shape that fell cold in the `Compile cache below its hit-rate
@@ -1838,10 +2064,20 @@ repository cache they fill.
   any read. The guard fires at 90% of the storage limit the caller declares,
   because over the limit GitHub evicts the oldest snapshots, which is how the
   2026-10-26 cold groups happened, and the margin gives the guard time to file
-  before that. The usage is read for every judged run.
+  before that. The usage is read for every judged run. The save window does not
+  count: a push leaves the snapshots it replaces on the default branch until its
+  pruning jobs finish, so the guard sets those aside (the older entries of each
+  compile, Cargo git and test setup prefix on that branch) and judges what stays,
+  the at-rest total in [One entry per prefix](#one-entry-per-prefix). An entry
+  of another ref, or under another name, counts in full. The issue states the
+  reading, the part that is window and the part that stays.
   Source: Maestro held 10,928,201,953 bytes (10.18 GiB) in 22 entries on
-  2026-10-30 against its 10 GiB limit. The guide and the finding use GiB. To respond, delete the pull-request entries the issue lists, or
-  shrink what the snapshots hold.
+  2026-10-30 against its 10 GiB limit, and 10,484,269,311 bytes (9.76 GiB,
+  97.6%) on 2026-11-08, when one snapshot for each of twelve shapes needed
+  11.66 GiB and GitHub evicted the newest Linux snapshots. The guide and the
+  finding use GiB. To respond, delete the pull-request entries the issue lists,
+  or shrink what the snapshots hold: a shape that restores nothing later needs no
+  snapshot ([Jobs that keep no snapshot](#jobs-that-keep-no-snapshot)).
 
 Both are kinds without subjects: a repeat rewrites the open issue in place.
 
@@ -1934,9 +2170,10 @@ every other pinned check must still run. Job-shape comparisons keep reused runs
 separate from full-suite runs, so the deliberate skips do not report removals.
 
 Pull requests require `Caller declaration`, `Format and lint`, `Docs`,
-`Dependency, source and coverage checks` and each declared native target result:
-`Check (aarch64-apple-darwin)`, `Check (x86_64-apple-darwin)` and
-`Check (x86_64-pc-windows-msvc)`. A failed target check fails the workflow.
+`Dependency, source and coverage checks` and the declared Windows target result,
+`Check (x86_64-pc-windows-msvc)`. Apple target compilation runs on merge groups
+and main pushes, with arm64 covered by the native test archive and x86_64 by
+`Check (x86_64-apple-darwin)`. A failed target check fails the workflow.
 Undeclared targets do not create required results. Pull requests keep the test
 and build job names but skip their work, except that `Wasm and browser build`
 compiles the declared [example witnesses](#wasm-example-witnesses) and reports

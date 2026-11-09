@@ -80,10 +80,16 @@ jobs:
         run: bash -e -o pipefail "$PROOF_STEPS/Test toolchain"
       - name: Coverage tools
         timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         run: bash -e -o pipefail "$PROOF_STEPS/Coverage tools"
       - name: Caller tools
         timeout-minutes: 10
         working-directory: maestro
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         run: |
           bash -e -o pipefail "$PROOF_STEPS/Search tools"
           bash -e -o pipefail "$PROOF_STEPS/Mise bootstrap"

@@ -124,6 +124,7 @@ jobs:
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
       tests_reused: ${{ steps.queue.outputs.tests_reused }}
+      merge_group_pull_request: ${{ steps.config.outputs.merge_group_pull_request }}
       coverage_scope: ${{ steps.selection.outputs.coverage_scope }}
       test_runners: ${{ steps.selection.outputs.test_runners }}
       test_counts: ${{ steps.selection.outputs.test_counts }}
@@ -131,6 +132,7 @@ jobs:
       test_shards: ${{ steps.selection.outputs.test_shards }}
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       wasm_examples: ${{ steps.config.outputs.wasm_examples }}
+      emscripten_crates: ${{ steps.config.outputs.emscripten_crates }}
       targets: ${{ steps.config.outputs.targets }}
       browser_test_crates: ${{ steps.config.outputs.browser_test_crates }}
       browser_tests: ${{ steps.selection.outputs.browser_tests }}
@@ -200,17 +202,20 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', wasm_examples='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', wasm_examples='[]', emscripten_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
-              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'wasm_examples', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
+              unknown = set(config) - {'test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'warm_test_filter', 'test_shard_count', 'wasm_crates', 'wasm_examples', 'emscripten_crates', 'check_targets', 'browser_test_crates', 'browser_build', 'test_tools', 'reserved_ports', 'additional_locked_manifests', 'coverage_min_lines', 'spelling_words', 'license_exceptions', 'advisory_exceptions', 'yanked_crate_exceptions', 'git_sources', 'privileged_trigger_workflows', 'fuzz_manifest', 'fuzz_targets', 'test_inputs'}
               if unknown:
                   replacement = '; test_prepare_setups replaces test_prepare_packages' if 'test_prepare_packages' in unknown else ''
                   raise SystemExit(f'{path}: unknown keys {sorted(unknown)!r}' + replacement)
               for key in ('wasm_crates', 'check_targets'):
                   if key not in config or not isinstance(config[key], list) or any(type(item) is not str for item in config[key]):
                       raise SystemExit(f'{path}: {key} must be an array of strings')
+              emscripten = config.get('emscripten_crates', [])
+              if not isinstance(emscripten, list) or any(type(item) is not str for item in emscripten):
+                  raise SystemExit(f'{path}: emscripten_crates must be an array of strings')
               witnesses = config.get('wasm_examples', {})
               if not isinstance(witnesses, dict) or any(not isinstance(names, list) or any(type(name) is not str for name in names) for names in witnesses.values()):
                   raise SystemExit(f'{path}: wasm_examples must map package names to arrays of strings')
@@ -361,6 +366,9 @@ jobs:
                   for name in names:
                       if name not in examples[crate]:
                           raise SystemExit(f'{path}: wasm_examples[{json.dumps(crate)}] contains unknown example {name!r}')
+              for crate in emscripten:
+                  if crate not in packages:
+                      raise SystemExit(f'{path}: emscripten_crates contains unknown package {crate!r}')
               for crate in browser_tests:
                   if crate not in packages:
                       raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
@@ -500,11 +508,16 @@ jobs:
                       raise SystemExit(f'{path}: check_targets contains unknown target {target!r}')
                   if target not in runners:
                       raise SystemExit(f'{path}: check_targets has no runner for {target!r}')
-                  if os.environ.get('TEST_EVENT') != 'pull_request' or target in ('aarch64-apple-darwin', 'x86_64-apple-darwin', 'x86_64-pc-windows-msvc'):
-                      targets.append(dict(target=target, runner=runners[target]))
+                  if os.environ.get('TEST_EVENT') == 'pull_request' and target != 'x86_64-pc-windows-msvc':
+                      continue
+                  # The native macOS archive already compiles the arm64 target on full runs.
+                  if target == 'aarch64-apple-darwin' and os.environ.get('WARM') != 'true':
+                      continue
+                  targets.append(dict(target=target, runner=runners[target]))
               values.update(targets=json.dumps(targets))
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             wasm_examples=json.dumps([[crate, name] for crate, names in witnesses.items() for name in names]),
+                            emscripten_crates=json.dumps(emscripten),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
           # The test jobs carry a Windows leg, but Windows is not a native test host until its cold setup fits the job limit.
@@ -514,10 +527,29 @@ jobs:
           if config is not None and os.environ.get('TEST_EVENT') != 'pull_request' and os.environ.get('WARM') != 'true':
               hosts.update({runner: min(shards, count) for target, (runner, shards) in native_tests.items() if target in config['check_targets']})
           values.update(test_hosts=json.dumps(hosts))
+          # A rebuilt merge group keeps its pull request number; only the base hash ending the ref changes.
+          values['merge_group_pull_request'] = ''
+          if os.environ.get('GITHUB_EVENT_NAME') == 'merge_group':
+              queued = re.fullmatch(r'refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]+', os.environ.get('GITHUB_REF', ''))
+              if queued is None:
+                  raise SystemExit(f"merge group ref {os.environ.get('GITHUB_REF')!r} names no queued pull request")
+              values['merge_group_pull_request'] = queued[1]
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
           PYTHON
+      - &superseded-check
+        name: Stop when the merge group was replaced
+        if: ${{ github.event_name == 'merge_group' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A queue rebuild deletes the old group's ref. A job of the replaced run must not join a concurrency group the live run holds.
+          # Only a missing ref stops the run; an API failure says nothing about the group.
+          if ! reply=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/${GITHUB_REF#refs/}" 2>&1) && [[ "$reply" == *'HTTP 404'* ]]; then
+            echo "::error::${GITHUB_REF} no longer exists: the merge queue replaced this group"
+            exit 1
+          fi
       - name: Test evidence identity
         id: evidence-scope
         if: github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan)
@@ -923,16 +955,19 @@ jobs:
           seeder = r'-\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\d+-'
           call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
           suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX']) + '-' + call
-          writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
+          # A Linux job that no later job restores keeps no snapshot: the repository cache holds one snapshot per
+          # other shape, and a snapshot for each of these would not fit the cache limit next to them.
+          snapshot = not (os.environ['HOST_OS'] == 'Linux' and os.environ['CACHE_JOB'] in ('quality', 'docs', 'doctests', 'browser', 'browser-tests', 'targets'))
+          writer = snapshot and os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
           if os.environ['CACHE_JOB'] in ('tests', 'doctests') and not (os.environ['CACHE_JOB'] == 'doctests' and os.environ['CACHE_WARM'] == 'true'):
-              shard = os.environ.get('SHARD', '')
-              writer = writer and (shard in ('warm', '1') or (shard == 'doctests' and os.environ['HOST_OS'] == 'Linux' and os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true'))
+              writer = writer and os.environ.get('SHARD', '') in ('warm', '1')
           # Prepare test setup also builds every wasm example extension; its working set passed 1 GiB.
           size = 1610612736 if shape == 'test-prepare' else 1073741824
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
-              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\nshape={shape}\nnamespace={namespace}\nseeder={seeder}\nsize={size}\n')
+              output.write(f'prefix={prefix}\nkey={prefix}{suffix}\nwriter={str(writer).lower()}\nsnapshot={str(snapshot).lower()}\nshape={shape}\nnamespace={namespace}\nseeder={seeder}\nsize={size}\n')
           PYTHON
       - name: Restore compile cache
+        if: steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -944,6 +979,8 @@ jobs:
           fail-on-cache-miss: false
       - name: Compile cache
         env: &sccache-install-env
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
           CACHE_RESTORE_OUTCOME: ${{ steps.cache-restore.outcome }}
           CACHE_RESTORE_MATCHED: ${{ steps.cache-restore.outputs.cache-hit }}
           CACHE_SIZE: ${{ steps.cache-identity.outputs.size }}
@@ -959,18 +996,25 @@ jobs:
           name=sccache-v$version-$platform
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-sccache.XXXXXX")
           archive=$(mktemp)
-          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
-          python3 - "$digest" "$archive" <<'PYTHON'
+          assets="$RUNNER_TEMP/maestro-release-assets"
+          mkdir -p "$assets"
+          if [ -f "$assets/$digest" ]; then
+            cp "$assets/$digest" "$archive"
+          else
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location "https://github.com/mozilla/sccache/releases/download/v$version/$name.tar.gz" --output "$archive"
+          fi
+          python3 -I - "$digest" "$archive" <<'PYTHON'
           import hashlib
           import sys
           with open(sys.argv[2], 'rb') as source:
               raise SystemExit(hashlib.file_digest(source, 'sha256').hexdigest() != sys.argv[1])
           PYTHON
+          cp "$archive" "$assets/$digest"
           tar -xzf "$archive" -C "$bin" --strip-components=1 "$name/sccache"
           rm "$archive"
           test -x "$bin/sccache"
           echo "$bin" >> "$GITHUB_PATH"
-          if [ "$CACHE_RESTORE_OUTCOME" = failure ] || { [ "$CACHE_RESTORE_MATCHED" != true ] && [ "$CACHE_RESTORE_MATCHED" != false ]; }; then
+          if [ "$CACHE_RESTORE_OUTCOME" = failure ] || { [ "$CACHE_RESTORE_OUTCOME" != skipped ] && [ "$CACHE_RESTORE_MATCHED" != true ] && [ "$CACHE_RESTORE_MATCHED" != false ]; }; then
             rm -rf "$RUNNER_TEMP/maestro-sccache"
             echo 'Compile cache snapshot restore failed; using an empty local cache'
           fi
@@ -979,7 +1023,7 @@ jobs:
           export SCCACHE_SKIP_CACHE_CHECK=true SCCACHE_ERROR_LOG="$RUNNER_TEMP/sccache-error.log" SCCACHE_LOG=debug
           { echo CARGO_BUILD_RUSTC_WRAPPER=sccache; env | grep -E '^(SCCACHE_(DIR|CACHE_SIZE|LOCAL_RW_MODE|GHA_ENABLED|SKIP_CACHE_CHECK|ERROR_LOG|LOG)|CARGO_INCREMENTAL)='; } >> "$GITHUB_ENV"
           if [ -z "${HOST_CC+x}" ] && [ -z "${CC+x}" ]; then
-            python3 - <<'PYTHON'
+            python3 -I - <<'PYTHON'
           import os
           import pathlib
           import tomllib
@@ -992,10 +1036,13 @@ jobs:
                   output.write('HOST_CC=sccache cc\n')
           PYTHON
           fi
-          PATH="$bin:$PATH" sccache --start-server
+          env -u GH_TOKEN -u MISE_GITHUB_TOKEN PATH="$bin:$PATH" sccache --start-server
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: &release-auth
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
         run: &mise-bootstrap |
           # https://github.com/jdx/mise/releases/download/v2026.10.2/SHASUMS256.txt
           version=2026.10.2
@@ -1012,13 +1059,20 @@ jobs:
           installed=$(mise --version 2>/dev/null | cut -d ' ' -f 1) || installed=
           if [ "$installed" != "$version" ]; then
             bin=$(mktemp -d "$RUNNER_TEMP/maestro-mise.XXXXXX")
-            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$bin/$executable"
-            python3 - "$digest" "$bin/$executable" <<'PYTHON'
+            assets="$RUNNER_TEMP/maestro-release-assets"
+            mkdir -p "$assets"
+            if [ -f "$assets/$digest" ]; then
+              cp "$assets/$digest" "$bin/$executable"
+            else
+              curl --fail --retry 3 --retry-all-errors --retry-delay 30 --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location "$url" --output "$bin/$executable"
+            fi
+            python3 -I - "$digest" "$bin/$executable" <<'PYTHON'
           import hashlib
           import sys
           with open(sys.argv[2], 'rb') as source:
               raise SystemExit(hashlib.file_digest(source, 'sha256').hexdigest() != sys.argv[1])
           PYTHON
+            cp "$bin/$executable" "$assets/$digest"
             chmod +x "$bin/$executable"
             "$bin/$executable" --version | grep "^$version "
             export PATH="$bin:$PATH"
@@ -1028,6 +1082,7 @@ jobs:
       - name: Test tools
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: *release-auth
         run: &caller-tools |
           if [ ! -f mise.toml ]; then
             echo 'mise.toml: caller tools require a pinned tool configuration' >&2
@@ -1190,6 +1245,7 @@ jobs:
           CACHE_PREFIX: ${{ steps.cache-identity.outputs.prefix }}
           CACHE_NAMESPACE: ${{ steps.cache-identity.outputs.namespace }}
           CACHE_SEEDER: ${{ steps.cache-identity.outputs.seeder }}
+          CACHE_SNAPSHOT: ${{ steps.cache-identity.outputs.snapshot }}
           GH_TOKEN: ${{ github.token }}
         run: &sccache-floor |
           python3 -I - <<'PYTHON'
@@ -1210,6 +1266,9 @@ jobs:
           if not executed or not int(executed[1]) or not rate:
               finish('Compile cache hit rate not judged: no cacheable compilation ran')
           rate = float(rate[1])
+          if os.environ['CACHE_SNAPSHOT'] != 'true':
+              print(f'::notice title=Work units::compiles: {executed[1]}')
+              finish(f'Compile cache hit rate not judged: shape {shape} keeps no snapshot')
           # The guards read the compile units and the hit rate of every build from this notice.
           print(f'::notice title=Work units::compiles: {executed[1]}; hit-rate: {rate:.2f}')
           if rate >= floor:
@@ -1270,6 +1329,7 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
+        if: steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -1281,10 +1341,12 @@ jobs:
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: *release-auth
         run: *mise-bootstrap
       - name: Test tools
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: *release-auth
         run: *caller-tools
       - name: Cargo git cache identity
         id: git-cache-identity
@@ -1337,6 +1399,9 @@ jobs:
       fail-fast: false
       matrix:
         runner: ${{ fromJSON(needs.declaration.outputs.test_runners) }}
+    concurrency:
+      group: ${{ format('rust-ci-job-{0}-{1}{2}-test-build-{3}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.runner) }}
+      cancel-in-progress: ${{ github.event_name == 'merge_group' }}
     runs-on: ${{ matrix.runner }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -1388,6 +1453,7 @@ jobs:
         run: *sccache-install
       - name: Coverage tools
         timeout-minutes: 10
+        env: *release-auth
         run: &coverage-tools |
           case "$(uname -s):$(uname -m)" in
             Linux:x86_64) tools='
@@ -1406,8 +1472,14 @@ jobs:
           while read -r url digest binary; do
             [ -n "$url" ] || continue
             archive=$(mktemp)
-            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$archive"
-            python3 - "$digest" "$archive" "$binary" "$bin" <<'PYTHON'
+            assets="$RUNNER_TEMP/maestro-release-assets"
+            mkdir -p "$assets"
+            if [ -f "$assets/$digest" ]; then
+              cp "$assets/$digest" "$archive"
+            else
+              curl --fail --retry 3 --retry-all-errors --retry-delay 30 --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location "$url" --output "$archive"
+            fi
+            python3 -I - "$digest" "$archive" "$binary" "$bin" <<'PYTHON'
           import gzip
           import hashlib
           import io
@@ -1433,6 +1505,7 @@ jobs:
           target.write_bytes(content)
           target.chmod(0o755)
           PYTHON
+            cp "$archive" "$assets/$digest"
             rm "$archive"
           done <<< "$tools"
           if [ "${OS:-}" = Windows_NT ]; then bin=$(cygpath -m "$bin"); fi
@@ -1464,6 +1537,7 @@ jobs:
       - name: Search tools
         timeout-minutes: 10
         if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
+        env: *release-auth
         run: &search-tools |
           # Digests: ripgrep's release .sha256 file and fd's GitHub release asset digest.
           case "$(uname -s):$(uname -m)" in
@@ -1485,8 +1559,14 @@ jobs:
           while read -r url digest binary; do
             [ -n "$url" ] || continue
             archive=$(mktemp)
-            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$archive"
-            python3 - "$digest" "$archive" "$binary" "$bin" <<'PYTHON'
+            assets="$RUNNER_TEMP/maestro-release-assets"
+            mkdir -p "$assets"
+            if [ -f "$assets/$digest" ]; then
+              cp "$assets/$digest" "$archive"
+            else
+              curl --fail --retry 3 --retry-all-errors --retry-delay 30 --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location "$url" --output "$archive"
+            fi
+            python3 -I - "$digest" "$archive" "$binary" "$bin" <<'PYTHON'
           import gzip
           import hashlib
           import io
@@ -1512,6 +1592,7 @@ jobs:
           target.write_bytes(content)
           target.chmod(0o755)
           PYTHON
+            cp "$archive" "$assets/$digest"
             rm "$archive"
           done <<< "$tools"
           "$bin/rg" --version
@@ -1521,11 +1602,19 @@ jobs:
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: *release-auth
         run: *mise-bootstrap
       - name: Test tools
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: *release-auth
         run: *caller-tools
+      - name: Share release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets-${{ runner.os }}-${{ runner.arch }}-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ runner.temp }}/maestro-release-assets
+          if-no-files-found: error
       # Seconds only steer which shard gets each test binary, never which tests run; the token stays out of the step that compiles the caller.
       - name: Earlier test seconds
         env:
@@ -1677,6 +1766,7 @@ jobs:
         if: *sccache-floor-condition
         env: *sccache-floor-env
         run: *sccache-floor
+      - *superseded-check
 
   test-prepare:
     permissions:
@@ -1689,6 +1779,9 @@ jobs:
       fail-fast: false
       matrix:
         runner: ${{ fromJSON(needs.declaration.outputs.test_runners) }}
+    concurrency:
+      group: ${{ format('rust-ci-job-{0}-{1}{2}-test-prepare-{3}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.runner) }}
+      cancel-in-progress: ${{ github.event_name == 'merge_group' }}
     runs-on: ${{ matrix.runner }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -1744,14 +1837,17 @@ jobs:
       - name: Search tools
         timeout-minutes: 10
         if: inputs.warm-cache || needs.declaration.outputs.enabled == 'true'
+        env: *release-auth
         run: *search-tools
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: *release-auth
         run: *mise-bootstrap
       - name: Test tools
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: *release-auth
         run: *caller-tools
       - name: Test setup cache identity
         id: setup-identity
@@ -2103,6 +2199,7 @@ jobs:
         if: *sccache-floor-condition
         env: *sccache-floor-env
         run: *sccache-floor
+      - *superseded-check
 
   tests:
     needs: [declaration, test-build, test-prepare]
@@ -2115,6 +2212,9 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(inputs.warm-cache && '[{"runner":"ubuntu-latest","shard":"warm"}]' || needs.declaration.outputs.test_shards) }}
+    concurrency:
+      group: ${{ format('rust-ci-job-{0}-{1}{2}-tests-{3}-{4}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.runner, matrix.shard) }}
+      cancel-in-progress: ${{ github.event_name == 'merge_group' }}
     runs-on: ${{ matrix.runner }}
     env: &test-env
       TEST_SHARD_COUNT: ${{ matrix.count || needs.declaration.outputs.test_shard_count }}
@@ -2156,11 +2256,17 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
-        if: runner.os != 'Windows' && (inputs.warm-cache || matrix.shard == 'doctests')
+        if: runner.os != 'Windows' && (inputs.warm-cache || matrix.shard == 'doctests') && steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with: *sccache-restore
+      - name: Restore release assets
+        if: ${{ !inputs.warm-cache && github.job == 'tests' }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets-${{ runner.os }}-${{ runner.arch }}-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ runner.temp }}/maestro-release-assets
       - name: Compile cache
         if: runner.os != 'Windows' && (inputs.warm-cache || matrix.shard == 'doctests')
         env: *sccache-install-env
@@ -2168,6 +2274,7 @@ jobs:
         run: *sccache-install
       - name: Coverage tools
         timeout-minutes: 10
+        env: *release-auth
         run: *coverage-tools
       - name: Cargo git cache identity
         id: git-cache-identity
@@ -2249,14 +2356,17 @@ jobs:
       - name: Search tools
         timeout-minutes: 10
         if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'
+        env: *release-auth
         run: *search-tools
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: *release-auth
         run: *mise-bootstrap
       - name: Test tools
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: *release-auth
         run: *caller-tools
       - name: Reserved ports
         if: runner.os == 'Linux' && needs.declaration.outputs.reserved_ports != ''
@@ -2567,6 +2677,9 @@ jobs:
     needs: declaration
     # A push that reuses merge-queue tests still runs doctests, to seed this shape's snapshot.
     if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    concurrency:
+      group: ${{ format('rust-ci-job-{0}-{1}{2}-doctests-{3}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.runner) }}
+      cancel-in-progress: ${{ github.event_name == 'merge_group' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -2655,13 +2768,14 @@ jobs:
           rustup component add llvm-tools-preview
       - name: Check tools
         timeout-minutes: 10
+        env: *release-auth
         run: &check-tools |
           bin=$(mktemp -d "$RUNNER_TEMP/maestro-check-tools.XXXXXX")
           while read -r url digest binary; do
             # Only the fuzz job needs cargo-fuzz; the required checks never download it.
             if [ "$binary" = cargo-fuzz ] && [ "${FUZZ_SCAN:-}" != true ]; then continue; fi
             archive=$(mktemp)
-            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --location "$url" --output "$archive"
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location "$url" --output "$archive"
             printf '%s  %s\n' "$digest" "$archive" | sha256sum --check --status
             if [ "$binary" = shfmt ]; then
               install -m 0755 "$archive" "$bin/$binary"
@@ -2954,6 +3068,8 @@ jobs:
       - name: Check tools
         timeout-minutes: 10
         env:
+          GH_TOKEN: ${{ github.token }}
+          MISE_GITHUB_TOKEN: ${{ github.token }}
           FUZZ_SCAN: true
         run: *check-tools
       - name: Embedded check defaults
@@ -3061,6 +3177,7 @@ jobs:
         run: rustup show
       - name: Check tools
         timeout-minutes: 10
+        env: *release-auth
         run: *check-tools
       - name: Embedded check defaults
         run: *check-defaults
@@ -3106,6 +3223,9 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.declaration.outputs.targets) }}
+    concurrency:
+      group: ${{ format('rust-ci-job-{0}-{1}{2}-targets-{3}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.target) }}
+      cancel-in-progress: ${{ github.event_name == 'merge_group' }}
     runs-on: ${{ matrix.runner }}
     env:
       CACHE_TARGET: ${{ matrix.target }}
@@ -3132,7 +3252,7 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
-        if: *sccache-target-host
+        if: runner.os != 'Windows' && steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -3154,10 +3274,12 @@ jobs:
       - name: Mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: *release-auth
         run: *mise-bootstrap
       - name: Test tools
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true'
+        env: *release-auth
         run: *caller-tools
       - name: Check target
         env:
@@ -3200,7 +3322,7 @@ jobs:
     needs: declaration
     # A push that reuses merge-queue tests still builds, to seed this shape's snapshot.
     # A pull request runs the job only for declared example witnesses; the other steps skip.
-    if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.wasm_examples != '[]') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.wasm_examples != '[]') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -3225,6 +3347,7 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
+        if: steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -3247,11 +3370,47 @@ jobs:
       - name: Browser mise bootstrap
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true' || (needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true'))
+        env: *release-auth
         run: *mise-bootstrap
       - name: Browser tools
         timeout-minutes: 10
         if: needs.declaration.outputs.test_tools == 'true' || (needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true'))
+        env: *release-auth
         run: *caller-tools
+      - name: Emscripten SDK
+        timeout-minutes: 10
+        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
+        env: &emscripten-sdk-env
+          GH_TOKEN: ${{ github.token }}
+        run: &emscripten-sdk |
+          # emsdk 6.0.10 from its release archive, then the two archives its installer fetches for that release
+          # (node and the toolchain binaries). Each is checksummed and placed where the installer looks first.
+          emsdk=$(mktemp -d "$RUNNER_TEMP/maestro-emsdk.XXXXXX")
+          archive=$(mktemp)
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location https://github.com/emscripten-core/emsdk/archive/refs/tags/6.0.10.tar.gz --output "$archive"
+          unset GH_TOKEN
+          printf '%s  %s\n' 09cbafdf00e5a7b4275fc27229d69befafc5ca6070543124219977101310dade "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$emsdk" --strip-components=1
+          rm "$archive"
+          mkdir "$emsdk/downloads"
+          while read -r url digest name; do
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --proto '=https' --proto-redir '=https' --location "$url" --output "$emsdk/downloads/$name"
+            printf '%s  %s\n' "$digest" "$emsdk/downloads/$name" | sha256sum --check --status
+          done <<'ARCHIVES'
+          https://storage.googleapis.com/webassembly/emscripten-releases-builds/deps/node-v24.19.0-linux-x64.tar.xz 14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647 node-v24.19.0-linux-x64.tar.xz
+          https://storage.googleapis.com/webassembly/emscripten-releases-builds/linux/666337b525e673e769121856d175f6f52b8ead64/wasm-binaries.tar.xz a51dd2829bdf725d268974728e032533b106ea01cb482a62288ec12627a7abbe 666337b525e673e769121856d175f6f52b8ead64-wasm-binaries.tar.xz
+          ARCHIVES
+          EMSDK_KEEP_DOWNLOADS=1 "$emsdk/emsdk" install 6.0.10
+          "$emsdk/emsdk" activate 6.0.10
+          node="$emsdk/node/24.19.0_64bit/bin/node"
+          PATH="$emsdk/upstream/emscripten:$PATH" EMSDK="$emsdk" EMSDK_NODE="$node" emcc --version | head -n 1 | grep -F ' 6.0.10 '
+          echo "$emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+          echo "EMSDK=$emsdk" >> "$GITHUB_ENV"
+          echo "EMSDK_NODE=$node" >> "$GITHUB_ENV"
+      - name: Emscripten target
+        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
+        run: &emscripten-target |
+          rustup target add wasm32-unknown-emscripten
       - name: Build wasm crates
         if: &browser-sweep (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
         env:
@@ -3266,6 +3425,18 @@ jobs:
               subprocess.run(['rustup', 'target', 'add', 'wasm32-unknown-unknown'], check=True)
           for crate in crates:
               subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
+          PYTHON
+      - name: Build emscripten crates
+        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
+        env:
+          EMSCRIPTEN_CRATES: ${{ needs.declaration.outputs.emscripten_crates }}
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+          for crate in json.loads(os.environ['EMSCRIPTEN_CRATES']):
+              subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-emscripten', '-p', crate], check=True)
           PYTHON
       - name: Build wasm examples
         env:
@@ -3355,6 +3526,7 @@ jobs:
         env: *sccache-identity-env
         run: *sccache-identity
       - name: Restore compile cache
+        if: steps.cache-identity.outputs.snapshot == 'true'
         id: cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -3366,22 +3538,33 @@ jobs:
       - name: Browser test tool pin
         run: *browser-tool-pin
       - name: Browser test mise bootstrap
+        env: *release-auth
         run: *mise-bootstrap
       - name: Browser test caller tools
+        env: *release-auth
         run: *caller-tools
+      - name: Emscripten SDK
+        timeout-minutes: 10
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        env: *emscripten-sdk-env
+        run: *emscripten-sdk
+      - name: Emscripten target
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        run: *emscripten-target
       - name: Browser runtime tools
+        env: *release-auth
         run: |
           tools=$(mktemp -d "$RUNNER_TEMP/browser-runtime.XXXXXX")
           cd "$tools"
           curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://cdn.playwright.dev/builds/cft/156.0.8078.4/linux64/chrome-linux64.zip -o chromium.zip
           echo '43fd31766c7533a02dda2ded5ad50c2f861cd5400be7509c0abad71129f79d79  chromium.zip' | sha256sum --check --status
           unzip -q chromium.zip
-          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz -o bindgen.tar.gz
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.129/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl.tar.gz -o bindgen.tar.gz
           echo '82d12bb940e2d4e72e0d5605387fc1b8ca179044e012b620f0ce4e7440e8320e  bindgen.tar.gz' | sha256sum --check --status
           tar -xzf bindgen.tar.gz
           curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://registry.npmjs.org/playwright/-/playwright-1.64.1.tgz -o playwright.tgz
           curl --fail --retry 3 --retry-all-errors --retry-delay 30 --silent --show-error --location https://registry.npmjs.org/playwright-core/-/playwright-core-1.64.1.tgz -o playwright-core.tgz
-          python3 - <<'PYTHON'
+          python3 -I - <<'PYTHON'
           import base64
           import hashlib
           import pathlib
