@@ -60,13 +60,18 @@ def declared(directory, text):
     return result, dict(line.split('=', 1) for line in lines if '=' in line)
 
 
-def isolated(directory):
-    # A package of its own locked workspace is accepted only through the manifest that declares it.
+def add_isolated(directory):
     manifest = directory / 'isolated/Cargo.toml'
     (manifest.parent / 'src').mkdir(parents=True)
     (manifest.parent / 'src/lib.rs').write_text('', encoding='utf-8')
     manifest.write_text('[workspace]\n[package]\nname = "isolated"\nversion = "0.1.0"\nedition = "2021"\nlicense = "MIT"\n', encoding='utf-8')
     subprocess.run(['cargo', 'generate-lockfile', '--offline', '--manifest-path', str(manifest)], check=True, capture_output=True)
+    return manifest
+
+
+def isolated(directory):
+    # A package of its own locked workspace is accepted only through the manifest that declares it.
+    manifest = add_isolated(directory)
     listed = 'additional_locked_manifests=["isolated/Cargo.toml"]\n'
     result, values = declared(directory, listed + 'emscripten_crates=["witness", "isolated", "other"]\n')
     assert result.returncode == 0, result.stderr
@@ -121,6 +126,28 @@ def the_declaration_checks_types_and_packages():
     assert 'emscripten_crates' not in schema['required']
 
 
+def the_declaration_names_the_paths_that_decide_each_build():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/wasm-witnesses', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        (directory / '.github').mkdir()
+        result, values = declared(directory, '')
+        assert result.returncode == 0, result.stderr
+        assert values['emscripten_paths'] == '[]', values
+        # A root package is decided by its directory and the root manifest and lock file.
+        result, values = declared(directory, 'emscripten_crates=["witness", "witness"]\n')
+        assert result.returncode == 0, result.stderr
+        assert json.loads(values['emscripten_paths']) == ['Cargo.lock', 'Cargo.toml', 'witness'], values
+        # A package of an additional manifest is decided by its directory, that manifest and its lock file,
+        # whichever way the declaration spells the manifest path.
+        add_isolated(directory)
+        for spelling in ['isolated/Cargo.toml', './isolated/../isolated/Cargo.toml']:
+            result, values = declared(directory, f'additional_locked_manifests=[{json.dumps(spelling)}]\nemscripten_crates=["isolated", "other"]\n')
+            assert result.returncode == 0, result.stderr
+            assert json.loads(values['emscripten_paths']) == [
+                'Cargo.lock', 'Cargo.toml', 'isolated', 'isolated/Cargo.lock', 'isolated/Cargo.toml', 'other'], (spelling, values)
+
+
 def only_an_opted_in_caller_installs_anything():
     context = {'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.tests_reused': 'false',
                'needs.declaration.outputs.emscripten_crates': '["web"]'}
@@ -130,8 +157,8 @@ def only_an_opted_in_caller_installs_anything():
             step = steps(job)[name]
             assert opens(step['if'], context), (name, 'the opted-in caller installs')
             assert not opens(step['if'], closed), (name, 'a caller without the key installs nothing')
-    # A pull request skips the merge-group sweep, so the opt-in costs it nothing there.
-    pull_request = context | {'needs.declaration.outputs.coverage': 'false'}
+    # A pull request builds only when its change reaches a listed package; otherwise the opt-in costs it nothing.
+    pull_request = context | {'needs.declaration.outputs.coverage': 'false', 'needs.declaration.outputs.emscripten_changed': 'false'}
     for name in [SDK, TARGET, BUILD]:
         assert not opens(steps(browser)[name]['if'], pull_request), name
     assert opens(steps(browser)[BUILD]['if'], context)
@@ -154,6 +181,33 @@ def only_an_opted_in_caller_installs_anything():
     assert order.index('Browser tools') < order.index(SDK) < order.index(TARGET) < order.index(BUILD) < order.index('Browser recipe'), order
     order = [step['name'] for step in chromium['steps']]
     assert order.index('Browser test caller tools') < order.index(SDK) < order.index(TARGET) < order.index('Browser test recipe'), order
+
+
+def a_pull_request_builds_the_emscripten_crates_only_when_its_change_reaches_them():
+    pull_request = {'inputs.browser-only': False, 'needs.declaration.outputs.coverage': 'false',
+                    'needs.declaration.outputs.tests_reused': 'false', 'needs.declaration.outputs.wasm_examples': '[]',
+                    'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'inputs.warm-cache': False,
+                    'github.event_name': 'pull_request', 'github.ref': 'refs/pull/1/merge',
+                    "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
+                    'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.browser_build': 'false',
+                    'needs.declaration.outputs.emscripten_crates': '[["web", null]]',
+                    'needs.declaration.outputs.emscripten_changed': 'true'}
+    untouched = pull_request | {'needs.declaration.outputs.emscripten_changed': 'false'}
+    undeclared = pull_request | {'needs.declaration.outputs.emscripten_crates': '[]'}
+    assert opens(browser['if'], pull_request), 'a pull request that reaches a listed package runs the job'
+    assert not opens(browser['if'], untouched), 'a pull request that reaches none keeps it closed'
+    assert not opens(browser['if'], undeclared), 'a caller without the key never runs it for this'
+    for name in [SDK, TARGET, BUILD]:
+        step = steps(browser)[name]
+        assert opens(step['if'], pull_request), name
+        assert not opens(step['if'], untouched), name
+        assert not opens(step['if'], undeclared), name
+    # The Chromium job and the library sweep stay off a pull request.
+    assert not opens(chromium['if'], pull_request | {'needs.declaration.outputs.browser_tests': 'true'})
+    assert steps(browser)['Build wasm crates']['if'] and not opens(steps(browser)['Build wasm crates']['if'], pull_request)
+    # Selection hands the verdict to the job: the declaration job exposes it, and the selection step reads the paths from the declaration.
+    assert document['jobs']['declaration']['outputs']['emscripten_changed'] == '${{ steps.selection.outputs.emscripten_changed }}'
+    assert steps(document['jobs']['declaration'])['Select test packages']['env']['EMSCRIPTEN_PATHS'] == '${{ steps.config.outputs.emscripten_paths }}'
 
 
 def recorded(directory, tool, step, extra=None):
@@ -305,7 +359,9 @@ def a_compiler_of_another_version_stops_the_install():
         assert (directory / 'GITHUB_ENV').read_text(encoding='utf-8') == ''
 
 
-for check in [the_declaration_checks_types_and_packages, only_an_opted_in_caller_installs_anything, the_target_comes_from_rustup,
+for check in [the_declaration_checks_types_and_packages, the_declaration_names_the_paths_that_decide_each_build,
+              only_an_opted_in_caller_installs_anything, a_pull_request_builds_the_emscripten_crates_only_when_its_change_reaches_them,
+              the_target_comes_from_rustup,
               each_crate_builds_for_emscripten_in_order, the_sdk_is_downloaded_with_the_job_token_and_installed_from_verified_archives,
               a_wrong_checksum_stops_the_install_before_the_installer_runs, a_compiler_of_another_version_stops_the_install]:
     check()

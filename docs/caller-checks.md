@@ -38,9 +38,10 @@ Pull requests run declaration validation, formatting, Clippy, docs,
 dependency/source checks and the declared Windows target check. Host
 Clippy and the Windows target check select changed crates and their workspace
 dependents; formatting still checks the whole workspace. Pull requests skip the
-test archive, test setup, test shards, doctests and wasm/browser builds. The
-declared [example witnesses](#wasm-example-witnesses) are the exception: they
-still compile. Every required check name still reports; skipped jobs count as
+test archive, test setup, test shards, doctests and wasm/browser builds. Two
+exceptions still compile: the declared [example witnesses](#wasm-example-witnesses),
+and the declared [Emscripten crates](#emscripten-builds) that the change
+reaches. Every required check name still reports; skipped jobs count as
 success. Merge groups run the full Linux shard matrix, Linux doctests,
 coverage and all declared builds and foreign-target checks except the native
 arm64 macOS route. They keep `Check (x86_64-apple-darwin)`. Main pushes also
@@ -942,7 +943,8 @@ checks still report success. An absent base selects every package for lint.
 Wasm Clippy ignores the selection and lints every `wasm_crates` package on every
 run; see [Wasm and browser builds](#wasm-and-browser-builds). Pull requests
 skip the test archive, preparation, test shards, doctests and wasm/browser
-builds regardless of package selection.
+builds regardless of package selection, except for the example witnesses and
+the Emscripten crates a change reaches.
 
 A crate manifest selects its crate; lockfile changes compare the resolved transitive dependency identities
 and features at base and head, selecting affected crates. Root manifest,
@@ -1388,8 +1390,9 @@ belongs to the root workspace. Listing a manifest twice, or under another
 spelling, still names one package. Two different packages with the same name
 fail validation, because the build would reach only one of them.
 
-On merge groups and main pushes, a non-empty list adds these steps to the Wasm
-and browser build job. Pull requests skip them, and the job runs even when
+A non-empty list adds these steps to the Wasm and browser build job on merge
+groups, main pushes and the pull requests described
+[below](#emscripten-crates-on-pull-requests). The job runs even when
 `wasm_crates` is empty:
 
 | Step | What it does |
@@ -1419,6 +1422,24 @@ unchecked file. The step then checks that `emcc` reports 6.0.10 and exports
 
 The caller owns the binding step and the browser application. The shared
 workflow only provides the toolchain and the build of the listed packages.
+
+### Emscripten crates on pull requests
+
+A pull request builds the listed packages, as a merge group does, when its
+change touches any of:
+
+- a file under the directory of a listed package;
+- the manifest that declares a listed package: the root `Cargo.toml` for a root
+  workspace package, or its `additional_locked_manifests` entry;
+- the `Cargo.lock` beside that manifest;
+- the `emscripten_crates` key of `.github/ci.toml`.
+
+A pull request that touches none of these skips the three steps. The build
+starts from an empty compile cache, because Wasm and browser build keeps no
+snapshot; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot). A
+change in another directory that a listed package depends on does not match;
+the merge group builds it. The Chromium browser tests job does not run on pull
+requests.
 
 ## Chromium browser tests
 
@@ -2255,10 +2276,10 @@ groups and main pushes. The native test archive covers arm64 Apple compilation
 on main pushes only. A failed target check fails the workflow.
 Undeclared targets do not create required results. Pull requests keep the test
 and build job names but skip their work, except that `Wasm and browser build`
-compiles the declared [example witnesses](#wasm-example-witnesses) and reports
-its required name. The required-checks guard enforces execution only on merge
-groups and main pushes, so intentional PR skips do not file missing-check
-findings.
+compiles the declared [example witnesses](#wasm-example-witnesses), builds the
+Emscripten crates a change reaches, and reports its required name. The
+required-checks guard enforces execution only on merge groups and main pushes,
+so intentional PR skips do not file missing-check findings.
 
 ### Escalations
 
