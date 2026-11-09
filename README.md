@@ -32,8 +32,10 @@ docs and fixtures route only to readers. See
 for root-package boundaries. Pull requests skip the test archive, test setup,
 test shards, doctests and wasm/browser builds. The declared
 [wasm example witnesses](docs/caller-checks.md#wasm-example-witnesses) are the
-exception: they compile on every pull request. Their job names remain present;
-skipped jobs count as successful required checks. Merge groups and main pushes
+exception: they compile on every pull request, and so do the declared
+[Emscripten crates](docs/caller-checks.md#emscripten-crates-on-pull-requests)
+that a change reaches. Their job names remain present; skipped jobs count as
+successful required checks. Merge groups and main pushes
 run the full shard matrix, coverage, doctests, wasm/browser builds and every
 declared foreign-target check. A main push skips the test legs when its exact
 commit already passed a completed merge-group run of the same shared workflow

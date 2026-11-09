@@ -133,6 +133,7 @@ jobs:
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       wasm_examples: ${{ steps.config.outputs.wasm_examples }}
       emscripten_crates: ${{ steps.config.outputs.emscripten_crates }}
+      emscripten_changed: ${{ steps.selection.outputs.emscripten_changed }}
       targets: ${{ steps.config.outputs.targets }}
       browser_test_crates: ${{ steps.config.outputs.browser_test_crates }}
       browser_tests: ${{ steps.selection.outputs.browser_tests }}
@@ -202,7 +203,7 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', wasm_examples='[]', emscripten_crates='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', wasm_examples='[]', emscripten_crates='[]', emscripten_paths='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
@@ -377,12 +378,20 @@ jobs:
                   except (subprocess.CalledProcessError, OSError, ValueError) as error:
                       raise SystemExit(f'{path}: caller metadata/toolchain failed') from error
               builds = []
+              watched = set()
               for crate in emscripten:
                   if crate not in owners:
                       raise SystemExit(f'{path}: emscripten_crates contains unknown package {crate!r}')
                   if len(owners[crate]) > 1:
                       raise SystemExit(f'{path}: emscripten_crates package {crate!r} is in more than one manifest')
-                  builds.append([crate, next(iter(owners[crate].values()))])
+                  (package_manifest, manifest), = owners[crate].items()
+                  builds.append([crate, manifest])
+                  # A pull request builds the crate when it changes the package directory, the manifest that declares the
+                  # package or that manifest's lock file.
+                  declaring = os.path.normpath(manifest or 'Cargo.toml')
+                  watched.update(pathlib.PurePath(name).as_posix() for name in (
+                      os.path.relpath(os.path.dirname(package_manifest), pathlib.Path.cwd().resolve()), declaring,
+                      os.path.join(os.path.dirname(declaring), 'Cargo.lock')))
               for crate in browser_tests:
                   if crate not in packages:
                       raise SystemExit(f'{path}: browser_test_crates contains unknown package {crate!r}')
@@ -531,7 +540,7 @@ jobs:
               values.update(targets=json.dumps(targets))
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             wasm_examples=json.dumps([[crate, name] for crate, names in witnesses.items() for name in names]),
-                            emscripten_crates=json.dumps(builds),
+                            emscripten_crates=json.dumps(builds), emscripten_paths=json.dumps(sorted(watched)),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
           # The test jobs carry a Windows leg, but Windows is not a native test host until its cold setup fits the job limit.
@@ -660,6 +669,7 @@ jobs:
           TEST_HOSTS: ${{ steps.config.outputs.test_hosts }}
           TEST_PREPARE_CONSUMERS: ${{ steps.config.outputs.test_prepare_consumers }}
           TESTS_REUSED: ${{ steps.queue.outputs.tests_reused }}
+          EMSCRIPTEN_PATHS: ${{ steps.config.outputs.emscripten_paths }}
         run: |
           python3 - <<'PYTHON'
           import ast
@@ -712,8 +722,12 @@ jobs:
           # Declared paths outside every member select only the packages whose tests read them.
           inputs = {pathlib.Path(key): {ids[name] for name in readers} for key, readers in config.get('test_inputs', {}).items()}
           changed = None
+          emscripten_changed = False
           if event == 'pull_request' and base:
               changed = subprocess.check_output(['git', 'diff', '--relative', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
+              # A pull request builds the declared Emscripten crates when its change reaches their paths.
+              watched = [pathlib.PurePosixPath(name) for name in json.loads(os.environ['EMSCRIPTEN_PATHS'])]
+              emscripten_changed = any(pathlib.PurePosixPath(name).is_relative_to(path) for name in changed for path in watched)
           if changed is not None:
               # Literal compile-input paths are relative to the Rust source, not the package root.
               changed_paths = {(pathlib.Path.cwd() / name).resolve() for name in changed}
@@ -786,6 +800,7 @@ jobs:
               if '.github/ci.toml' in changed:
                   before, after = declarations()
                   browser_changed = before.get('browser_test_crates', []) != after.get('browser_test_crates', [])
+                  emscripten_changed = emscripten_changed or before.get('emscripten_crates', []) != after.get('emscripten_crates', [])
                   if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
                       selected = set(members)
                       trigger = 'shared input: .github/ci.toml'
@@ -849,6 +864,7 @@ jobs:
           print(f'Advisory check ({event}): {"required" if check_advisories else "skipped, no change to Cargo.lock or the declared exceptions"}')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
+              output.write('emscripten_changed=' + str(emscripten_changed).lower() + '\n')
               # The preparation job runs only when a selected package reads its output.
               consumers = json.loads(os.environ['TEST_PREPARE_CONSUMERS'])
               prepare = json.dumps(config.get('test_prepare', '') if consumers is None or set(consumers) & set(names) else '')
@@ -3365,8 +3381,9 @@ jobs:
     name: Wasm and browser build
     needs: declaration
     # A push that reuses merge-queue tests still builds, to seed this shape's snapshot.
-    # A pull request runs the job only for declared example witnesses; the other steps skip.
-    if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.wasm_examples != '[]') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    # A pull request runs the job only for declared example witnesses and for a change that reaches a listed Emscripten
+    # crate; the other steps skip.
+    if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_changed == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -3423,7 +3440,7 @@ jobs:
         run: *caller-tools
       - name: Emscripten SDK
         timeout-minutes: 10
-        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
+        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.emscripten_changed == 'true')
         env: &emscripten-sdk-env
           GH_TOKEN: ${{ github.token }}
         run: &emscripten-sdk |
@@ -3452,7 +3469,7 @@ jobs:
           echo "EMSDK=$emsdk" >> "$GITHUB_ENV"
           echo "EMSDK_NODE=$node" >> "$GITHUB_ENV"
       - name: Emscripten target
-        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
+        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.emscripten_changed == 'true')
         run: &emscripten-target |
           rustup target add wasm32-unknown-emscripten
       - name: Build wasm crates
@@ -3471,7 +3488,7 @@ jobs:
               subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
           PYTHON
       - name: Build emscripten crates
-        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
+        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.emscripten_changed == 'true')
         env:
           EMSCRIPTEN_CRATES: ${{ needs.declaration.outputs.emscripten_crates }}
         run: |
