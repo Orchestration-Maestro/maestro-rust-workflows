@@ -38,15 +38,16 @@ run the full shard matrix, coverage, doctests, wasm/browser builds and every
 declared foreign-target check. A main push skips the test legs when its exact
 commit already passed a completed merge-group run of the same shared workflow
 revision, with an identity artifact confirming full-workspace test selection.
-The archive and preparation jobs still run without artifact uploads to seed
-compiled-cache snapshots.
+The archive and preparation jobs still run, without artifact uploads, on every
+test host, including a claimed macOS host. They seed the compiled-cache
+snapshots the next merge group restores.
 Missing evidence, including an unreadable API result, keeps the full suite.
 Formatting, lint, docs, dependency/source and target checks still run; the
 independent `warm-cache` call continues on every main push. See
 [test policy](docs/caller-checks.md#test-policy-and-caller-permissions).
 The main-push behaviour below applies when no matching merge-queue result exists.
-Full events also run native test legs for a claimed macOS host, except
-when a main push reuses merge-queue tests.
+Full events also run native test legs for a claimed macOS host. A main push
+that reuses merge-queue tests runs only that host's archive and preparation.
 
 Merge groups and main pushes always run declared Chromium tests, regardless of
 changed paths. Ordinary pull requests skip Chromium runtime tests. See

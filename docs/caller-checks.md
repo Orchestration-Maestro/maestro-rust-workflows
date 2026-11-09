@@ -46,11 +46,14 @@ shard matrix, doctests, coverage and all declared builds and foreign-target
 compilation. The arm64 macOS archive replaces its separate target check. A main
 push reuses tests when its exact commit already
 passed a completed merge-group run of the same shared workflow revision with the
-full workspace selected. That push skips the test shards and coverage. The
-archive, preparation, Doctests, Wasm and browser build and Chromium browser
-tests jobs still run and save their compiled-cache snapshots for the next merge
-group, so doctests and browser tests run a second time on that commit. The
-archive keeps the same instrumentation and cache shape as that group.
+full workspace selected. That push skips the test shards, doctests and
+coverage. The archive and preparation jobs still run on every test host,
+including a claimed macOS host, and save the compiled-cache snapshots the next
+merge group restores. A merge group cannot save them itself: only
+default-branch pushes write snapshots. The Wasm and browser build and Chromium
+browser tests jobs also still run, so browser tests run a second time on that
+commit. The archive keeps the same instrumentation and cache shape as that
+group.
 Formatting, lint, docs, dependency/source checks and target checks still run. No
 caller setting changes this policy.
 
@@ -327,7 +330,8 @@ still instrument workspace builds and send their compiles through the cache.
 | --- | --- | --- | --- |
 | Warm coverage build, Build test archive, Prepare test setup, Dependency/source/coverage checks | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
 | Format and lint, Docs, Doctests, Wasm and browser build, Chromium browser tests, declared target checks | Linux | Never | Never; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) |
-| Native test archive builds, test preparation and doctests | arm64 macOS | Every full-suite call that runs the job | Default-branch pushes only |
+| Native test archive builds and test preparation | arm64 macOS | Every call that runs the job | Default-branch pushes only, including those that reuse merge-queue tests |
+| Native doctests | arm64 macOS | Every call that runs the job | Never; they restore the native archive's snapshot |
 | Declared target checks | arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
 | Declared target checks and native test jobs | x86_64 Windows | Never | Never |
 
@@ -551,8 +555,8 @@ with their opted-in tools. Only the Linux numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including native shards and every `Doctests` leg, to succeed on full runs.
 Native legs run plain nextest without coverage instrumentation. On a main push
-that reuses merge-queue tests it requires skipped test shards and a successful
-`Doctests` leg. On pull requests it requires a
+that reuses merge-queue tests it requires skipped test shards and skipped
+`Doctests` legs. On pull requests it requires a
 successful declaration and skipped test and doctest jobs, regardless of package
 selection. On full runs it downloads all reports, counts each source line once
 (covered if any shard hits it), and enforces `coverage_min_lines` on the union.
@@ -1130,8 +1134,8 @@ runner fails its test step, so coverage uploads run only after success; a missin
 report after success fails the upload separately. On full runs the required aggregate accepts
 only successful matrix legs, including `Doctests`, and requires one report per
 numeric shard when merging coverage. On a main push that reuses merge-queue
-tests the shards are skipped and the aggregate still requires a successful
-`Doctests` leg. On pull requests the aggregate requires a
+tests the shards and the `Doctests` legs are skipped, and the aggregate
+requires both to be skipped. On pull requests the aggregate requires a
 successful declaration and skipped test and doctest jobs.
 
 The original home and auth file are never read, moved or modified. Only the
@@ -1989,7 +1993,8 @@ source and coverage checks, and each arm64 macOS target check (the Windows targe
 checks skip the statistics step, so they are never judged). Format and lint,
 Docs, Doctests, the Wasm and Chromium browser builds and the Linux target checks
 keep no snapshot, so they report their compile count and no hit rate. A
-default-branch push seeds every judged shape (`tests-coverage`, `tests-plain`,
+default-branch push, including one that reuses merge-queue tests, seeds every
+judged shape on every host (`tests-coverage`, `tests-plain`,
 `checks`, `targets-clippy-<target>` and `test-prepare`), so each is judged on
 merge groups, pull requests and default-branch runs alike; only a run in which no
 cacheable compilation ran is not judged. It never fails the build: a change can invalidate the cache itself,
@@ -2012,10 +2017,13 @@ shape passed. The causes a warning names, with their fixes:
 - **Cold snapshot:** a snapshot was restored but lacks this build's objects.
   Run the warm build on the default branch to seed it again.
 - **Key change:** no snapshot matches the job shape, though others of the same
-  job exist. The compiler, runner or caller directory changed; the next warm
-  build on the default branch seeds the new key.
-- **No writer:** the repository cache holds snapshots of other jobs but none of
-  this shape, so no default-branch push saves it. Check that the caller's warm-up
+  job on the same operating system exist. The compiler, runner or caller
+  directory changed; the next warm build on the default branch seeds the new
+  key. Every key names its host's operating system, so the Linux snapshot of a
+  job never counts as a key change for its macOS leg.
+- **No writer:** the repository cache holds snapshots of other jobs, or of the
+  same job on another host, but none of this shape, so no default-branch push
+  saves it. Check that the caller's warm-up
   runs a release of this workflow that has the writer.
 - **Eviction:** the repository cache holds no compile snapshot at all. Check the
   cache size and the seven-day expiry, then run the warm build.
