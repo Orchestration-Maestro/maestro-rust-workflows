@@ -1861,7 +1861,16 @@ jobs:
           import hashlib
           import json
           import os
-          # The compile cache prefix names repository, directory, host and compiler; the command and checkout path complete the prefix that finds an earlier bundle, and the input file contents complete the key.
+          import shutil
+          # The compile cache prefix names repository, directory, host and compiler; the command, the checkout path and the pinned search programs complete the prefix that finds an earlier bundle, and the input file contents complete the key.
+          # The programs are the ones the Search tools step put first on PATH, so a bundle that holds copies of them never outlives a pin change.
+          programs = {}
+          for name in ('rg', 'fd'):
+              path = shutil.which(name)
+              if path is None:
+                  raise SystemExit(f'{name}: the pinned search program is not on PATH')
+              with open(path, 'rb') as source:
+                  programs[name] = hashlib.sha256(source.read()).hexdigest()
           files = {}
           for pattern in json.loads(os.environ['TEST_PREPARE_INPUTS']):
               matches = [name for name in glob.glob(pattern, recursive=True, include_hidden=True) if os.path.isfile(name)]
@@ -1872,7 +1881,7 @@ jobs:
                       files[name] = hashlib.sha256(source.read()).hexdigest()
           def digest(value):
               return hashlib.sha256(json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
-          prefix = 'maestro-test-setup-v2-' + digest([os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE']]) + '-'
+          prefix = 'maestro-test-setup-v2-' + digest([os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE'], programs]) + '-'
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'prefix={prefix}\nkey={prefix}{digest(sorted(files.items()))}\n')
           PYTHON

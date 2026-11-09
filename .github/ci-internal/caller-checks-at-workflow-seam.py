@@ -1882,6 +1882,15 @@ def fixture_git(directory, *args):
         'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', *args],
         cwd=directory, text=True).strip()
 
+def search_path(directory, rg=b'rg one', fd=b'fd one'):
+    """Return a PATH that starts with stand-in search programs holding the given bytes."""
+    programs = pathlib.Path(directory) / 'search-programs'
+    programs.mkdir(exist_ok=True)
+    for name, content in (('rg', rg), ('fd', fd)):
+        (programs / name).write_bytes(content)
+        (programs / name).chmod(0o755)
+    return os.pathsep.join([str(programs), os.environ['PATH']])
+
 def coverage_matrix_splits_doctests_from_partitions():
     tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
     matrix_match = re.search(r'        include: (.*)', tests)

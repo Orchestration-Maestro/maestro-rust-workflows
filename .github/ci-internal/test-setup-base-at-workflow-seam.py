@@ -110,11 +110,18 @@ def setup_cache_identity_separates_host_bundles():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         (directory / 'input').write_text('bundle input', encoding='utf-8')
+        # The identity hashes the pinned search programs, so stand-ins lead the path.
+        programs = directory / 'programs'
+        programs.mkdir()
+        for name in ('rg', 'fd'):
+            (programs / name).write_bytes(b'stand-in')
+            (programs / name).chmod(0o755)
         def key(prefix):
             output = directory / 'output'
             output.write_text('', encoding='utf-8')
             result = execute('Test setup cache identity', directory, {'COMPILE_CACHE_PREFIX': prefix, 'TEST_PREPARE_INPUTS': '["input"]',
-                             'GITHUB_WORKSPACE': '/checkout', 'TEST_PREPARE': 'prepare', 'GITHUB_OUTPUT': str(output)})
+                             'GITHUB_WORKSPACE': '/checkout', 'TEST_PREPARE': 'prepare', 'GITHUB_OUTPUT': str(output),
+                             'PATH': str(programs) + os.pathsep + os.environ['PATH']})
             assert result.returncode == 0, result.stderr
             return output.read_text(encoding='utf-8')
         assert key('linux-compiler') == key('linux-compiler')

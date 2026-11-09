@@ -733,8 +733,8 @@ repository-relative path globs from the caller's working directory, such as
 `.config/prepare-tests.sh` or `tools/**/*.toml`. `**` matches any depth, hidden
 files included. The prepared directory is cached under a key built from the
 contents of every matching file, the `test_prepare` command, the compile cache
-identity (repository, directory, host and compiler), and the checkout path. A
-glob that matches no file fails the job. On reader runs, `Prepare test setup`
+identity (repository, directory, host and compiler), the checkout path and the
+pinned `rg` and `fd`. A glob that matches no file fails the job. On reader runs, `Prepare test setup`
 restores the bundle on an exact hit and skips the `test_prepare` command.
 When preparation is enabled, default-branch pushes run the command even on an
 exact hit, including warm builds and pushes that reuse merge-queue tests.
@@ -1183,8 +1183,9 @@ The test run reaches the pinned `rg` and `fd` only through files your
 `cp "$(command -v rg)" "$TEST_PREPARE_OUTPUT/"`. Nextest setup scripts run
 inside the test run, so they and the tests read those copies. A setup script
 can export the paths as `MAESTRO_TEST_RG` and `MAESTRO_TEST_FD` for tests that
-expect them. List the files that fix the program versions, such as `mise.toml`,
-in `test_prepare_inputs` so the copies follow their pins.
+expect them. The shared pins of `rg` and `fd` are part of the prepared bundle's
+cache key, so a pin change prepares again. For programs you pin yourself, list
+the files that fix their versions, such as `mise.toml`, in `test_prepare_inputs`.
 
 The `Ambient path` step records `PATH` before any tool step runs. The isolated
 test command then removes each directory a tool step added afterwards that holds

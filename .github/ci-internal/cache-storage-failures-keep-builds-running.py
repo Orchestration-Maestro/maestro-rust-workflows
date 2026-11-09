@@ -236,7 +236,14 @@ def superseded_cache_entries_leave_the_newest_of_each_prefix():
     def prefix(step, **values):
         with tempfile.TemporaryDirectory() as temporary:
             output = pathlib.Path(temporary) / 'outputs'
-            result = shell(body(step), environment(pathlib.Path(temporary)) | {'GITHUB_OUTPUT': str(output)} | values)
+            # The test setup identity hashes the pinned search programs, so stand-ins lead the path.
+            programs = pathlib.Path(temporary) / 'programs'
+            programs.mkdir()
+            for name in ('rg', 'fd'):
+                (programs / name).write_bytes(b'stand-in')
+                (programs / name).chmod(0o755)
+            path = {'PATH': str(programs) + os.pathsep + os.environ['PATH']}
+            result = shell(body(step), environment(pathlib.Path(temporary)) | path | {'GITHUB_OUTPUT': str(output)} | values)
             assert result.returncode == 0, result.stderr
             return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['prefix']
     # Every prefix comes from the identity step that names its writer's entries.
