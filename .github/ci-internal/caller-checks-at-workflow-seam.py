@@ -4404,6 +4404,13 @@ def native_test_hosts_follow_claims_and_run_after_landing():
                                 step = next(step for step in jobs[job]['steps'] if step['name'] == name)
                                 uploads = evaluate(step['if'], context | {'matrix.runner': runner})
                                 assert uploads == (runner in tested), (job, runner, event, reused)
+    # An unavailable declaration output must not start a warm job after its dependencies skipped.
+    for tested in ['', '[]']:
+        for warm in [False, True]:
+            routed = routed_jobs(document, {'inputs.warm-cache': warm,
+                                 'needs.declaration.outputs.tested_runners': tested,
+                                 'needs.test-build.result': 'skipped', 'needs.test-prepare.result': 'skipped'})
+            assert not {'tests', 'doctests'} & routed, (tested, warm, routed)
     for name in ['test-prepare', 'test-build']:
         assert 'test_runners' in jobs[name]['strategy']['matrix']['runner']
     assert 'tested_runners' in jobs['doctests']['strategy']['matrix']['runner']

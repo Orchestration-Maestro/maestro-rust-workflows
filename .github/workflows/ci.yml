@@ -2226,7 +2226,7 @@ jobs:
       contents: read
       actions: read
     name: ${{ inputs.warm-cache && 'Warm coverage cache' || matrix.runner == 'ubuntu-latest' && format('Test shard ({0}/{1})', matrix.shard, matrix.count) || format('Test shard ({0} {1}/{2})', matrix.runner, matrix.shard, matrix.count) }}
-    if: ${{ !inputs.browser-only && !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && needs.declaration.outputs.tested_runners != '[]' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && !cancelled() && (inputs.warm-cache || needs.test-build.result == 'success') && (needs.test-prepare.result == 'success' || needs.test-prepare.result == 'skipped') && needs.declaration.outputs.tested_runners != '' && needs.declaration.outputs.tested_runners != '[]' && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     strategy:
       fail-fast: false
       matrix:
@@ -2682,7 +2682,7 @@ jobs:
       actions: read
     name: ${{ matrix.runner == 'ubuntu-latest' && 'Doctests' || format('Doctests ({0})', matrix.runner) }}
     needs: declaration
-    if: ${{ !inputs.browser-only && needs.declaration.outputs.tested_runners != '[]' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !inputs.browser-only && needs.declaration.outputs.tested_runners != '' && needs.declaration.outputs.tested_runners != '[]' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
     concurrency:
       group: ${{ format('rust-ci-job-{0}-{1}{2}-doctests-{3}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.runner) }}
       cancel-in-progress: ${{ github.event_name == 'merge_group' }}
