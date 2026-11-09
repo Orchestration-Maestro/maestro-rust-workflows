@@ -1863,7 +1863,7 @@ jobs:
           import os
           import shutil
           # The compile cache prefix names repository, directory, host and compiler; the command, the checkout path and the pinned search programs complete the prefix that finds an earlier bundle, and the input file contents complete the key.
-          # The programs are the ones the Search tools step put first on PATH, so a bundle that holds copies of them never outlives a pin change.
+          # The programs are the `rg` and `fd` first on `PATH`, so a bundle that holds copies of them never outlives a pin change.
           programs = {}
           for name in ('rg', 'fd'):
               path = shutil.which(name)

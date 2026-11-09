@@ -734,8 +734,9 @@ repository-relative path globs from the caller's working directory, such as
 files included. The prepared directory is cached under a key built from the
 contents of every matching file, the `test_prepare` command, the compile cache
 identity (repository, directory, host and compiler), the checkout path and the
-pinned `rg` and `fd`. A glob that matches no file fails the job. On reader runs, `Prepare test setup`
-restores the bundle on an exact hit and skips the `test_prepare` command.
+pinned `rg` and `fd`. A glob that matches no file fails the job. On reader
+runs, `Prepare test setup` restores the bundle on an exact hit and skips the
+`test_prepare` command.
 When preparation is enabled, default-branch pushes run the command even on an
 exact hit, including warm builds and pushes that reuse merge-queue tests.
 These writers check whether the bundle is cached without downloading it and
