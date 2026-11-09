@@ -120,18 +120,34 @@ run's coverage artifacts.
 
 Release pull requests need no extra configuration. When a PR from this
 repository's `release-please--branches--main` branch changes only release
-metadata, `CI self-test` reuses a successful run on its exact base commit.
+metadata, `CI self-test` reuses a successful run that tested its base commit
+or an identical repository tree.
 The allowed files are the release manifest and the version file and changelog
 named by the base commit's release configuration. The default changelog is
 `CHANGELOG.md`. For example, a release changing only that changelog,
 `.github/release-please/manifest.json` and `version.txt` can reuse its base run.
 
-Reuse requires a completed, successful `push` run of `ci-internal.yml` in the
-same repository on that exact base SHA. Missing, failed or unfinished runs,
-unreadable evidence and lookup errors keep the full self-test. A change outside
-the metadata files also keeps the full self-test. Other PRs, merge groups and
-main pushes keep their normal runs; caller repositories and release-pin updates
-are unchanged.
+Reuse requires a completed, successful `ci-internal.yml` run in the same
+repository. An exact-base `push` run qualifies directly. Otherwise, selection
+looks up a small evidence artifact named for the base tree SHA. The artifact
+must identify this workflow, record a full self-test and contain the same tree
+SHA. The matching run can be a PR run on a different commit with identical
+files. For example, the merged PR's tested tree can qualify while the new main
+push is still running. Release creation stays on main pushes; it does not wait
+for that push's self-test.
+
+After all fixture and proof jobs and repository quality pass, a full self-test
+records its checked-out tree and workflow identity. It uploads the evidence
+under `self-test-evidence-<tree SHA>`; a rerun replaces that run's artifact.
+Selection reads only the evidence for the requested tree, checks the producing
+run and accepts one JSON file of at most 4 KiB. The evidence is a same-repository
+workflow self-report, not an independent attestation. A run that reuses evidence
+does not upload fresh full-self-test evidence.
+
+Missing, expired or invalid evidence, failed or unfinished runs and lookup
+errors keep the full self-test. A change outside the metadata files also keeps
+the full self-test. Other PRs, merge groups and main pushes keep their normal
+runs; caller repositories and release-pin updates are unchanged.
 
 `Self-test selection` records the decision in `Reuse release base self-test`.
 On reuse, the fixture and proof jobs skip their work. Both required checks,

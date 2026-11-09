@@ -31,11 +31,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 -I - <<'PYTHON'
+          import io
           import json
           import os
           import pathlib
+          import re
           import subprocess
+          import zipfile
           repository = os.environ['GITHUB_REPOSITORY']
+          workflow_path = repository + '/.github/workflows/ci-internal.yml'
+          def api(path, paginate=False, binary=False):
+              flags = ['--paginate', '--slurp'] if paginate else []
+              result = subprocess.check_output(['gh', 'api', *flags, f'repos/{repository}/{path}'], text=not binary)
+              return result if binary else json.loads(result)
+          def successful(run):
+              return (run['status'] == 'completed' and run['conclusion'] == 'success'
+                  and run['path'] == '.github/workflows/ci-internal.yml'
+                  and (run.get('head_repository') or {}).get('full_name') == repository)
           reused = False
           try:
               if os.environ['GITHUB_EVENT_NAME'] == 'pull_request':
@@ -51,15 +63,32 @@ jobs:
                       changed = subprocess.check_output(['git', 'diff', '--no-renames', '--name-only', '-z',
                                                          base, pr['head']['sha'], '--']).decode('utf-8').split('\0')[:-1]
                       if changed and set(changed) <= metadata:
-                          path = f'repos/{repository}/actions/workflows/ci-internal.yml/runs'
-                          pages = json.loads(subprocess.check_output(['gh', 'api', '--paginate', '--slurp',
-                              f'{path}?event=push&status=success&head_sha={base}&per_page=100'], text=True))
-                          reused = any(run['head_sha'] == base and run['event'] == 'push'
-                              and run['status'] == 'completed' and run['conclusion'] == 'success'
-                              and run['path'] == '.github/workflows/ci-internal.yml'
-                              and (run.get('head_repository') or {}).get('full_name') == repository
+                          path = 'actions/workflows/ci-internal.yml/runs'
+                          pages = api(f'{path}?event=push&status=success&head_sha={base}&per_page=100', True)
+                          reused = any(successful(run) and run['head_sha'] == base and run['event'] == 'push'
                               for page in pages for run in page['workflow_runs'])
-          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError, OSError):
+                          if not reused:
+                              tree = subprocess.check_output(['git', 'rev-parse', base + '^{tree}'], text=True).strip()
+                              name = 'self-test-evidence-' + tree
+                              listed = api(f'actions/artifacts?name={name}&per_page=100', True)
+                              for artifact in (item for page in listed for item in page['artifacts']):
+                                  if artifact['name'] != name or artifact['expired']:
+                                      continue
+                                  run = api(f"actions/runs/{artifact['workflow_run']['id']}")
+                                  if not successful(run):
+                                      continue
+                                  archive = api(f"actions/artifacts/{artifact['id']}/zip", binary=True)
+                                  with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+                                      if bundle.namelist() != ['self-test-tree.json'] or bundle.infolist()[0].file_size > 4096:
+                                          raise ValueError('Invalid self-test evidence archive')
+                                      evidence = json.loads(bundle.read('self-test-tree.json'))
+                                  reference, ref = evidence['workflow_ref'].rsplit('@', 1)
+                                  if (reference == workflow_path and ref
+                                          and re.fullmatch('[0-9a-f]{40}', evidence['workflow_sha'])
+                                          and evidence['tree'] == tree and evidence['full_test_set'] is True):
+                                      reused = True
+                                      break
+          except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError, OSError, zipfile.BadZipFile):
               print('Release base evidence unavailable; running the full self-test')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('tests_reused=' + str(reused).lower() + '\n')
@@ -68,7 +97,7 @@ jobs:
         if: steps.base.outputs.tests_reused == 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: echo "Base $BASE_SHA already passed CI self-test on a main push; release metadata reuses that result."
+        run: echo "Base $BASE_SHA has a successful CI self-test commit or tree match; release metadata reuses that result."
 
   sample:
     needs: selection
@@ -604,7 +633,7 @@ jobs:
 
   consumers:
     name: Required consumer tests
-    needs: [selection, seams, native, fuzz-issues, browser-qualification, shard-seams]
+    needs: [selection, quality, seams, native, fuzz-issues, browser-qualification, shard-seams]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -618,5 +647,39 @@ jobs:
           import os
           results = json.loads(os.environ['RESULTS'])
           assert results.pop('selection')['result'] == 'success'
+          assert results.pop('quality')['result'] == 'success'
           expected = 'skipped' if os.environ['REUSED'] == 'true' else 'success'
           assert all(job['result'] == expected for job in results.values())
+      - name: Checkout tested tree
+        if: needs.selection.outputs.tests_reused != 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Record self-test evidence
+        id: evidence
+        if: needs.selection.outputs.tests_reused != 'true'
+        env:
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          python3 -I - <<'PYTHON'
+          import json
+          import os
+          import pathlib
+          import subprocess
+          tree = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], text=True).strip()
+          evidence = {'workflow_ref': os.environ['WORKFLOW_REF'], 'workflow_sha': os.environ['WORKFLOW_SHA'],
+                      'tree': tree, 'full_test_set': True}
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'self-test-tree.json'
+          path.write_text(json.dumps(evidence) + '\n', encoding='utf-8')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'tree={tree}\n')
+          PYTHON
+      - name: Upload self-test evidence
+        if: needs.selection.outputs.tests_reused != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: self-test-evidence-${{ steps.evidence.outputs.tree }}
+          path: ${{ runner.temp }}/self-test-tree.json
+          if-no-files-found: error
+          overwrite: true
