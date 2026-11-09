@@ -53,7 +53,7 @@ on:
         value: ${{ jobs.advisories.outputs.findings }}
 
 concurrency:
-  group: rust-ci-${{ github.event_name == 'push' && format('{0}-{1}', github.workflow, github.sha) || github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
+  group: rust-ci-${{ (github.event_name == 'push' || github.event_name == 'merge_group') && format('{0}-{1}', github.workflow, github.sha) || github.ref }}${{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -124,7 +124,6 @@ jobs:
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
       tests_reused: ${{ steps.queue.outputs.tests_reused }}
-      merge_group_pull_request: ${{ steps.config.outputs.merge_group_pull_request }}
       coverage_scope: ${{ steps.selection.outputs.coverage_scope }}
       test_runners: ${{ steps.selection.outputs.test_runners }}
       test_counts: ${{ steps.selection.outputs.test_counts }}
@@ -543,13 +542,6 @@ jobs:
           if config is not None and os.environ.get('TEST_EVENT') not in ('pull_request', 'merge_group') and os.environ.get('WARM') != 'true':
               hosts.update({runner: min(shards, count) for target, (runner, shards) in native_tests.items() if target in config['check_targets']})
           values.update(test_hosts=json.dumps(hosts))
-          # A rebuilt merge group keeps its pull request number; only the base hash ending the ref changes.
-          values['merge_group_pull_request'] = ''
-          if os.environ.get('GITHUB_EVENT_NAME') == 'merge_group':
-              queued = re.fullmatch(r'refs/heads/gh-readonly-queue/.+/pr-([0-9]+)-[0-9a-f]+', os.environ.get('GITHUB_REF', ''))
-              if queued is None:
-                  raise SystemExit(f"merge group ref {os.environ.get('GITHUB_REF')!r} names no queued pull request")
-              values['merge_group_pull_request'] = queued[1]
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
               for key, value in values.items():
                   output.write(f'{key}={value}\n')
@@ -560,10 +552,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # A queue rebuild deletes the old group's ref. A job of the replaced run must not join a concurrency group the live run holds.
-          # Only a missing ref stops the run; an API failure says nothing about the group.
-          if ! reply=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/${GITHUB_REF#refs/}" 2>&1) && [[ "$reply" == *'HTTP 404'* ]]; then
-            echo "::error::${GITHUB_REF} no longer exists: the merge queue replaced this group"
+          # The queue deletes a dropped group's ref, or reuses its name for a new commit; either way this run can never merge.
+          # Only a missing or moved ref stops the run; an API failure says nothing about the group.
+          head=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/${GITHUB_REF#refs/}" --jq .object.sha 2>&1) || [[ "$head" == *'HTTP 404'* ]] || exit 0
+          if [[ "$head" != "$GITHUB_SHA" ]]; then
+            echo "::error::${GITHUB_REF} no longer holds ${GITHUB_SHA}: the merge queue replaced this group"
             exit 1
           fi
       - name: Test evidence identity
@@ -907,6 +900,68 @@ jobs:
           name: merge-queue-tests-${{ steps.evidence-scope.outputs.scope }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/merge-queue-tests.json
           if-no-files-found: error
+
+  replaced-groups:
+    # A merge group the queue dropped (a rebuild, a removed or closed pull request) can never merge, yet its run keeps
+    # its runners. Concurrency cannot end it: a dropped group may have no successor, and no name read from the ref
+    # matches the two. Each new group's run cancels this workflow's unfinished runs whose ref the queue no longer holds.
+    # Like the pruners, it holds a write grant and runs no caller code.
+    name: Cancel replaced merge groups
+    if: ${{ github.event_name == 'merge_group' && !inputs.browser-only && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    permissions:
+      contents: read
+      actions: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Runner hardware
+        if: runner.os == 'Linux'
+        working-directory: ${{ github.workspace }}
+        run: *runner-hardware
+      - name: Cancel replaced merge groups
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -I - <<'PYTHON'
+          import json
+          import os
+          import subprocess
+          import sys
+          repository = os.environ['GITHUB_REPOSITORY']
+          def api(*arguments):
+              return subprocess.run(['gh', 'api', *arguments], capture_output=True, text=True)
+          def warn(text, reply):
+              print(f"::warning title=Replaced merge groups::{text}: {' '.join(reply.stderr.split())}")
+          def read(path):
+              reply = api(path)
+              if reply.returncode:
+                  warn(f'{path} was not read', reply)
+                  sys.exit(1)
+              return json.loads(reply.stdout)
+          workflow = read(f"repos/{repository}/actions/runs/{os.environ['GITHUB_RUN_ID']}")['workflow_id']
+          # A run that still holds runners is queued or in progress.
+          runs = [run for status in ('queued', 'in_progress')
+                  for run in read(f'repos/{repository}/actions/runs?event=merge_group&status={status}&per_page=100')['workflow_runs']
+                  if run['workflow_id'] == workflow]
+          status = 0
+          for run in runs:
+              # The queue deletes a dropped group's ref, or reuses its name for a new commit.
+              ref = api(f"repos/{repository}/git/ref/heads/{run['head_branch']}")
+              if ref.returncode == 0 and json.loads(ref.stdout)['object']['sha'] == run['head_sha']:
+                  continue
+              if ref.returncode and 'HTTP 404' not in ref.stderr:
+                  warn(f"{run['head_branch']} was not read", ref)
+                  status = 1
+                  continue
+              cancel = api('--method', 'POST', f"repos/{repository}/actions/runs/{run['id']}/cancel")
+              # A run that finished since the listing is past cancelling, which is the outcome sought.
+              if cancel.returncode and 'HTTP 409' not in cancel.stderr:
+                  warn(f"run {run['id']} was not cancelled", cancel)
+                  status = 1
+              else:
+                  print(f"Cancelled run {run['id']}: the merge queue no longer holds {run['head_branch']} at {run['head_sha']}")
+          sys.exit(status)
+          PYTHON
 
   quality:
     permissions:
@@ -1418,9 +1473,6 @@ jobs:
       fail-fast: false
       matrix:
         runner: ${{ fromJSON(needs.declaration.outputs.test_runners) }}
-    concurrency:
-      group: ${{ format('rust-ci-job-{0}-{1}{2}-test-build-{3}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.runner) }}
-      cancel-in-progress: ${{ github.event_name == 'merge_group' }}
     runs-on: ${{ matrix.runner }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -1798,9 +1850,6 @@ jobs:
       fail-fast: false
       matrix:
         runner: ${{ fromJSON(needs.declaration.outputs.test_runners) }}
-    concurrency:
-      group: ${{ format('rust-ci-job-{0}-{1}{2}-test-prepare-{3}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.runner) }}
-      cancel-in-progress: ${{ github.event_name == 'merge_group' }}
     runs-on: ${{ matrix.runner }}
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
@@ -2231,9 +2280,6 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(inputs.warm-cache && '[{"runner":"ubuntu-latest","shard":"warm"}]' || needs.declaration.outputs.test_shards) }}
-    concurrency:
-      group: ${{ format('rust-ci-job-{0}-{1}{2}-tests-{3}-{4}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.runner, matrix.shard) }}
-      cancel-in-progress: ${{ github.event_name == 'merge_group' }}
     runs-on: ${{ matrix.runner }}
     env: &test-env
       TEST_SHARD_COUNT: ${{ matrix.count || needs.declaration.outputs.test_shard_count }}
@@ -2683,9 +2729,6 @@ jobs:
     name: ${{ matrix.runner == 'ubuntu-latest' && 'Doctests' || format('Doctests ({0})', matrix.runner) }}
     needs: declaration
     if: ${{ !inputs.browser-only && needs.declaration.outputs.tested_runners != '' && needs.declaration.outputs.tested_runners != '[]' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
-    concurrency:
-      group: ${{ format('rust-ci-job-{0}-{1}{2}-doctests-{3}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.runner) }}
-      cancel-in-progress: ${{ github.event_name == 'merge_group' }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -3227,9 +3270,6 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(needs.declaration.outputs.targets) }}
-    concurrency:
-      group: ${{ format('rust-ci-job-{0}-{1}{2}-targets-{3}', github.workflow, github.event_name == 'merge_group' && format('mg-{0}', needs.declaration.outputs.merge_group_pull_request) || github.run_id, inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '', matrix.target) }}
-      cancel-in-progress: ${{ github.event_name == 'merge_group' }}
     runs-on: ${{ matrix.runner }}
     env:
       CACHE_TARGET: ${{ matrix.target }}
