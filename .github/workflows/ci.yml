@@ -544,11 +544,11 @@ jobs:
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
           # The test jobs carry a Windows leg, but Windows is not a native test host until its cold setup fits the job limit.
-          native_tests = {'aarch64-apple-darwin': ('macos-latest', 4)}
+          native_tests = {'x86_64-pc-windows-msvc': ('windows-latest', 16)}
           count = int(values['test_shard_count'])
-          hosts = {'ubuntu-latest': count}
+          hosts = {}
           # Merge groups test Linux only; native hosts run in the full suite after landing.
-          if config is not None and os.environ.get('TEST_EVENT') not in ('pull_request', 'merge_group') and os.environ.get('WARM') != 'true':
+          if config is not None and os.environ.get('WARM') != 'true':
               hosts.update({runner: min(shards, count) for target, (runner, shards) in native_tests.items() if target in config['check_targets']})
           values.update(test_hosts=json.dumps(hosts))
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding="utf-8") as output:
@@ -2652,7 +2652,7 @@ jobs:
               partition=()
               if [ -n "${SHARD:-}" ] && [ -z "${TEST_ARCHIVE:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); fi
               run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
-                "${build_args[@]}" --retries 0 --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
+                "${build_args[@]}" --no-fail-fast --retries 0 --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi
           fi
           if [[ "${WARM_CACHE:-false}" != true && -z "${CARGO_COVERAGE_MIN_LINES:-}" && ( "${SHARD:-}" == doctests || ( -z "${TEST_ARCHIVE:-}" && "${SHARD:-1}" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ) ]]; then
