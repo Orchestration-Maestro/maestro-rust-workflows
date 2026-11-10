@@ -861,7 +861,7 @@ def archived_shards_reuse_build_and_prepared_outputs():
             assert result.returncode == 43, result.stdout + result.stderr
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                            workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-    assert 'needs: [declaration, test-build, test-prepare]' in jobs['tests']
+    assert 'needs: [declaration, sandbox-runtime, test-build, test-prepare]' in jobs['tests']
     assert 'name: Download test archive' in jobs['tests']
     assert 'name: Upload test archive' in jobs['test-build']
     assert 'test_runners' in jobs['test-build']
@@ -1912,7 +1912,7 @@ def coverage_matrix_splits_doctests_from_partitions():
     assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[{\"runner\":\"ubuntu-latest\",\"shard\":\"warm\"}]' || needs.declaration.outputs.test_shards) }}"
     assert "format('Test shard ({0}/{1})', matrix.shard, matrix.count)" in tests
     assert "format('Test shard ({0} {1}/{2})', matrix.runner, matrix.shard, matrix.count)" in tests
-    assert '    needs: [declaration, test-build, test-prepare]\n' in tests and '      fail-fast: false\n' in tests
+    assert '    needs: [declaration, sandbox-runtime, test-build, test-prepare]\n' in tests and '      fail-fast: false\n' in tests
     proof = json.loads(subprocess.check_output(['yq', '-o=json', '.github/workflows/ci-proof.yml'], text=True))
     assert proof['jobs']['selected']['with']['test-event'] == 'pull_request'
     assert 'advisory-scan' in tests and "inputs.working-directory != '.'" in tests
