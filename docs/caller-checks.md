@@ -38,19 +38,28 @@ Pull requests run declaration validation, formatting, Clippy, docs,
 dependency/source checks and the declared Windows target check. Host
 Clippy and the Windows target check select changed crates and their workspace
 dependents; formatting still checks the whole workspace. Pull requests skip the
-test archive, test setup, test shards, doctests and wasm/browser builds. The
-declared [example witnesses](#wasm-example-witnesses) are the exception: they
-still compile. Every required check name still reports; skipped jobs count as
-success. Merge groups and main pushes run every workspace test with the full
-shard matrix, doctests, coverage and all declared builds and foreign-target
-compilation. The arm64 macOS archive replaces its separate target check. A main
-push reuses tests when its exact commit already
-passed a completed merge-group run of the same shared workflow revision with the
-full workspace selected. That push skips the test shards and coverage. The
-archive, preparation, Doctests, Wasm and browser build and Chromium browser
-tests jobs still run and save their compiled-cache snapshots for the next merge
-group, so doctests and browser tests run a second time on that commit. The
-archive keeps the same instrumentation and cache shape as that group.
+test archive, test setup, test shards, doctests and wasm/browser builds. Two
+exceptions still compile: the declared [example witnesses](#wasm-example-witnesses),
+and the declared [Emscripten crates](#emscripten-builds) that the change
+reaches. Every required check name still reports; skipped jobs count as
+success. Merge groups run the full Linux shard matrix, Linux doctests,
+coverage and all declared builds and foreign-target checks except the native
+arm64 macOS route. They keep `Check (x86_64-apple-darwin)`. Main pushes also
+run the claimed macOS host's test archive, preparation, four test shards and
+doctests. The arm64 macOS archive replaces its separate target check there.
+A macOS test failure after landing goes through the existing
+[post-landing safeguard](#full-suite-after-landing).
+
+A main push reuses Linux tests when its exact commit already passed a completed
+merge-group run of the same shared workflow revision with the full workspace
+selected. That push skips Linux test shards, Linux doctests and coverage, but
+still runs the macOS tests and doctests the group skipped. The archive and
+preparation jobs still run on every test host and save compiled-cache snapshots;
+they upload test archives and setup only for hosts whose tests run. A merge
+group cannot save snapshots itself: only default-branch pushes write them. The
+Wasm and browser build and Chromium browser tests jobs also still run, so browser
+tests run a second time on that commit. The Linux archive keeps the same
+instrumentation and cache shape as the merge group.
 Formatting, lint, docs, dependency/source checks and target checks still run. No
 caller setting changes this policy.
 
@@ -100,18 +109,62 @@ See [Test shards](#test-shards) for the required test result and coverage rules.
 
 Callers grant `contents: read` and `actions: write` to the reusable-workflow
 call. Read access lets the shared workflow reuse prepared test bundles from
-earlier runs. Only the pruning jobs in
-[One entry per prefix](#one-entry-per-prefix) take write access; they run on
-default-branch pushes, check out nothing and run no caller code. Every other job
-declares `actions: read`. GitHub checks each job's permissions against the
-call's grant when the run starts, even for jobs that will skip, so a call that
-grants less cannot start. Add this grant before the release-pin update.
+earlier runs. Only two kinds of job take write access, and neither checks out
+anything or runs caller code: the pruning jobs in
+[One entry per prefix](#one-entry-per-prefix), on default-branch pushes, and the
+canceller in [Superseded merge-group runs](#superseded-merge-group-runs), on
+merge groups. Every other job declares `actions: read`. GitHub checks each
+job's permissions against the call's grant when the run starts, even for jobs
+that will skip, so a call that grants less cannot start. Add this grant before
+the release-pin update.
 
 The workspace coverage floor remains 80% (or the caller's higher floor).
 Declared callers collect fresh coverage for the full workspace on merge groups
 and main pushes. Every shard must provide its report, and the aggregate applies
 the floor to their union. Pull requests collect no coverage and need no previous
 run's coverage artifacts.
+
+## Release PR self-test reuse
+
+Release pull requests need no extra configuration. When a PR from this
+repository's `release-please--branches--main` branch changes only release
+metadata, `CI self-test` reuses a successful run that tested its base commit
+or an identical repository tree.
+The allowed files are the release manifest and the version file and changelog
+named by the base commit's release configuration. The default changelog is
+`CHANGELOG.md`. For example, a release changing only that changelog,
+`.github/release-please/manifest.json` and `version.txt` can reuse its base run.
+
+Reuse requires a completed, successful `ci-internal.yml` run in the same
+repository. An exact-base `push` run qualifies directly. Otherwise, selection
+looks up a small evidence artifact named for the base tree SHA. The artifact
+must identify this workflow, record a full self-test and contain the same tree
+SHA. The matching run can be a PR run on a different commit with identical
+files. For example, the merged PR's tested tree can qualify while the new main
+push is still running. Release creation stays on main pushes; it does not wait
+for that push's self-test.
+
+After all fixture and proof jobs and repository quality pass, a full self-test
+records its checked-out tree and workflow identity. It uploads the evidence
+under `self-test-evidence-<tree SHA>`; a rerun replaces that run's artifact.
+Selection reads only the evidence for the requested tree, checks the producing
+run and accepts one JSON file of at most 4 KiB. The evidence is a same-repository
+workflow self-report, not an independent attestation. A run that reuses evidence
+does not upload fresh full-self-test evidence.
+
+Missing, expired or invalid evidence, failed or unfinished runs and lookup
+errors keep the full self-test. A change outside the metadata files also keeps
+the full self-test. Other PRs, merge groups and main pushes keep their normal
+runs; caller repositories and release-pin updates are unchanged.
+
+`Self-test selection` shows `Reuse release base self-test` only when it reuses
+successful evidence. On reuse, the fixture and proof jobs skip their work. Both
+required checks, `Required repository quality` and `Required consumer tests`,
+still run and accept those skips only when selection succeeded and proved reuse.
+Without reuse, repository quality requires the sample, declared caller and
+caller test tools to succeed. Consumer tests require repository quality and every
+workflow proof to succeed. Failures and cancellations still fail the required
+checks.
 
 ## Native C compilation
 
@@ -166,61 +219,66 @@ compatible snapshot.
 
 ## Superseded merge-group runs
 
-When the merge queue rebuilds a group, the new run cancels the jobs of the run
-it replaces that can hold a macOS runner, and the live group takes those
-runners.
+A merge group that the queue drops can never merge. The queue drops a group
+when it rebuilds (main moved, or an entry ahead of it left), when its pull
+request leaves the queue, and when the pull request is closed. Every
+merge-group run starts a `Cancel replaced merge groups` job. The job cancels
+the unfinished runs of the same workflow whose group the queue no longer holds,
+and their runners, macOS included, go to the live groups.
 
 A queued group runs on a ref named `gh-readonly-queue/<base>/pr-<number>-<hash>`.
-A rebuild keeps the number and changes the hash, so the ref alone cannot match
-the old run to the new one. The caller declaration reads the number from the ref
-and publishes it as the `merge_group_pull_request` output. A merge-group ref
-without a number fails the declaration.
+When the queue drops a group, it deletes that ref. If it later queues the same
+pull request on the same base, it reuses the name for a new commit. A run is
+replaced when its ref is missing or points at a commit other than the run's
+own. The job lists this workflow's queued and in-progress merge-group runs,
+reads each run's ref and cancels every replaced run. A live group's ref still
+points at its own commit, so live groups are never cancelled.
 
-The jobs that can hold a macOS runner (`test-build`, `test-prepare`, `tests`,
-`doctests` and `targets`) each hold their own concurrency group. The group name
-is the calling workflow, `mg`, the number, the `concurrency-key`, the job and
-the matrix leg. Both runs of one pull request share it, so the newer run cancels
-the older one. Different pull requests, jobs, legs and callers never share one,
-so live groups never cancel each other. Every leg of those jobs is cancelled,
-whatever its runner: Linux, macOS and Windows alike. The superseded run's other
-jobs finish on their own.
+The job has no `needs`, so it starts with the run, beside the declaration. It
+holds `contents: read` and `actions: write`, checks out nothing and runs no
+caller code. A failed read or cancellation prints a `Replaced merge groups`
+warning, marks the step failed and leaves the job green, so it never fails the
+live group that ran it. A run that finished between the listing and the
+cancellation is not an error. Pull requests, pushes, and scan, warm or
+browser-only calls do not run the job.
 
-GitHub cancels whichever job already holds a group when another joins, however
-old its run is. A replaced run that reaches a group late would cancel the live
-run. A rebuild deletes the old group's ref, so a step checks that the run's own
-ref still exists. It runs right after the declaration is read, and again as the
-last step of `test-build` and `test-prepare`, the two jobs `tests` waits for. A
-missing ref fails the job and skips the jobs that need it, so a replaced run
-stops before it takes a group. Any other API failure lets the run continue.
+Concurrency groups cannot do this. GitHub cancels a job only when a later job
+joins its group, and a dropped group may have no successor: a closed pull
+request has none, and a rebuild builds only as many groups as the queue's build
+limit allows. Queue positions and bases shift as groups merge, so any group
+name read from the ref that ties a dropped group to a live one also ties two
+live groups together.
 
-Pull requests and pushes are unchanged. Their job groups carry the run ID, so
-no two runs share one and nothing is cancelled.
+Each run also checks its own ref, right after the declaration is read and again
+as the last step of `test-build` and `test-prepare`, the two jobs `tests` waits
+for. A missing or moved ref fails the job and skips the jobs that need it, so a
+run replaced before its builds end never starts its test shards. Any other API
+failure lets the run continue.
 
-Limits:
+Merge-group runs are grouped by the calling workflow's name and commit, so a
+new run starts its canceller even when the queue reuses the old run's ref name.
 
-- A pull request that leaves the queue without a rebuild has no later run to
-  claim its group, so its jobs run to completion. Cancel that run by hand.
-- The check reads the ref once per job. A replaced run that passes it can still
-  join a group a few seconds later. It cancels a live job only if that job joined
-  in those seconds, and a live run needs a full build before its `tests` legs
-  join, so the window is small but not closed.
+Cancellation happens when a new group starts. A pull request removed from the
+end of the queue starts no new group, so the jobs its run already started run
+to completion, but test shards that had not started never start. The next
+group's run cancels it, or cancel it by hand.
 
 ## Reusable-call concurrency
 
-Every run except a push is grouped by ref. A push run is grouped by
-the calling workflow's name and the pushed commit, so two caller workflows on
-one commit run at the same time and later landings never wait for each
-other. The optional workflow input `concurrency-key` defaults to an empty
-string, which adds nothing to the group. If a workflow calls this
+Push and merge-group runs are grouped by the calling workflow's name and
+commit; other runs are grouped by ref. Two caller workflows on one commit run
+at the same time, later landings never wait for each other, and a rebuilt merge
+group starts even when the queue reuses its ref name. The optional workflow
+input `concurrency-key` defaults to an empty string, which adds nothing to the
+group. If a workflow calls this
 reusable workflow more than once, give each calling job a distinct, stable
 key (case-insensitive), such as `concurrency-key: quality`. Reuse that key on
 later pushes so a new pull-request run cancels the older invocation of the
 same job, not another job in its own run. Do not use a run ID as the key.
-A rebuilt merge group cancels the jobs of the run it replaces that can hold a
-macOS runner; see
-[Superseded merge-group runs](#superseded-merge-group-runs). The caller must not
-share the same concurrency group with its called workflow; see GitHub's
-[reusable workflow concurrency rules](https://docs.github.com/en/actions/reference/reusable-workflows-reference#limitations-of-reusable-workflows).
+A job, not concurrency, cancels the runs of merge groups that the queue
+dropped; see [Superseded merge-group runs](#superseded-merge-group-runs). The
+caller must not share the same concurrency group with its called workflow; see
+GitHub's [reusable workflow concurrency rules](https://docs.github.com/en/actions/reference/reusable-workflows-reference#limitations-of-reusable-workflows).
 
 ## Declaration
 
@@ -234,8 +292,9 @@ and defaults to `[]`. The [schema](../.github/ci.schema.json) describes the
 parsed TOML shape; there is no version key or older-format reader.
 
 `check_targets` also selects native test hosts: `aarch64-apple-darwin` adds
-`macos-latest`. These test legs run on merge groups and main pushes only; pull
-requests and warm calls keep Linux-only tests. The other supported targets,
+`macos-latest`. These test legs run after landing on main pushes, including
+pushes that reuse the merge group's Linux results. Merge groups, pull requests
+and warm calls keep Linux-only tests. The other supported targets,
 including `x86_64-pc-windows-msvc`, remain compile-only. The test jobs already
 carry a Windows leg, but `windows-latest` joins the native test hosts only once
 its cold preparation fits the job's 45-minute step limit.
@@ -250,9 +309,11 @@ ports on macOS or Windows. Without it nothing runs.
 An absent file runs the standard checks without isolation, search tool
 installation or optional jobs. After declaration validation, pull requests
 run formatting, Clippy, docs, dependency/source checks and the declared
-Windows target check in parallel. Merge groups and main pushes also run the test
-archive, test setup, full shard matrix, doctests, coverage, wasm/browser builds,
-Chromium tests and all other declared foreign-target checks.
+Windows target check in parallel. Merge groups and main pushes also run the Linux
+test archive, test setup, full shard matrix, doctests, coverage, wasm/browser
+builds, Chromium tests and declared foreign-target checks. The native macOS
+test route runs only after landing on main; merge groups keep the x86_64 macOS
+compile check. Main pushes may reuse the Linux results as described above.
 Pull requests skip these jobs without removing their required check names.
 An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
@@ -261,7 +322,8 @@ present document is invalid. Integer and string booleans are not accepted.
 
 Names are exact, without whitespace or Unicode normalization. Each wasm name
 must match a package in the caller's locked Cargo metadata, as must each
-`emscripten_crates` name. Each `wasm_examples`
+`emscripten_crates` name (which may also come from an additional locked
+manifest). Each `wasm_examples`
 example must be an example target of its package. Each target must match the
 caller compiler's target list and the runner table below. An unknown package,
 unknown target or recognized target without a runner fails with a file/key
@@ -329,7 +391,8 @@ still instrument workspace builds and send their compiles through the cache.
 | --- | --- | --- | --- |
 | Warm coverage build, Build test archive, Prepare test setup, Dependency/source/coverage checks | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
 | Format and lint, Docs, Doctests, Wasm and browser build, Chromium browser tests, declared target checks | Linux | Never | Never; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) |
-| Native test archive builds, test preparation and doctests | arm64 macOS | Every full-suite call that runs the job | Default-branch pushes only |
+| Native test archive builds and test preparation | arm64 macOS | Every call that runs the job | Default-branch pushes only, including those that reuse merge-queue tests |
+| Native doctests | arm64 macOS | Every call that runs the job | Never; they restore the native archive's snapshot |
 | Declared target checks | arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
 | Declared target checks and native test jobs | x86_64 Windows | Never | Never |
 
@@ -380,8 +443,8 @@ Cold times measured on Maestro, against the warm time of the same job:
 | Wasm and browser build | 8.3 to 12.3 min | 3.1 to 3.5 min |
 | Check (aarch64-unknown-linux-gnu) | 4.7 to 5.5 min | 3.0 min |
 
-Each stays under the merge group's longest path, the arm64 macOS archive build
-and its shards. The extra Linux minutes add no cost on a public repository.
+The table records Linux job costs; macOS tests run after landing. The extra
+Linux minutes add no cost on a public repository.
 
 An entry a job saved before it stopped keeping a snapshot stays in the cache
 until GitHub's seven-day expiry removes it, because nothing restores it and the
@@ -531,7 +594,8 @@ for merge groups and main pushes. These events always select every workspace
 package. Pull requests skip both test shards and doctests.
 Native shards are named `Test shard (<runner> k/n)`, with `Doctests (<runner>)`
 for their doctests. Linux names remain `Test shard (k/N)` and `Doctests`.
-Native legs run only on full events that do not reuse merge-queue tests.
+Native legs run only on main pushes, including those that reuse merge-queue
+Linux results.
 
 `test_shard_count` sets the number of shards. It is an optional whole number
 from 1 to 60 and defaults to 16. Any other value, including a float, a string or
@@ -553,10 +617,11 @@ with their opted-in tools. Only the Linux numeric shards upload LCOV, without
 individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
 including native shards and every `Doctests` leg, to succeed on full runs.
 Native legs run plain nextest without coverage instrumentation. On a main push
-that reuses merge-queue tests it requires skipped test shards and a successful
-`Doctests` leg. On pull requests it requires a
-successful declaration and skipped test and doctest jobs, regardless of package
-selection. On full runs it downloads all reports, counts each source line once
+that reuses merge-queue Linux results, the aggregate requires successful native
+shards and `Doctests` legs when the caller claims native test hosts. Without
+native hosts, it requires skipped test and doctest jobs. On pull requests it
+requires a successful declaration and skipped test and doctest jobs, regardless
+of package selection. On full runs it downloads all reports, counts each source line once
 (covered if any shard hits it), and enforces `coverage_min_lines` on the union.
 Missing reports or low coverage fail.
 Undeclared callers use the same test shards but retain their single coverage job
@@ -607,8 +672,9 @@ shard. When a caller has fewer test binaries than shards, the extra shards hold
 no binary: they run nothing and upload an empty coverage report, so the union
 still receives one report per shard. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
-runs doctests once on every merge group and main push, without waiting for the
-archive build.
+runs doctests once per tested host on every merge group and main push. On a main
+push that reuses merge-queue Linux results, the Linux leg skips and the claimed
+native legs still run. It does not wait for the archive build.
 
 Native hosts follow the same route: one `Build test archive (<runner>)` job and
 one `Prepare test setup (<runner>)` job per claimed host, each with its own
@@ -880,7 +946,8 @@ checks still report success. An absent base selects every package for lint.
 Wasm Clippy ignores the selection and lints every `wasm_crates` package on every
 run; see [Wasm and browser builds](#wasm-and-browser-builds). Pull requests
 skip the test archive, preparation, test shards, doctests and wasm/browser
-builds regardless of package selection.
+builds regardless of package selection, except for the example witnesses and
+the Emscripten crates a change reaches.
 
 A crate manifest selects its crate; lockfile changes compare the resolved transitive dependency identities
 and features at base and head, selecting affected crates. Root manifest,
@@ -895,16 +962,22 @@ readers, including for Markdown changes.
 Every enabled shard fetches locked dependencies.
 
 Merge groups and main pushes always run the full workspace suite, doctests,
-declared Chromium tests and coverage. They do not narrow tests using a diff or
-previous coverage. The queue is the merge gate; a suite failure stops the merge.
+declared Chromium tests and coverage, except a main push that reuses
+merge-queue tests: it takes the Linux suite from the merge group, skips the
+Linux shards and doctests, turns coverage off, and runs the declared Chromium
+tests and the claimed native hosts' shards and doctests. They do
+not narrow tests using a diff or previous coverage. The queue is the merge gate;
+a suite failure stops the merge.
 Main-push failure reporting and revert handling remain in the post-landing
 workflow.
 
-`test_inputs` maps repository-relative files or directories outside the
-workspace members to the exact package names whose tests read them. A change
-under a declared path selects those packages and their reverse dependencies,
-including Markdown files there. An empty list marks a path no workspace test
-reads, such as a separate fuzz workspace. Paths must stay inside the repository
+`test_inputs` maps repository-relative files or directories to the exact
+package names whose tests read them. A change under a declared path selects
+those packages and their reverse dependencies, including Markdown files there.
+A path inside a member directory also selects the member that owns the file, so
+a test that reads every crate's sources lists the crates' parent directory. An
+empty list marks a path no workspace test reads, such as a separate fuzz
+workspace. Paths must stay inside the repository
 and names must be workspace packages; anything else fails the declaration.
 
 ```toml
@@ -1136,9 +1209,10 @@ runner fails its test step, so coverage uploads run only after success; a missin
 report after success fails the upload separately. On full runs the required aggregate accepts
 only successful matrix legs, including `Doctests`, and requires one report per
 numeric shard when merging coverage. On a main push that reuses merge-queue
-tests the shards are skipped and the aggregate still requires a successful
-`Doctests` leg. On pull requests the aggregate requires a
-successful declaration and skipped test and doctest jobs.
+Linux results, Linux shards and `Doctests` skip; claimed native test hosts still
+run their shards and doctests, and the aggregate requires success. Without
+native hosts, it requires skipped test and doctest jobs. On pull requests the
+aggregate requires a successful declaration and skipped test and doctest jobs.
 
 The original home and auth file are never read, moved or modified. Only the
 isolated directories are cleaned on success or failure; other action steps
@@ -1320,19 +1394,38 @@ emscripten_crates = ["my-sandbox-runtime"]
 
 `emscripten_crates` is an optional array of exact locked package names, in
 build order. It defaults to `[]`. Repetitions are kept, and the names reach
-cargo as arguments, never as shell syntax. A name outside the locked Cargo
-metadata fails declaration validation with the file and key. With an empty list
-or no key, no job installs or builds anything for Emscripten.
+cargo as arguments, never as shell syntax. A name outside the root or the
+additional locked metadata fails declaration validation with the file and key.
+With an empty list or no key, no job installs or builds anything for
+Emscripten.
 
-On merge groups and main pushes, a non-empty list adds these steps to the Wasm
-and browser build job. Pull requests skip them, and the job runs even when
+A package that lives in its own locked workspace works the same way once that
+workspace's manifest is in `additional_locked_manifests`. The name is checked
+against that manifest's own `cargo metadata --no-deps --locked`, and the build
+passes `--manifest-path` for it:
+
+```toml
+wasm_crates = []
+check_targets = []
+additional_locked_manifests = ["runtime/Cargo.toml"]
+emscripten_crates = ["my-sandbox-runtime", "my-host"]
+```
+
+Here `my-sandbox-runtime` is a package of `runtime/Cargo.toml` and `my-host`
+belongs to the root workspace. Listing a manifest twice, or under another
+spelling, still names one package. Two different packages with the same name
+fail validation, because the build would reach only one of them.
+
+A non-empty list adds these steps to the Wasm and browser build job on merge
+groups, main pushes and the pull requests described
+[below](#emscripten-crates-on-pull-requests). The job runs even when
 `wasm_crates` is empty:
 
 | Step | What it does |
 | --- | --- |
 | Emscripten SDK | Installs Emscripten 6.0.10 and puts `emcc` on the `PATH`. |
 | Emscripten target | Runs `rustup target add wasm32-unknown-emscripten` for the caller's toolchain. |
-| Build emscripten crates | Runs `cargo build --locked --target wasm32-unknown-emscripten -p "$CRATE"` for each package. |
+| Build emscripten crates | Runs `cargo build --locked --target wasm32-unknown-emscripten -p "$CRATE"` for each package, adding `--manifest-path` for a package from an additional manifest. |
 
 The Chromium browser tests job installs the same SDK and target before the
 caller's `browser-test` recipe, so a recipe can build for Emscripten itself. It
@@ -1355,6 +1448,25 @@ unchecked file. The step then checks that `emcc` reports 6.0.10 and exports
 
 The caller owns the binding step and the browser application. The shared
 workflow only provides the toolchain and the build of the listed packages.
+
+### Emscripten crates on pull requests
+
+A pull request builds the listed packages, as a merge group does, when its
+change touches any of:
+
+- a file under the directory of a listed package;
+- the manifest that declares a listed package: the root `Cargo.toml` for a root
+  workspace package, or its `additional_locked_manifests` entry;
+- the `Cargo.lock` beside that manifest;
+- the `emscripten_crates` key of `.github/ci.toml`.
+
+A pull request that touches none of these skips the three steps. The build
+starts from an empty compile cache, because Wasm and browser build keeps no
+snapshot; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot). A
+change in another directory that a listed package depends on does not match;
+the merge group builds it. A package at the repository root owns every file, so
+every pull request builds it. The Chromium browser tests job does not run on pull
+requests.
 
 ## Chromium browser tests
 
@@ -1594,10 +1706,11 @@ cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warning
 There is no Linux fallback for Apple/MSVC targets. Runtime tests on a claimed
 macOS arm64 host use the separate [test shard route](#test-shards).
 Merge groups and main pushes run opted-in target checks, except for
-`aarch64-apple-darwin`: its native macOS test archive already compiles that
-target. The separate `x86_64-apple-darwin` check remains because there is no
-native x86_64 macOS test archive. Warm calls keep both Apple checks because they
-do not build native test archives. The four native macOS test shards are unchanged.
+`aarch64-apple-darwin`: the main push's native macOS test archive compiles that
+target after landing. Merge groups compile macOS through the separate
+`x86_64-apple-darwin` check. Warm calls keep both Apple checks because they do
+not build native test archives. The four native macOS test shards and macOS
+doctests run on main pushes, not in merge groups.
 
 Ordinary pull requests run only the declared `x86_64-pc-windows-msvc` target
 check. Apple checks wait for the full run; no macOS compile-only job starts on
@@ -1798,8 +1911,8 @@ guard matches a job against a pinned name after the last ` / `, so
 `suite / Caller declaration` counts as `Caller declaration`. The reuse,
 required-checks, time-per-unit, shard-balance and slow-test guards read those
 names. When the `Reuse merge queue tests` step in `Caller declaration`
-succeeded, the skipped test shards and doctests leave the pinned list, exactly
-as they do in a run with no prefix.
+succeeded, the skipped Linux test shards and Linux doctests leave the pinned
+list, exactly as they do in a run with no prefix. Native test jobs still run.
 
 Pin the reference to a reviewed commit and list the listener workflow in
 `privileged_trigger_workflows`, as for the post-landing reporter. Issues are
@@ -2013,7 +2126,8 @@ source and coverage checks, and each arm64 macOS target check (the Windows targe
 checks skip the statistics step, so they are never judged). Format and lint,
 Docs, Doctests, the Wasm and Chromium browser builds and the Linux target checks
 keep no snapshot, so they report their compile count and no hit rate. A
-default-branch push seeds every judged shape (`tests-coverage`, `tests-plain`,
+default-branch push, including one that reuses merge-queue tests, seeds every
+judged shape on every host (`tests-coverage`, `tests-plain`,
 `checks`, `targets-clippy-<target>` and `test-prepare`), so each is judged on
 merge groups, pull requests and default-branch runs alike; only a run in which no
 cacheable compilation ran is not judged. It never fails the build: a change can invalidate the cache itself,
@@ -2036,10 +2150,13 @@ shape passed. The causes a warning names, with their fixes:
 - **Cold snapshot:** a snapshot was restored but lacks this build's objects.
   Run the warm build on the default branch to seed it again.
 - **Key change:** no snapshot matches the job shape, though others of the same
-  job exist. The compiler, runner or caller directory changed; the next warm
-  build on the default branch seeds the new key.
-- **No writer:** the repository cache holds snapshots of other jobs but none of
-  this shape, so no default-branch push saves it. Check that the caller's warm-up
+  job on the same operating system exist. The compiler, runner or caller
+  directory changed; the next warm build on the default branch seeds the new
+  key. Every key names its host's operating system, so the Linux snapshot of a
+  job never counts as a key change for its macOS leg.
+- **No writer:** the repository cache holds snapshots of other jobs, or of the
+  same job on another host, but none of this shape, so no default-branch push
+  saves it. Check that the caller's warm-up
   runs a release of this workflow that has the writer.
 - **Eviction:** the repository cache holds no compile snapshot at all. Check the
   cache size and the seven-day expiry, then run the warm build.
@@ -2175,21 +2292,21 @@ rename a job on purpose, change the pin and the ruleset in one change.
 
 On a main push that reuses merge-queue tests, the successful `Reuse merge queue
 tests` step in `Caller declaration` records the decision. The required-checks
-guard permits shard and doctest skips only with that marker. The archive and
+guard permits Linux shard and doctest skips only with that marker. The archive and
 every other pinned check must still run. Job-shape comparisons keep reused runs
 separate from full-suite runs, so the deliberate skips do not report removals.
 
 Pull requests require `Caller declaration`, `Format and lint`, `Docs`,
 `Dependency, source and coverage checks` and the declared Windows target result,
-`Check (x86_64-pc-windows-msvc)`. Apple target compilation runs on merge groups
-and main pushes, with arm64 covered by the native test archive and x86_64 by
-`Check (x86_64-apple-darwin)`. A failed target check fails the workflow.
+`Check (x86_64-pc-windows-msvc)`. `Check (x86_64-apple-darwin)` runs on merge
+groups and main pushes. The native test archive covers arm64 Apple compilation
+on main pushes only. A failed target check fails the workflow.
 Undeclared targets do not create required results. Pull requests keep the test
 and build job names but skip their work, except that `Wasm and browser build`
-compiles the declared [example witnesses](#wasm-example-witnesses) and reports
-its required name. The required-checks guard enforces execution only on merge
-groups and main pushes, so intentional PR skips do not file missing-check
-findings.
+compiles the declared [example witnesses](#wasm-example-witnesses), builds the
+Emscripten crates a change reaches, and reports its required name. The
+required-checks guard enforces execution only on merge groups and main pushes,
+so intentional PR skips do not file missing-check findings.
 
 ### Escalations
 

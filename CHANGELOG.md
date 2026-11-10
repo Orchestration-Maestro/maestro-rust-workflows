@@ -1,5 +1,62 @@
 # Changelog
 
+## [0.19.29](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.28...v0.19.29) (2026-11-09)
+
+
+### Continuous Integration
+
+* pin maestro-rust-workflows callers to v0.19.28 ([#449](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/449)) ([e868755](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/e86875599962af7e4f2a3e79dd6b7d4711892f75))
+
+
+### Bug Fixes
+
+* **ci:** build the listed Emscripten crates on pull requests that reach them ([#451](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/451)) ([8c91a2b](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/8c91a2b676685a72cc1c5f2f2b9544703e75224a))
+
+## [0.19.28](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.27...v0.19.28) (2026-11-09)
+
+
+### Continuous Integration
+
+* pin maestro-rust-workflows callers to v0.19.27 ([#447](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/447)) ([13cd34d](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/13cd34d7522fb0e09e290d033daf8a7ae83ed75e))
+* reuse tested self-test trees for release pull requests ([#445](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/445)) ([fc08e45](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/fc08e4526b3f5fe853559864d43506fd6c0432db))
+
+## [0.19.27](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.26...v0.19.27) (2026-11-09)
+
+
+### Continuous Integration
+
+* pin maestro-rust-workflows callers to v0.19.26 ([#439](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/439)) ([7215516](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/7215516e0bc69f44fc53229bb13171bcea0a3165))
+* run macOS test shards after landing instead of in merge groups ([#442](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/442)) ([f55f73f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/f55f73f794bc71f5d2b62934805c4b4235e8af04))
+
+
+### Bug Fixes
+
+* **ci:** cancel replaced merge-group runs at startup ([#443](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/443)) ([d24a5b6](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/d24a5b63da88faedda4153d56440f4ebb6446b0f))
+
+## [0.19.26](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.25...v0.19.26) (2026-11-09)
+
+
+### Continuous Integration
+
+* pin scan workflows to v0.19.25 ([#435](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/435)) ([8dbe2f9](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/8dbe2f983683c3b88a926269618694376e1074a7))
+
+
+### Bug Fixes
+
+* **ci:** accept emscripten crates from additional manifests ([#438](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/438)) ([8fdb3ef](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/8fdb3eff5b2a880aa836887056e992c8dc3511a9))
+
+## [0.19.25](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.24...v0.19.25) (2026-11-09)
+
+
+### Continuous Integration
+
+* pin scan workflows to v0.19.24 ([#430](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/430)) ([2bcede5](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/2bcede561b1f4374537422cf16bf002cf3d3b270))
+
+
+### Bug Fixes
+
+* **ci:** seed native snapshots on reused main pushes ([#433](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/433)) ([52d4d7c](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/52d4d7c36ffb89ace39481dc0686ce7f21cd2cb6))
+
 ## [0.19.24](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.23...v0.19.24) (2026-11-08)
 
 

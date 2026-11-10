@@ -32,21 +32,24 @@ docs and fixtures route only to readers. See
 for root-package boundaries. Pull requests skip the test archive, test setup,
 test shards, doctests and wasm/browser builds. The declared
 [wasm example witnesses](docs/caller-checks.md#wasm-example-witnesses) are the
-exception: they compile on every pull request. Their job names remain present;
-skipped jobs count as successful required checks. Merge groups and main pushes
+exception: they compile on every pull request, and so do the declared
+[Emscripten crates](docs/caller-checks.md#emscripten-crates-on-pull-requests)
+that a change reaches. Their job names remain present; skipped jobs count as
+successful required checks. Merge groups and main pushes
 run the full shard matrix, coverage, doctests, wasm/browser builds and every
 declared foreign-target check. A main push skips the test legs when its exact
 commit already passed a completed merge-group run of the same shared workflow
 revision, with an identity artifact confirming full-workspace test selection.
-The archive and preparation jobs still run without artifact uploads to seed
-compiled-cache snapshots.
+The archive and preparation jobs still run, without artifact uploads, on every
+test host, including a claimed macOS host. They seed the compiled-cache
+snapshots the next merge group restores.
 Missing evidence, including an unreadable API result, keeps the full suite.
 Formatting, lint, docs, dependency/source and target checks still run; the
 independent `warm-cache` call continues on every main push. See
 [test policy](docs/caller-checks.md#test-policy-and-caller-permissions).
 The main-push behaviour below applies when no matching merge-queue result exists.
-Full events also run native test legs for a claimed macOS host, except
-when a main push reuses merge-queue tests.
+Full events also run native test legs for a claimed macOS host. A main push
+that reuses merge-queue tests runs only that host's archive and preparation.
 
 Merge groups and main pushes always run declared Chromium tests, regardless of
 changed paths. Ordinary pull requests skip Chromium runtime tests. See
@@ -58,7 +61,8 @@ tests took on an earlier run, or by test count when no earlier run timed them.
 The `warm-cache` call instead compiles and runs its warm test filter in one job.
 A caller can declare `test_shard_count` (1 to 60) in `.github/ci.toml`; see
 [test shards](docs/caller-checks.md#test-shards). Doctests run in a
-parallel `Doctests` matrix leg on merge groups and main pushes.
+parallel `Doctests` matrix leg on merge groups and main pushes, except a main
+push that reuses merge-queue tests.
 Each claimed native host gets up to four shards, capped at `test_shard_count`,
 and its own `Doctests (<runner>)` leg on full events. Native shards are named
 `Test shard (<runner> k/n)`; Linux job names stay unchanged.
@@ -165,9 +169,10 @@ it at 8.33 GiB, under 90% of the limit
 ([One entry per prefix](docs/caller-checks.md#one-entry-per-prefix)). After each job that saves a
 cache on a default-branch push, a pruning job keeps only the newest entry of each
 compile, Cargo git and test setup prefix, the entry a restore reads, so the
-repository holds one generation. Pruning jobs are the only jobs that hold
-`actions: write`, and they run no caller code; callers grant that permission to
-the reusable call. See
+repository holds one generation. Pruning jobs and the merge-group canceller
+([Superseded merge-group runs](docs/caller-checks.md#superseded-merge-group-runs))
+are the only jobs that hold `actions: write`, and they run no caller code;
+callers grant that permission to the reusable call. See
 [One entry per prefix](docs/caller-checks.md#one-entry-per-prefix). GitHub evicts by
 last access, so a shape's only seed can still disappear when other caches fill
 the allowance.

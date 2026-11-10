@@ -25,7 +25,7 @@ def evaluate(condition, values):
         expression = expression.replace(key, repr(value))
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     expression = re.sub(r'!(?!=)', ' not ', expression).strip()
-    return eval(expression, {'__builtins__': {}})
+    return eval(expression, {'__builtins__': {}, 'contains': lambda items, item: item in items, 'fromJSON': json.loads})
 
 def routed_jobs(document, values):
     # Every gate is open except the two scans; values set the inputs a case proves.
@@ -34,8 +34,10 @@ def routed_jobs(document, values):
         'github.event_name': 'push', 'github.ref': 'refs/heads/main', default_ref: 'refs/heads/main',
         'github.repository_id': 'caller', 'inputs.working-directory': '.',
         'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.tests_reused': 'false',
+        'needs.declaration.outputs.tested_runners': '["ubuntu-latest"]',
         'needs.declaration.outputs.targets': '[{}]', 'needs.declaration.outputs.fuzz_targets': '["target"]',
         'needs.declaration.outputs.wasm_crates': '["web"]', 'needs.declaration.outputs.wasm_examples': '[]',
+        'needs.declaration.outputs.emscripten_changed': 'false',
         'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.browser_tests': 'true',
         # Longer names first: evaluate substitutes by prefix.
         'needs.declaration.outputs.test_prepare_inputs': '[]',
@@ -205,6 +207,8 @@ def execute(name, cwd, extra=None, prelude=''):
     env['TEST_SHARD_COUNT'] = wired_shard_count(name)
     # The declaration's output without test_prepare_setups.
     env['TEST_PREPARE_CONSUMERS'] = 'null'
+    # The declaration's output for a caller that lists no Emscripten crates.
+    env['EMSCRIPTEN_PATHS'] = '[]'
     env.update(extra or {})
     if name == 'Select test packages':
         env.setdefault('TEST_HOSTS', json.dumps({'ubuntu-latest': int(env['TEST_SHARD_COUNT'])}))
@@ -1177,20 +1181,20 @@ def doctests_run_independently_and_remain_required():
     jobs = document['jobs']
     assert jobs['doctests']['needs'] == 'declaration'
     assert evaluate(jobs['doctests']['name'], {'matrix.runner': 'ubuntu-latest', "format('Doctests ({0})', 'ubuntu-latest')": 'unused'}) == 'Doctests'
-    assert 'test_runners' in jobs['doctests']['strategy']['matrix']['runner']
+    assert 'tested_runners' in jobs['doctests']['strategy']['matrix']['runner']
     assert jobs['doctests']['strategy']['matrix']['shard'] == ['doctests']
     assert jobs['doctests']['strategy']['matrix']['count'] == [0]
     assert set(jobs['doctests']['strategy']['matrix']) == {'runner', 'shard', 'count'}, 'one doctest leg per runner'
     for key in ['steps', 'defaults', 'env']:
         assert jobs['doctests'][key] == jobs['tests'][key], key
     assert set(jobs['tests-result']['needs']) == {'tests', 'doctests', 'declaration'}
-    for coverage, tests in [('true', 'success'), ('false', 'skipped')]:
+    for tested, tests in [('["ubuntu-latest"]', 'success'), ('["macos-latest"]', 'success'), ('[]', 'skipped')]:
         for docs in ['success', 'failure', 'cancelled', 'skipped']:
             result = subprocess.run(['python3', '-c', body('All test shards passed')],
                                     env=os.environ | {'RESULT': tests, 'DOCTEST_RESULT': docs,
-                                    'COLLECT_COVERAGE': coverage, 'DECLARATION_RESULT': 'success'},
+                                    'TESTED_RUNNERS': tested, 'DECLARATION_RESULT': 'success'},
                                     capture_output=True, text=True)
-            assert (result.returncode == 0) == (docs == tests), (coverage, docs, result.stderr)
+            assert (result.returncode == 0) == (docs == tests), (tested, docs, result.stderr)
 
 doctests_run_independently_and_remain_required()
 print('PASS doctests_run_independently_and_remain_required')
@@ -1207,7 +1211,7 @@ def preparation_runs_beside_host_compilation():
     assert 'target/test-setup' in body('Prepare test setup')
     assert 'tar -C target' in body('Restore test setup')
     for name in ['test-prepare', 'test-build', 'doctests']:
-        assert 'test_runners' in jobs[name]['strategy']['matrix']['runner'], name
+        assert ('tested_runners' if name == 'doctests' else 'test_runners') in jobs[name]['strategy']['matrix']['runner'], name
         assert 'matrix.runner' in jobs[name]['runs-on'], name
     for job in ['test-prepare', 'test-build', 'tests']:
         free = next(step for step in jobs[job]['steps'] if step['name'] == 'Free instrumented build space')
@@ -1218,10 +1222,9 @@ preparation_runs_beside_host_compilation()
 print('PASS preparation_runs_beside_host_compilation')
 
 def absent_keeps_base_checks():
-    # The seam also runs in a merge group, where the runner's event would name a queued pull request.
-    result, values = declaration(root / 'fixtures/sample', {'GITHUB_EVENT_NAME': 'pull_request'})
+    result, values = declaration(root / 'fixtures/sample')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'emscripten_crates': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}', 'merge_group_pull_request': ''}
+    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'emscripten_crates': '[]', 'emscripten_paths': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}'}
     assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
     assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
     assert "inputs.working-directory != '.'" in workflow
@@ -1721,6 +1724,7 @@ def warm_push_seeds_non_test_shapes():
                             'inputs.fuzz-scan': excluded == 'fuzz',
                             'github.repository_id': 'caller', 'inputs.working-directory': '.',
                             'needs.declaration.outputs.coverage': 'true',
+                            'needs.declaration.outputs.tested_runners': '["ubuntu-latest"]',
                             'needs.declaration.outputs.wasm_crates': '["web"]',
                             'needs.declaration.outputs.browser_build': 'true',
                             'needs.declaration.outputs.browser_tests': 'true'})
@@ -1926,7 +1930,8 @@ def coverage_matrix_splits_doctests_from_partitions():
                 assert result.returncode == 0, result.stderr
                 selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                 legs = json.loads(selected['test_shards'])
-                assert legs == [{'runner': 'ubuntu-latest', 'shard': shard, 'count': 16} for shard in range(1, 17)], (event, selected)
+                assert legs == ([] if event == 'pull_request' else [
+                    {'runner': 'ubuntu-latest', 'shard': shard, 'count': 16} for shard in range(1, 17)]), (event, selected)
 
 coverage_matrix_splits_doctests_from_partitions()
 print('PASS coverage_matrix_splits_doctests_from_partitions')
@@ -2145,15 +2150,15 @@ def diagnostic_upload_is_unconditional_and_scoped():
     assert 'name: $' + '{{ steps.diagnostics.outputs.artifact_name }}\n' in upload
     assert 'timeout-minutes: 45\n' in steps['Isolated tests']
     assert "if: $" + "{{ env.WARM_CACHE != 'true' && needs.declaration.outputs.enabled != 'true' }}\n" in steps['Tests']
-    for coverage in ['false', 'true']:
+    for tested in ['[]', '["ubuntu-latest"]', '["macos-latest"]']:
         for status in ['success', 'failure', 'cancelled', 'skipped']:
             for docs in ['success', 'failure', 'cancelled', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': docs, 'COLLECT_COVERAGE': coverage,
+                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': docs, 'TESTED_RUNNERS': tested,
                                                           'DECLARATION_RESULT': 'success'},
                                         capture_output=True, text=True)
-                expected = 'success' if coverage == 'true' else 'skipped'
-                assert (result.returncode == 0) == (status == expected and docs == expected), (coverage, status, docs, result.stderr)
+                expected = 'skipped' if tested == '[]' else 'success'
+                assert (result.returncode == 0) == (status == expected and docs == expected), (tested, status, docs, result.stderr)
 
 diagnostic_upload_is_unconditional_and_scoped()
 print('PASS diagnostic_upload_is_unconditional_and_scoped')
@@ -3033,10 +3038,12 @@ def event_policy_keeps_pull_requests_fast():
                            default_ref: 'refs/heads/main', 'github.ref': 'refs/heads/main',
                            'github.repository_id': 'caller', 'inputs.working-directory': '.',
                            'needs.declaration.outputs.coverage': values['coverage'],
+                           'needs.declaration.outputs.tested_runners': values['tested_runners'],
                            'needs.declaration.outputs.tests_reused': 'false',
                            'needs.declaration.outputs.targets': '[{}]',
                            'needs.declaration.outputs.wasm_crates': '["sample"]',
                            'needs.declaration.outputs.wasm_examples': '[]',
+                           'needs.declaration.outputs.emscripten_changed': 'false',
                            'needs.declaration.outputs.browser_build': 'true',
                            'needs.declaration.outputs.browser_tests': 'true'}
                 expected = not advisory and not fuzz
@@ -3113,15 +3120,16 @@ def removed_shard_lists_fail_clearly():
     assert 'tests-result' in routed_jobs(document, {'success()': False, 'failure()': True})
     # An implicit success() covers the whole condition, not only its first operand.
     assert 'declaration' not in routed_jobs(document, {'success()': False, 'inputs.working-directory': 'sub'})
-    for coverage, required in [('false', 'skipped'), ('true', 'success'), ('', None)]:
+    # A main push that reuses the queue's Linux result still runs and requires the native shards.
+    for tested, required in [('[]', 'skipped'), ('["ubuntu-latest"]', 'success'), ('["macos-latest"]', 'success'), ('', None)]:
         for declaration_status in ['success', 'failure', 'cancelled', 'skipped']:
             for status in ['success', 'failure', 'cancelled', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': required or 'skipped', 'COLLECT_COVERAGE': coverage,
+                                        env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': required or 'skipped', 'TESTED_RUNNERS': tested,
                                                           'DECLARATION_RESULT': declaration_status},
                                         capture_output=True, text=True)
                 expected = declaration_status == 'success' and required is not None and status == required
-                assert (result.returncode == 0) == expected, f'{coverage} {declaration_status} {status}\n' + result.stdout + result.stderr
+                assert (result.returncode == 0) == expected, f'{tested} {declaration_status} {status}\n' + result.stdout + result.stderr
 
 removed_shard_lists_fail_clearly()
 print('PASS removed_shard_lists_fail_clearly')
@@ -3180,7 +3188,7 @@ partitions_run_every_test_once_and_doctests()
 print('PASS partitions_run_every_test_once_and_doctests')
 
 def local_callers_grant_cache_pruning():
-    # Only the pruning jobs take the write grant; a call that lacks it cannot start.
+    # The pruning jobs and the replaced-group canceller take the write grant; a call that lacks it cannot start.
     for path in sorted((root / '.github/workflows').glob('*.yml')):
         document = json.loads(subprocess.check_output(
             ['yq', '-o=json', '-'], input=path.read_text(encoding='utf-8'), text=True))
@@ -3487,13 +3495,14 @@ def changed_packages_include_reverse_dependencies():
         git('commit', '-qm', 'source')
         values = select()
         assert json.loads(values['packages']) == ['a', 'b', 'c'] and values['coverage'] == 'false'
-        assert json.loads(values['test_shards']) == [{'runner': 'ubuntu-latest', 'shard': shard, 'count': 16} for shard in range(1, 17)], values
+        assert json.loads(values['test_shards']) == [], values
         document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
         context = {'cancelled()': False, 'needs.test-build.result': 'success',
                    'needs.test-prepare.result': 'skipped', 'inputs.warm-cache': False,
                    'inputs.advisory-scan': False, 'inputs.fuzz-scan': False,
                    'github.repository_id': 'caller', 'inputs.working-directory': '.',
                    'needs.declaration.outputs.coverage': values['coverage'],
+                   'needs.declaration.outputs.tested_runners': values['tested_runners'],
                    'needs.declaration.outputs.tests_reused': 'false'}
         for job in ['test-build', 'tests']:
             assert not evaluate(document['jobs'][job]['if'], context), job
@@ -3953,6 +3962,7 @@ def main_reuses_only_exact_successful_merge_queue_tests():
             selected = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
             assert selected['coverage'] == str(not reused).lower(), (name, selected)
             conditions = context | {'needs.declaration.outputs.coverage': selected['coverage'],
+                'needs.declaration.outputs.tested_runners': selected['tested_runners'],
                 'needs.declaration.outputs.tests_reused': values['tests_reused'],
                 'needs.declaration.outputs.enabled': 'true', 'needs.declaration.outputs.browser_tests': 'true',
                 'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.wasm_crates': '["web"]',
@@ -3960,8 +3970,10 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                 'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True,
                 'matrix.runner': 'ubuntu-latest'}
-            for job in ['test-build', 'test-prepare', 'browser', 'doctests', 'browser-tests']:
+            for job in ['test-build', 'test-prepare', 'browser', 'browser-tests']:
                 assert evaluate(document['jobs'][job]['if'], conditions), (name, job, 'main must seed compiled objects')
+            # Doctests save no snapshot, so a reused queue result skips them with the shards.
+            assert bool(evaluate(document['jobs']['doctests']['if'], conditions)) == (not reused), name
             for job, upload in [('test-build', 'Upload test archive'), ('test-prepare', 'Upload test setup')]:
                 step = next(step for step in document['jobs'][job]['steps'] if step['name'] == upload)
                 assert bool(evaluate(step.get('if', 'True'), conditions)) == (not reused), (name, upload)
@@ -3972,16 +3984,17 @@ def main_reuses_only_exact_successful_merge_queue_tests():
             assert evaluate(identity['env']['CACHE_COVERAGE'], conditions), 'main must seed the merge-group cache shape'
             for job in ['quality', 'docs', 'tests', 'doctests', 'browser', 'browser-tests', 'targets']:
                 warm = conditions | {'inputs.warm-cache': True, 'needs.declaration.outputs.coverage': 'true',
+                                     'needs.declaration.outputs.tested_runners': '["ubuntu-latest"]',
                                      'needs.declaration.outputs.targets': '["windows"]'}
                 assert evaluate(document['jobs'][job]['if'], warm), job
-            # Doctests run on every main push, so a failed or missing doctest leg fails the result even when shards reuse.
+            # The result takes the doctest legs with the shards: skipped when reused, successful otherwise.
             for doctests in ['success', 'failure', 'skipped']:
                 result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                    env=os.environ | {'DECLARATION_RESULT': 'success', 'COLLECT_COVERAGE': selected['coverage'],
+                    env=os.environ | {'DECLARATION_RESULT': 'success', 'TESTED_RUNNERS': selected['tested_runners'],
                                       'TESTS_REUSED': values['tests_reused'],
                                       'RESULT': 'skipped' if reused else 'success', 'DOCTEST_RESULT': doctests},
                     capture_output=True, text=True)
-                assert (result.returncode == 0) == (doctests == 'success'), (name, doctests, result.stderr)
+                assert (result.returncode == 0) == (doctests == ('skipped' if reused else 'success')), (name, doctests, result.stderr)
 
 main_reuses_only_exact_successful_merge_queue_tests()
 print('PASS main_reuses_only_exact_successful_merge_queue_tests')
@@ -4029,7 +4042,7 @@ print('PASS main_setup_writers_prepare_even_with_exact_bundle')
 def pull_request_test_results_must_be_skipped():
     for status in ['success', 'failure', 'cancelled', 'skipped']:
         result = subprocess.run(['python3', '-c', body('All test shards passed')],
-                                env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'skipped', 'COLLECT_COVERAGE': 'false',
+                                env=os.environ | {'RESULT': status, 'DOCTEST_RESULT': 'skipped', 'TESTED_RUNNERS': '[]',
                                                   'DECLARATION_RESULT': 'success'},
                                 capture_output=True, text=True)
         expected = status == 'skipped'
@@ -4091,6 +4104,19 @@ def declared_test_inputs_select_their_readers():
         git('add', '.')
         git('commit', '-qm', 'route')
         assert select() == ['a', 'b', 'c', 'd']
+        # A route over member directories adds its reader to the changed crate's own selection, so a test that
+        # reads every crate's sources runs on a change to any one of them.
+        git('reset', '--hard', base)
+        (directory / '.github/ci.toml').write_text(declared.replace('{"shared/"=["d"], ', '{"a/"=["d"], "b/"=["d"], '), encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'member route')
+        base = git('rev-parse', 'HEAD')
+        for name, expected in [('a/src/lib.rs', ['a', 'b', 'c', 'd']), ('b/src/lib.rs', ['b', 'c', 'd']), ('c/src/lib.rs', ['c'])]:
+            (directory / name).write_text('pub fn changed() {}\n', encoding='utf-8')
+            git('add', '.')
+            git('commit', '-qm', 'source')
+            assert select() == expected, (name, select())
+            git('reset', '--hard', base)
 
 declared_test_inputs_select_their_readers()
 print('PASS declared_test_inputs_select_their_readers')
@@ -4457,10 +4483,11 @@ def real_search_tools_are_exercised():
 real_search_tools_are_exercised()
 print('PASS real_search_tools_are_exercised')
 
-def native_test_hosts_follow_claims_and_full_suite_events():
+def native_test_hosts_follow_claims_and_run_after_landing():
     import shutil
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     jobs = document['jobs']
+    assert jobs['declaration']['outputs']['tested_runners'] == '$' + '{{ steps.selection.outputs.tested_runners }}'
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
@@ -4472,15 +4499,20 @@ def native_test_hosts_follow_claims_and_full_suite_events():
         for targets, native in [(['aarch64-apple-darwin', 'x86_64-pc-windows-msvc'], ['macos-latest']),
                                 (['x86_64-pc-windows-msvc'], []),
                                 (['x86_64-apple-darwin', 'aarch64-unknown-linux-gnu'], [])]:
-            for count in [2, 16]:
+            for count, native_count in [(2, 2), (16, 4)]:
                 (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=' + json.dumps(targets) + f'\ntest_shard_count={count}\n', encoding='utf-8')
-                for event, warm in [('pull_request', 'false'), ('merge_group', 'false'), ('push', 'false'), ('push', 'true')]:
+                # Explicit expected routes: ordinary queue work is Linux-only; main adds the claimed native host.
+                for event, warm, hosts, fresh, reused_hosts in [
+                        ('pull_request', 'false', ['ubuntu-latest'], [], []),
+                        ('merge_group', 'false', ['ubuntu-latest'], ['ubuntu-latest'], []),
+                        ('push', 'false', ['ubuntu-latest', *native], ['ubuntu-latest', *native], native),
+                        ('push', 'true', ['ubuntu-latest'], ['ubuntu-latest'], [])]:
                     output = directory / 'config-output'
                     output.write_text('', encoding='utf-8')
                     result = execute('Read caller declaration', directory, {'GITHUB_OUTPUT': str(output), 'TEST_EVENT': event, 'WARM': warm})
                     assert result.returncode == 0, result.stderr
                     values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-                    hosts = ['ubuntu-latest'] + (native if event != 'pull_request' and warm == 'false' else [])
+                    # Merge groups test Linux only; native hosts run in the main push after landing.
                     assert list(json.loads(values['test_hosts'])) == hosts, (targets, event, warm, values)
                     for reused in ['false', 'true']:
                         result = select_packages(directory, {'GITHUB_OUTPUT': str(directory / 'selection-output'), 'TEST_EVENT': event,
@@ -4489,19 +4521,41 @@ def native_test_hosts_follow_claims_and_full_suite_events():
                         assert result.returncode == 0, result.stderr
                         selected = dict(line.split('=', 1) for line in (directory / 'selection-output').read_text(encoding='utf-8').splitlines())
                         (directory / 'selection-output').unlink()
-                        runners = ['ubuntu-latest'] if reused == 'true' else hosts
-                        assert json.loads(selected['test_runners']) == runners, (targets, event, reused, selected)
+                        # A reused queue result keeps every host: its archive and preparation seed that host's snapshots.
+                        assert json.loads(selected['test_runners']) == hosts, (targets, event, reused, selected)
+                        # The queue result covers Linux only, so a reused push still tests every other host.
+                        tested = reused_hosts if reused == 'true' else fresh
+                        assert json.loads(selected['tested_runners']) == tested, (targets, event, reused, selected)
                         legs = json.loads(selected['test_shards'])
-                        for runner in runners:
-                            expected = count if runner == 'ubuntu-latest' else min(4, count)
+                        for runner in tested:
+                            expected = count if runner == 'ubuntu-latest' else native_count
                             assert [leg for leg in legs if leg['runner'] == runner] == [
                                 {'runner': runner, 'shard': shard, 'count': expected} for shard in range(1, expected + 1)]
-                        assert len(legs) == count + (len(runners) - 1) * min(4, count)
+                        assert {leg['runner'] for leg in legs} == set(tested), (targets, event, reused, selected)
                         # The archive build splits each host's binaries into as many archives as that host has shard legs.
-                        assert json.loads(selected['test_counts']) == {
-                            runner: len([leg for leg in legs if leg['runner'] == runner]) for runner in runners}, (targets, event, reused, selected)
-    for name in ['test-prepare', 'test-build', 'doctests']:
+                        counts = {runner: count if runner == 'ubuntu-latest' else native_count for runner in hosts}
+                        assert json.loads(selected['test_counts']) == counts, (targets, event, reused, selected)
+                        # Shards and doctests run exactly where the selection tests, and the tests aggregate expects them there.
+                        context = {'github.event_name': event, 'inputs.warm-cache': False,
+                                   'needs.declaration.outputs.coverage': selected['coverage'], 'needs.declaration.outputs.tests_reused': reused,
+                                   'needs.declaration.outputs.tested_runners': selected['tested_runners']}
+                        routed = routed_jobs(document, context)
+                        assert {'tests', 'doctests'} <= routed if tested else not {'tests', 'doctests'} & routed, (targets, event, reused, routed)
+                        for runner in hosts:
+                            for job, name in [('test-build', 'Upload test archive'), ('test-prepare', 'Upload test setup')]:
+                                step = next(step for step in jobs[job]['steps'] if step['name'] == name)
+                                uploads = evaluate(step['if'], context | {'matrix.runner': runner})
+                                assert uploads == (runner in tested), (job, runner, event, reused)
+    # An unavailable declaration output must not start a warm job after its dependencies skipped.
+    for tested in ['', '[]']:
+        for warm in [False, True]:
+            routed = routed_jobs(document, {'inputs.warm-cache': warm,
+                                 'needs.declaration.outputs.tested_runners': tested,
+                                 'needs.test-build.result': 'skipped', 'needs.test-prepare.result': 'skipped'})
+            assert not {'tests', 'doctests'} & routed, (tested, warm, routed)
+    for name in ['test-prepare', 'test-build']:
         assert 'test_runners' in jobs[name]['strategy']['matrix']['runner']
+    assert 'tested_runners' in jobs['doctests']['strategy']['matrix']['runner']
     assert 'test_counts' in jobs['test-build']['env']['TEST_SHARD_COUNT'] and 'matrix.runner' in jobs['test-build']['env']['TEST_SHARD_COUNT']
     assert 'test_shards' in jobs['tests']['strategy']['matrix']['include']
     for job, names in [('test-build', ['Upload test archive']), ('test-prepare', ['Upload test setup', 'Test setup candidates', 'Download test setup candidates']),
@@ -4512,8 +4566,75 @@ def native_test_hosts_follow_claims_and_full_suite_events():
             assert "format('-{0}', matrix.runner)" in artifact, (job, name)
     assert 'matrix.runner' in next(step for step in jobs['tests']['steps'] if step['name'] == 'Print test diagnostics')['env']['TEST_RUNNER']
 
-native_test_hosts_follow_claims_and_full_suite_events()
-print('PASS native_test_hosts_follow_claims_and_full_suite_events')
+native_test_hosts_follow_claims_and_run_after_landing()
+print('PASS native_test_hosts_follow_claims_and_run_after_landing')
+
+def every_snapshot_a_merge_group_restores_has_a_writer_on_a_reused_main_push():
+    # A merge group restores only default-branch snapshots, and a landing's main push reuses the group's
+    # tests, so a snapshot that push does not save leaves every later group on that host compiling cold.
+    import shutil
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    hosts = {'ubuntu-latest': ('Linux', 'X64'), 'ubuntu-24.04-arm': ('Linux', 'ARM64'), 'macos-latest': ('macOS', 'ARM64'),
+             'macos-15-intel': ('macOS', 'X64'), 'windows-latest': ('Windows', 'X64')}
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        shutil.copytree(root / 'fixtures/sample', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        (directory / '.github').mkdir()
+        (directory / '.github/ci.toml').write_text(
+            'wasm_crates=[]\ncheck_targets=["aarch64-apple-darwin", "x86_64-apple-darwin", "aarch64-unknown-linux-gnu"]\n', encoding='utf-8')
+        fixture_git(directory, 'init', '--quiet')
+        fixture_git(directory, 'add', '.')
+        fixture_git(directory, 'commit', '-qm', 'seed fixture')
+
+        def snapshots(event, reused, step):
+            # The prefix of every snapshot the event's jobs pass to the named cache step, with the leg that does it.
+            result, values = declaration(directory, {'TEST_EVENT': event, 'WARM': 'false'})
+            assert result.returncode == 0, result.stderr
+            with output_file() as output:
+                result = select_packages(directory, {'GITHUB_OUTPUT': str(output), 'TEST_EVENT': event, 'BASE_REF': '',
+                                                     'TEST_HOSTS': values['test_hosts'], 'TESTS_REUSED': reused})
+                assert result.returncode == 0, result.stderr
+                values |= dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            ref = 'refs/heads/main' if event == 'push' else 'refs/heads/gh-readonly-queue/main/pr-1-' + 'a' * 40
+            context = {'github.event_name': event, 'github.ref': ref, 'needs.declaration.outputs.coverage': values['coverage'],
+                       'needs.declaration.outputs.tests_reused': reused, 'needs.declaration.outputs.targets': values['targets']}
+            found = {}
+            for job in sorted(routed_jobs(document, context)):
+                steps = {item.get('name'): item for item in document['jobs'][job].get('steps', [])}
+                if 'Compile cache identity' not in steps:
+                    continue
+                matrix = document['jobs'][job].get('strategy', {}).get('matrix', {})
+                def listed(expression):
+                    return json.loads(values[re.search(r'needs\.declaration\.outputs\.(\w+)', expression)[1]])
+                axes = {key: listed(value) if isinstance(value, str) else value for key, value in matrix.items() if key != 'include'}
+                legs = [dict(zip(axes, combination, strict=True)) for combination in itertools.product(*axes.values())] if axes else []
+                legs += listed(matrix['include']) if 'include' in matrix else []
+                for index, leg in enumerate(legs or [{'runner': document['jobs'][job]['runs-on']}]):
+                    system, architecture = hosts[leg['runner']]
+                    with output_file() as output:
+                        result = execute('Compile cache identity', directory, {
+                            'CALLER_REPOSITORY': 'owner/caller', 'CALLER_DIRECTORY': '.', 'HOST_OS': system, 'HOST_ARCH': architecture,
+                            'CACHE_JOB': job, 'CACHE_INDEX': str(index), 'CACHE_CALL': '', 'CACHE_TARGET': leg.get('target', ''),
+                            'CACHE_COVERAGE': str(evaluate(steps['Compile cache identity']['env']['CACHE_COVERAGE'], context)).lower(),
+                            'CACHE_ENABLED': values['enabled'], 'CACHE_WARM': 'false', 'CACHE_DEFAULT_BRANCH': 'main',
+                            'SHARD': str(leg.get('shard', '')), 'GITHUB_EVENT_NAME': event, 'GITHUB_REF': ref,
+                            'GITHUB_RUN_ID': '1', 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_OUTPUT': str(output)})
+                        assert result.returncode == 0, result.stderr
+                        identity = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+                    gates = {'steps.cache-identity.outputs.snapshot': identity['snapshot'], 'steps.cache-identity.outputs.writer': identity['writer'],
+                             'steps.cache-seal.outputs.eligible': 'true', 'runner.os': system, 'inputs.warm-cache': False,
+                             'matrix.shard': str(leg.get('shard', '')), 'needs.declaration.outputs.enabled': values['enabled']}
+                    if evaluate(steps[step].get('if', 'True'), gates):
+                        found.setdefault(identity['prefix'], f"{job} on {leg['runner']}, shape {identity['shape']}")
+            return found
+
+        restored = snapshots('merge_group', 'false', 'Restore compile cache')
+        written = snapshots('push', 'true', 'Save compile cache')
+        assert any('macos-latest' in leg for leg in restored.values()), restored
+        assert not restored.keys() - written.keys(), [restored[prefix] for prefix in restored.keys() - written.keys()]
+
+every_snapshot_a_merge_group_restores_has_a_writer_on_a_reused_main_push()
+print('PASS every_snapshot_a_merge_group_restores_has_a_writer_on_a_reused_main_push')
 
 def supported_targets_use_native_runners():
     targets_job = workflow.split('  targets:\n', 1)[1].split('\n  browser:', 1)[0]
@@ -4666,6 +4787,72 @@ def broken_wasm_example_stops_at_first_failure():
 broken_wasm_example_stops_at_first_failure()
 print('PASS broken_wasm_example_stops_at_first_failure')
 
+def pull_requests_build_the_emscripten_crates_their_change_reaches():
+    from functools import partial
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        def crate(parent, name):
+            (parent / 'src').mkdir(parents=True)
+            (parent / 'Cargo.toml').write_text(f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
+            (parent / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+        (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b"]\n', encoding='utf-8')
+        crate(directory / 'a', 'a')
+        crate(directory / 'b', 'b')
+        # A package of an additional locked workspace, and a sibling directory whose name starts like a listed one.
+        crate(directory / 'sandbox', 's')
+        (directory / 'sandbox/Cargo.toml').write_text(
+            '[workspace]\n' + (directory / 'sandbox/Cargo.toml').read_text(encoding='utf-8'), encoding='utf-8')
+        (directory / 'bx').mkdir()
+        (directory / 'bx/notes.txt').write_text('notes\n', encoding='utf-8')
+        subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=directory, check=True)
+        subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=directory / 'sandbox', check=True)
+        subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+        git = partial(fixture_git, directory)
+        (directory / '.github').mkdir()
+        declared = 'wasm_crates=[]\ncheck_targets=[]\nadditional_locked_manifests=["sandbox/Cargo.toml"]\n'
+        ci_toml = directory / '.github/ci.toml'
+        ci_toml.write_text(declared + 'emscripten_crates=["b", "s"]\n', encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        def changing(files, event='pull_request'):
+            # The verdict for a change to `files`, from the declaration step's paths through the selection step.
+            git('reset', '--hard', base)
+            for name, text in files.items():
+                (directory / name).write_text(text, encoding='utf-8')
+            git('add', '.')
+            git('commit', '-qm', 'change')
+            result, values = declaration(directory)
+            assert result.returncode == 0, result.stdout + result.stderr
+            with output_file() as output:
+                result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                     'EMSCRIPTEN_PATHS': values['emscripten_paths']})
+                assert result.returncode == 0, result.stdout + result.stderr
+                return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['emscripten_changed']
+        source = 'pub fn changed() {}\n'
+        lock = (directory / 'Cargo.lock').read_text(encoding='utf-8') + '# changed\n'
+        sandbox_lock = (directory / 'sandbox/Cargo.lock').read_text(encoding='utf-8') + '# changed\n'
+        for files in [{'b/src/lib.rs': source}, {'b/Cargo.toml': (directory / 'b/Cargo.toml').read_text(encoding='utf-8') + '# changed\n'},
+                      {'sandbox/src/lib.rs': source}, {'sandbox/Cargo.lock': sandbox_lock}, {'Cargo.lock': lock},
+                      {'.github/ci.toml': declared + 'emscripten_crates=["b"]\n'}]:
+            assert changing(files) == 'true', files
+        for files in [{'a/src/lib.rs': source}, {'bx/notes.txt': 'changed\n'}, {'docs.md': 'Documentation\n'},
+                      {'.github/ci.toml': declared + 'emscripten_crates=["b", "s"]\nwarm_test_filter="none()"\n'}]:
+            assert changing(files) == 'false', files
+        # Merge groups and pushes build through the full run, not through this verdict.
+        for event in ['merge_group', 'push']:
+            assert changing({'b/src/lib.rs': source}, event) == 'false', event
+        # A caller that lists no Emscripten crate never builds, whatever the change.
+        git('reset', '--hard', base)
+        ci_toml.write_text(declared, encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'no crates')
+        base = git('rev-parse', 'HEAD')
+        assert changing({'b/src/lib.rs': source}) == 'false'
+
+pull_requests_build_the_emscripten_crates_their_change_reaches()
+print('PASS pull_requests_build_the_emscripten_crates_their_change_reaches')
+
 def pull_requests_compile_only_the_declared_witnesses():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     job = document['jobs']['browser']
@@ -4674,7 +4861,7 @@ def pull_requests_compile_only_the_declared_witnesses():
                'github.repository_id': 'caller', 'inputs.working-directory': '.',
                'needs.declaration.outputs.coverage': 'false', 'needs.declaration.outputs.tests_reused': 'false',
                'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.browser_build': 'true',
-               'needs.declaration.outputs.test_tools': 'false',
+               'needs.declaration.outputs.test_tools': 'false', 'needs.declaration.outputs.emscripten_changed': 'false',
                'needs.declaration.outputs.wasm_examples': json.dumps([['witness', 'first']])}
     assert evaluate(job['if'], context), 'a pull request with declared witnesses runs the browser job'
     assert not evaluate(job['if'], context | {'needs.declaration.outputs.wasm_examples': '[]'}), \
@@ -5115,10 +5302,10 @@ def browser_test_setup_and_recipe_fail_closed(directory, env, values, cli):
 def workflow_failures_remain_required():
     internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding="utf-8")
     assert '  declared:\n' in internal and 'working-directory: fixtures/declared' in internal
-    assert 'needs: [sample, declared, test-tools]' in internal
+    jobs = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=internal, text=True))['jobs']
+    assert {'sample', 'declared', 'test-tools'} <= set(jobs['quality']['needs'])
     assert 'working-directory: fixtures/test-tools' in internal
-    consumers = internal.split('  consumers:\n', 1)[1]
-    assert 'needs: [seams, native, fuzz-issues, browser-qualification, shard-seams]' in consumers
+    assert {'seams', 'native', 'fuzz-issues', 'browser-qualification', 'shard-seams'} <= set(jobs['consumers']['needs'])
     assert "RESULTS: $" + "{{ toJSON(needs) }}" in internal
     assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
     for name in ['targets', 'browser', 'tests']:
@@ -5127,16 +5314,14 @@ def workflow_failures_remain_required():
     assert 'pull_request:' in workflow and 'merge_group:' in workflow
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     routed = routed_jobs(document, {})
-    assert routed == set(document['jobs']) - {'advisories', 'fuzz'}, sorted(routed)
+    # The replaced-group canceller runs in merge groups only.
+    assert routed == set(document['jobs']) - {'advisories', 'fuzz', 'replaced-groups'}, sorted(routed)
     assert 'browser' not in routed_jobs(document, {'needs.declaration.outputs.coverage': 'false'})
     # An advisory scan runs only the declaration and its own job.
     routed = routed_jobs(document, {'inputs.advisory-scan': True})
     assert routed == {'declaration', 'advisories'}, sorted(routed)
 
 def browser_test_result_stays_required():
-    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
-    assert 'needs: [sample, declared, test-tools]' in internal
-    assert "all(job['result'] == 'success'" in internal
     assert not re.search(r'^    continue-on-error:', workflow, re.MULTILINE)
     job = workflow.split('  browser-tests:\n', 1)[1]
     assert "needs.declaration.outputs.browser_tests == 'true'" in job
@@ -5200,8 +5385,8 @@ def reusable_calls_complete_independently():
     match = re.search(r'^  group: (.+)$', workflow, re.MULTILINE)
     assert match is not None, 'Missing workflow concurrency group'
     group = match.group(1)
-    assert group == 'rust-ci-$' + "{{ github.event_name == 'push' && format('{0}-{1}', github.workflow, github.sha) || github.ref }}$" + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
-        'The push group must name the caller and the commit, other runs the ref, and keyed calls the key'
+    assert group == 'rust-ci-$' + "{{ (github.event_name == 'push' || github.event_name == 'merge_group') && format('{0}-{1}', github.workflow, github.sha) || github.ref }}$" + "{{ inputs.concurrency-key && format('-{0}', inputs.concurrency-key) || '' }}", \
+        'Push and merge-group runs must name the caller and commit, other runs the ref, and keyed calls the key'
     keys = []
     for job in ['sample', 'declared', 'test-tools']:
         section = re.split(r'\n  \S', internal.split(f'  {job}:\n', 1)[1], maxsplit=1)[0]
@@ -5209,8 +5394,6 @@ def reusable_calls_complete_independently():
         assert key, f'{job} must select its own stable concurrency key'
         keys.append(key.group(1).casefold())
     assert len(set(keys)) == 3, 'Concurrency groups are case-insensitive'
-    assert 'needs: [sample, declared, test-tools]' in internal
-    assert "all(job['result'] == 'success'" in internal
     assert "cancel-in-progress: $" + "{{ github.event_name == 'pull_request' }}" in workflow
 
 reusable_calls_complete_independently()
@@ -5501,3 +5684,291 @@ shutil.copyfile(root / 'payload', sys.argv[sys.argv.index('--output') + 1])
 
 verified_release_archives_are_reused_by_later_jobs()
 print('PASS verified_release_archives_are_reused_by_later_jobs', flush=True)
+
+
+@contextlib.contextmanager
+def release_self_test_fixture(version_file="version.txt"):
+    from unittest.mock import patch
+    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+    script = body('Check release base self-test', internal)
+    code = re.search(r"python3 -I - <<'PYTHON'\n(.*?)\nPYTHON", script, re.S)[1]
+    repository = 'owner/workflows'
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        for name in ['.github/release-please/config.json', '.github/release-please/manifest.json', 'CHANGELOG.md']:
+            path = directory / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((root / name).read_bytes())
+        (directory / 'version.txt').write_text('0.0.0\n', encoding='utf-8')
+        config_path = directory / '.github/release-please/config.json'
+        config = json.loads(config_path.read_text(encoding='utf-8'))
+        config['packages']['.']['version-file'] = version_file
+        config_path.write_text(json.dumps(config), encoding='utf-8')
+        fixture_git(directory, 'init', '--quiet')
+        fixture_git(directory, 'add', '.')
+        fixture_git(directory, 'commit', '-qm', 'base')
+        base = fixture_git(directory, 'rev-parse', 'HEAD')
+        good = {'head_sha': base, 'event': 'push', 'status': 'completed', 'conclusion': 'success',
+                'path': '.github/workflows/ci-internal.yml', 'head_repository': {'full_name': repository}}
+        def run(files=None, pages=None, event='pull_request', head=None, tree_case=None):
+            fixture_git(directory, 'read-tree', base)
+            for name, content in (files or {'version.txt': '0.20.0\n'}).items():
+                path = directory / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding='utf-8')
+                fixture_git(directory, 'add', name)
+            fixture_git(directory, 'commit', '-qm', 'release')
+            revision = fixture_git(directory, 'rev-parse', 'HEAD')
+            # The selection job checks out the trusted base, not the PR's scripts or config.
+            fixture_git(directory, 'checkout', '--quiet', base)
+            payload = {'pull_request': {'base': {'sha': base}, 'head': {'sha': revision,
+                'ref': 'release-please--branches--main', 'repo': {'full_name': repository}} | (head or {})},
+                'repository': {'default_branch': 'main'}}
+            event_path, output = directory / 'event', directory / 'output'
+            event_path.write_text(json.dumps(payload), encoding='utf-8')
+            output.write_text('', encoding='utf-8')
+            calls = []
+            real_output = subprocess.check_output
+
+            def api(argv, **kwargs):
+                if argv[0] != 'gh':
+                    return real_output(argv, **kwargs)
+                calls.append(argv)
+                endpoint = argv[-1]
+                prefix = f'repos/{repository}/'
+                if endpoint == prefix + f'actions/workflows/ci-internal.yml/runs?event=push&status=success&head_sha={base}&per_page=100':
+                    if pages == 'error':
+                        raise subprocess.CalledProcessError(1, argv)
+                    return pages if isinstance(pages, str) else json.dumps(pages if pages is not None else [{'workflow_runs': [good]}])
+                case = tree_case or {}
+                if case.get('api_error'):
+                    raise subprocess.CalledProcessError(1, argv)
+                tree = fixture_git(directory, 'rev-parse', base + '^{tree}')
+                if endpoint == prefix + f'actions/artifacts?name=self-test-evidence-{tree}&per_page=100':
+                    artifact = {'id': 7, 'name': 'self-test-evidence-' + case.get('artifact_tree', tree),
+                                'expired': case.get('expired', False), 'workflow_run': {'id': 42}}
+                    artifacts = case.get('artifacts', [artifact] if tree_case is not None else [])
+                    return json.dumps([{'artifacts': [item for item in artifacts if item['name'] == 'self-test-evidence-' + tree]}])
+                if endpoint == prefix + 'actions/runs/42':
+                    candidate = good | {'id': 42, 'run_attempt': 2, 'head_sha': 'c' * 40, 'event': 'pull_request'}
+                    return json.dumps(candidate | case.get('run', {}))
+                assert endpoint == prefix + 'actions/artifacts/7/zip', argv
+                import io
+                import zipfile
+                evidence = {'workflow_ref': repository + '/.github/workflows/ci-internal.yml@refs/pull/1/merge',
+                            'workflow_sha': 'c' * 40, 'tree': fixture_git(directory, 'rev-parse', base + '^{tree}'),
+                            'full_test_set': True} | case.get('evidence', {})
+                stream = io.BytesIO()
+                with zipfile.ZipFile(stream, 'w') as bundle:
+                    bundle.writestr(case.get('filename', 'self-test-tree.json'), case.get('content', json.dumps(evidence)))
+                return case.get('archive', stream.getvalue())
+
+            with contextlib.chdir(directory), patch.dict(os.environ, {'GITHUB_EVENT_NAME': event,
+                    'GITHUB_EVENT_PATH': str(event_path), 'GITHUB_REPOSITORY': repository, 'GITHUB_OUTPUT': str(output)}), \
+                    patch('subprocess.check_output', side_effect=api):
+                exec(compile(code, 'Check release base self-test', 'exec'), {})
+            values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+            return values['tests_reused'], calls
+
+        yield run, good
+
+
+def metadata_only_release_reuses_exact_green_base():
+    with release_self_test_fixture() as (run, good):
+        reused, calls = run({'.github/release-please/manifest.json': '{".":"0.20.0"}',
+                            'CHANGELOG.md': 'Release notes\n', 'version.txt': '0.20.0\n'},
+                           [{'workflow_runs': []}, {'workflow_runs': [good]}])
+        assert reused == 'true' and calls, (reused, calls)
+    with release_self_test_fixture('release-version.txt') as (run, _):
+        assert run({'release-version.txt': '0.20.0\n'})[0] == 'true'
+        assert run({'version.txt': '0.20.0\n'})[0] == 'false'
+
+
+metadata_only_release_reuses_exact_green_base()
+print('PASS metadata_only_release_reuses_exact_green_base', flush=True)
+
+
+def release_with_non_metadata_changes_runs_full_self_test():
+    with release_self_test_fixture() as (run, _):
+        for name in ['.github/workflows/ci-internal.yml', '.github/release-please/config.json',
+                     'fixtures/sample/src/lib.rs', 'docs/caller-checks.md', 'unexpected\nversion.txt']:
+            reused, calls = run({'version.txt': '0.20.0\n', name: 'changed\n'})
+            assert reused == 'false' and not calls, (name, reused, calls)
+
+
+release_with_non_metadata_changes_runs_full_self_test()
+print('PASS release_with_non_metadata_changes_runs_full_self_test', flush=True)
+
+
+def release_without_exact_green_base_runs_full_self_test():
+    with release_self_test_fixture() as (run, good):
+        replies = [[{'workflow_runs': []}], 'error', 'not JSON', [{}]]
+        for field, value in [('head_sha', 'b' * 40), ('event', 'pull_request'), ('status', 'in_progress'),
+                             ('conclusion', 'failure'), ('conclusion', 'cancelled'),
+                             ('path', '.github/workflows/ci.yml'), ('head_repository', None),
+                             ('head_repository', {'full_name': 'other/repository'})]:
+            replies.append([{'workflow_runs': [good | {field: value}]}])
+        for reply in replies:
+            reused, calls = run(pages=reply)
+            assert reused == 'false' and calls, (reply, reused, calls)
+
+
+release_without_exact_green_base_runs_full_self_test()
+print('PASS release_without_exact_green_base_runs_full_self_test', flush=True)
+
+
+def only_same_repository_release_pull_requests_reuse_self_test():
+    with release_self_test_fixture() as (run, _):
+        for event, head in [('push', None), ('merge_group', None), ('pull_request', {'ref': 'ci/fix'}),
+                            ('pull_request', {'repo': {'full_name': 'fork/workflows'}})]:
+            reused, calls = run(event=event, head=head)
+            assert reused == 'false' and not calls, (event, head, reused, calls)
+
+
+only_same_repository_release_pull_requests_reuse_self_test()
+print('PASS only_same_repository_release_pull_requests_reuse_self_test', flush=True)
+
+
+def release_reuse_keeps_required_checks_and_skips_only_proven_work():
+    import sys
+    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=internal, text=True))
+    jobs = document['jobs']
+    assert jobs['selection']['permissions'] == {'contents': 'read', 'actions': 'read'}
+    assert jobs['selection']['outputs']['tests_reused'] == '${{ steps.base.outputs.tests_reused }}'
+    steps = {step['name']: step for step in jobs['selection']['steps']}
+    assert steps['Check release base self-test']['env'] == {'GH_TOKEN': '${{ github.token }}'}
+    checkout = steps['Checkout tested base']['with']
+    assert checkout['ref'] == '${{ github.event.pull_request.base.sha || github.sha }}'
+    assert checkout['fetch-depth'] == 0 and checkout['persist-credentials'] is False
+    work = {'sample', 'declared', 'test-tools', 'fuzz', 'shard-seams', 'seams', 'native', 'fuzz-issues', 'browser-qualification'}
+    assert set(jobs) == work | {'selection', 'quality', 'consumers'}, set(jobs)
+    for reused in ['true', 'false']:
+        context = {'needs.selection.outputs.tests_reused': reused}
+        marker = steps['Reuse release base self-test']
+        assert evaluate(marker['if'], {'steps.base.outputs.tests_reused': reused}) == (reused == 'true')
+        for name in work:
+            needs = jobs[name]['needs']
+            assert 'selection' in ([needs] if isinstance(needs, str) else needs), name
+            assert evaluate(jobs[name]['if'], context) == (reused == 'false'), name
+        for name, check in [('quality', 'Required repository quality'), ('consumers', 'Required consumer tests')]:
+            job = jobs[name]
+            expected_needs = {'selection', 'sample', 'declared', 'test-tools'} if name == 'quality' else {
+                'selection', 'quality', 'seams', 'native', 'fuzz-issues', 'browser-qualification', 'shard-seams'}
+            assert set(job['needs']) == expected_needs, job['needs']
+            assert job['name'] == check and evaluate(job['if'], {'always()': True}), job
+            step = job['steps'][0]
+            assert step['env']['REUSED'] == '${{ needs.selection.outputs.tests_reused }}'
+            assert step['env']['RESULTS'] == '${{ toJSON(needs) }}'
+            results = {need: {'result': 'skipped' if reused == 'true' else 'success'} for need in job['needs']}
+            results['selection'] = {'result': 'success'}
+            if name == 'consumers':
+                results['quality'] = {'result': 'success'}
+
+            def aggregate(values, step=step, reused=reused):
+                return subprocess.run([sys.executable, '-I', '-c', step['run']], capture_output=True, text=True,
+                    env=os.environ | {'RESULTS': json.dumps(values), 'REUSED': reused})
+
+            passed = aggregate(results)
+            assert passed.returncode == 0, passed.stderr
+            for need in results:
+                for status in ['failure', 'cancelled', 'success' if reused == 'true' and need not in {'selection', 'quality'} else 'skipped']:
+                    failed = aggregate(results | {need: {'result': status}})
+                    assert failed.returncode != 0, (name, reused, need, status)
+
+
+release_reuse_keeps_required_checks_and_skips_only_proven_work()
+print('PASS release_reuse_keeps_required_checks_and_skips_only_proven_work', flush=True)
+
+
+def release_reuses_tested_tree_while_base_push_is_running():
+    with release_self_test_fixture() as (run, good):
+        # The merged PR finished before the new main push and release PR started.
+        running = good | {'status': 'in_progress', 'conclusion': None}
+        reused, calls = run(pages=[{'workflow_runs': [running]}], tree_case={})
+        assert reused == 'true' and any('actions/artifacts/7/zip' in call[-1] for call in calls), (reused, calls)
+        reused, calls = run({'fixtures/sample/src/lib.rs': 'changed\n'}, pages=[{'workflow_runs': []}], tree_case={})
+        assert reused == 'false' and not calls, (reused, calls)
+
+
+release_reuses_tested_tree_while_base_push_is_running()
+print('PASS release_reuses_tested_tree_while_base_push_is_running', flush=True)
+
+
+def release_tree_reuse_rejects_unproven_evidence():
+    cases = [{'evidence': {'tree': 'b' * 40}}, {'evidence': {'full_test_set': False}},
+             {'evidence': {'full_test_set': 'true'}}, {'evidence': {'workflow_sha': ''}},
+             {'evidence': {'workflow_ref': 'other/workflows/.github/workflows/ci-internal.yml@refs/heads/main'}},
+             {'evidence': {'workflow_ref': 'owner/workflows/.github/workflows/ci.yml@refs/heads/main'}},
+             {'evidence': {'workflow_ref': 'owner/workflows/.github/workflows/ci-internal.yml'}},
+             {'evidence': {'workflow_ref': 'owner/workflows/.github/workflows/ci-internal.yml@'}},
+             {'artifacts': []}, {'expired': True},
+             {'content': 'not JSON'}, {'content': '{}'}, {'content': 'x' * 4097},
+             {'filename': '../self-test-tree.json'}, {'archive': b'not a zip'}, {'api_error': True}]
+    for field, value in [('status', 'in_progress'), ('conclusion', 'failure'), ('conclusion', 'cancelled'),
+                         ('path', '.github/workflows/ci.yml'), ('head_repository', None),
+                         ('head_repository', {'full_name': 'other/workflows'})]:
+        cases.append({'run': {field: value}})
+    with release_self_test_fixture() as (run, _):
+        for case in cases:
+            reused, calls = run(pages=[{'workflow_runs': []}], tree_case=case)
+            assert reused == 'false' and calls, (case, reused, calls)
+
+
+release_tree_reuse_rejects_unproven_evidence()
+print('PASS release_tree_reuse_rejects_unproven_evidence', flush=True)
+
+
+def full_self_test_records_checked_out_tree_only_after_all_proofs():
+    import sys
+    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=internal, text=True))
+    jobs = document['jobs']
+    job = jobs['consumers']
+    assert 'quality' in job['needs']
+    steps = {step['name']: step for step in job['steps']}
+    checkout = steps['Checkout tested tree']
+    record = steps['Record self-test evidence']
+    upload = steps['Upload self-test evidence']
+    for reused in ['true', 'false']:
+        for step in [checkout, record, upload]:
+            assert evaluate(step['if'], {'needs.selection.outputs.tests_reused': reused}) == (reused == 'false')
+    assert checkout['with']['persist-credentials'] is False
+    assert upload['uses'].startswith('actions/upload-artifact@')
+    assert record['env'] == {'WORKFLOW_REF': '${{ github.workflow_ref }}', 'WORKFLOW_SHA': '${{ github.workflow_sha }}'}
+    assert upload['with'] == {'name': 'self-test-evidence-${{ steps.evidence.outputs.tree }}',
+                             'path': '${{ runner.temp }}/self-test-tree.json', 'if-no-files-found': 'error', 'overwrite': True}
+    script = body('Record self-test evidence', internal)
+    code = re.search(r"python3 -I - <<'PYTHON'\n(.*?)\nPYTHON", script, re.S)[1]
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        fixture_git(directory, 'init', '--quiet')
+        (directory / 'source').write_text('tested\n', encoding='utf-8')
+        fixture_git(directory, 'add', 'source')
+        fixture_git(directory, 'commit', '-qm', 'tested merge tree')
+        expected = fixture_git(directory, 'rev-parse', 'HEAD^{tree}')
+        env = {'RUNNER_TEMP': temporary, 'GITHUB_OUTPUT': temporary + '/output',
+               'WORKFLOW_REF': 'owner/workflows/.github/workflows/ci-internal.yml@refs/pull/1/merge',
+               'WORKFLOW_SHA': fixture_git(directory, 'rev-parse', 'HEAD')}
+        result = subprocess.run([sys.executable, '-I', '-c', code], cwd=directory, env=os.environ | env,
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (directory / 'output').read_text(encoding='utf-8') == f'tree={expected}\n'
+        evidence = json.loads((directory / 'self-test-tree.json').read_text(encoding='utf-8'))
+        assert evidence == {'workflow_ref': env['WORKFLOW_REF'], 'workflow_sha': env['WORKFLOW_SHA'],
+                            'tree': expected, 'full_test_set': True}, evidence
+
+
+full_self_test_records_checked_out_tree_only_after_all_proofs()
+print('PASS full_self_test_records_checked_out_tree_only_after_all_proofs', flush=True)
+
+
+def release_tree_lookup_ignores_other_tree_names():
+    with release_self_test_fixture() as (run, _):
+        reused, calls = run(pages=[{'workflow_runs': []}], tree_case={'artifact_tree': 'b' * 40})
+        assert reused == 'false' and calls, (reused, calls)
+        assert not any('actions/runs/42' in call[-1] or 'actions/artifacts/7/zip' in call[-1] for call in calls), calls
+
+
+release_tree_lookup_ignores_other_tree_names()
+print('PASS release_tree_lookup_ignores_other_tree_names', flush=True)

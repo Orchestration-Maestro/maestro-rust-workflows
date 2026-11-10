@@ -523,7 +523,7 @@ jobs:
           def every_bundle_reader_restores_on_a_hit():
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               base = {'cancelled()': False, 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
-                      'needs.declaration.outputs.coverage': 'true',
+                      'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.tested_runners': '["ubuntu-latest"]',
                       'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'github.repository_id': 'caller',
                       'inputs.working-directory': '.', 'matrix.shard': '1'}
               def values(key, warm, **extra):
@@ -2736,15 +2736,16 @@ jobs:
                   assert result.returncode == 0, result.stdout + result.stderr
                   return dict(line.split('=', 1) for line in (directory / 'output').read_text(encoding='utf-8').splitlines())
 
-          def a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_only():
+          def a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_on_its_host_only():
               jobs = ['tests', 'doctests', 'test-build', 'test-prepare', 'quality', 'docs', 'checks', 'browser', 'browser-tests', 'targets']
-              identities = {job: identity_of(job) for job in jobs}
-              for job, identity in identities.items():
+              # The Linux and macOS legs of one job keep separate snapshots, so neither leg counts the other's as its own.
+              identities = {(job, host): identity_of(job, host) for job in jobs for host in ('Linux', 'macOS')}
+              for leg, identity in identities.items():
                   for other, seen in identities.items():
-                      assert bool(re.search(identity['seeder'], seen['key'])) == (job == other), (job, other, identity['seeder'], seen['key'])
+                      assert bool(re.search(identity['seeder'], seen['key'])) == (leg == other), (leg, other, identity['seeder'], seen['key'])
 
-          a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_only()
-          print('PASS a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_only')
+          a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_on_its_host_only()
+          print('PASS a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_on_its_host_only')
 
           def run_cache_floor(shape, stats, matched, listing, namespace='maestro-compile-v1-', seeder=None, snapshot='true'):
               seeder = seeder or identity_of('tests')['seeder']
@@ -2776,10 +2777,10 @@ jobs:
                   # A pass names its shape too: it is the identity the guards recover on, and the warning names it on a breach.
                   assert result.returncode == 0 and f'Compile cache hit rate {rate:.2f}% (floor 90%) in shape tests-coverage' in result.stdout, result.stdout + result.stderr
               cases = [('tests-coverage', 40, prefix + '1-tests', [prefix + '1-tests'], 'cold snapshot'),
-                       ('tests-coverage', 0, '', ['maestro-compile-v1-bbb-1-1-tests-0-abc', 'maestro-compile-v1-ccc-1-1-docs-0-abc'], 'key change'),
-                       ('tests-coverage', 0, '', ['maestro-compile-v1-ccc-1-1-docs-0-abc'], 'no writer'),
+                       ('tests-coverage', 0, '', ['maestro-compile-v1-bbb-1-1-tests-0-Linux-abc', 'maestro-compile-v1-ccc-1-1-docs-0-Linux-abc'], 'key change'),
+                       ('tests-coverage', 0, '', ['maestro-compile-v1-ccc-1-1-docs-0-Linux-abc'], 'no writer'),
                        # Snapshots of the browser tests job are not snapshots of the tests job.
-                       ('tests-coverage', 0, '', ['maestro-compile-v1-ccc-1-1-browser-tests-0-abc'], 'no writer'),
+                       ('tests-coverage', 0, '', ['maestro-compile-v1-ccc-1-1-browser-tests-0-Linux-abc'], 'no writer'),
                        ('tests-coverage', 0, '', [], 'eviction'),
                        ('tests-coverage', 0, '', None, 'cache list is unavailable'),
                        ('tests-coverage', 89.99, prefix + '1-tests', [], 'cold snapshot')]
@@ -2797,13 +2798,17 @@ jobs:
                   seeder = identity_of(job)['seeder']
                   result = run_cache_floor(shape, stats_of(610, 100), prefix + '1-' + job, [], seeder=seeder)
                   assert result.returncode == 0 and f'Compile cache hit rate 100.00% (floor 90%) in shape {shape}' in result.stdout, (shape, result.stdout + result.stderr)
-                  other = f'maestro-compile-v1-bbb-1-1-{job}-0-abc'
-                  for listing, cause in [([other], 'key change'), (['maestro-compile-v1-ccc-1-1-other-0-abc'], 'no writer'), ([], 'eviction')]:
+                  other = f'maestro-compile-v1-bbb-1-1-{job}-0-Linux-abc'
+                  for listing, cause in [([other], 'key change'), (['maestro-compile-v1-ccc-1-1-other-0-Linux-abc'], 'no writer'), ([], 'eviction')]:
                       result = run_cache_floor(shape, stats_of(610, 0), '', listing, seeder=seeder)
                       assert f'is below the 90% floor in shape {shape}: {cause}' in result.stdout, (shape, cause, result.stdout + result.stderr)
               # The key layout belongs to the identity step: a bumped namespace is read from it, not assumed.
-              result = run_cache_floor('tests-coverage', stats_of(610, 0), '', ['maestro-compile-v2-bbb-1-1-tests-0-abc'], 'maestro-compile-v2-')
+              result = run_cache_floor('tests-coverage', stats_of(610, 0), '', ['maestro-compile-v2-bbb-1-1-tests-0-Linux-abc'], 'maestro-compile-v2-')
               assert 'floor in shape tests-coverage: key change' in result.stdout, result.stdout + result.stderr
+              # The Linux snapshot of a job is no key change for its macOS leg: no default-branch push wrote the macOS one.
+              linux, macos = identity_of('test-prepare'), identity_of('test-prepare', 'macOS')
+              result = run_cache_floor('test-prepare', stats_of(610, 0), '', [linux['key']], seeder=macos['seeder'])
+              assert 'floor in shape test-prepare: no writer' in result.stdout, result.stdout + result.stderr
               result = run_cache_floor('tests-coverage', stats_of(0, 0), '', [])
               assert result.returncode == 0 and 'not judged: no cacheable compilation ran' in result.stdout, result.stdout + result.stderr
 
@@ -2931,7 +2936,6 @@ jobs:
               # One owner of the step: the other jobs only alias it, so no shape is judged by a copy.
               for name in holders[1:]:
                   assert steps[name].rstrip('\n') == '        if: *sccache-floor-condition\n        env: *sccache-floor-env\n        run: *sccache-floor', (name, steps[name])
-              assert "seeder = r'-\\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\\d+-'" in workflow
               # The floor reads the key layout from the identity step's outputs, spells none of it, and judges every shape.
               assert 'maestro-compile-v1-' not in step and "'-tests-'" not in step and 'tests-coverage' not in step, step
 
