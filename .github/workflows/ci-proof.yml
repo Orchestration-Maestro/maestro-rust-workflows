@@ -17,8 +17,8 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 749dd6bb743bd7597d6e4367cec33c7d7488d610
-      concurrency-key: proof-3905-red
+      checkout-ref: 63ceb22000caebb3e9374a90252b365223624c75
+      concurrency-key: proof-3905-red-2
       test-event: merge_group
 
   green:
@@ -30,6 +30,6 @@ jobs:
     with:
       working-directory: maestro
       checkout-repository: Orchestration-Maestro/maestro
-      checkout-ref: 32c91141d386f1910615738847926e928c0159df
-      concurrency-key: proof-3905-green
+      checkout-ref: ccbd9db73cf7dfac7d263bf21b00ced1d2e39488
+      concurrency-key: proof-3905-green-2
       test-event: merge_group
