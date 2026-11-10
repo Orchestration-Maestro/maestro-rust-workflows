@@ -61,7 +61,9 @@ def the_job_exists_only_for_a_caller_that_declares_emscripten_crates():
 def the_script_is_built_on_every_run_with_the_installed_sdk():
     job = steps(jobs[JOB])
     # A cached script would hide a change to the generator, so no step restores, saves or skips on a cache.
-    assert not any('cache' in step.get('uses', '') or 'if' in step for step in jobs[JOB]['steps']), 'every step runs on every run'
+    # Only the runner-hardware record carries a condition: the guards require it on every Linux job.
+    assert not any('cache' in step.get('uses', '') or ('if' in step and step['name'] != 'Runner hardware')
+                   for step in jobs[JOB]['steps']), 'every step runs on every run'
     # The generator reuses the one SDK, target and tool install of the other jobs.
     browser, quality = steps(jobs['browser']), steps(jobs['quality'])
     for name in ['Emscripten SDK', 'Emscripten target']:
@@ -69,7 +71,7 @@ def the_script_is_built_on_every_run_with_the_installed_sdk():
     for name in ['Mise bootstrap', 'Test tools']:
         assert job[name]['run'] == quality[name]['run'] and job[name]['env'] == quality[name]['env'], name
     order = [step['name'] for step in jobs[JOB]['steps']]
-    assert order == ['Checkout', 'Toolchain', 'Mise bootstrap', 'Test tools', 'Emscripten SDK', 'Emscripten target',
+    assert order == ['Runner hardware', 'Checkout', 'Toolchain', 'Mise bootstrap', 'Test tools', 'Emscripten SDK', 'Emscripten target',
                      'Build sandbox runtime script', 'Upload sandbox runtime'], order
     build = job['Build sandbox runtime script']['run'].splitlines()
     assert build[0] == 'mise exec -- just sandbox-runtime', build
