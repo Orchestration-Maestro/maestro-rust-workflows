@@ -1394,7 +1394,9 @@ emscripten_crates = ["my-sandbox-runtime"]
 ```
 
 `emscripten_crates` is an optional array of exact locked package names, in
-build order. It defaults to `[]`. Repetitions are kept, and the names reach
+build order. It defaults to `[]`. A non-empty list also requires a
+`sandbox-runtime` recipe in the caller's `justfile`; see the
+[generated runtime script](#generated-runtime-script). Repetitions are kept, and the names reach
 cargo as arguments, never as shell syntax. A name outside the root or the
 additional locked metadata fails declaration validation with the file and key.
 With an empty list or no key, no job installs or builds anything for
@@ -1448,7 +1450,8 @@ unchecked file. The step then checks that `emcc` reports 6.0.10 and exports
 `EMSDK` and `EMSDK_NODE` for later steps. The SDK is MIT and NCSA licensed.
 
 The caller owns the binding step and the browser application. The shared
-workflow only provides the toolchain and the build of the listed packages.
+workflow provides the toolchain, the build of the listed packages and the run of
+the caller's [`sandbox-runtime` recipe](#generated-runtime-script).
 
 ### Generated runtime script
 
@@ -1476,18 +1479,15 @@ empty list skips the job and every other job runs as before.
 
 | Step | What it does |
 | --- | --- |
-| Sandbox runtime identity | Hashes the files of each listed package's directory, its manifest and lock file, plus `mise.toml`, `justfile` and `rust-toolchain.toml`. Build output under the package is left out. |
-| Restore sandbox runtime | Restores `target/sandbox-runtime/maestro-sandbox-runtime.js` under that hash. |
 | Toolchain | Runs `rustup show` to install the caller's pinned toolchain. |
 | Mise bootstrap, Test tools | Install the caller's `mise.toml` tools, also when `test_tools` is `false`, because the recipe needs them. |
 | Emscripten SDK, Emscripten target | The steps described [above](#emscripten-builds). |
 | Build sandbox runtime script | Runs `mise exec -- just sandbox-runtime`, then fails if the file is missing. |
-| Save sandbox runtime | Stores the file under the same hash. |
-| Upload sandbox runtime | Publishes the file as the `sandbox-runtime` artifact of the run. |
+| Upload sandbox runtime | Publishes the file as the `sandbox-runtime-<concurrency key or root>` artifact of the run. |
 
-Every step from Toolchain to Save sandbox runtime runs only when the restore
-misses, so a run whose hashed files did not change installs no toolchain and no
-SDK.
+Every step runs on every run. Maestro keeps no cache of the file, so a change to
+the generator, to the listed packages or to a pinned tool is always tested
+against the script it produces.
 
 Every job that compiles the caller waits for `Sandbox runtime script`: Format
 and lint, Docs, Build test archive, Prepare test setup, the test shards,
@@ -1498,11 +1498,7 @@ into `target/sandbox-runtime`, before the first cargo command.
 
 A failed generator does not skip those jobs: they start, the download fails
 them, and each required check reports the failure. The job keeps no compile
-snapshot, so its cargo build starts cold when the restore misses.
-
-The hash does not cover the generator's own sources. A change to the tool that
-writes the script reuses the saved file until a hashed file moves. Touch a file
-under the listed package, or change `justfile`, to rebuild it.
+snapshot, so the recipe's cargo build starts cold.
 
 ### Emscripten crates on pull requests
 

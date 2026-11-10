@@ -74,7 +74,7 @@ def every_cache_writer_has_one_pruner_without_caller_code():
     import json
     import subprocess
     jobs = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))['jobs']
-    # The sandbox runtime job saves one generated file under its own key, not a compile snapshot.
+    # The sandbox runtime job keeps no compile snapshot and no cache.
     writers = {name for name, job in jobs.items()
                if any(step.get('uses', '').startswith('actions/cache/save@') and step['with']['path'].endswith('maestro-sccache')
                       for step in job.get('steps', []))}
