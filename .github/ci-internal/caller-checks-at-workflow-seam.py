@@ -12,6 +12,8 @@ import subprocess
 import tempfile
 import textwrap
 
+import tomllib
+
 workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding="utf-8")
 root = pathlib.Path.cwd()
 default_ref = "format('refs/heads/{0}', github.event.repository.default_branch)"
@@ -212,6 +214,9 @@ def execute(name, cwd, extra=None, prelude=''):
         env.setdefault('TEST_HOSTS', json.dumps({'ubuntu-latest': int(env['TEST_SHARD_COUNT'])}))
     if name in ['Tests', 'Isolated tests']:
         env.update(toolchain_environment(cwd, env))
+    if name == 'Isolated tests':
+        # The route reads the recorded ambient path; unless a case sets one, nothing was added after it.
+        env.setdefault('AMBIENT_PATH', env['PATH'])
     env = {key: value for key, value in env.items() if value is not None}
     command = prelude + body(name)
     if '--header "Authorization: Bearer $GH_TOKEN"' in command or 'mise install' in command:
@@ -228,6 +233,9 @@ def execute(name, cwd, extra=None, prelude=''):
         # Git Bash prepends its own utilities during startup; restore the caller's order.
         env['MAESTRO_SEAM_PATH'] = env['PATH']
         command = 'export PATH="$(cygpath -u -p "$MAESTRO_SEAM_PATH")"\n' + command
+        if 'AMBIENT_PATH' in env:
+            env['MAESTRO_SEAM_AMBIENT'] = env.pop('AMBIENT_PATH')
+            command = 'export AMBIENT_PATH="$(cygpath -u -p "$MAESTRO_SEAM_AMBIENT")"\n' + command
     if os.environ.get('MAESTRO_LOCAL_CAPPED'):
         command = command.replace('env -i ', 'env -i CARGO_BUILD_JOBS=3 ')
         env['CARGO_BUILD_JOBS'] = '3'
@@ -1297,6 +1305,7 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
                                          ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
                                          test_prepare_output=os.environ.get('TEST_PREPARE_OUTPUT'),
                                          test_archive=os.environ.get('TEST_ARCHIVE'),
+                                         path=os.environ.get('PATH'),
                                          coverage_env={{name: value for name, value in os.environ.items() if name.startswith('CARGO_LLVM_COV')}},
                                          diagnostics=os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'))) + '\\n')
         if args[:1] != ['fetch'] and os.environ.get('MAESTRO_TEST_DIAGNOSTICS_DIR'):
@@ -1521,6 +1530,58 @@ cargo_git_cache_restores_before_every_fetch()
 print('PASS cargo_git_cache_restores_before_every_fetch')
 archive_signal_reaches_only_archived_shards()
 print('PASS archive_signal_reaches_only_archived_shards')
+
+def tool_step_search_directories_leave_isolated_test_path():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        tools, log = install_recording_runner(directory)
+        # The runner image's own directory, a pinned search directory, a pinned directory without them.
+        bins = {name: directory / name for name in ['system', 'search', 'build']}
+        programs = {'system': ['fd'], 'search': ['rg', 'fd'], 'build': ['just']}
+        for name, executables in programs.items():
+            bins[name].mkdir()
+            for executable in executables:
+                (bins[name] / executable).write_text('#!/bin/sh\n', encoding='utf-8')
+                (bins[name] / executable).chmod(0o755)
+        ambient = os.pathsep.join([str(tools), str(bins['system']), os.environ['PATH']])
+        # The tool steps run after the ambient path is recorded and add the pinned directories to it.
+        current = os.pathsep.join([str(bins['search']), str(bins['build']), ambient])
+        result = execute('Isolated tests', directory, {
+            'PATH': current, 'AMBIENT_PATH': ambient, 'TOOLS': str(tools), 'RUNNER_TEMP': temporary,
+            'SHARD': '1', 'WARM_CACHE': 'false', 'COLLECT_COVERAGE': 'false', 'TEST_ARCHIVE': '',
+            'TEST_PACKAGES': '["sample"]', 'CARGO_COVERAGE_MIN_LINES': ''})
+        assert result.returncode == 0, result.stdout + result.stderr
+        commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+        assert [c['args'][0] for c in commands] == ['fetch', 'nextest', 'test'], commands
+        normal = lambda path: os.path.normcase(os.path.normpath(path))
+        for command in commands[1:]:
+            entries = [normal(entry) for entry in command['path'].split(os.pathsep)]
+            assert normal(str(bins['search'])) not in entries, command['path']
+            assert normal(str(bins['build'])) in entries, command['path']
+            assert normal(str(bins['system'])) in entries, command['path']
+    # Setup and preparation still reach the pinned directories through the path.
+    for name in ['Search tools', 'Test tools']:
+        assert 'GITHUB_PATH' in body(name), name
+
+tool_step_search_directories_leave_isolated_test_path()
+print('PASS tool_step_search_directories_leave_isolated_test_path')
+
+def ambient_path_is_recorded_before_any_tool_step():
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    steps = [step['name'] for step in document['jobs']['tests']['steps']]
+    recorder = next(step for step in document['jobs']['tests']['steps'] if step['name'] == 'Ambient path')
+    assert 'if' not in recorder, recorder
+    for later in ['Search tools', 'Mise bootstrap', 'Test tools', 'Isolated tests']:
+        assert steps.index('Ambient path') < steps.index(later), later
+    assert document['jobs']['doctests']['steps'] == document['jobs']['tests']['steps']
+    with tempfile.TemporaryDirectory() as temporary:
+        environment = pathlib.Path(temporary) / 'environment'
+        result = execute('Ambient path', pathlib.Path(temporary), {'GITHUB_ENV': str(environment)})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert environment.read_text(encoding='utf-8').startswith('AMBIENT_PATH='), environment.read_text(encoding='utf-8')
+
+ambient_path_is_recorded_before_any_tool_step()
+print('PASS ambient_path_is_recorded_before_any_tool_step')
 
 def warm_filter_runs_only_in_warm_mode():
     for value in warm_filters:
@@ -1826,6 +1887,15 @@ def fixture_git(directory, *args):
     return subprocess.check_output(['git', '-c', 'user.name=Fixture', '-c',
         'user.email=fixture@example.com', '-c', 'commit.gpgsign=false', *args],
         cwd=directory, text=True).strip()
+
+def search_path(directory, rg=b'rg one', fd=b'fd one'):
+    """Return a PATH that starts with stand-in search programs holding the given bytes."""
+    programs = pathlib.Path(directory) / 'search-programs'
+    programs.mkdir(exist_ok=True)
+    for name, content in (('rg', rg), ('fd', fd)):
+        (programs / name).write_bytes(content)
+        (programs / name).chmod(0o755)
+    return os.pathsep.join([str(programs), os.environ['PATH']])
 
 def coverage_matrix_splits_doctests_from_partitions():
     tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
@@ -4307,6 +4377,55 @@ def credential_names_fail_closed():
 credential_names_fail_closed()
 print('PASS credential_names_fail_closed')
 
+def pinned_search_directory(directory):
+    """Link the pinned `rg` and `fd` into `directory/pins` and return that directory."""
+    pins = directory / 'pins'
+    pins.mkdir()
+    for binary in ['rg', 'fd']:
+        (pins / binary).symlink_to(shutil.which(binary))
+    return pins
+
+def declared_test_prepare(fixture, search_path):
+    """Run the fixture's own `test_prepare` command, as the prepare step does, with `search_path` on PATH."""
+    output = fixture / 'target/test-setup'
+    output.mkdir(parents=True, exist_ok=True)
+    command = tomllib.loads((fixture / '.github/ci.toml').read_text(encoding='utf-8'))['test_prepare']
+    return subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command], cwd=fixture, text=True, capture_output=True,
+                          env=os.environ | {'PATH': search_path, 'TEST_PREPARE_OUTPUT': str(output)})
+
+def ambient_path_without_search_programs():
+    """The ambient PATH with every directory that holds `fd` left out."""
+    return os.pathsep.join(entry for entry in os.environ['PATH'].split(os.pathsep) if not shutil.which('fd', path=entry))
+
+def copied_declared_fixture(directory):
+    """Copy the declared fixture into `directory`, so a preparation writes nothing into the checkout."""
+    fixture = directory / 'caller'
+    shutil.copytree(root / 'fixtures/declared', fixture, ignore=shutil.ignore_patterns('target'))
+    return fixture
+
+def prepare_declared_search_tools(fixture, search_path):
+    """Prepare `fixture` as the prepare step does, with `search_path` on PATH."""
+    result = declared_test_prepare(fixture, search_path)
+    assert result.returncode == 0, result.stderr
+
+def declared_test_prepare_copies_the_pinned_search_programs():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        pins = pinned_search_directory(directory)
+        fixture = copied_declared_fixture(directory)
+        ambient = ambient_path_without_search_programs()
+        copied = declared_test_prepare(fixture, str(pins) + os.pathsep + ambient)
+        assert copied.returncode == 0, copied.stderr
+        for tool, version in [('rg', 'ripgrep'), ('fd', 'fd')]:
+            version_line = subprocess.check_output([str(fixture / 'target/test-setup' / tool), '--version'], text=True)
+            assert version_line.startswith(version), version_line
+        # A host that has not installed the programs fails the preparation, never the tests later.
+        missing = declared_test_prepare(fixture, ambient)
+        assert missing.returncode != 0, missing.stdout + missing.stderr
+
+declared_test_prepare_copies_the_pinned_search_programs()
+print('PASS declared_test_prepare_copies_the_pinned_search_programs')
+
 def isolated_tests_ignore_ambient_state():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
@@ -4319,7 +4438,10 @@ def isolated_tests_ignore_ambient_state():
         env = {'HOME': str(home), 'CARGO_HOME': os.environ.get('CARGO_HOME', str(pathlib.Path.home() / '.cargo')),
                'RUSTUP_HOME': os.environ.get('RUSTUP_HOME', str(pathlib.Path.home() / '.rustup')),
                'RUNNER_TEMP': temporary, 'UNRELATED_AMBIENT_CANARY': 'must-not-inherit'}
-        result = execute('Isolated tests', root / 'fixtures/declared', env)
+        pins = pinned_search_directory(directory)
+        declared = copied_declared_fixture(directory)
+        prepare_declared_search_tools(declared, str(pins) + os.pathsep + os.environ['PATH'])
+        result = execute('Isolated tests', declared, env)
         assert result.returncode == 0, result.stdout + result.stderr
         assert sentinel.read_text(encoding="utf-8") == 'original-auth-canary'
         for fixture in ['credential-dependent', 'home-dependent']:
@@ -4335,7 +4457,7 @@ def isolated_tests_ignore_ambient_state():
             assert negative.returncode != 0 and 'FAIL' in negative.stdout + negative.stderr, negative.stderr
             assert sentinel.read_text(encoding="utf-8") == 'original-auth-canary'
         sentinel.unlink()
-        result = execute('Isolated tests', root / 'fixtures/declared', env)
+        result = execute('Isolated tests', declared, env)
         assert result.returncode == 0, result.stdout + result.stderr
         assert not sentinel.exists()
 
@@ -4345,13 +4467,16 @@ print('PASS isolated_tests_ignore_ambient_state')
 def real_search_tools_are_exercised():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
-        bin_dir = directory / 'bin'
-        bin_dir.mkdir()
-        import shutil
-        for binary in ['rg', 'fd']:
-            (bin_dir / binary).symlink_to(shutil.which(binary))
-        result = execute('Isolated tests', root / 'fixtures/declared',
-                         {'RUNNER_TEMP': temporary, 'PATH': f'{bin_dir}:/usr/bin:' + os.environ['PATH']})
+        pins = pinned_search_directory(directory)
+        # The pins hold the only `fd` on PATH.
+        ambient = ambient_path_without_search_programs()
+        fixture = directory / 'caller'
+        shutil.copytree(root / 'fixtures/declared', fixture, ignore=shutil.ignore_patterns('target'))
+        env = {'RUNNER_TEMP': temporary, 'PATH': str(pins) + os.pathsep + ambient, 'AMBIENT_PATH': ambient}
+        unprepared = execute('Isolated tests', fixture, env)
+        assert unprepared.returncode != 0 and 'FAIL' in unprepared.stdout + unprepared.stderr, unprepared.stdout + unprepared.stderr
+        prepare_declared_search_tools(fixture, env['PATH'])
+        result = execute('Isolated tests', fixture, env)
         assert result.returncode == 0, result.stdout + result.stderr
         assert 'search_commands_read_fixture_files' in result.stdout + result.stderr
 
@@ -4848,7 +4973,9 @@ def windows_known_folders_resolve_inside_isolated_profile():
                 assert marker.read_text(encoding='utf-8') == 'disposable'
                 print(f'PASS {variable}: {path}', flush=True)
         '''), encoding='utf-8')
-        setup = body('Isolated tests').split('cargo fetch --locked', 1)[0]
+        # `Isolated tests` reads the PATH that the `Ambient path` step records; Git Bash's PATH
+        # stands in for it here.
+        setup = 'export AMBIENT_PATH="$PATH"\n' + body('Isolated tests').split('cargo fetch --locked', 1)[0]
         script = directory / 'probe.sh'
         script.write_text(setup + '\nrun_isolated ' + shlex.quote(pathlib.Path(sys.executable).as_posix()) +
                           ' ' + shlex.quote(probe.as_posix()) + '\n', encoding='utf-8', newline='\n')
@@ -4881,7 +5008,9 @@ def windows_system_locations_accept_mixed_case_names():
         for name, value in variables.items():
             probe += f'assert os.environ.get({name!r}) == {value!r}, ({name!r}, os.environ.get({name!r}))\n'
         probe += "assert 'UNRELATED_AMBIENT_CANARY' not in os.environ\n"
-        setup = body('Isolated tests').split('cargo fetch --locked', 1)[0]
+        # `Isolated tests` reads the PATH that the `Ambient path` step records; Git Bash's PATH
+        # stands in for it here.
+        setup = 'export AMBIENT_PATH="$PATH"\n' + body('Isolated tests').split('cargo fetch --locked', 1)[0]
         script = directory / 'probe.sh'
         script.write_text(setup + '\nrun_isolated ' + shlex.quote(pathlib.Path(sys.executable).as_posix()) +
                           ' -c ' + shlex.quote(probe) + '\n', encoding='utf-8', newline='\n')

@@ -51,14 +51,20 @@ mod tests {
             .join("search-fixture");
         fs::create_dir(&directory).unwrap();
         fs::write(directory.join("needle.txt"), "shared-search-canary\n").unwrap();
+        // The pinned programs reach the test run only as the files `test_prepare` copied.
+        let prepared = PathBuf::from(env::var("TEST_PREPARE_OUTPUT").unwrap());
+        let program = |tool: &str| prepared.join(format!("{tool}{}", env::consts::EXE_SUFFIX));
         for (tool, version) in [("rg", "ripgrep 15.2.0"), ("fd", "fd 10.5.0")] {
-            let output = Command::new(tool).arg("--version").output().unwrap();
+            let output = Command::new(program(tool))
+                .arg("--version")
+                .output()
+                .unwrap();
             assert!(output.status.success());
             assert!(String::from_utf8(output.stdout)
                 .unwrap()
                 .starts_with(version));
         }
-        let rg = Command::new("rg")
+        let rg = Command::new(program("rg"))
             .args(["--no-config", "shared-search-canary", "needle.txt"])
             .current_dir(&directory)
             .output()
@@ -68,7 +74,7 @@ mod tests {
             String::from_utf8(rg.stdout).unwrap(),
             "shared-search-canary\n"
         );
-        let fd = Command::new("fd")
+        let fd = Command::new(program("fd"))
             .args(["--color", "never", "--glob", "needle.txt", "."])
             .current_dir(&directory)
             .output()

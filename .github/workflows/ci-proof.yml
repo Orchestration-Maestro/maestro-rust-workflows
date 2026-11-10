@@ -71,6 +71,8 @@ jobs:
           path: maestro
       - name: Extract workflow steps
         run: python3 workflow/.github/extract-workflow-steps.py
+      - name: Ambient path
+        run: bash -e -o pipefail "$PROOF_STEPS/Ambient path"
       - name: Free instrumented build space
         run: bash -e -o pipefail "$PROOF_STEPS/Free instrumented build space"
       - name: Toolchain

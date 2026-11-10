@@ -1945,7 +1945,16 @@ jobs:
           import hashlib
           import json
           import os
-          # The compile cache prefix names repository, directory, host and compiler; the command and checkout path complete the prefix that finds an earlier bundle, and the input file contents complete the key.
+          import shutil
+          # The compile cache prefix names repository, directory, host and compiler; the command, the checkout path and the pinned search programs complete the prefix that finds an earlier bundle, and the input file contents complete the key.
+          # The programs are the `rg` and `fd` first on `PATH`, so a bundle that holds copies of them never outlives a pin change.
+          programs = {}
+          for name in ('rg', 'fd'):
+              path = shutil.which(name)
+              if path is None:
+                  raise SystemExit(f'{name}: the pinned search program is not on PATH')
+              with open(path, 'rb') as source:
+                  programs[name] = hashlib.sha256(source.read()).hexdigest()
           files = {}
           for pattern in json.loads(os.environ['TEST_PREPARE_INPUTS']):
               matches = [name for name in glob.glob(pattern, recursive=True, include_hidden=True) if os.path.isfile(name)]
@@ -1956,7 +1965,7 @@ jobs:
                       files[name] = hashlib.sha256(source.read()).hexdigest()
           def digest(value):
               return hashlib.sha256(json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
-          prefix = 'maestro-test-setup-v2-' + digest([os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE']]) + '-'
+          prefix = 'maestro-test-setup-v2-' + digest([os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE'], programs]) + '-'
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'prefix={prefix}\nkey={prefix}{digest(sorted(files.items()))}\n')
           PYTHON
@@ -2432,6 +2441,8 @@ jobs:
           if [[ "$SHARD" == doctests || ( -z "${TEST_ARCHIVE:-}" && "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
             cargo test --locked --doc "${packages[@]}"
           fi
+      - name: Ambient path
+        run: echo "AMBIENT_PATH=$PATH" >> "$GITHUB_ENV"
       - name: Search tools
         timeout-minutes: 10
         if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'
@@ -2568,8 +2579,18 @@ jobs:
             mkdir -p "$isolation/home/AppData/"{Roaming,Local}
             system+=(USERPROFILE="$isolation/home" APPDATA="$isolation/home/AppData/Roaming" LOCALAPPDATA="$isolation/home/AppData/Local")
           fi
+          # The pinned rg and fd reach the tests only as the files test_prepare copied into
+          # TEST_PREPARE_OUTPUT: a directory the tool steps added to PATH leaves it when it holds either program.
+          : "${AMBIENT_PATH:?The ambient PATH was not recorded}"
+          IFS=: read -r -a entries <<< "$PATH"
+          kept=()
+          for entry in "${entries[@]}"; do
+            if [[ ":$AMBIENT_PATH:" != *":$entry:"* ]] && { [ -e "$entry/rg" ] || [ -e "$entry/fd" ]; }; then continue; fi
+            kept+=("$entry")
+          done
+          test_path=$(IFS=:; printf '%s' "${kept[*]}")
           run_isolated() {
-          env -i "${system[@]}" PATH="${TOOLS:+$TOOLS:}$PATH" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+          env -i "${system[@]}" PATH="${TOOLS:+$TOOLS:}$test_path" CARGO_HOME="$cargo_home" RUSTUP_HOME="$rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
             HOME="$isolation/home" TMPDIR="$isolation/tmp" TMP="$isolation/tmp" TEMP="$isolation/tmp" \
             XDG_CONFIG_HOME="$isolation/config" XDG_DATA_HOME="$isolation/data" \
             XDG_CACHE_HOME="$isolation/cache" XDG_STATE_HOME="$isolation/state" \

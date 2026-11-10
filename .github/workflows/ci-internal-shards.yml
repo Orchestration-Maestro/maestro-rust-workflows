@@ -351,7 +351,7 @@ jobs:
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               job, steps = prepare_steps(document)
               names = list(steps)
-              order = ['Test tools', 'Test setup cache identity', 'Restore test setup cache', 'Prepare test setup',
+              order = ['Search tools', 'Test tools', 'Test setup cache identity', 'Restore test setup cache', 'Prepare test setup',
                        'Save test setup cache', 'Upload test setup']
               assert [names.index(name) for name in order] == sorted(names.index(name) for name in order), names
               declared = "needs.declaration.outputs.test_prepare_inputs != '[]'"
@@ -380,10 +380,12 @@ jobs:
                   with output_file() as output:
                       env = {'TEST_PREPARE': command, 'TEST_PREPARE_INPUTS': json.dumps(list(patterns)), 'GITHUB_OUTPUT': str(output),
                              'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work'} | (extra or {})
+                      if 'PATH' not in env:
+                          env['PATH'] = search_path(programs)
                       result = execute('Test setup cache identity', directory, env)
                       values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
                       return result, values
-              with tempfile.TemporaryDirectory() as temporary:
+              with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as programs:
                   directory = pathlib.Path(temporary)
                   (directory / 'inputs').mkdir()
                   (directory / 'inputs/a.txt').write_text('a1\n', encoding='utf-8')
@@ -426,6 +428,24 @@ jobs:
                                       ('workspace', key(directory, extra={'GITHUB_WORKSPACE': '/other'}))]:
                       assert other[0].returncode == 0 and other[1]['key'] != first, name
                       assert other[1]['prefix'] != prefix, name
+                  # The pinned search programs are inputs: the prepared copies come from them, so a new pin is a new bundle.
+                  for name, pins in [('rg', {'rg': b'rg two'}), ('fd', {'fd': b'fd two'})]:
+                      other = key(directory, extra={'PATH': search_path(programs, **pins)})
+                      assert other[0].returncode == 0 and other[1]['key'] != first and other[1]['prefix'] != prefix, name
+                  assert key(directory, extra={'PATH': search_path(programs)})[1] == values
+                  # A host with only one of the programs on PATH fails the identity, so a missing pin never hides in a key.
+                  bare = pathlib.Path(programs) / 'bare'
+                  bare.mkdir()
+                  for tool in ['bash', 'python3']:
+                      (bare / tool).symlink_to(shutil.which(tool))
+                  for name, kept in [('rg', 'fd'), ('fd', 'rg')]:
+                      (bare / kept).write_bytes(b'stand-in')
+                      (bare / kept).chmod(0o755)
+                      (bare / name).unlink(missing_ok=True)
+                      missing = key(directory, extra={'PATH': str(bare)})
+                      assert missing[0].returncode != 0 and not missing[1], name
+                      assert f'{name}: the pinned search program is not on PATH' in missing[0].stderr, (name, missing[0].stderr)
+                      (bare / kept).unlink()
                   for patterns, message in [(('inputs/*.missing',), "test_prepare_inputs pattern 'inputs/*.missing' matches no file"),
                                             (('inputs/*.txt', 'nowhere/**'), "test_prepare_inputs pattern 'nowhere/**' matches no file"),
                                             (('inputs',), "test_prepare_inputs pattern 'inputs' matches no file")]:
@@ -451,7 +471,7 @@ jobs:
                       (checkout / 'key.txt').write_text(printed, encoding='utf-8')
                       env = {'TEST_PREPARE': command, 'TEST_PREPARE_INPUTS': json.dumps(['key.txt']), 'RUNNER_TEMP': str(runner),
                              'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work',
-                             'CACHE_WRITER': 'true' if writer else 'false'}
+                             'CACHE_WRITER': 'true' if writer else 'false', 'PATH': search_path(temporary)}
                       with output_file() as output:
                           result = execute('Test setup cache identity', checkout, env | {'GITHUB_OUTPUT': str(output)})
                           assert result.returncode == 0, result.stderr

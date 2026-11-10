@@ -7,5 +7,5 @@ check_targets = [
 ]
 browser_build = true
 browser_test_crates = ["declared"]
-test_prepare = "printf ready > \"$TEST_PREPARE_OUTPUT/ready\""
+test_prepare = "for tool in rg fd; do cp \"$(command -v \"$tool\")\" \"$TEST_PREPARE_OUTPUT/\"; done"
 test_prepare_inputs = ["justfile"]

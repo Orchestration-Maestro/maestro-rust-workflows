@@ -284,6 +284,8 @@ GitHub's [reusable workflow concurrency rules](https://docs.github.com/en/action
 
 The `wasm_crates` and `check_targets` arrays are required, including when empty.
 `browser_build` and `test_tools` are optional booleans that default to `false`.
+The test run reaches the pinned `rg` and `fd` only through files the
+`test_prepare` command copied into `TEST_PREPARE_OUTPUT`, never through `PATH`.
 `wasm_examples` is an optional table that maps package names to example names
 and defaults to `{}`. `emscripten_crates` is an optional array of package names
 and defaults to `[]`. The [schema](../.github/ci.schema.json) describes the
@@ -797,9 +799,10 @@ repository-relative path globs from the caller's working directory, such as
 `.config/prepare-tests.sh` or `tools/**/*.toml`. `**` matches any depth, hidden
 files included. The prepared directory is cached under a key built from the
 contents of every matching file, the `test_prepare` command, the compile cache
-identity (repository, directory, host and compiler), and the checkout path. A
-glob that matches no file fails the job. On reader runs, `Prepare test setup`
-restores the bundle on an exact hit and skips the `test_prepare` command.
+identity (repository, directory, host and compiler), the checkout path and the
+pinned `rg` and `fd`. A glob that matches no file fails the job. On reader
+runs, `Prepare test setup` restores the bundle on an exact hit and skips the
+`test_prepare` command.
 When preparation is enabled, default-branch pushes run the command even on an
 exact hit, including warm builds and pushes that reuse merge-queue tests.
 These writers check whether the bundle is cached without downloading it and
@@ -1166,7 +1169,10 @@ Opted-in tests install ripgrep 15.2.0 and fd 10.5.0 from pinned release archives
 for their host: Linux x86_64 musl, macOS arm64 or Windows x86_64 MSVC.
 Installation verifies their published SHA-256
 digests before extraction. The dedicated binary directory exposes `rg` and
-`fd` directly on `PATH`. Every tool-installation step has a 10-minute timeout
+`fd` on the `PATH` of the setup and prepare steps. The test run does not
+inherit it, so `test_prepare` copies the programs into `TEST_PREPARE_OUTPUT`:
+see [Caller-pinned build and test tools](#caller-pinned-build-and-test-tools).
+Every tool-installation step has a 10-minute timeout
 to fail stalled downloads or installs. Before tests start, a presence guard rejects exported provider API/OAuth
 keys, GitHub/Hugging Face tokens, cloud project/profile/region selectors,
 cloud credential paths/URIs and the extensive-model selector listed in the
@@ -1246,6 +1252,24 @@ The nextest shard and doctest argv, credential guards,
 fresh directories and the child environment allowlist are unchanged. Only the
 installed tools' executable paths are added, not mise's environment settings.
 Windows paths are published in native format for later steps.
+
+The test run reaches the pinned `rg` and `fd` only through files your
+`test_prepare` command copies into `TEST_PREPARE_OUTPUT`, for example
+`cp "$(command -v rg)" "$TEST_PREPARE_OUTPUT/"`. Nextest setup scripts run
+inside the test run, so they and the tests read those copies. A setup script
+can export the paths as `MAESTRO_TEST_RG` and `MAESTRO_TEST_FD` for tests that
+expect them. The shared pins of `rg` and `fd` are part of the prepared bundle's
+cache key, so a pin change prepares again. For programs you pin yourself, list
+the files that fix their versions, such as `mise.toml`, in `test_prepare_inputs`.
+
+The `Ambient path` step records `PATH` before any tool step runs. The isolated
+test command then removes each directory a tool step added afterwards that holds
+`rg` or `fd`, whether it comes from the shared search tools or from your
+`mise.toml` pins. A test that looks up `rg` or `fd` on `PATH` fails unless the
+runner image itself provides it. The tool steps and `test_prepare` keep the full
+`PATH`; nextest setup scripts and tests get the filtered one. Directories that
+were on `PATH` before the tool steps, and added directories that hold neither
+program, stay. Linux, macOS and Windows follow the same rule.
 
 ## Documentation
 

@@ -236,7 +236,14 @@ def superseded_cache_entries_leave_the_newest_of_each_prefix():
     def prefix(step, **values):
         with tempfile.TemporaryDirectory() as temporary:
             output = pathlib.Path(temporary) / 'outputs'
-            result = shell(body(step), environment(pathlib.Path(temporary)) | {'GITHUB_OUTPUT': str(output)} | values)
+            # The test setup identity hashes the pinned search programs, so stand-ins lead the path.
+            programs = pathlib.Path(temporary) / 'programs'
+            programs.mkdir()
+            for name in ('rg', 'fd'):
+                (programs / name).write_bytes(b'stand-in')
+                (programs / name).chmod(0o755)
+            path = {'PATH': str(programs) + os.pathsep + os.environ['PATH']}
+            result = shell(body(step), environment(pathlib.Path(temporary)) | path | {'GITHUB_OUTPUT': str(output)} | values)
             assert result.returncode == 0, result.stderr
             return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['prefix']
     # Every prefix comes from the identity step that names its writer's entries.
@@ -502,6 +509,7 @@ def snapshot_restart_preserves_isolated_local_policy():
             command = setup + '\nrun_isolated env\nrun_isolated env SCCACHE_SERVER_UDS="$SCCACHE_SERVER_UDS" cargo build --locked --manifest-path "$SAMPLE_MANIFEST" --target-dir "$CARGO_TARGET_DIR"\n'
             isolated_env = env | {'RUSTUP_TOOLCHAIN': subprocess.check_output(['rustup', 'show', 'active-toolchain'], text=True).split()[0],
                                   'SAMPLE_MANIFEST': str(root / 'fixtures/sample/Cargo.toml'),
+                                  'AMBIENT_PATH': os.environ['PATH'],
                                   'OPENAI_API_KEY': 'not-a-credential-canary'}
             warm = shell(command, isolated_env)
             assert warm.returncode == 0, warm.stderr
@@ -626,7 +634,7 @@ def native_c_compiler_configuration_reaches_isolated_children():
             env = environment(directory) | compiler | {
                 'isolation': temporary, 'diagnostics': temporary,
                 'cargo_home': str(directory / 'cargo'), 'rustup_home': str(directory / 'rustup'),
-                'RUSTUP_TOOLCHAIN': 'stable'}
+                'RUSTUP_TOOLCHAIN': 'stable', 'test_path': os.environ['PATH']}
             result = shell(isolated[0] + '\nrun_isolated python3 -c ' + shlex.quote(probe), env)
             assert result.returncode == 0, result.stdout + result.stderr
             assert json.loads(result.stdout) == compiler, (compiler, result.stdout)
