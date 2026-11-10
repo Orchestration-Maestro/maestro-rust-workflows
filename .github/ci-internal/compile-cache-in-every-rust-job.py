@@ -8,7 +8,7 @@ def snapshot_jobs_share_one_owner():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     assert document['permissions'] == {'contents': 'read'}
     writers = {'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests', 'doctests'}
-    assert set(document['jobs']) == {'declaration', 'replaced-groups', 'advisories', 'fuzz', 'tests-result'} | writers | {name + '-prune' for name in writers}
+    assert set(document['jobs']) == {'declaration', 'replaced-groups', 'advisories', 'fuzz', 'tests-result', 'sandbox-runtime'} | writers | {name + '-prune' for name in writers}
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                            workflow.split('\njobs:\n', 1)[1], re.M | re.S))
     owners = {'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests'}
@@ -74,8 +74,10 @@ def every_cache_writer_has_one_pruner_without_caller_code():
     import json
     import subprocess
     jobs = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))['jobs']
+    # The sandbox runtime job saves one generated file under its own key, not a compile snapshot.
     writers = {name for name, job in jobs.items()
-               if any(step.get('uses', '').startswith('actions/cache/save@') for step in job.get('steps', []))}
+               if any(step.get('uses', '').startswith('actions/cache/save@') and step['with']['path'].endswith('maestro-sccache')
+                      for step in job.get('steps', []))}
     assert writers == {'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'doctests', 'checks', 'targets', 'browser', 'browser-tests'}
     pruners = {name: job for name, job in jobs.items() if name.endswith('-prune')}
     # The replaced-group canceller holds the only other write grant; its own seam proves it runs no caller code.

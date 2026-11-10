@@ -133,6 +133,7 @@ jobs:
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       wasm_examples: ${{ steps.config.outputs.wasm_examples }}
       emscripten_crates: ${{ steps.config.outputs.emscripten_crates }}
+      emscripten_paths: ${{ steps.config.outputs.emscripten_paths }}
       emscripten_changed: ${{ steps.selection.outputs.emscripten_changed }}
       targets: ${{ steps.config.outputs.targets }}
       browser_test_crates: ${{ steps.config.outputs.browser_test_crates }}
@@ -983,10 +984,10 @@ jobs:
     permissions:
       contents: read
       actions: read
-    needs: declaration
+    needs: [declaration, sandbox-runtime]
     name: Format and lint
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !cancelled() && needs.declaration.result == 'success' && (!inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.'))) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1004,6 +1005,12 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Sandbox runtime script
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: &sandbox-runtime-artifact
+          name: sandbox-runtime-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ inputs.working-directory || '.' }}/target/sandbox-runtime
       - name: Toolchain
         run: |
           rustup show
@@ -1391,10 +1398,10 @@ jobs:
     permissions:
       contents: read
       actions: read
-    needs: declaration
+    needs: [declaration, sandbox-runtime]
     name: Docs
     # This workflow repository has fixtures, not a root Rust package.
-    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !cancelled() && needs.declaration.result == 'success' && (!inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.'))) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1412,6 +1419,10 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Sandbox runtime script
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: *sandbox-runtime-artifact
       - name: Toolchain
         run: rustup show
       - name: Compile cache identity
@@ -1479,12 +1490,12 @@ jobs:
         run: *sccache-floor
 
   test-build:
-    needs: declaration
+    needs: [declaration, sandbox-runtime]
     permissions:
       contents: read
       actions: read
     name: ${{ matrix.runner == 'ubuntu-latest' && 'Build test archive' || format('Build test archive ({0})', matrix.runner) }}
-    if: ${{ !inputs.browser-only && !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !cancelled() && needs.declaration.result == 'success' && (!inputs.browser-only && !inputs.warm-cache && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.'))) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1512,6 +1523,10 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Sandbox runtime script
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: *sandbox-runtime-artifact
       - name: Free instrumented build space
         if: runner.os == 'Linux' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
         run: &free-build-space |
@@ -1859,9 +1874,9 @@ jobs:
     permissions:
       contents: read
       actions: read
-    needs: declaration
+    needs: [declaration, sandbox-runtime]
     name: ${{ matrix.runner == 'ubuntu-latest' && 'Prepare test setup' || format('Prepare test setup ({0})', matrix.runner) }}
-    if: ${{ !inputs.browser-only && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    if: ${{ !cancelled() && needs.declaration.result == 'success' && (!inputs.browser-only && needs.declaration.outputs.test_prepare != '""' && (!inputs.warm-cache || needs.declaration.outputs.test_prepare_inputs != '[]') && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.'))) }}
     strategy:
       fail-fast: false
       matrix:
@@ -1886,6 +1901,10 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Sandbox runtime script
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: *sandbox-runtime-artifact
       - name: Free instrumented build space
         if: runner.os == 'Linux' && (inputs.warm-cache || needs.declaration.outputs.enabled == 'true')
         run: *free-build-space
@@ -2295,7 +2314,7 @@ jobs:
       - *superseded-check
 
   tests:
-    needs: [declaration, test-build, test-prepare]
+    needs: [declaration, sandbox-runtime, test-build, test-prepare]
     permissions:
       contents: read
       actions: read
@@ -2335,6 +2354,10 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Sandbox runtime script
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: *sandbox-runtime-artifact
       - name: Free instrumented build space
         if: runner.os == 'Linux' && (env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true')
         run: *free-build-space
@@ -2764,8 +2787,8 @@ jobs:
       contents: read
       actions: read
     name: ${{ matrix.runner == 'ubuntu-latest' && 'Doctests' || format('Doctests ({0})', matrix.runner) }}
-    needs: declaration
-    if: ${{ !inputs.browser-only && needs.declaration.outputs.tested_runners != '' && needs.declaration.outputs.tested_runners != '[]' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    needs: [declaration, sandbox-runtime]
+    if: ${{ !cancelled() && needs.declaration.result == 'success' && (!inputs.browser-only && needs.declaration.outputs.tested_runners != '' && needs.declaration.outputs.tested_runners != '[]' && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && !inputs.advisory-scan && !inputs.fuzz-scan && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.'))) }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -2821,8 +2844,8 @@ jobs:
       contents: read
       actions: read
     name: Dependency, source and coverage checks
-    needs: declaration
-    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.')) }}
+    needs: [declaration, sandbox-runtime]
+    if: ${{ !cancelled() && needs.declaration.result == 'success' && (!inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && !inputs.warm-cache && (github.repository_id != '1404598722' || (inputs.working-directory != '' && inputs.working-directory != '.'))) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -2843,6 +2866,10 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Sandbox runtime script
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: *sandbox-runtime-artifact
       - name: Free instrumented build space
         if: needs.declaration.outputs.enabled != 'true'
         run: *free-build-space
@@ -3120,8 +3147,8 @@ jobs:
 
   fuzz:
     name: Fuzz ${{ matrix.name }}
-    needs: declaration
-    if: ${{ !inputs.browser-only && !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]' }}
+    needs: [declaration, sandbox-runtime]
+    if: ${{ !cancelled() && needs.declaration.result == 'success' && (!inputs.browser-only && !inputs.warm-cache && inputs.fuzz-scan && needs.declaration.outputs.fuzz_targets != '[]') }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -3147,6 +3174,10 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Sandbox runtime script
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: *sandbox-runtime-artifact
       - name: Fuzz toolchain
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: Check tools
@@ -3301,8 +3332,8 @@ jobs:
       contents: read
       actions: read
     name: Check (${{ matrix.target }})
-    needs: declaration
-    if: ${{ !inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]' }}
+    needs: [declaration, sandbox-runtime]
+    if: ${{ !cancelled() && needs.declaration.result == 'success' && (!inputs.browser-only && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || github.event_name == 'push') && needs.declaration.outputs.targets != '[]') }}
     strategy:
       fail-fast: false
       matrix:
@@ -3326,6 +3357,10 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Sandbox runtime script
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: *sandbox-runtime-artifact
       - name: Toolchain
         run: rustup show
       - name: Compile cache identity
@@ -3400,11 +3435,11 @@ jobs:
       contents: read
       actions: read
     name: Wasm and browser build
-    needs: declaration
+    needs: [declaration, sandbox-runtime]
     # A push that reuses merge-queue tests still builds, to seed this shape's snapshot.
     # A pull request runs the job only for declared example witnesses and for a change that reaches a listed Emscripten
     # crate; the other steps skip.
-    if: ${{ !inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_changed == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_crates != '[]' || needs.declaration.outputs.browser_build == 'true') }}
+    if: ${{ !cancelled() && needs.declaration.result == 'success' && (!inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_changed == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_crates != '[]' || needs.declaration.outputs.browser_build == 'true')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -3422,6 +3457,10 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Sandbox runtime script
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: *sandbox-runtime-artifact
       - name: Toolchain
         run: rustup show
       - name: Compile cache identity
@@ -3576,14 +3615,107 @@ jobs:
         env: *sccache-floor-env
         run: *sccache-floor
 
+  sandbox-runtime:
+    permissions:
+      contents: read
+      actions: read
+    name: Sandbox runtime script
+    needs: declaration
+    if: ${{ needs.declaration.outputs.emscripten_crates != '[]' && !inputs.advisory-scan }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory || '.' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.checkout-repository || github.repository }}
+          path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
+          ref: ${{ inputs.checkout-ref || github.sha }}
+      # The generated script is a function of the listed packages, their lock files and the pinned tools, so an
+      # unchanged run restores it and installs no SDK.
+      - name: Sandbox runtime identity
+        id: identity
+        env:
+          EMSCRIPTEN_PATHS: ${{ needs.declaration.outputs.emscripten_paths }}
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          digest = hashlib.sha256()
+          files = set()
+          for name in [*json.loads(os.environ['EMSCRIPTEN_PATHS']), 'mise.toml', 'justfile', 'rust-toolchain.toml']:
+              path = pathlib.Path(name)
+              if path.is_file():
+                  files.add(path)
+              elif path.is_dir():
+                  # A package's own build output is not an input.
+                  files.update(item for item in path.rglob('*') if item.is_file() and 'target' not in item.relative_to(path).parts)
+          for path in sorted(files):
+              digest.update(path.as_posix().encode('utf-8') + b'\0' + hashlib.sha256(path.read_bytes()).digest())
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'key=maestro-sandbox-runtime-v1-{digest.hexdigest()}\n')
+          PYTHON
+      - name: Restore sandbox runtime
+        id: restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ inputs.working-directory || '.' }}/target/sandbox-runtime/maestro-sandbox-runtime.js
+          key: ${{ steps.identity.outputs.key }}
+      - name: Toolchain
+        if: steps.restore.outputs.cache-hit != 'true'
+        run: rustup show
+      - name: Mise bootstrap
+        timeout-minutes: 10
+        if: steps.restore.outputs.cache-hit != 'true'
+        env: *release-auth
+        run: *mise-bootstrap
+      - name: Test tools
+        timeout-minutes: 10
+        if: steps.restore.outputs.cache-hit != 'true'
+        env: *release-auth
+        run: *caller-tools
+      - name: Emscripten SDK
+        timeout-minutes: 10
+        if: steps.restore.outputs.cache-hit != 'true'
+        env: *emscripten-sdk-env
+        run: *emscripten-sdk
+      - name: Emscripten target
+        if: steps.restore.outputs.cache-hit != 'true'
+        run: *emscripten-target
+      - name: Build sandbox runtime script
+        if: steps.restore.outputs.cache-hit != 'true'
+        run: |
+          mise exec -- just sandbox-runtime
+          test -f target/sandbox-runtime/maestro-sandbox-runtime.js
+      - name: Save sandbox runtime
+        if: steps.restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ inputs.working-directory || '.' }}/target/sandbox-runtime/maestro-sandbox-runtime.js
+          key: ${{ steps.identity.outputs.key }}
+      - name: Upload sandbox runtime
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sandbox-runtime-${{ inputs.concurrency-key || 'root' }}
+          path: ${{ inputs.working-directory || '.' }}/target/sandbox-runtime/maestro-sandbox-runtime.js
+          if-no-files-found: error
+
   browser-tests:
     permissions:
       contents: read
       actions: read
     name: Chromium browser tests
-    needs: declaration
+    needs: [declaration, sandbox-runtime]
     # A push that reuses merge-queue tests still runs browser tests, to seed this shape's snapshot.
-    if: ${{ (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true' }}
+    if: ${{ !cancelled() && needs.declaration.result == 'success' && ((needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true') }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -3601,6 +3733,10 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Sandbox runtime script
+        if: needs.declaration.outputs.emscripten_crates != '[]'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with: *sandbox-runtime-artifact
       - name: Toolchain
         run: rustup show
       - name: Compile cache identity

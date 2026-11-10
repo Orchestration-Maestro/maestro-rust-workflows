@@ -157,10 +157,12 @@ def a_replaced_run_never_starts_its_test_shards():
     # A run that failed the check skips every job that needs the declaration, and its `tests` legs never start.
     for name in ['test-build', 'test-prepare', 'tests', 'doctests', 'targets']:
         assert 'declaration' in str(jobs[name]['needs']), name
-    # `doctests` and `targets` carry no status function at all; `tests` uses `!cancelled()` and is checked by `starts`.
+    # `doctests` and `targets` carry only the `!cancelled()` that keeps a skipped sandbox runtime job from skipping them, and it
+    # stays behind the declaration's own success; `tests` uses `!cancelled()` and is checked by `starts`.
     for name in ['doctests', 'targets']:
         condition = str(jobs[name].get('if'))
-        assert not any(call in condition for call in ('always()', 'failure()', 'cancelled()')), (name, condition)
+        assert not any(call in condition for call in ('always()', 'failure()')), (name, condition)
+        assert condition.startswith("${{ !cancelled() && needs.declaration.result == 'success' && ("), (name, condition)
     tests_if = expression(jobs['tests']['if'])
     def starts(build, prepare):
         contexts = {'github': {'repository_id': '1'}, 'inputs': {'working-directory': ''}, 'needs': {

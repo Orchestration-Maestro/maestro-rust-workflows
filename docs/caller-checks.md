@@ -288,7 +288,8 @@ The test run reaches the pinned `rg` and `fd` only through files the
 `test_prepare` command copied into `TEST_PREPARE_OUTPUT`, never through `PATH`.
 `wasm_examples` is an optional table that maps package names to example names
 and defaults to `{}`. `emscripten_crates` is an optional array of package names
-and defaults to `[]`. The [schema](../.github/ci.schema.json) describes the
+and defaults to `[]`; a non-empty list also makes every compiling job wait for the
+[generated runtime script](#generated-runtime-script). The [schema](../.github/ci.schema.json) describes the
 parsed TOML shape; there is no version key or older-format reader.
 
 `check_targets` also selects native test hosts: `aarch64-apple-darwin` adds
@@ -1448,6 +1449,60 @@ unchecked file. The step then checks that `emcc` reports 6.0.10 and exports
 
 The caller owns the binding step and the browser application. The shared
 workflow only provides the toolchain and the build of the listed packages.
+
+### Generated runtime script
+
+Quick start: define a `sandbox-runtime` recipe in the caller's `justfile` that
+writes `target/sandbox-runtime/maestro-sandbox-runtime.js`, and pin `just` and
+any other tool the recipe runs in `mise.toml`. Maestro runs the recipe once per
+run, before any job compiles the caller.
+
+```toml
+# .github/ci.toml
+emscripten_crates = ["my-sandbox-runtime"]
+```
+
+```just
+# justfile
+sandbox-runtime:
+    cargo run --quiet --locked -p my-tooling --bin development -- sandbox-runtime
+```
+
+A caller that embeds a generated file in a crate cannot compile until the file
+exists. When `emscripten_crates` is non-empty, the `Sandbox runtime script` job
+builds that file once and every compiling job fetches it. It runs on pull
+requests too, so a change outside the listed packages still finds the file. An
+empty list skips the job and every other job runs as before.
+
+| Step | What it does |
+| --- | --- |
+| Sandbox runtime identity | Hashes the files of each listed package's directory, its manifest and lock file, plus `mise.toml`, `justfile` and `rust-toolchain.toml`. Build output under the package is left out. |
+| Restore sandbox runtime | Restores `target/sandbox-runtime/maestro-sandbox-runtime.js` under that hash. |
+| Toolchain | Runs `rustup show` to install the caller's pinned toolchain. |
+| Mise bootstrap, Test tools | Install the caller's `mise.toml` tools, also when `test_tools` is `false`, because the recipe needs them. |
+| Emscripten SDK, Emscripten target | The steps described [above](#emscripten-builds). |
+| Build sandbox runtime script | Runs `mise exec -- just sandbox-runtime`, then fails if the file is missing. |
+| Save sandbox runtime | Stores the file under the same hash. |
+| Upload sandbox runtime | Publishes the file as the `sandbox-runtime` artifact of the run. |
+
+Every step from Toolchain to Save sandbox runtime runs only when the restore
+misses, so a run whose hashed files did not change installs no toolchain and no
+SDK.
+
+Every job that compiles the caller waits for `Sandbox runtime script`: Format
+and lint, Docs, Build test archive, Prepare test setup, the test shards,
+Doctests, Dependency, source and coverage checks, the target checks, Wasm and
+browser build, Chromium browser tests and the fuzz job. Each one runs the step
+`Sandbox runtime script` straight after its checkout. It downloads the artifact
+into `target/sandbox-runtime`, before the first cargo command.
+
+A failed generator does not skip those jobs: they start, the download fails
+them, and each required check reports the failure. The job keeps no compile
+snapshot, so its cargo build starts cold when the restore misses.
+
+The hash does not cover the generator's own sources. A change to the tool that
+writes the script reuses the saved file until a hashed file moves. Touch a file
+under the listed package, or change `justfile`, to rebuild it.
 
 ### Emscripten crates on pull requests
 
