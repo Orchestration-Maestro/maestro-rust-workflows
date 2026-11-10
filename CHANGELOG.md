@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.30](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.29...v0.19.30) (2026-11-10)
+
+
+### Continuous Integration
+
+* keep ambient rg and fd off the test run's PATH ([#432](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/432)) ([289d2af](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/289d2afe02bc41fe2d532dfa1190583e4978d9cf))
+* pin maestro-rust-workflows callers to v0.19.29 ([#452](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/452)) ([38d6e37](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/38d6e37d1715dc9f37a18c0ec739686e892998ea))
+
 ## [0.19.29](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.28...v0.19.29) (2026-11-09)
 
 
