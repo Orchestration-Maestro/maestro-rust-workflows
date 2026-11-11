@@ -2786,7 +2786,8 @@ jobs:
                 # Keep compile-time Cargo executable paths valid after archive extraction.
                 mkdir -p target/llvm-cov-target
                 ln -sfn target/debug target/llvm-cov-target/debug
-                coverage_build_args=(--no-clean --archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
+                # The run's --no-report below already keeps the extracted build.
+                coverage_build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
                 # The report reads the same archive the run executed.
                 archive_report=(--nextest-archive-file "$TEST_ARCHIVE")
                 partition=()
