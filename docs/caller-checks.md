@@ -504,24 +504,24 @@ Cache entries cannot be overwritten, and every default-branch save uses a new
 key, so each push adds one entry per shape beside the one it replaces. A restore
 reads only the newest entry of a prefix. After each job that saves a cache, a
 pruning job named `Prune superseded caches (<job>)` lists the default branch's
-entries, keeps the newest entry of each compile, Cargo git, test setup and browser
-packages prefix and deletes the others. It runs only on default-branch pushes after its saving
-job succeeds, holds only `actions: write` and checks out nothing. Another pruner
-may delete an entry first; that is not an error. Any other failed deletion
-prints a `Cache prune` warning, marks the step failed and leaves the job green,
-and the next pruner tries again. Entries under other names, such as a caller's
-own caches, are never touched.
+entries, keeps the newest entry of each compile, Cargo git, test setup and
+browser packages prefix and deletes the others. It runs only on default-branch
+pushes after its saving job succeeds, holds only `actions: write` and checks out
+nothing. Another pruner may delete an entry first; that is not an error. Any
+other failed deletion prints a `Cache prune` warning, marks the step failed and
+leaves the job green, and the next pruner tries again. Entries under other
+names, such as a caller's own caches, are never touched.
 
 The repository cache holds one generation, so the snapshots every kept shape
-saves, plus the Cargo git entries, the test setup bundles and the browser packages, must add up to under
-90% of the 10 GiB limit, the level at which the usage guard files an issue. Over
-the limit GitHub evicts the newest snapshots of the shapes restored least
-recently, and those shapes then compile cold. One snapshot for each of the
-twelve shapes Maestro compiled needed 11.66 GiB, so the Linux jobs listed in
-[Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) stopped saving. Measured
-from Maestro's default-branch push 42428071607 on 2026-11-08, one entry per kept
-shape holds 8.33 GiB; with the browser packages entry, 8.35 GiB, 83.5% of the
-limit:
+saves, plus the Cargo git entries, the test setup bundles and the browser
+packages, must add up to under 90% of the 10 GiB limit, the level at which the
+usage guard files an issue. Over the limit GitHub evicts the newest snapshots of
+the shapes restored least recently, and those shapes then compile cold. One
+snapshot for each of the twelve shapes Maestro compiled needed 11.66 GiB, so the
+Linux jobs listed in [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot)
+stopped saving. Measured from Maestro's default-branch push 42428071607 on
+2026-11-08, one entry per kept shape holds 8.33 GiB; with the browser packages
+entry, 8.35 GiB, 83.5% of the limit:
 
 | Entry | Host | GiB |
 | --- | --- | --- |
@@ -538,10 +538,11 @@ limit:
 | `test-setup` | macOS | 0.76 |
 | `browser-packages` | Linux | 0.02 |
 
-The `browser-packages` row is the download the Chromium job's package step made
-on 2026-11-11: 9 packages, 21.9 MB. While a new runner image rolls out, each
-of the two images keeps an entry, 0.04 GiB together, until GitHub evicts the
-retired image's entry after 7 days unread. A shape that joins Maestro needs a
+The `browser-packages` row is a bound taken from the uncompressed download size
+of the Chromium job's package step on 2026-11-11 (9 packages, 21.9 MB), not a
+measured cache entry. While a new runner image rolls out, each of the two
+images keeps an entry, 0.04 GiB together, until GitHub evicts the retired
+image's entry after 7 days unread. A shape that joins Maestro needs a
 row here, and the self-test fails when a kept shape has no row or the rows pass
 90%. While a run saves, a shape's new entry and the one it replaces exist
 together until the pruner that follows its saving job runs. That job waits for
@@ -1589,13 +1590,13 @@ apt-get -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::R
 ```
 
 The staging directory is a fresh `browser-packages.XXXXXX` directory in `/tmp`
-that anyone may enter, because apt downloads as its own unprivileged user. The step moves the
-downloaded `.deb` files into `$RUNNER_TEMP/browser-packages` and installs them
-from there, so a miss and a hit run the same install. The staging directory
-stays on the machine after the run with only apt's lock and its empty `partial`
-directory in it. A stalled connection
-fails over in seconds, and the step's `timeout-minutes: 5` still fails a mirror
-that streams too slowly to trip those timeouts.
+that anyone may enter, because apt downloads as its own unprivileged user. The
+step moves the downloaded `.deb` files into `$RUNNER_TEMP/browser-packages` and
+installs them from there, so a miss and a hit run the same install. The staging
+directory stays on the machine after the run with only apt's lock and its empty
+`partial` directory in it. A stalled connection fails over in seconds, and the
+step's `timeout-minutes: 5` still fails a mirror that streams too slowly to trip
+those timeouts.
 
 Playwright's dry run simulates the install of every package it names and fails
 the step when one is missing, so a Playwright upgrade that names a new package

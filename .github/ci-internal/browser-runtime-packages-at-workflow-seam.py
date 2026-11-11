@@ -65,7 +65,15 @@ for directory in [archives, *archives.parents]:
 (archives / 'partial').mkdir(mode=0o700)
 (archives / 'lock').touch(mode=0o640)
 for package in words[4:]:
-    (archives / f'{package}_1.0_amd64.deb').write_bytes(b'archive ' + package.encode())
+    if os.environ.get('FAKE_NO_DEBS') != '1':
+        (archives / f'{package}_1.0_amd64.deb').write_bytes(b'archive ' + package.encode())
+'''
+
+MKTEMP = '''#!/bin/bash
+# Stands in for mktemp: it makes the real directory and records its path so the sandbox removes it.
+dir=$(/usr/bin/mktemp "$@") || exit
+echo "$dir" >> "$FAKE_STAGE"
+echo "$dir"
 '''
 
 DPKG = '''#!/usr/bin/env python3
@@ -105,7 +113,7 @@ def installed(directory, source=None, **changes):
     """Runs the packages step in a sandbox and returns its result, trace, archive contacts and download directories."""
     bin_dir = directory / 'bin'
     bin_dir.mkdir()
-    for tool, text in [('sudo', SUDO), ('apt-get', APT_GET), ('dpkg', DPKG), ('node', DRIVER)]:
+    for tool, text in [('sudo', SUDO), ('apt-get', APT_GET), ('dpkg', DPKG), ('node', DRIVER), ('mktemp', MKTEMP)]:
         (bin_dir / tool).write_text(text, encoding='utf-8')
         (bin_dir / tool).chmod(0o700)
     env = {key: value for key, value in os.environ.items() if not key.startswith(('GITHUB_', 'FAKE_', 'RUNNER_'))} | {
@@ -116,17 +124,14 @@ def installed(directory, source=None, **changes):
         'FAKE_TRACE': str(directory / 'trace'),
         'FAKE_ARCHIVE': str(directory / 'archive'),
         'FAKE_DOWNLOADS': str(directory / 'downloads'),
+        'FAKE_STAGE': str(directory / 'stage'),
     } | changes
-    # The step stages downloads outside the sandbox, where apt's own user can reach them, so the sandbox removes what it adds there.
-    template = re.search(r'mktemp -d (\S+)\.XXXXXX', steps[PACKAGES]['run'])
-    assert template, 'the packages step stages its downloads in a directory of its own'
-    stage = pathlib.Path(template[1])
-    staged = set(stage.parent.glob(stage.name + '.*'))
     try:
         result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', source or steps[PACKAGES]['run']],
                                 cwd=directory, env=env, text=True, capture_output=True)
     finally:
-        for download in set(stage.parent.glob(stage.name + '.*')) - staged:
+        # The step stages downloads outside the sandbox, where apt's own user can reach them, so the sandbox removes the directories this run made.
+        for download in lines(directory / 'stage'):
             shutil.rmtree(download)
     return result, lines(directory / 'trace'), lines(directory / 'archive'), lines(directory / 'downloads')
 
@@ -165,9 +170,13 @@ def a_cache_miss_downloads_the_listed_packages_and_keeps_only_their_files_for_th
 def a_cache_miss_with_every_package_already_installed_downloads_nothing_and_still_checks():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
-        result, trace, archive, _ = installed(directory, BROWSER_PACKAGES='')
+        result, trace, archive, downloads = installed(directory, PACKAGES_HIT='', FAKE_NO_DEBS='1')
         assert result.returncode == 0, result.stdout + result.stderr
-        assert len(archive) == 2 and list((directory / 'browser-packages').iterdir()) == [], archive
+        assert len(downloads) == 1, downloads
+        assert archive == [' '.join(BOUNDED + ['update']),
+                           ' '.join(BOUNDED + ['-o', f'Dir::Cache::Archives={downloads[0]}/', 'install', '-y',
+                                               '--no-install-recommends', '--download-only'] + job['env']['BROWSER_PACKAGES'].split())], archive
+        assert list((directory / 'browser-packages').iterdir()) == [], archive
         assert trace == ['install-deps --dry-run chromium'], trace
 
 
