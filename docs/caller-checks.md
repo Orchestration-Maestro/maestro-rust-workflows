@@ -539,13 +539,15 @@ limit:
 | `browser-packages` | Linux | 0.02 |
 
 The `browser-packages` row is the download the Chromium job's package step made
-on 2026-11-11: 9 packages, 21.9 MB. A shape that joins Maestro needs a row here,
-and the self-test fails when a kept shape has no row or the rows pass 90%. While a run saves, a shape's new entry
-and the one it replaces exist together until the pruner that follows its saving
-job runs. That job waits for the whole matrix, so a Linux entry can outlive its
-replacement by as long as the macOS leg takes. GitHub evicts by last access, so
-the replaced entry, which nothing has read since the run began, normally goes
-first.
+on 2026-11-11: 9 packages, 21.9 MB. While a new runner image rolls out, each
+of the two images keeps an entry, 0.04 GiB together, until GitHub evicts the
+retired image's entry after 7 days unread. A shape that joins Maestro needs a
+row here, and the self-test fails when a kept shape has no row or the rows pass
+90%. While a run saves, a shape's new entry and the one it replaces exist
+together until the pruner that follows its saving job runs. That job waits for
+the whole matrix, so a Linux entry can outlive its replacement by as long as the
+macOS leg takes. GitHub evicts by last access, so the replaced entry, which
+nothing has read since the run began, normally goes first.
 
 ### Cargo git dependency cache
 
@@ -1576,7 +1578,7 @@ environment. Four steps handle them:
 | `Save browser runtime packages` | Saves the package files on a default-branch push that missed |
 
 On a hit, the step installs the restored files and contacts no archive: it runs
-no `apt-get update` and no download. On a miss, it downloads as before. Apt
+no `apt-get update` and no download. On a miss, it downloads them. Apt
 resolves the list against the packages the runner image already holds and
 downloads the rest, every transfer bounded:
 
@@ -1602,12 +1604,15 @@ downloads nothing.
 
 Only an exact key is a hit: files saved on another runner image could replace
 the packages the image already holds with older ones. A new image version, a
-Playwright upgrade or a list change starts a new key, and the first default-branch
-push after it saves the new entry. Merge groups and later default-branch runs
-read that entry. The pruning job that follows the Chromium job keeps the newest entry of
-the prefix and deletes the one it replaces; see
-[One entry per prefix](#one-entry-per-prefix). A failed restore or save never
-fails the job; after a failed restore, the step downloads.
+Playwright upgrade or a list change starts a new key, and the first
+default-branch push after it saves the new entry. Merge groups and later
+default-branch runs read that entry. Each image version has a prefix of its
+own. The pruning job that follows the Chromium job keeps the newest entry of
+each prefix, so a Playwright upgrade or a list change replaces the image's
+entry; see [One entry per prefix](#one-entry-per-prefix). A staged rollout runs
+two images at once, and each keeps its own entry. GitHub evicts a retired
+image's entry after 7 days unread. A failed restore or save never fails the
+job; after a failed restore, the step downloads.
 
 The recipe receives absolute `PLAYWRIGHT_MODULE` and `CHROMIUM_PATH` values.
 The verified binding CLI directory precedes caller tools on PATH. The job runs

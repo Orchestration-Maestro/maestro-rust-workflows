@@ -260,7 +260,7 @@ def superseded_cache_entries_leave_the_newest_of_each_prefix():
             'RUNNER_ARCH': 'X64', 'BROWSER_PACKAGES': 'xvfb', 'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/heads/main',
             'CACHE_DEFAULT_BRANCH': 'main'})
         assert result.returncode == 0, result.stderr
-        # The packages key is its prefix followed by the digest of the image version, the tool version and the list.
+        # The packages key is its image's prefix followed by the digest of the tool version and the list.
         packages = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['key'][:-64]
     # The newest by creation time stays, as a restore reads it; an entry without fractional seconds is the oldest of its second.
     entries = [(1, tests + '10-1-tests-0-call', '2026-11-04T17:00:00.000000Z'), (2, tests + '12-1-tests-0-call', '2026-11-04T17:20:27Z'),

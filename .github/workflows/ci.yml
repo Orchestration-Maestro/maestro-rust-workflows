@@ -3794,9 +3794,10 @@ jobs:
           def digest(value):
               return hashlib.sha256(json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
           # Apt resolves the list against the packages the runner image already holds, so the image names the entry.
+          # Each image has a prefix of its own: a staged rollout serves two images, and the pruner keeps one entry per prefix.
           tool = json.loads(pathlib.Path(os.environ['PLAYWRIGHT_MODULE'], 'package.json').read_text(encoding='utf-8'))['version']
-          prefix = 'maestro-browser-packages-v1-' + digest([os.environ['ImageOS'], os.environ['RUNNER_ARCH']]) + '-'
-          key = prefix + digest([os.environ['ImageVersion'], tool, os.environ['BROWSER_PACKAGES'].split()])
+          prefix = 'maestro-browser-packages-v1-' + digest([os.environ['ImageOS'], os.environ['RUNNER_ARCH'], os.environ['ImageVersion']]) + '-'
+          key = prefix + digest([tool, os.environ['BROWSER_PACKAGES'].split()])
           writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'key={key}\nwriter={str(writer).lower()}\n')

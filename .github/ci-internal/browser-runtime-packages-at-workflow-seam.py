@@ -198,14 +198,15 @@ def identity(**changes):
 
 def the_cache_key_names_the_runner_image_the_browser_tool_and_the_package_list():
     base = identity()
-    # The pruner that follows the job keeps the newest entry of each prefix, so a new image, tool or list replaces the old entry.
+    # The pruner that follows the job keeps the newest entry of each prefix, so a new tool or list replaces the old entry.
     prefix = re.fullmatch(r'(maestro-browser-packages-v1-[0-9a-f]{64}-)[0-9a-f]{64}', base['key'])
     assert prefix, base
-    for change in [{'ImageVersion': '20251109.1.0'}, {'tool': '1.65.0'},
-                   {'BROWSER_PACKAGES': job['env']['BROWSER_PACKAGES'] + ' libgtk-3-0t64'}]:
+    for change in [{'tool': '1.65.0'}, {'BROWSER_PACKAGES': job['env']['BROWSER_PACKAGES'] + ' libgtk-3-0t64'}]:
         key = identity(**change)['key']
         assert key != base['key'] and key.startswith(prefix[1]), change
-    assert not identity(ImageOS='ubuntu26')['key'].startswith(prefix[1])
+    # A staged rollout serves two images at once, and pruning one image's entry for the other's would send its runners back to the archive.
+    for change in [{'ImageVersion': '20251109.1.0'}, {'ImageOS': 'ubuntu26'}, {'RUNNER_ARCH': 'ARM64'}]:
+        assert not identity(**change)['key'].startswith(prefix[1]), change
     assert identity(GITHUB_EVENT_NAME='merge_group')['key'] == base['key'], 'a merge group restores what the default branch saved'
 
 
