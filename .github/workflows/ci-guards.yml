@@ -397,7 +397,7 @@ jobs:
           def replaced_size(caches):
               """Bytes of default-branch snapshots a newer entry of the same prefix replaces: a push leaves them until its pruning jobs finish, so they are the save window, not the cache at rest."""
               # The prefixes and the keep-newest rule of the pruning jobs in the shared workflow.
-              prefix = re.compile(r'(?:maestro-compile-v1|maestro-cargo-git-v1|maestro-test-setup-v2)-[0-9a-f]{64}-')
+              prefix = re.compile(r'(?:maestro-compile-v1|maestro-cargo-git-v1|maestro-test-setup-v2|maestro-browser-packages-v1)-[0-9a-f]{64}-')
               named = [(match[0], cache) for cache in caches if cache['ref'] == 'refs/heads/main' and (match := prefix.match(cache['key']))]
               newest, size = {}, 0
               for name, cache in sorted(named, key=lambda item: datetime.datetime.fromisoformat(item[1]['created_at']), reverse=True):
