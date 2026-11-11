@@ -28,7 +28,8 @@ commands.insert(1, body('Lint'))
 def only_cache_housekeeping_fails_open():
     transfers = ['Restore compile cache', 'Save compile cache', 'Restore test setup cache', 'Save test setup cache',
                  'Restore Cargo git cache', 'Save Cargo git cache', 'Restore sandbox runtime', 'Save sandbox runtime',
-                 'Test setup candidates', 'Download test setup candidates']
+                 'Test setup candidates', 'Download test setup candidates',
+                 'Restore browser runtime packages', 'Save browser runtime packages']
     transferred = pruned = cancelled = 0
     for step in re.split(r'^      - name: ', workflow, flags=re.M)[1:]:
         if not re.search(r'^        continue-on-error:', step, re.M):
@@ -46,7 +47,7 @@ def only_cache_housekeeping_fails_open():
             assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M) or name in ('Test setup candidates', 'Download test setup candidates'), name
             transferred += 1
         assert '        continue-on-error: true\n' in step
-    assert transferred == 33
+    assert transferred == 35
     assert pruned == 1
     assert cancelled == 1
     assert not re.search(r'^    continue-on-error:', workflow, re.M)
