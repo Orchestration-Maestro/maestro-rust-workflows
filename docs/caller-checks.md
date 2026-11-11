@@ -658,14 +658,18 @@ and the Bash 3.2 on macOS runners has no `mapfile`.
 
 The seconds come from the `Earlier test seconds` step, before the build. It takes
 the newest earlier successful merge group or push run of the same workflow in
-which every test shard of this caller succeeded, adds up the `PASS` seconds
-those shards' logs print for each test binary, and logs the run it read with its
-branch, commit and date. A binary that run did not time weighs its tests at the
-timed binaries' seconds per test. With no such run, or when the lookup fails, the
-step says so and every test weighs the same: the binaries go by test count. The
-timing decides only which shard runs each binary, never which tests run. This
-step holds the run's token, and its Python runs isolated, so no module in the
-caller's checkout is imported while it holds the token.
+which every test shard of this caller on the same host succeeded, adds up the
+`PASS` seconds those shards' logs print for each test binary, and logs the run
+it read with its branch, commit and date. Each host reads only its own shards:
+`Build test archive (macos-latest)` times its binaries from the earlier
+`Test shard (macos-latest 1/4)` to `(macos-latest 4/4)` jobs, never from the
+Linux shards, so a run without macOS shards is passed over. A binary that run
+did not time weighs its tests at the timed binaries' seconds per test. With no
+such run, or when the lookup fails, the step says so and every test weighs the
+same: the binaries go by test count. The timing decides only which shard runs
+each binary, never which tests run. This step holds the run's token, and its
+Python runs isolated, so no module in the caller's checkout is imported while it
+holds the token.
 
 Each numeric shard downloads only its own archive and runs every test in it with
 `--archive-file`. No partition flag applies, so every test runs on exactly one
