@@ -1741,8 +1741,9 @@ jobs:
               current = json.loads(gh(f"actions/runs/{os.environ['GITHUB_RUN_ID']}"))
               built = next(job for job in jobs_of(f"actions/runs/{current['id']}/attempts/{os.environ['GITHUB_RUN_ATTEMPT']}/jobs?per_page=100")
                            if job['status'] == 'in_progress' and job['runner_name'] == os.environ['RUNNER_NAME'])
-              # This caller's shards carry the same prefix as this job (`suite / Build test archive`).
-              shard = re.compile(re.escape(built['name'].removesuffix('Build test archive')) + r'Test shard \(\d+/\d+\)')
+              # This caller's shards carry this job's prefix and runner: `suite / Build test archive (macos-latest)` runs `suite / Test shard (macos-latest 1/4)`.
+              prefix, runner = re.fullmatch(r'(.*)Build test archive(?: \((.+)\))?', built['name']).groups()
+              shard = re.compile(re.escape(f"{prefix}Test shard ({runner + ' ' if runner else ''}") + r'\d+/\d+\)')
               earlier = sorted((run for event in ('merge_group', 'push')
                                 for run in json.loads(gh(f'actions/runs?event={event}&status=success&per_page=100'))['workflow_runs']
                                 if run['workflow_id'] == current['workflow_id'] and run['created_at'] < current['created_at']

@@ -1,6 +1,8 @@
+import ast
 import json
 import os
 import pathlib
+import re
 import subprocess
 import tempfile
 
@@ -8,6 +10,18 @@ workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
 document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
 steps = {step['name']: step for step in document['jobs']['test-build']['steps']}
 READ = 'Earlier test seconds'
+
+# The seam's GitHub expression reader, so every job name below is the one the workflow's own `name:` produces.
+reader = ast.parse(pathlib.Path('.github/ci-internal/superseded-merge-groups-at-workflow-seam.py').read_text(encoding='utf-8'))
+reader.body = [node for node in reader.body if isinstance(node, ast.FunctionDef) and node.name in {'parse', 'evaluate', 'expression'}]
+expressions = {'re': re}
+exec(compile(reader, 'GitHub expression reader', 'exec'), expressions)
+expression, evaluate = expressions['expression'], expressions['evaluate']
+
+def named(job, runner='ubuntu-latest', shard=1, count=2, caller='suite'):
+    """The name GitHub shows for `job` of the `caller` job's call on `runner`."""
+    matrix = {'runner': runner, 'shard': shard, 'count': count}
+    return f"{caller} / {evaluate(expression(document['jobs'][job]['name']), {'inputs': {'warm-cache': False}, 'matrix': matrix})}"
 
 def run(identifier, created, workflow=55, repository='o/r', event='merge_group'):
     return {'id': identifier, 'workflow_id': workflow, 'created_at': created, 'event': event, 'head_branch': 'gh-readonly-queue/main/pr-1',
@@ -22,11 +36,15 @@ def jobs(run_id, *found):
 def listed(event, *runs):
     return {f'actions/runs?event={event}&status=success&per_page=100': {'workflow_runs': list(runs)}}
 
-# The current run 100 of workflow 55, whose `suite / Build test archive` job runs on runner `GitHub Actions 7`.
-CURRENT = {'actions/runs/100': run(100, '2026-11-05T10:00:00Z'),
-           'actions/runs/100/attempts/1/jobs?per_page=100': [{'jobs': [
-               job(1, 'suite / Caller declaration', runner='GitHub Actions 3'),
-               job(2, 'suite / Build test archive', None, 'in_progress')]}]}
+def current(runner='ubuntu-latest'):
+    """The current run 100 of workflow 55, whose `suite / Build test archive` job for `runner` runs on runner `GitHub Actions 7`."""
+    return {'actions/runs/100': run(100, '2026-11-05T10:00:00Z'),
+            'actions/runs/100/attempts/1/jobs?per_page=100': [{'jobs': [
+                job(1, 'suite / Caller declaration', runner='GitHub Actions 3'),
+                job(3, named('test-build', 'macos-latest' if runner == 'ubuntu-latest' else 'ubuntu-latest'), None, 'in_progress', 'GitHub Actions 5'),
+                job(2, named('test-build', runner), None, 'in_progress')]}]}
+
+CURRENT = current()
 
 def shard_log(*lines):
     return ''.join(f'2026-11-05T09:00:00.0000000Z {line}\n' for line in lines)
@@ -63,8 +81,8 @@ def the_newest_earlier_run_of_this_caller_supplies_seconds_per_test_binary():
         run(60, '2026-11-05T09:10:00Z'),  # Its shards skipped: the tests were reused.
         run(50, '2026-11-05T09:00:00Z'),
         run(40, '2026-11-01T09:00:00Z')) | listed('push', run(45, '2026-11-04T09:00:00Z', event='push')) | jobs(
-        60, job(61, 'suite / Test shard (1/2)', 'skipped'), job(62, 'suite / Test shard (2/2)', 'skipped')) | jobs(
-        50, job(51, 'suite / Test shard (1/2)'), job(52, 'suite / Test shard (2/2)'), job(53, 'other / Test shard (1/1)'),
+        60, job(61, named('tests', shard=1), 'skipped'), job(62, named('tests', shard=2), 'skipped')) | jobs(
+        50, job(51, named('tests', shard=1)), job(52, named('tests', shard=2)), job(53, named('tests', count=1, caller='other')),
         job(54, 'suite / Doctests')) | {
         'actions/jobs/51/logs': shard_log(
             '  SETUP PASS [   9.500s] native-fixture: target/test-setup/development nextest-setup native-fixture',
@@ -81,12 +99,31 @@ def the_newest_earlier_run_of_this_caller_supplies_seconds_per_test_binary():
 
 def a_failed_shard_keeps_its_run_out():
     routes = CURRENT | listed('merge_group', run(50, '2026-11-05T09:00:00Z')) | listed('push') | jobs(
-        50, job(51, 'suite / Test shard (1/2)'), job(52, 'suite / Test shard (2/2)', 'cancelled')) | {
+        50, job(51, named('tests', shard=1)), job(52, named('tests', shard=2), 'cancelled')) | {
         'actions/jobs/51/logs': shard_log('        PASS [   1.000s] (1/1) heavy::integration slow_one'),
         'actions/jobs/52/logs': shard_log('        PASS [   1.000s] (1/1) light::bin/light quick')}
     seconds, log = read(routes)
     assert seconds == {}, seconds
     assert 'Test seconds unavailable' in log and 'test binaries are grouped by test count' in log, log
+
+def each_runner_takes_seconds_from_its_own_shards():
+    # Run 60 ran the Linux shards only; run 50 ran both runners' shards, each runner with its own shard count.
+    linux = [job(61, named('tests', shard=1)), job(62, named('tests', shard=2))]
+    both = [job(51, named('tests', shard=1)), job(52, named('tests', shard=2)),
+            job(55, named('tests', 'macos-latest', 1, 3)), job(56, named('tests', 'macos-latest', 2, 3)), job(57, named('tests', 'macos-latest', 3, 3))]
+    logs = {'actions/jobs/61/logs': shard_log('        PASS [   2.000s] (1/1) heavy::integration slow_one'),
+            'actions/jobs/62/logs': shard_log('        PASS [   1.000s] (1/1) light::bin/light quick'),
+            'actions/jobs/51/logs': shard_log('        PASS [   4.000s] (1/1) heavy::integration slow_one'),
+            'actions/jobs/52/logs': shard_log('        PASS [   3.000s] (1/1) light::bin/light quick'),
+            'actions/jobs/55/logs': shard_log('        PASS [  20.000s] (1/1) heavy::integration slow_one'),
+            'actions/jobs/56/logs': shard_log('        PASS [  10.000s] (1/1) light::bin/light quick'),
+            'actions/jobs/57/logs': shard_log('        PASS [   5.000s] (1/1) heavy::integration slow_two')}
+    earlier = listed('merge_group', run(60, '2026-11-05T09:30:00Z'), run(50, '2026-11-05T09:00:00Z')) | listed('push') | jobs(60, *linux) | jobs(50, *both)
+    for runner, expected, source in [('ubuntu-latest', {'heavy::integration': 2.0, 'light::bin/light': 1.0}, 60),
+                                     ('macos-latest', {'heavy::integration': 25.0, 'light::bin/light': 10.0}, 50)]:
+        seconds, log = read(current(runner) | earlier | logs)
+        assert seconds == expected, (runner, seconds)
+        assert f'Test seconds from run {source} ' in log, (runner, log)
 
 def without_earlier_timing_the_binaries_go_by_test_count():
     for routes in [CURRENT | listed('merge_group') | listed('push'), {}]:
@@ -100,6 +137,7 @@ def the_caller_checkout_never_runs_with_the_token():
     assert seconds == {}, seconds
 
 for check in [the_newest_earlier_run_of_this_caller_supplies_seconds_per_test_binary, a_failed_shard_keeps_its_run_out,
-              without_earlier_timing_the_binaries_go_by_test_count, the_caller_checkout_never_runs_with_the_token]:
+              each_runner_takes_seconds_from_its_own_shards, without_earlier_timing_the_binaries_go_by_test_count,
+              the_caller_checkout_never_runs_with_the_token]:
     check()
     print('PASS ' + check.__name__, flush=True)

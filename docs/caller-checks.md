@@ -658,14 +658,18 @@ and the Bash 3.2 on macOS runners has no `mapfile`.
 
 The seconds come from the `Earlier test seconds` step, before the build. It takes
 the newest earlier successful merge group or push run of the same workflow in
-which every test shard of this caller succeeded, adds up the `PASS` seconds
-those shards' logs print for each test binary, and logs the run it read with its
-branch, commit and date. A binary that run did not time weighs its tests at the
-timed binaries' seconds per test. With no such run, or when the lookup fails, the
-step says so and every test weighs the same: the binaries go by test count. The
-timing decides only which shard runs each binary, never which tests run. This
-step holds the run's token, and its Python runs isolated, so no module in the
-caller's checkout is imported while it holds the token.
+which every test shard of this caller on the same host succeeded, adds up the
+`PASS` seconds those shards' logs print for each test binary, and logs the run
+it read with its branch, commit and date. Each host reads only its own shards:
+`Build test archive (macos-latest)` times its binaries from the earlier
+`Test shard (macos-latest 1/4)` to `(macos-latest 4/4)` jobs, never from the
+Linux shards, so a run without macOS shards is passed over. A binary that run
+did not time weighs its tests at the timed binaries' seconds per test. With no
+such run, or when the lookup fails, the step says so and every test weighs the
+same: the binaries go by test count. The timing decides only which shard runs
+each binary, never which tests run. This step holds the run's token, and its
+Python runs isolated, so no module in the caller's checkout is imported while it
+holds the token.
 
 Each numeric shard downloads only its own archive and runs every test in it with
 `--archive-file`. No partition flag applies, so every test runs on exactly one
@@ -1936,11 +1940,12 @@ listener, and runs it without a run id on pull requests for the exception check:
 ```yaml
 on:
   workflow_run:
-    workflows: [Rust CI]
+    workflows: [Rust CI, Full suite after landing]
     types: [completed]
 jobs:
   guards:
     if: >-
+      github.event.workflow_run.event == 'pull_request' ||
       github.event.workflow_run.event == 'merge_group' ||
       (github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_branch == github.event.repository.default_branch)
@@ -1953,17 +1958,22 @@ jobs:
       run-id: ${{ github.event.workflow_run.id }}
 ```
 
-The listener passes default-branch pushes as well as merge groups, because those
-runs save the compile snapshots every other run restores, and it passes a
-cancelled one too: a cancelled seeding run is a finding, not silence. A
-default-branch push that calls the shared suite through one reusable job is
-judged too. GitHub titles its jobs `<calling job> / <shared job>`, and every
-guard matches a job against a pinned name after the last ` / `, so
-`suite / Caller declaration` counts as `Caller declaration`. The reuse,
-required-checks, time-per-unit, shard-balance and slow-test guards read those
-names. When the `Reuse merge queue tests` step in `Caller declaration`
-succeeded, the skipped Linux test shards and Linux doctests leave the pinned
-list, exactly as they do in a run with no prefix. Native test jobs still run.
+List every workflow whose runs hold the shared jobs. On Maestro those are
+`Rust CI`, the shared workflow itself, for pull requests and merge groups, and
+`Full suite after landing`, its caller for main pushes. The macOS test shards
+run only in the second, so a listener that leaves it out never judges them. The
+listener passes pull-request runs, the only runs the selection guard judges. It
+passes default-branch pushes as well as merge groups, because those runs save
+the compile snapshots every other run restores, and it passes a cancelled one
+too: a cancelled seeding run is a finding, not silence. A default-branch push
+that calls the shared suite through one reusable job is judged too. GitHub
+titles its jobs `<calling job> / <shared job>`, and every guard matches a job
+against a pinned name after the last ` / `, so `suite / Caller declaration`
+counts as `Caller declaration`. The reuse, required-checks, time-per-unit,
+shard-balance and slow-test guards read those names. When the
+`Reuse merge queue tests` step in `Caller declaration` succeeded, the skipped
+Linux test shards and Linux doctests leave the pinned list, exactly as they do
+in a run with no prefix. Native test jobs still run.
 
 Pin the reference to a reviewed commit and list the listener workflow in
 `privileged_trigger_workflows`, as for the post-landing reporter. Issues are
