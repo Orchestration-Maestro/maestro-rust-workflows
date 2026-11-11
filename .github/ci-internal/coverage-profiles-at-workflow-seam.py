@@ -5,17 +5,27 @@ import pathlib
 import subprocess
 import tempfile
 import textwrap
+from typing import Any
 
 root = pathlib.Path.cwd()
 workflow = (root / '.github/workflows/ci.yml').read_text(encoding='utf-8')
 code = (root / '.github/ci-internal/caller-checks-at-workflow-seam.py').read_text(encoding='utf-8')
 tree = ast.parse(textwrap.dedent(code))
-tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
-exec(compile(tree, 'workflow body resolver', 'exec'), globals())  # noqa: S102
+# The step runner and its recording tool stand-ins, so a case runs the workflow's own step.
+loaded = {'workflow', 'root', 'default_ref', 'credential_names', 'coverage_report_args'}
+tree.body = [node for node in tree.body if isinstance(node, (ast.Import, ast.FunctionDef))
+             or (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id in loaded
+                                                     for target in node.targets))]
+resolver: dict[str, Any] = {'__name__': __name__}
+exec(compile(tree, 'workflow body resolver', 'exec'), resolver)  # noqa: S102
+body = resolver['body']
+execute = resolver['execute']
+install_recording_runner = resolver['install_recording_runner']
 
 document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
 CHECK = document['env']['COVERAGE_PROFILES']
-SIGNATURE = '6a1b2c3d4e5f6071'
+# The profile runtime appends the merge pool index to the signature, and prints the signature in decimal.
+SIGNATURE = '9182736455463728'
 
 def checkout(directory):
     """A cargo checkout with the instrumented build's directory, and the profiles' own directory."""
@@ -26,14 +36,30 @@ def program(directory, name, signature):
     """A program that writes the profile its own merge signature names, as the profile runtime does."""
     path = directory / 'target/llvm-cov-target/debug/deps' / name
     path.write_text('#!/bin/bash\n'
-                    f'printf PROFILE > "${{LLVM_PROFILE_FILE//%4m/{signature}}}"\n', encoding='utf-8')
+                    f'printf PROFILE > "${{LLVM_PROFILE_FILE//%4m/{signature}_0}}"\n', encoding='utf-8')
     path.chmod(0o755)
 
-def profdata(directory, accepted):
-    """A stand-in for the merge tool, so a complete profile needs no instrumented build."""
-    tool = directory / 'stand-in-tools'
-    tool.mkdir(exist_ok=True)
+def toolchain(directory, accepted):
+    """A toolchain whose own merge tool is a stand-in, so a complete profile needs no instrumented build."""
+    tool = directory / 'toolchain/lib/rustlib/test-host/bin'
+    tool.mkdir(parents=True)
     (tool / 'llvm-profdata').write_text(f'#!/bin/sh\nhead -c 7 "$2" | grep -qx {accepted} || exit 1\n', encoding='utf-8')
+    (tool / 'llvm-profdata').chmod(0o755)
+    compiler = directory / 'stand-in-toolchain'
+    compiler.mkdir()
+    (compiler / 'rustc').write_text('#!/bin/sh\n'
+                                    'case "$1" in\n'
+                                    f'  --print) echo {tool.parents[3]} ;;\n'
+                                    '  -vV) echo "host: test-host" ;;\n'
+                                    'esac\n', encoding='utf-8')
+    (compiler / 'rustc').chmod(0o755)
+    return str(compiler) + os.pathsep + os.environ['PATH']
+
+def ambient_toolchain(directory):
+    """A merge tool earlier on PATH than the toolchain's own, accepting anything it is given."""
+    tool = directory / 'path-tools'
+    tool.mkdir()
+    (tool / 'llvm-profdata').write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
     (tool / 'llvm-profdata').chmod(0o755)
     return str(tool) + os.pathsep + os.environ['PATH']
 
@@ -48,7 +74,7 @@ def complete_profiles_pass():
         program(directory, 'maestro-test-process-1a2b3c4d', SIGNATURE)
         (site / f'maestro-999-{SIGNATURE}_0.profraw').write_text('PROFILE', encoding='utf-8')
         (site / f'maestro-999-{SIGNATURE}_1.profraw').write_text('PROFILE', encoding='utf-8')
-        result = check(directory, profdata(directory, 'PROFILE'))
+        result = check(directory, toolchain(directory, 'PROFILE'))
         assert result.returncode == 0, result.stdout + result.stderr
         assert 'Coverage profiles: 2 complete' in result.stdout, result.stdout
         assert '::error' not in result.stdout
@@ -66,27 +92,43 @@ def damaged_profiles_fail_naming_each_file_and_its_program():
         directory = pathlib.Path(temporary)
         site = checkout(directory)
         program(directory, 'maestro-test-process-1a2b3c4d', SIGNATURE)
-        # A process stopped while it wrote its profile leaves an empty or a cut file.
-        (site / f'maestro-999-{SIGNATURE}_0.profraw').write_text('', encoding='utf-8')
-        (site / 'maestro-999-0f1e2d3c4b5a6978_0.profraw').write_text('cut', encoding='utf-8')
-        (site / f'maestro-999-{SIGNATURE}_1.profraw').write_text('PROFILE', encoding='utf-8')
-        result = check(directory, profdata(directory, 'PROFILE'))
+        # A process stopped while it wrote its profile leaves an empty or a cut file; the pool index is not the signature.
+        (site / f'maestro-999-{SIGNATURE}_1.profraw').write_text('', encoding='utf-8')
+        (site / 'maestro-999-0f1e2d3c4b5a6978_2.profraw').write_text('cut', encoding='utf-8')
+        (site / f'maestro-999-{SIGNATURE}_0.profraw').write_text('PROFILE', encoding='utf-8')
+        result = check(directory, toolchain(directory, 'PROFILE'))
         assert result.returncode != 0, result.stdout + result.stderr
         output = result.stdout + result.stderr
-        assert f'maestro-999-{SIGNATURE}_0.profraw is empty; its binary is maestro-test-process-1a2b3c4d' in output, output
+        assert f'maestro-999-{SIGNATURE}_1.profraw is empty; its binary is maestro-test-process-1a2b3c4d' in output, output
         # A signature no program carries still names the file.
-        assert 'maestro-999-0f1e2d3c4b5a6978_0.profraw is cut; its binary is unnamed' in output, output
+        assert 'maestro-999-0f1e2d3c4b5a6978_2.profraw is cut; its binary is unnamed' in output, output
         assert 'Damaged coverage profiles: 2 of 3' in output, output
 
-def the_merge_tool_rejects_a_cut_profile():
-    # The merge tool itself, on a file it did not write: a cut profile is one it rejects.
+def the_check_reads_profiles_with_the_tool_the_report_merges_them():
+    # The toolchain's own merge tool reads the profiles, so a lax one earlier on PATH cannot pass a cut file.
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         site = checkout(directory)
-        (site / 'maestro-999-0f1e2d3c4b5a6978_0.profraw').write_bytes(b'not a profile')
-        result = check(directory)
+        (site / f'maestro-999-{SIGNATURE}_0.profraw').write_bytes(b'not a profile')
+        result = check(directory, ambient_toolchain(directory))
         assert result.returncode != 0, result.stdout + result.stderr
         assert 'is cut' in result.stdout + result.stderr, result.stdout + result.stderr
+
+def an_archived_shard_reports_from_its_archive():
+    # A report merges one run's profiles, so an archived shard must hand it the archive it ran.
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        tools, log = install_recording_runner(directory)
+        archive = str(directory / 'shard-1.tar.zst')
+        (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": 1}', encoding='utf-8')
+        result = execute('Isolated tests', directory, {
+            'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+            'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': archive, 'TEST_PACKAGES': '["sample"]',
+            'SHARD': '1', 'COLLECT_COVERAGE': 'true', 'CARGO_COVERAGE_MIN_LINES': ''})
+        assert result.returncode == 0, result.stdout + result.stderr
+        commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+        report = next(command['args'] for command in commands if command['args'][:2] == ['llvm-cov', 'report'])
+        assert report[report.index('--nextest-archive-file') + 1] == archive, report
 
 def the_check_reads_the_profiles_before_the_report_merges_them():
     for name in ['Coverage', 'Isolated tests']:
@@ -105,6 +147,7 @@ def the_check_reads_the_profiles_before_the_report_merges_them():
         assert 'COVERAGE_PROFILES<<COVERAGE_POLICY\n' + CHECK + 'COVERAGE_POLICY\n' in exported.read_text(encoding='utf-8')
 
 for case in [complete_profiles_pass, no_profiles_pass, damaged_profiles_fail_naming_each_file_and_its_program,
-             the_merge_tool_rejects_a_cut_profile, the_check_reads_the_profiles_before_the_report_merges_them]:
+             the_check_reads_profiles_with_the_tool_the_report_merges_them, an_archived_shard_reports_from_its_archive,
+             the_check_reads_the_profiles_before_the_report_merges_them]:
     case()
     print('PASS ' + case.__name__, flush=True)

@@ -635,8 +635,11 @@ with their opted-in tools. Only the Linux numeric shards upload LCOV, without
 individual thresholds. The run writes its raw profiles without a report, the
 step checks every profile, and `cargo llvm-cov report` merges them into the
 report. A process that a test stops while it exits leaves its profile empty or
-cut. The check fails the step for an empty profile or one the merge tool
-rejects, and names each file with the binary whose merge signature it carries. It
+cut. The check fails the step for an empty profile or one the toolchain's own
+merge tool rejects, the same tool the report merges with, so another
+`llvm-profdata` earlier on `PATH` reads nothing here. It names each file with
+the binary whose merge signature it carries, without the pool index the runtime
+appends. It
 finds the binary by running each program of the instrumented build once, and only
 when a profile is damaged; it prints the seconds it took either way. The merge
 then runs as before: no profile is skipped or deleted. `Tests (ubuntu-latest)` requires all matrix legs,
@@ -697,7 +700,8 @@ holds the token.
 
 Each numeric shard downloads only its own archive and runs every test in it with
 `--archive-file`. No partition flag applies, so every test runs on exactly one
-shard. When a caller has fewer test binaries than shards, the extra shards hold
+shard. Its coverage report reads that same archive with
+`--nextest-archive-file`, so the merged profile set is the one the shard ran. When a caller has fewer test binaries than shards, the extra shards hold
 no binary: they run nothing and upload an empty coverage report, so the union
 still receives one report per shard. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
