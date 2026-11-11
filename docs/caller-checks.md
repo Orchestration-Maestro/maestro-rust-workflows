@@ -1586,8 +1586,8 @@ apt-get -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::R
   -o Dir::Cache::Archives=<staging>/ install -y --no-install-recommends --download-only <packages>
 ```
 
-The staging directory is a fresh `/tmp/browser-packages.XXXXXX` that anyone may
-enter, because apt downloads as its own unprivileged user. The step moves the
+The staging directory is a fresh `browser-packages.XXXXXX` directory in `/tmp`
+that anyone may enter, because apt downloads as its own unprivileged user. The step moves the
 downloaded `.deb` files into `$RUNNER_TEMP/browser-packages` and installs them
 from there, so a miss and a hit run the same install. The staging directory
 stays on the machine after the run with only apt's lock and its empty `partial`
