@@ -98,6 +98,70 @@ env:
     print(f'Merged line coverage: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')
     if percentage < threshold:
         raise SystemExit('Merged line coverage is below threshold')
+  COVERAGE_PROFILES: |
+    import os
+    import pathlib
+    import shutil
+    import subprocess
+    import tempfile
+    import time
+
+    def profdata():
+        found = shutil.which('llvm-profdata')
+        if found:
+            return found
+        sysroot = subprocess.run(['rustc', '--print', 'sysroot'], capture_output=True, text=True, check=True).stdout.strip()
+        compiler = subprocess.run(['rustc', '-vV'], capture_output=True, text=True, check=True).stdout
+        host = next(line.split(': ', 1)[1] for line in compiler.splitlines() if line.startswith('host: '))
+        return str(pathlib.Path(sysroot, 'lib', 'rustlib', host, 'bin', 'llvm-profdata'))
+
+    def binaries():
+        # The instrumented build's own programs, one level below the profiles they wrote.
+        built = pathlib.Path('target/llvm-cov-target/debug/deps')
+        # shortcut: a build script is not a test binary, so it is skipped by name, not by inspection.
+        return [path for path in sorted(built.glob('*'))
+                if path.is_file() and os.access(path, os.X_OK) and not path.name.startswith('build_script_build')
+                and path.suffix not in ('.d', '.rlib', '.rmeta', '.so', '.dylib', '.dll', '.a', '.o')]
+
+    def signatures():
+        # One run of a program writes the merge signature its own profiles carry, so the file names it.
+        found = {}
+        with tempfile.TemporaryDirectory() as mapping:
+            written = pathlib.Path(mapping)
+            for binary in binaries():
+                before = {path.name for path in written.iterdir()}
+                try:
+                    subprocess.run([str(binary), '--list'], timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   env=os.environ | {'LLVM_PROFILE_FILE': str(written / '%4m.profraw')})
+                except (OSError, subprocess.TimeoutExpired):
+                    continue
+                for name in {path.name for path in written.iterdir()} - before:
+                    found[pathlib.Path(name).stem] = binary.name
+        return found
+
+    def owner(profile, found):
+        for signature in sorted(found, key=len, reverse=True):
+            if f'-{signature}_' in profile.stem:
+                return found[signature]
+        return None
+
+    started = time.monotonic()
+    profiles = sorted(pathlib.Path('target/llvm-cov-target').glob('*.profraw'))
+    damaged = []
+    if profiles:
+        shown = profdata()
+        for profile in profiles:
+            if profile.stat().st_size == 0:
+                damaged.append((profile, 'empty'))
+            elif subprocess.run([shown, 'show', str(profile)], capture_output=True).returncode != 0:
+                damaged.append((profile, 'cut'))
+    if damaged:
+        found = signatures()
+        for profile, state in damaged:
+            print(f'::error file={profile}::{profile.name} is {state}; its binary is {owner(profile, found) or "unnamed"}', flush=True)
+        print(f'Damaged coverage profiles: {len(damaged)} of {len(profiles)} in {time.monotonic() - started:.1f}s', flush=True)
+        raise SystemExit('A process was stopped while it wrote its coverage profile')
+    print(f'Coverage profiles: {len(profiles)} complete in {time.monotonic() - started:.1f}s', flush=True)
 
 defaults:
   run:
@@ -2713,7 +2777,7 @@ jobs:
               if [ "${WARM_CACHE:-false}" = true ]; then
                 packages=(--workspace)
                 partition=(-E "${WARM_TEST_FILTER-none()}")
-                report=(--no-report)
+                report=()
               elif [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ]; then
                 partition=(--partition slice:1/1)
                 mkdir -p target/single-coverage
@@ -2733,9 +2797,14 @@ jobs:
                 # More shards than test binaries: this shard has none, so it runs nothing and covers no line.
                 : > "$PWD/shard-$SHARD.lcov"
               else
+                # The run leaves its raw profiles; the report merges them, so check them first.
                 run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
-                  --retries 0 --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" \
-                  --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee nextest.log
+                  --retries 0 --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" --no-report 2>&1 | tee nextest.log
+                if [ ${#report[@]} -gt 0 ]; then
+                  run_isolated python3 -c "$COVERAGE_PROFILES"
+                  run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov report \
+                    --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee -a nextest.log
+                fi
               fi
               if [ -n "${CARGO_COVERAGE_MIN_LINES:-}" ] && [ "${WARM_CACHE:-false}" != true ]; then
                 COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
@@ -3192,8 +3261,11 @@ jobs:
           mkdir -p target/single-coverage
           PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
             --retries 0 --final-status-level flaky --partition slice:1/1 --no-tests pass --workspace --locked \
+            --no-report 2>&1 | tee nextest.log
+          python3 -c "$COVERAGE_PROFILES"
+          PATH="$TOOLS:$PATH" "$TOOLS/cargo-llvm-cov" llvm-cov report \
             --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" \
-            --lcov --output-path "$PWD/target/single-coverage/shard-1.lcov" 2>&1 | tee nextest.log
+            --lcov --output-path "$PWD/target/single-coverage/shard-1.lcov" 2>&1 | tee -a nextest.log
           COVERAGE_REPORT_DIR=target/single-coverage COVERAGE_REPORT_COUNT=1 python3 -c "$COVERAGE_MERGE"
       - name: Compile cache statistics
         id: cache-statistics

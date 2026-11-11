@@ -1842,9 +1842,12 @@ def coverage_exclusions_have_one_workflow_owner():
         exported_text = exported.read_text(encoding='utf-8')
         assert exported_text.startswith(f'PROOF_STEPS={temporary}/proof-steps\nCOVERAGE_IGNORE_FILENAME_REGEX={policy}\n')
         assert 'COVERAGE_MERGE<<COVERAGE_POLICY\n' + document['env']['COVERAGE_MERGE'] + 'COVERAGE_POLICY\n' in exported_text
+        assert 'COVERAGE_PROFILES<<COVERAGE_POLICY\n' + document['env']['COVERAGE_PROFILES'] + 'COVERAGE_POLICY\n' in exported_text
         assert workflow.count('source = os.path.normpath(record[3:])') == 1
         for name in ['Coverage', 'Isolated tests', 'Merge coverage']:
             assert body(name).count('python3 -c "$COVERAGE_MERGE"') == 1, name
+        for name in ['Coverage', 'Isolated tests']:
+            assert body(name).count('python3 -c "$COVERAGE_PROFILES"') == 1, name
 
 coverage_exclusions_have_one_workflow_owner()
 print('PASS coverage_exclusions_have_one_workflow_owner')
@@ -1892,7 +1895,7 @@ def warm_cache_builds_without_tests_or_reports():
             assert commands[1]['args'] == [
                 'llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                 '--retries', '0', '--final-status-level', 'flaky',
-                '-E', 'none()', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--no-report']
+                '-E', 'none()', '--no-tests', 'pass', '--workspace', '--locked', '--no-report']
             assert commands[1]['home'] != os.environ.get('HOME')
             assert not list(directory.glob('*.lcov'))
 
@@ -2694,15 +2697,17 @@ def locked_manifests_precede_all_test_routes():
                 assert all(c['home'] == str(original_home) for c in runners)
             if shard == 'doctests':
                 expected = ['test', '--locked', '--doc', '-p', 'sample']
-            elif threshold:
+                reported = []
+            elif threshold or (route == 'Isolated tests' and coverage == 'true'):
+                # The run writes the raw profiles, the check reads them, and only then the report merges them.
+                partition = 'slice:1/1' if threshold else f'slice:{shard}/16'
+                output = directory / ('target/single-coverage/shard-1.lcov' if threshold else f'shard-{shard}.lcov')
                 expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                             '--retries', '0', '--final-status-level', 'flaky',
-                            '--partition', 'slice:1/1', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
-            elif route == 'Isolated tests' and coverage == 'true':
-                expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
-                            '--retries', '0', '--final-status-level', 'flaky',
-                            '--partition', f'slice:{shard}/16', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
+                            '--partition', partition, '--no-tests', 'pass', '-p', 'sample', '--locked', '--no-report']
+                reported = [['llvm-cov', 'report'] + coverage_report_args + ['--lcov', '--output-path', str(output)]]
             else:
+                reported = []
                 expected = ['nextest', 'run', '--user-config-file', 'none', '--ignore-default-filter', '--locked',
                             '-p', 'sample', '--retries', '0', '--final-status-level', 'flaky']
                 if route == 'Tests':
@@ -2710,7 +2715,8 @@ def locked_manifests_precede_all_test_routes():
                 else:
                     expected += ['--no-tests', 'pass', '--partition', f'slice:{shard}/16']
             assert runners[0]['args'] == expected, runners[0]['args']
-            assert [c['args'] for c in runners[1:]] == ([['test', '--locked', '--doc', '-p', 'sample']] if shard == 1 and not threshold and coverage == 'false' else [])
+            assert [c['args'] for c in runners[1:]] == reported + (
+                [['test', '--locked', '--doc', '-p', 'sample']] if shard == 1 and not threshold and coverage == 'false' else [])
             print(f'PASS provisioning route {index}: {route}, shard {shard}, coverage {coverage}, threshold {threshold}', flush=True)
 
 locked_manifests_precede_all_test_routes()

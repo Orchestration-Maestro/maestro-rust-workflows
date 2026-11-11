@@ -81,7 +81,10 @@ See [PR selection](docs/caller-checks.md#pull-request-selection-and-retries)
 for the declaration's package-selection rules and self-test event mode.
 
 Declared callers measure coverage in those shards with `cargo llvm-cov
-nextest`. Only the numeric shards upload LCOV; the aggregate counts a
+nextest`. The run writes its raw profiles without a report; the shard then checks
+every profile before `cargo llvm-cov report` merges them, so an empty or cut
+profile fails the step and names the binary that wrote it. Only the numeric
+shards upload LCOV; the aggregate counts a
 source line as covered if any shard covers it and enforces the workspace union's
 80% floor (or caller's higher threshold). Missing shard reports fail. Undeclared
 callers retain single-job coverage in `Dependency, source and coverage checks`.

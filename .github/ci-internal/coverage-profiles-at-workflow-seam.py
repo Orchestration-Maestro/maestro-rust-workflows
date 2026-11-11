@@ -1,0 +1,110 @@
+import ast
+import json
+import os
+import pathlib
+import subprocess
+import tempfile
+import textwrap
+
+root = pathlib.Path.cwd()
+workflow = (root / '.github/workflows/ci.yml').read_text(encoding='utf-8')
+code = (root / '.github/ci-internal/caller-checks-at-workflow-seam.py').read_text(encoding='utf-8')
+tree = ast.parse(textwrap.dedent(code))
+tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
+exec(compile(tree, 'workflow body resolver', 'exec'), globals())  # noqa: S102
+
+document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+CHECK = document['env']['COVERAGE_PROFILES']
+SIGNATURE = '6a1b2c3d4e5f6071'
+
+def checkout(directory):
+    """A cargo checkout with the instrumented build's directory, and the profiles' own directory."""
+    (directory / 'target/llvm-cov-target/debug/deps').mkdir(parents=True)
+    return directory / 'target/llvm-cov-target'
+
+def program(directory, name, signature):
+    """A program that writes the profile its own merge signature names, as the profile runtime does."""
+    path = directory / 'target/llvm-cov-target/debug/deps' / name
+    path.write_text('#!/bin/bash\n'
+                    f'printf PROFILE > "${{LLVM_PROFILE_FILE//%4m/{signature}}}"\n', encoding='utf-8')
+    path.chmod(0o755)
+
+def profdata(directory, accepted):
+    """A stand-in for the merge tool, so a complete profile needs no instrumented build."""
+    tool = directory / 'stand-in-tools'
+    tool.mkdir(exist_ok=True)
+    (tool / 'llvm-profdata').write_text(f'#!/bin/sh\nhead -c 7 "$2" | grep -qx {accepted} || exit 1\n', encoding='utf-8')
+    (tool / 'llvm-profdata').chmod(0o755)
+    return str(tool) + os.pathsep + os.environ['PATH']
+
+def check(directory, path=None):
+    environment = os.environ | ({'PATH': path} if path else {})
+    return subprocess.run(['python3', '-c', CHECK], cwd=directory, env=environment, capture_output=True, text=True)
+
+def complete_profiles_pass():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        site = checkout(directory)
+        program(directory, 'maestro-test-process-1a2b3c4d', SIGNATURE)
+        (site / f'maestro-999-{SIGNATURE}_0.profraw').write_text('PROFILE', encoding='utf-8')
+        (site / f'maestro-999-{SIGNATURE}_1.profraw').write_text('PROFILE', encoding='utf-8')
+        result = check(directory, profdata(directory, 'PROFILE'))
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert 'Coverage profiles: 2 complete' in result.stdout, result.stdout
+        assert '::error' not in result.stdout
+
+def no_profiles_pass():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        checkout(directory)
+        result = check(directory)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert 'Coverage profiles: 0 complete' in result.stdout, result.stdout
+
+def damaged_profiles_fail_naming_each_file_and_its_program():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        site = checkout(directory)
+        program(directory, 'maestro-test-process-1a2b3c4d', SIGNATURE)
+        # A process stopped while it wrote its profile leaves an empty or a cut file.
+        (site / f'maestro-999-{SIGNATURE}_0.profraw').write_text('', encoding='utf-8')
+        (site / 'maestro-999-0f1e2d3c4b5a6978_0.profraw').write_text('cut', encoding='utf-8')
+        (site / f'maestro-999-{SIGNATURE}_1.profraw').write_text('PROFILE', encoding='utf-8')
+        result = check(directory, profdata(directory, 'PROFILE'))
+        assert result.returncode != 0, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        assert f'maestro-999-{SIGNATURE}_0.profraw is empty; its binary is maestro-test-process-1a2b3c4d' in output, output
+        # A signature no program carries still names the file.
+        assert 'maestro-999-0f1e2d3c4b5a6978_0.profraw is cut; its binary is unnamed' in output, output
+        assert 'Damaged coverage profiles: 2 of 3' in output, output
+
+def the_merge_tool_rejects_a_cut_profile():
+    # The merge tool itself, on a file it did not write: a cut profile is one it rejects.
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        site = checkout(directory)
+        (site / 'maestro-999-0f1e2d3c4b5a6978_0.profraw').write_bytes(b'not a profile')
+        result = check(directory)
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert 'is cut' in result.stdout + result.stderr, result.stdout + result.stderr
+
+def the_check_reads_the_profiles_before_the_report_merges_them():
+    for name in ['Coverage', 'Isolated tests']:
+        command = body(name)
+        assert command.count('python3 -c "$COVERAGE_PROFILES"') == 1, name
+        assert command.index('python3 -c "$COVERAGE_PROFILES"') < command.index('llvm-cov report'), name
+        assert '--no-report' in command and 'tee -a nextest.log' in command, name
+    # The extracted proof steps carry the check the way they carry the merge.
+    internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
+    with tempfile.TemporaryDirectory() as temporary:
+        exported = pathlib.Path(temporary) / 'env'
+        result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', body('Shared coverage policy', internal)],
+                                env=os.environ | {'GITHUB_ENV': str(exported), 'RUNNER_TEMP': temporary},
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert 'COVERAGE_PROFILES<<COVERAGE_POLICY\n' + CHECK + 'COVERAGE_POLICY\n' in exported.read_text(encoding='utf-8')
+
+for case in [complete_profiles_pass, no_profiles_pass, damaged_profiles_fail_naming_each_file_and_its_program,
+             the_merge_tool_rejects_a_cut_profile, the_check_reads_the_profiles_before_the_report_merges_them]:
+    case()
+    print('PASS ' + case.__name__, flush=True)
