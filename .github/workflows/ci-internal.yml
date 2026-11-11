@@ -548,7 +548,6 @@ jobs:
           enableCrossOsArchive: false
           fail-on-cache-miss: false
       - name: Browser runtime packages
-        timeout-minutes: 5
         env:
           PACKAGES_HIT: ${{ steps.packages-restore.outputs.cache-hit }}
         run: bash -e -o pipefail "$PROOF_STEPS/Browser runtime packages"

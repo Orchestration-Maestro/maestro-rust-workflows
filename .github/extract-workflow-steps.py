@@ -3,6 +3,8 @@ import os
 import pathlib
 import re
 import textwrap
+from collections.abc import Callable
+from typing import cast
 
 workflow = (pathlib.Path(__file__).resolve().parent / 'workflows/ci.yml').read_text(encoding='utf-8')
 directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'proof-steps'
@@ -10,9 +12,9 @@ directory.mkdir()
 code = (pathlib.Path(__file__).resolve().parent / 'ci-internal/caller-checks-at-workflow-seam.py').read_text(encoding='utf-8')
 tree = ast.parse(code)
 tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
-resolver = {'workflow': workflow}
+resolver: dict[str, object] = {'workflow': workflow}
 exec(compile(tree, 'workflow body resolver', 'exec'), resolver)
-body = resolver['body']
+body = cast(Callable[[str], str], resolver['body'])
 for step in workflow.split('      - name: ')[1:]:
     name = step.splitlines()[0]
     if re.search(r'^        run:', step, re.MULTILINE):

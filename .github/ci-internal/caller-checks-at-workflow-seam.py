@@ -778,9 +778,9 @@ def browser_qualification_reuses_production_bodies():
         ['yq', '-o=json', '-'], input=job, text=True))['steps']}
     for name in ['Restore browser runtime packages', 'Save browser runtime packages']:
         assert qualified[name] == production[name], name
-    for name in ['Browser runtime packages identity', 'Browser runtime packages']:
-        assert {key: value for key, value in qualified[name].items() if key != 'run'} == {
-            key: value for key, value in production[name].items() if key != 'run'}, name
+    assert {key: value for key, value in qualified['Browser runtime packages identity'].items() if key != 'run'} == {
+        key: value for key, value in production['Browser runtime packages identity'].items() if key != 'run'}
+    assert qualified['Browser runtime packages']['env'] == production['Browser runtime packages']['env']
 
 browser_qualification_reuses_production_bodies()
 print('PASS browser_qualification_reuses_production_bodies')

@@ -248,7 +248,9 @@ files = {str(path): path.read_text(encoding='utf-8')
 
 class SearchReleases(unittest.TestCase):
     def test_pinned_archives(self):
-        self.assertNotIn('apt-get', workflow)
+        # The search tools come from verified releases; only the browser packages step reaches the Ubuntu archive, on a cache miss.
+        apt_steps = sorted({step.splitlines()[0] for step in workflow.split('      - name: ')[1:] if 'apt-get' in step})
+        self.assertEqual(apt_steps, ['Browser runtime packages'])
         rows = re.findall(r'^https://github.com/\S+ (\w{64}) (rg|fd)(?:\.exe)?$', body('Search tools'), re.MULTILINE)
         self.assertEqual(len(rows), 6)
         self.assertIn('/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz', body('Search tools'))
