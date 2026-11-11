@@ -1,23 +1,15 @@
-import ast
 import json
 import os
 import pathlib
 import subprocess
 import tempfile
-import textwrap
-from typing import Any
+
+import seam_runner
 
 root = pathlib.Path.cwd()
 workflow = (root / '.github/workflows/ci.yml').read_text(encoding='utf-8')
-code = (root / '.github/ci-internal/caller-checks-at-workflow-seam.py').read_text(encoding='utf-8')
-tree = ast.parse(textwrap.dedent(code))
 # The step runner and its recording tool stand-ins, so a case runs the workflow's own step.
-loaded = {'workflow', 'root', 'default_ref', 'credential_names', 'coverage_report_args'}
-tree.body = [node for node in tree.body if isinstance(node, (ast.Import, ast.FunctionDef))
-             or (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id in loaded
-                                                     for target in node.targets))]
-resolver: dict[str, Any] = {'__name__': __name__}
-exec(compile(tree, 'workflow body resolver', 'exec'), resolver)  # noqa: S102
+resolver = seam_runner.load(__name__)
 body = resolver['body']
 execute = resolver['execute']
 install_recording_runner = resolver['install_recording_runner']
