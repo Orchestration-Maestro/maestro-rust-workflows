@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.19.31](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.30...v0.19.31) (2026-11-11)
+
+
+### Continuous Integration
+
+* build the sandbox runtime script once per run ([#459](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/459)) ([886452e](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/886452ea6bef4c9e47e00205294946049e2ec48e))
+* pin maestro-rust-workflows callers to v0.19.30 ([#454](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/454)) ([7e5748c](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/7e5748c031b0baf618fce698db59c715f1590055))
+
 ## [0.19.30](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.29...v0.19.30) (2026-11-10)
 
 
