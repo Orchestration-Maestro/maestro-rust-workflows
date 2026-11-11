@@ -1967,13 +1967,13 @@ passes default-branch pushes as well as merge groups, because those runs save
 the compile snapshots every other run restores, and it passes a cancelled one
 too: a cancelled seeding run is a finding, not silence. A default-branch push
 that calls the shared suite through one reusable job is judged too. GitHub
-titles its jobs `<calling job> / <shared job>`, and every
-guard matches a job against a pinned name after the last ` / `, so
-`suite / Caller declaration` counts as `Caller declaration`. The reuse,
-required-checks, time-per-unit, shard-balance and slow-test guards read those
-names. When the `Reuse merge queue tests` step in `Caller declaration`
-succeeded, the skipped Linux test shards and Linux doctests leave the pinned
-list, exactly as they do in a run with no prefix. Native test jobs still run.
+titles its jobs `<calling job> / <shared job>`, and every guard matches a job
+against a pinned name after the last ` / `, so `suite / Caller declaration`
+counts as `Caller declaration`. The reuse, required-checks, time-per-unit,
+shard-balance and slow-test guards read those names. When the
+`Reuse merge queue tests` step in `Caller declaration` succeeded, the skipped
+Linux test shards and Linux doctests leave the pinned list, exactly as they do
+in a run with no prefix. Native test jobs still run.
 
 Pin the reference to a reviewed commit and list the listener workflow in
 `privileged_trigger_workflows`, as for the post-landing reporter. Issues are

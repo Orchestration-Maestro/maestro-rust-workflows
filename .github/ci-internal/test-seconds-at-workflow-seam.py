@@ -5,8 +5,6 @@ import pathlib
 import re
 import subprocess
 import tempfile
-from collections.abc import Callable
-from typing import cast
 
 workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
 document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
@@ -16,9 +14,9 @@ READ = 'Earlier test seconds'
 # The seam's GitHub expression reader, so every job name below is the one the workflow's own `name:` produces.
 reader = ast.parse(pathlib.Path('.github/ci-internal/superseded-merge-groups-at-workflow-seam.py').read_text(encoding='utf-8'))
 reader.body = [node for node in reader.body if isinstance(node, ast.FunctionDef) and node.name in {'parse', 'evaluate', 'expression'}]
-expressions: dict[str, object] = {'re': re}
+expressions = {'re': re}
 exec(compile(reader, 'GitHub expression reader', 'exec'), expressions)
-expression, evaluate = cast(Callable[[str], tuple], expressions['expression']), cast(Callable[[tuple, dict], str], expressions['evaluate'])
+expression, evaluate = expressions['expression'], expressions['evaluate']
 
 def named(job, runner='ubuntu-latest', shard=1, count=2, caller='suite'):
     """The name GitHub shows for `job` of the `caller` job's call on `runner`."""
