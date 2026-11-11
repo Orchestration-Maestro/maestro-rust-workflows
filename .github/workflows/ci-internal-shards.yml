@@ -2739,13 +2739,42 @@ jobs:
           def a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_on_its_host_only():
               jobs = ['tests', 'doctests', 'test-build', 'test-prepare', 'quality', 'docs', 'checks', 'browser', 'browser-tests', 'targets']
               # The Linux and macOS legs of one job keep separate snapshots, so neither leg counts the other's as its own.
+              # The Chromium job reads the one wasm32 shape the Wasm build saves, so its pattern finds that job's entries.
+              writers = {'browser-tests': 'browser'}
               identities = {(job, host): identity_of(job, host) for job in jobs for host in ('Linux', 'macOS')}
               for leg, identity in identities.items():
                   for other, seen in identities.items():
-                      assert bool(re.search(identity['seeder'], seen['key'])) == (leg == other), (leg, other, identity['seeder'], seen['key'])
+                      expected = leg[1] == other[1] and other[0] == writers.get(leg[0], leg[0])
+                      assert bool(re.search(identity['seeder'], seen['key'])) == expected, (leg, other, identity['seeder'], seen['key'])
 
           a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_on_its_host_only()
           print('PASS a_jobs_seeder_pattern_finds_the_snapshots_of_that_job_on_its_host_only')
+
+          def the_wasm_build_writes_the_one_wasm32_snapshot_the_chromium_job_reads():
+              # Both jobs compile one wasm32 graph, so they share a shape, one writer and one entry.
+              build, chromium = identity_of('browser'), identity_of('browser-tests')
+              assert build['shape'] == chromium['shape'] == 'wasm32', (build['shape'], chromium['shape'])
+              assert build['prefix'] == chromium['prefix'], (build['prefix'], chromium['prefix'])
+              assert build['seeder'] == chromium['seeder'], (build['seeder'], chromium['seeder'])
+              assert (build['snapshot'], build['writer']) == ('true', 'true'), build
+              assert (chromium['snapshot'], chromium['writer']) == ('true', 'false'), chromium
+              # A pull request writes nothing; a default-branch push is the only seeding run.
+              assert identity_of('browser', GITHUB_EVENT_NAME='pull_request')['writer'] == 'false'
+              assert identity_of('browser-tests', GITHUB_EVENT_NAME='pull_request')['writer'] == 'false'
+              assert identity_of('browser', GITHUB_REF='refs/heads/topic')['writer'] == 'false'
+              # One cap for the shared shape: the Wasm build's cold working set fit the default 1 GiB when it kept a snapshot.
+              assert build['size'] == chromium['size'] == str(1073741824), (build['size'], chromium['size'])
+              document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+              jobs = document['jobs']
+              for name in ('browser', 'browser-tests'):
+                  restore = next(step for step in jobs[name]['steps'] if step.get('name') == 'Restore compile cache')
+                  assert "steps.cache-identity.outputs.snapshot == 'true'" in restore['if'], name
+                  assert restore['with']['key'] == '$' + '{{ steps.cache-identity.outputs.key }}', name
+              chromium_save = next(step for step in jobs['browser-tests']['steps'] if step.get('name') == 'Save compile cache')
+              assert chromium_save['if'] == "steps.cache-identity.outputs.writer == 'true' && steps.cache-seal.outputs.eligible == 'true'", chromium_save
+
+          the_wasm_build_writes_the_one_wasm32_snapshot_the_chromium_job_reads()
+          print('PASS the_wasm_build_writes_the_one_wasm32_snapshot_the_chromium_job_reads')
 
           def run_cache_floor(shape, stats, matched, listing, namespace='maestro-compile-v1-', seeder=None, snapshot='true'):
               seeder = seeder or identity_of('tests')['seeder']
@@ -2793,12 +2822,14 @@ jobs:
                       cause == 'cache list is unavailable' and 'no snapshot restored' in output and cause in output), (cause, output)
                   assert '::error' not in output, (cause, output)
               # The floor finds each job's own snapshots, not only the coverage ones: five shapes sat at 0% for four days. Jobs that keep none are covered below.
-              for job, shape in [('tests', 'tests-plain'), ('quality', 'quality'), ('docs', 'docs'), ('checks', 'checks'), ('browser', 'browser'),
-                                 ('browser-tests', 'browser-tests'), ('test-prepare', 'test-prepare'), ('targets', 'targets-clippy-aarch64-unknown-linux-gnu')]:
+              for job, shape in [('tests', 'tests-plain'), ('quality', 'quality'), ('docs', 'docs'), ('checks', 'checks'), ('browser', 'wasm32'),
+                                 ('browser-tests', 'wasm32'), ('test-prepare', 'test-prepare'), ('targets', 'targets-clippy-aarch64-unknown-linux-gnu')]:
                   seeder = identity_of(job)['seeder']
-                  result = run_cache_floor(shape, stats_of(610, 100), prefix + '1-' + job, [], seeder=seeder)
+                  # The Chromium job's pattern finds the entries of the Wasm build, the shape's only writer.
+                  writer = 'browser' if job == 'browser-tests' else job
+                  result = run_cache_floor(shape, stats_of(610, 100), prefix + '1-' + writer, [], seeder=seeder)
                   assert result.returncode == 0 and f'Compile cache hit rate 100.00% (floor 90%) in shape {shape}' in result.stdout, (shape, result.stdout + result.stderr)
-                  other = f'maestro-compile-v1-bbb-1-1-{job}-0-Linux-abc'
+                  other = f'maestro-compile-v1-bbb-1-1-{writer}-0-Linux-abc'
                   for listing, cause in [([other], 'key change'), (['maestro-compile-v1-ccc-1-1-other-0-Linux-abc'], 'no writer'), ([], 'eviction')]:
                       result = run_cache_floor(shape, stats_of(610, 0), '', listing, seeder=seeder)
                       assert f'is below the 90% floor in shape {shape}: {cause}' in result.stdout, (shape, cause, result.stdout + result.stderr)
@@ -2816,21 +2847,25 @@ jobs:
           print('PASS a_build_below_the_cache_floor_warns_and_names_its_shape_and_cause')
 
           def leaf_jobs_on_linux_keep_no_snapshot_and_the_jobs_that_feed_the_tests_keep_theirs():
-              leaves = [('quality', {}), ('docs', {}), ('doctests', {'SHARD': 'doctests'}), ('browser', {}), ('browser-tests', {}), ('targets', {})]
+              leaves = [('quality', {}), ('docs', {}), ('doctests', {'SHARD': 'doctests'}), ('targets', {})]
               for job, changes in leaves:
                   identity = identity_of(job, **changes)
                   assert (identity['snapshot'], identity['writer']) == ('false', 'false'), (job, identity)
                   assert identity_of(job, 'macOS', **changes)['snapshot'] == 'true', job
-              for job, changes in [('test-build', {}), ('test-prepare', {}), ('tests', {'CACHE_WARM': 'true', 'SHARD': 'warm'}), ('checks', {})]:
+              for job, changes in [('test-build', {}), ('test-prepare', {}), ('tests', {'CACHE_WARM': 'true', 'SHARD': 'warm'}),
+                                   ('checks', {}), ('browser', {})]:
                   identity = identity_of(job, **changes)
                   assert (identity['snapshot'], identity['writer']) == ('true', 'true'), (job, identity)
+              # The Chromium job restores the wasm32 snapshot without ever replacing it.
+              chromium = identity_of('browser-tests')
+              assert (chromium['snapshot'], chromium['writer']) == ('true', 'false'), chromium
               for job in ['test-build', 'test-prepare', 'targets']:
                   assert identity_of(job, 'macOS')['writer'] == 'true', job
               assert identity_of('doctests', 'macOS', SHARD='doctests')['writer'] == 'false'
               assert identity_of('test-prepare', GITHUB_EVENT_NAME='merge_group')['writer'] == 'false'
               # A job without a snapshot restores none and is not judged on a hit rate it cannot reach.
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
-              for name in ['quality', 'docs', 'tests', 'targets', 'browser', 'browser-tests']:
+              for name in ['quality', 'docs', 'tests', 'targets']:
                   restore = next(step for step in document['jobs'][name]['steps'] if step.get('name') == 'Restore compile cache')
                   assert "steps.cache-identity.outputs.snapshot == 'true'" in restore['if'], name
               for job, changes in leaves:
@@ -2857,8 +2892,11 @@ jobs:
                   identity = identity_of(job, host, **changes)
                   if identity['writer'] == 'true':
                       kept.add((identity['shape'], host))
-              # Each host's Cargo git cache is saved by the archive build, and each host's test setup bundle by test preparation.
-              kept |= {('cargo-git', host) for host in ('Linux', 'macOS', 'Windows') if identity_of('test-build', host)['writer'] == 'true'}
+              # One Cargo git entry: only the Linux archive build writes it, and each host's test setup bundle
+              # is written by test preparation.
+              git_saves = re.findall(r'- name: Save Cargo git cache\n(?:        #[^\n]*\n)*        if: ([^\n]+)', workflow)
+              assert len(git_saves) == 1 and git_saves[0].startswith("runner.os == 'Linux' &&"), git_saves
+              kept.add(('cargo-git', 'Linux'))
               kept |= {('test-setup', host) for host in ('Linux', 'macOS') if identity_of('test-prepare', host)['writer'] == 'true'}
               assert set(measured) == kept, (sorted(set(measured) ^ kept))
               assert sum(measured.values()) <= 0.9 * 10, sum(measured.values())

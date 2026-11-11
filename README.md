@@ -141,12 +141,15 @@ Only pushes to the caller's default branch save snapshots. Pull-request and
 merge-group jobs restore but never save. Each test shape has one writer per
 call: the warm build or the archive build; the plain doctest leg writes none. Other
 cached compiling jobs each write their own shape, except the Linux jobs that
-no later job restores: Format and lint, Docs, Doctests, Wasm and browser build,
-Chromium browser tests and the Linux target checks keep no snapshot and compile
+no later job restores: Format and lint, Docs, Doctests and the Linux target
+checks keep no snapshot and compile
 cold, because one snapshot for each of them would not fit the repository's cache
-limit. See [Jobs that keep no snapshot](docs/caller-checks.md#jobs-that-keep-no-snapshot).
+limit. The Wasm and browser build keeps the one `wasm32` shape and is its only
+writer; Chromium browser tests restore it and never save it.
+See [Jobs that keep no snapshot](docs/caller-checks.md#jobs-that-keep-no-snapshot).
 A default-branch push warm call also runs those jobs when declared, with their
-normal commands, paths and compiler output modes, but they save nothing. Other
+normal commands, paths and compiler output modes, so it seeds the `wasm32` shape
+and nothing else. Other
 warm calls skip them. Declared arm64 macOS target checks seed their shapes on
 default-branch push warm calls.
 
@@ -166,7 +169,7 @@ cap skip saving. The archive contains compiler objects, never `target/`,
 registry sources, credentials or diagnostics. Compressed archive bytes are a
 separate measurement. This per-save bound does not bound the repository's 10 GB
 allowance; the sum of one snapshot per kept shape does, and the guide measures
-it at 8.33 GiB, under 90% of the limit
+it at 8.19 GiB, under 90% of the limit
 ([One entry per prefix](docs/caller-checks.md#one-entry-per-prefix)). After each job that saves a
 cache on a default-branch push, a pruning job keeps only the newest entry of each
 compile, Cargo git and test setup prefix, the entry a restore reads, so the

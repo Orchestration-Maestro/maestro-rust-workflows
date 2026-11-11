@@ -46,7 +46,7 @@ def only_cache_housekeeping_fails_open():
             assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M) or name in ('Test setup candidates', 'Download test setup candidates'), name
             transferred += 1
         assert '        continue-on-error: true\n' in step
-    assert transferred == 33
+    assert transferred == 32
     assert pruned == 1
     assert cancelled == 1
     assert not re.search(r'^    continue-on-error:', workflow, re.M)

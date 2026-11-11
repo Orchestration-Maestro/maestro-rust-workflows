@@ -1000,10 +1000,14 @@ def cargo_git_cache_restores_before_every_fetch():
         assert 'restore-keys: $' + '{{ steps.git-cache-identity.outputs.prefix }}' in restore
     save = next(step for step in build.split('      - name: ')[1:] if step.startswith('Save Cargo git cache\n'))
     assert 'uses: actions/cache/save@' in save and 'continue-on-error: true' in save
-    assert "if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'" in save
+    # The locked sources are the same on every host, so one host writes the entry and three copies never
+    # sit in the cache beside the compile snapshots.
+    assert "if: runner.os == 'Linux' && steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'" in save
     assert 'key: $' + '{{ steps.git-cache-identity.outputs.key }}' in save
     assert build.index('name: Build test archive') < build.index('name: Save Cargo git cache')
-    assert 'Save Cargo git cache' not in tests and 'Save Cargo git cache' not in prepare
+    for name, job in [('Tests', tests), ('Prepare test setup', prepare), ('Docs', jobs['docs']),
+                      ('Dependency, source and coverage checks', jobs['checks']), ('Native target checks', jobs['targets'])]:
+        assert 'Save Cargo git cache' not in job, name
 
     def identity(directory, manifests='[]', **extra):
         output = directory / 'github-output'
@@ -1038,10 +1042,7 @@ def cargo_git_cache_restores_before_every_fetch():
     target = jobs['targets']
     identity_step = next(step for step in target.split('      - name: ')[1:] if step.startswith('Compile cache identity\n'))
     assert '        if:' not in identity_step, 'Windows needs the shared writer decision, not the compiler cache'
-    save = next(step for step in target.split('      - name: ')[1:] if step.startswith('Save Cargo git cache\n'))
-    assert "if: runner.os != 'Linux' && steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'" in save
-    assert 'with: *git-cache-save' in save
-    assert target.index('name: Check target') < target.index('name: Save Cargo git cache')
+    assert target.index('name: Check target') < target.index('name: Compile cache statistics')
 
 def cargo_git_cache_reuses_exact_locked_sources():
     import shutil
