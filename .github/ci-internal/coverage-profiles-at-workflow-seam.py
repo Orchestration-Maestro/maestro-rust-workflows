@@ -121,6 +121,9 @@ def an_archived_shard_reports_from_its_archive():
         commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
         report = next(command['args'] for command in commands if command['args'][:2] == ['llvm-cov', 'report'])
         assert report[report.index('--nextest-archive-file') + 1] == archive, report
+        # The real tool refuses this pair, because `--no-report` already implies `--no-clean`; a stand-in never would.
+        run = next(command['args'] for command in commands if command['args'][:2] == ['llvm-cov', 'nextest'])
+        assert not {'--no-report', '--no-clean'} <= set(run), run
 
 def the_check_reads_the_profiles_before_the_report_merges_them():
     for name in ['Coverage', 'Isolated tests']:
@@ -128,6 +131,7 @@ def the_check_reads_the_profiles_before_the_report_merges_them():
         assert command.count('python3 -c "$COVERAGE_PROFILES"') == 1, name
         assert command.index('python3 -c "$COVERAGE_PROFILES"') < command.index('llvm-cov report'), name
         assert '--no-report' in command and 'tee -a nextest.log' in command, name
+        assert '--no-clean' not in command, name
     # The extracted proof steps carry the check the way they carry the merge.
     internal = (root / '.github/workflows/ci-internal.yml').read_text(encoding='utf-8')
     with tempfile.TemporaryDirectory() as temporary:
