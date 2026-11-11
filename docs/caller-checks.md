@@ -41,8 +41,9 @@ dependents; formatting still checks the whole workspace. Pull requests skip the
 test archive, test setup, test shards, doctests and wasm/browser builds. Two
 exceptions still compile: the declared [example witnesses](#wasm-example-witnesses),
 and the [Emscripten crates](#emscripten-builds), which the sandbox runtime job
-builds on every run when the list is non-empty. Every required check name still reports; skipped jobs count as
-success. Merge groups run the full Linux shard matrix, Linux doctests,
+builds, or restores from its cache, on every run when the list is non-empty.
+Every required check name still reports; skipped jobs count as success.
+Merge groups run the full Linux shard matrix, Linux doctests,
 coverage and all declared builds and foreign-target checks except the native
 arm64 macOS route. They keep `Check (x86_64-apple-darwin)`. Main pushes also
 run the claimed macOS host's test archive, preparation, four test shards and
@@ -1429,7 +1430,7 @@ job the one place the listed packages compile. On a cache miss it installs the
 caller's toolchain and tools, the SDK and the target, and runs the caller's
 `sandbox-runtime` recipe. No other job runs `emcc` or builds for
 `wasm32-unknown-emscripten`; every other job downloads the file the recipe
-writes. The Chromium browser tests job no longer installs the SDK: a browser
+writes. The Chromium browser tests job installs no SDK: a browser
 recipe that needs it runs its own build.
 
 The SDK comes from the emsdk 6.0.10 release archive on github.com. That request
@@ -1498,7 +1499,7 @@ The key covers every input of the script:
 - the directories of the packages the `sandbox-runtime` recipe runs, found from
   the `-p` and `--package` arguments of its recipe body, so a change to the
   generator misses the cache;
-- every path dependency the listed and named packages declare, followed through
+- every path dependency the named packages declare, followed through
   the caller's `cargo metadata`, so a change to a crate the generator builds on
   misses too;
 - the `justfile`, the root `Cargo.toml` and `Cargo.lock`, `mise.toml` and
