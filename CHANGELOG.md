@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.19.33](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.32...v0.19.33) (2026-11-11)
+
+
+### Continuous Integration
+
+* cache the sandbox runtime script and install the Emscripten SDK once ([#468](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/468)) ([2f6b567](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/2f6b5675b4725ed84fcdbfa0774687ce3311b9e6))
+* install the Chromium job's packages from a cache ([#474](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/474)) ([02d13fa](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/02d13fae0d15a4dee17de337bdb77ce7339f9d5f))
+* pin maestro-rust-workflows callers to v0.19.32 ([#464](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/464)) ([edfdaf1](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/edfdaf17209d66488f6e23b05cf8455cff4bbb9e))
+
+
+### Performance
+
+* **ci:** share one wasm32 compile snapshot between the Wasm and browser jobs ([#469](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/469)) ([c0f2886](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/c0f28862bddb9b066f918858b669c3d83ea8ffd0))
+
 ## [0.19.32](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.31...v0.19.32) (2026-11-11)
 
 
