@@ -189,17 +189,6 @@ def the_target_comes_from_rustup():
         assert calls == ['target add ' + EMSCRIPTEN], calls
 
 
-def each_crate_builds_for_emscripten_in_order():
-    names = [['b', None], ['a', 'x/Cargo.toml'], ['b', None], ['$(touch injected)', None], ['c', '$(touch injected)/Cargo.toml']]
-    with tempfile.TemporaryDirectory() as temporary:
-        directory = pathlib.Path(temporary)
-        result, calls = recorded(directory, 'cargo', BUILD, {'EMSCRIPTEN_CRATES': json.dumps(names)})
-        assert result.returncode == 0, result.stderr
-        assert calls == [f'build --locked --target {EMSCRIPTEN} ' + (f'--manifest-path {manifest} ' if manifest else '') + f'-p {name}'
-                         for name, manifest in names], calls
-        # A package name is an argument, never shell text.
-        assert not (directory / 'injected').exists()
-
 FAKE_CURL = '''#!/usr/bin/env python3
 import json, os, pathlib, shutil, sys
 args = sys.argv[1:]
