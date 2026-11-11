@@ -3675,6 +3675,14 @@ jobs:
     # A push that reuses merge-queue tests still runs browser tests, to seed this shape's snapshot.
     if: ${{ !cancelled() && needs.declaration.result == 'success' && ((needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true') }}
     runs-on: ubuntu-latest
+    env:
+      # The Ubuntu 24.04 packages Playwright 1.64.1 names for its tools and for Chromium, in its order.
+      BROWSER_PACKAGES: >-
+        xvfb fonts-noto-color-emoji fonts-unifont libfontconfig1 libfreetype6 xfonts-cyrillic xfonts-scalable
+        fonts-liberation fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf
+        libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3
+        libdrm2 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1
+        libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2
     defaults:
       run:
         shell: bash
@@ -3773,19 +3781,68 @@ jobs:
           echo "$tools/wasm-bindgen-0.2.129-x86_64-unknown-linux-musl" >> "$GITHUB_PATH"
           echo "PLAYWRIGHT_MODULE=$tools/node_modules/playwright" >> "$GITHUB_ENV"
           echo "CHROMIUM_PATH=$tools/chrome-linux64/chrome" >> "$GITHUB_ENV"
+      - name: Browser runtime packages identity
+        id: packages-identity
+        env:
+          CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          python3 -I - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          def digest(value):
+              return hashlib.sha256(json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+          # Apt resolves the list against the packages the runner image already holds, so the image names the entry.
+          tool = json.loads(pathlib.Path(os.environ['PLAYWRIGHT_MODULE'], 'package.json').read_text(encoding='utf-8'))['version']
+          prefix = 'maestro-browser-packages-v1-' + digest([os.environ['ImageOS'], os.environ['RUNNER_ARCH']]) + '-'
+          key = prefix + digest([os.environ['ImageVersion'], tool, os.environ['BROWSER_PACKAGES'].split()])
+          writer = os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'key={key}\nwriter={str(writer).lower()}\n')
+          PYTHON
+      - name: Restore browser runtime packages
+        id: packages-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: &browser-packages-path ${{ runner.temp }}/browser-packages
+          key: ${{ steps.packages-identity.outputs.key }}
+          enableCrossOsArchive: false
+          fail-on-cache-miss: false
       - name: Browser runtime packages
         timeout-minutes: 5
+        env:
+          PACKAGES_HIT: ${{ steps.packages-restore.outputs.cache-hit }}
         run: |
-          # Apt reads this drop-in as root, so every transfer it still needs fails over in seconds instead
-          # of holding the job for minutes.
-          settings=$(mktemp)
-          printf '%s\n' \
-            'Acquire::http::Timeout "15";' \
-            'Acquire::https::Timeout "15";' \
-            'Acquire::Retries "3";' > "$settings"
-          sudo install -m 0644 "$settings" /etc/apt/apt.conf.d/99-maestro-browser-packages
-          rm "$settings"
-          node "$PLAYWRIGHT_MODULE/cli.js" install-deps chromium
+          shopt -s nullglob
+          archives="$RUNNER_TEMP/browser-packages"
+          if [ "${PACKAGES_HIT:-}" != true ]; then
+            read -ra packages <<< "$BROWSER_PACKAGES"
+            # Each transfer fails over in seconds instead of holding the job for minutes.
+            bounded=(-o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=3)
+            # Apt downloads as its own unprivileged user, which needs every directory on the way open to it.
+            download=$(mktemp -d /tmp/browser-packages.XXXXXX)
+            chmod 0755 "$download"
+            sudo apt-get "${bounded[@]}" update
+            sudo apt-get "${bounded[@]}" -o Dir::Cache::Archives="$download/" install -y --no-install-recommends --download-only "${packages[@]}"
+            mkdir -p "$archives"
+            for deb in "$download"/*.deb; do mv "$deb" "$archives/"; done
+          fi
+          debs=("$archives"/*.deb)
+          # Local files install without the archive, whichever run downloaded them.
+          if [ "${#debs[@]}" -gt 0 ]; then
+            sudo dpkg --install "${debs[@]}"
+          fi
+          # Playwright's own check, a simulation that downloads nothing, that every package it names is installed.
+          node "$PLAYWRIGHT_MODULE/cli.js" install-deps --dry-run chromium
+      - name: Save browser runtime packages
+        if: steps.packages-identity.outputs.writer == 'true' && steps.packages-restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: *browser-packages-path
+          key: ${{ steps.packages-identity.outputs.key }}
       - name: Browser test recipe
         id: browser-recipe
         run: |
@@ -3845,8 +3902,8 @@ jobs:
           import re
           import subprocess
           import sys
-          # The compile, Cargo git and test setup prefixes each end in their identity digest.
-          prefix = re.compile(r'(?:maestro-compile-v1|maestro-cargo-git-v1|maestro-test-setup-v2)-[0-9a-f]{64}-')
+          # The compile, Cargo git, test setup and browser packages prefixes each end in their identity digest.
+          prefix = re.compile(r'(?:maestro-compile-v1|maestro-cargo-git-v1|maestro-test-setup-v2|maestro-browser-packages-v1)-[0-9a-f]{64}-')
           repository = os.environ['GITHUB_REPOSITORY']
           pages = json.loads(subprocess.check_output(['gh', 'api', '--paginate', '--slurp',
               f"repos/{repository}/actions/caches?ref={os.environ['GITHUB_REF']}&per_page=100"], text=True))

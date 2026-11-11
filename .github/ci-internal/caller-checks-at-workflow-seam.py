@@ -738,7 +738,7 @@ def browser_qualification_reuses_production_bodies():
     job = source.split('  browser-qualification:\n', 1)[1].split('\n  consumers:', 1)[0]
     names = ['Toolchain', 'Compile cache identity', 'Compile cache', 'Browser test tool pin',
              'Browser test mise bootstrap', 'Browser test caller tools', 'Browser runtime tools',
-             'Browser runtime packages',
+             'Browser runtime packages identity', 'Browser runtime packages',
              'Compile cache statistics', 'Seal compile cache']
     def require_extracted(candidate):
         for name in names:
@@ -768,6 +768,19 @@ def browser_qualification_reuses_production_bodies():
         subprocess.run(['python3', str(root / '.github/extract-workflow-steps.py')], env=env, check=True)
         for name in names + ['Browser test recipe']:
             assert (directory / 'proof-steps' / name).read_text(encoding='utf-8') == body(name), name
+        # The packages step reads its list from the Chromium job's environment, so the extraction carries it.
+        listed = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))['jobs']['browser-tests']['env']
+        assert 'BROWSER_PACKAGES=' + listed['BROWSER_PACKAGES'] + '\n' in (directory / 'env').read_text(encoding='utf-8')
+    # The qualification keeps the browser packages as the Chromium job does, so a hit there reaches no archive either.
+    production = {step['name']: step for step in json.loads(subprocess.check_output(
+        ['yq', '-o=json', '-'], input=workflow, text=True))['jobs']['browser-tests']['steps']}
+    qualified = {step['name']: step for step in json.loads(subprocess.check_output(
+        ['yq', '-o=json', '-'], input=job, text=True))['steps']}
+    for name in ['Restore browser runtime packages', 'Save browser runtime packages']:
+        assert qualified[name] == production[name], name
+    for name in ['Browser runtime packages identity', 'Browser runtime packages']:
+        assert {key: value for key, value in qualified[name].items() if key != 'run'} == {
+            key: value for key, value in production[name].items() if key != 'run'}, name
 
 browser_qualification_reuses_production_bodies()
 print('PASS browser_qualification_reuses_production_bodies')
