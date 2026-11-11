@@ -252,6 +252,16 @@ def superseded_cache_entries_leave_the_newest_of_each_prefix():
                  HOST_OS='Linux', ADDITIONAL_LOCKED_MANIFESTS='[]')
     setup = prefix('Test setup cache identity', COMPILE_CACHE_PREFIX=tests, GITHUB_WORKSPACE=str(root), TEST_PREPARE='prepare',
                    TEST_PREPARE_INPUTS='["README.md"]')
+    with tempfile.TemporaryDirectory() as temporary:
+        module, output = pathlib.Path(temporary), pathlib.Path(temporary) / 'outputs'
+        (module / 'package.json').write_text('{"version": "1.64.1"}', encoding='utf-8')
+        result = shell(body('Browser runtime packages identity'), environment(module) | {
+            'GITHUB_OUTPUT': str(output), 'PLAYWRIGHT_MODULE': str(module), 'ImageOS': 'ubuntu24', 'ImageVersion': '20251102.1.0',
+            'RUNNER_ARCH': 'X64', 'BROWSER_PACKAGES': 'xvfb', 'GITHUB_EVENT_NAME': 'push', 'GITHUB_REF': 'refs/heads/main',
+            'CACHE_DEFAULT_BRANCH': 'main'})
+        assert result.returncode == 0, result.stderr
+        # The packages key is its image's prefix followed by the digest of the tool version and the list.
+        packages = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['key'][:-64]
     # The newest by creation time stays, as a restore reads it; an entry without fractional seconds is the oldest of its second.
     entries = [(1, tests + '10-1-tests-0-call', '2026-11-04T17:00:00.000000Z'), (2, tests + '12-1-tests-0-call', '2026-11-04T17:20:27Z'),
                (3, tests + '11-1-tests-0-call', '2026-11-04T17:20:27.180800Z'), (4, docs + '12-1-docs-0-call', '2026-11-04T17:04:21.211030Z'),
@@ -259,7 +269,8 @@ def superseded_cache_entries_leave_the_newest_of_each_prefix():
                (7, setup + 'c' * 64, '2026-11-04T17:06:35.679527Z'), (8, setup + 'd' * 64, '2026-11-04T16:06:35.679527Z'),
                (9, 'maestro-compile-v0-' + tests[19:] + '9-1-tests-0-call', '2026-11-04T09:00:00.000000Z'),
                (10, 'maestro-compile-v0-' + tests[19:] + '8-1-tests-0-call', '2026-11-04T08:00:00.000000Z'),
-               (11, 'Linux-cargo-' + 'e' * 64, '2026-11-04T07:00:00.000000Z'), (12, 'Linux-cargo-' + 'f' * 64, '2026-11-04T06:00:00.000000Z')]
+               (11, 'Linux-cargo-' + 'e' * 64, '2026-11-04T07:00:00.000000Z'), (12, 'Linux-cargo-' + 'f' * 64, '2026-11-04T06:00:00.000000Z'),
+               (13, packages + 'a' * 64, '2026-11-11T17:00:00.000000Z'), (14, packages + 'b' * 64, '2026-11-04T17:00:00.000000Z')]
     caches = [{'id': identifier, 'key': key, 'created_at': created, 'ref': 'refs/heads/main', 'size_in_bytes': 1}
               for identifier, key, created in entries]
     for failures, status in [({}, 0), ({'1': 'HTTP 404'}, 0), ({'2': 'HTTP 502', '5': 'HTTP 404'}, 1)]:
@@ -289,8 +300,8 @@ def superseded_cache_entries_leave_the_newest_of_each_prefix():
             calls = [json.loads(line) for line in (directory / 'calls').read_text(encoding='utf-8').splitlines()]
             assert calls[0] == ['api', '--paginate', '--slurp', 'repos/owner/repo/actions/caches?ref=refs/heads/main&per_page=100'], calls
             deleted = sorted(int(call[-1].rsplit('/', 1)[1]) for call in calls[1:])
-            assert all(call[:3] == ['api', '--method', 'DELETE'] for call in calls[1:]) and deleted == [1, 2, 5, 8], calls
-            for identifier in ['1', '2', '5', '8']:
+            assert all(call[:3] == ['api', '--method', 'DELETE'] for call in calls[1:]) and deleted == [1, 2, 5, 8, 14], calls
+            for identifier in ['1', '2', '5', '8', '14']:
                 key = entries[int(identifier) - 1][1]
                 # A concurrent pruner may have deleted an entry first; any other failure is reported and the rest still go.
                 if failures.get(identifier) == 'HTTP 502':
