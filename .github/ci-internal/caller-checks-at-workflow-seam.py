@@ -19,7 +19,8 @@ root = pathlib.Path.cwd()
 default_ref = "format('refs/heads/{0}', github.event.repository.default_branch)"
 
 def evaluate(condition, values):
-    values = {'inputs.browser-only': False} | values
+    # A job condition that needs the sandbox runtime job opens with `!cancelled()` behind the declaration's success.
+    values = {'inputs.browser-only': False, 'cancelled()': False, 'needs.declaration.result': 'success'} | values
     expression = condition.removeprefix('$' + '{{').removesuffix('}}').strip()
     for key, value in values.items():
         expression = expression.replace(key, repr(value))
@@ -37,7 +38,8 @@ def routed_jobs(document, values):
         'needs.declaration.outputs.tested_runners': '["ubuntu-latest"]',
         'needs.declaration.outputs.targets': '[{}]', 'needs.declaration.outputs.fuzz_targets': '["target"]',
         'needs.declaration.outputs.wasm_crates': '["web"]', 'needs.declaration.outputs.wasm_examples': '[]',
-        'needs.declaration.outputs.emscripten_changed': 'false',
+        'needs.declaration.outputs.emscripten_changed': 'false', 'needs.declaration.outputs.emscripten_crates': '[]',
+        'needs.declaration.result': 'success', 'needs.sandbox-runtime.result': 'skipped',
         'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.browser_tests': 'true',
         # Longer names first: evaluate substitutes by prefix.
         'needs.declaration.outputs.test_prepare_inputs': '[]',
@@ -154,7 +156,7 @@ print('PASS workflow_body_resolves_parsed_steps')
 def job_run_defaults_preserve_pipeline_failures():
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                            workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-    expected = {'declaration', 'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests'}
+    expected = {'declaration', 'sandbox-runtime', 'quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'fuzz', 'advisories', 'targets', 'browser', 'browser-tests'}
     defaults = {name: re.search(r'^    defaults:(?: &[\w-]+)?\n(.*?)^    steps:', job, re.MULTILINE | re.DOTALL)
                 for name, job in jobs.items()}
     assert {name for name, match in defaults.items() if match} == expected
@@ -618,10 +620,13 @@ def manual_browser_proof_selects_only_existing_chromium_job():
         "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
         'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.browser_tests': 'true',
         'needs.declaration.outputs.tests_reused': '', 'always()': True, 'cancelled()': False,
+        'needs.declaration.outputs.emscripten_crates': '[]',
     }
     for name, job in document['jobs'].items():
         condition = job['if']
         assert evaluate(condition, values) == (name in ('declaration', 'browser-tests')), name
+    # A caller that builds for Emscripten also needs its generated script for the Chromium job.
+    assert evaluate(document['jobs']['sandbox-runtime']['if'], values | {'needs.declaration.outputs.emscripten_crates': '[[]]'})
     for name in ('declaration', 'browser-tests'):
         job = document['jobs'][name]
         checkout = next(step for step in job['steps'] if step['name'] == 'Checkout')
@@ -856,13 +861,13 @@ def archived_shards_reuse_build_and_prepared_outputs():
             assert result.returncode == 43, result.stdout + result.stderr
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
                            workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
-    assert 'needs: [declaration, test-build, test-prepare]' in jobs['tests']
+    assert 'needs: [declaration, sandbox-runtime, test-build, test-prepare]' in jobs['tests']
     assert 'name: Download test archive' in jobs['tests']
     assert 'name: Upload test archive' in jobs['test-build']
     assert 'test_runners' in jobs['test-build']
     assert 'TEST_PREPARE:' not in jobs['tests']
     assert 'TEST_PREPARE:' not in jobs['test-build']
-    assert 'needs: declaration' in jobs['test-prepare']
+    assert 'needs: [declaration, sandbox-runtime]' in jobs['test-prepare']
     assert "matrix.shard != 'doctests'" in jobs['tests']
 
 def per_shard_archives_run_every_test_once():
@@ -1179,7 +1184,7 @@ print('PASS archived_shards_skip_compile_cache_lifecycle')
 def doctests_run_independently_and_remain_required():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     jobs = document['jobs']
-    assert jobs['doctests']['needs'] == 'declaration'
+    assert jobs['doctests']['needs'] == ['declaration', 'sandbox-runtime']
     assert evaluate(jobs['doctests']['name'], {'matrix.runner': 'ubuntu-latest', "format('Doctests ({0})', 'ubuntu-latest')": 'unused'}) == 'Doctests'
     assert 'tested_runners' in jobs['doctests']['strategy']['matrix']['runner']
     assert jobs['doctests']['strategy']['matrix']['shard'] == ['doctests']
@@ -1202,8 +1207,8 @@ print('PASS doctests_run_independently_and_remain_required')
 def preparation_runs_beside_host_compilation():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     jobs = document['jobs']
-    assert jobs['test-build']['needs'] == jobs['test-prepare']['needs'] == 'declaration'
-    assert set(jobs['tests']['needs']) == {'declaration', 'test-build', 'test-prepare'}
+    assert jobs['test-build']['needs'] == jobs['test-prepare']['needs'] == ['declaration', 'sandbox-runtime']
+    assert set(jobs['tests']['needs']) == {'declaration', 'sandbox-runtime', 'test-build', 'test-prepare'}
     assert 'TEST_PREPARE' not in jobs['test-build']['env']
     assert 'test-prepare' in routed_jobs(document, {})
     assert 'test-prepare' not in routed_jobs(document, {'needs.declaration.outputs.test_prepare': json.dumps('')})
@@ -1216,7 +1221,7 @@ def preparation_runs_beside_host_compilation():
     for job in ['test-prepare', 'test-build', 'tests']:
         free = next(step for step in jobs[job]['steps'] if step['name'] == 'Free instrumented build space')
         assert "runner.os == 'Linux'" in free['if']
-    assert jobs['doctests']['needs'] == 'declaration'
+    assert jobs['doctests']['needs'] == ['declaration', 'sandbox-runtime']
 
 preparation_runs_beside_host_compilation()
 print('PASS preparation_runs_beside_host_compilation')
@@ -1907,7 +1912,7 @@ def coverage_matrix_splits_doctests_from_partitions():
     assert matrix == "$" + "{{ fromJSON(inputs.warm-cache && '[{\"runner\":\"ubuntu-latest\",\"shard\":\"warm\"}]' || needs.declaration.outputs.test_shards) }}"
     assert "format('Test shard ({0}/{1})', matrix.shard, matrix.count)" in tests
     assert "format('Test shard ({0} {1}/{2})', matrix.runner, matrix.shard, matrix.count)" in tests
-    assert '    needs: [declaration, test-build, test-prepare]\n' in tests and '      fail-fast: false\n' in tests
+    assert '    needs: [declaration, sandbox-runtime, test-build, test-prepare]\n' in tests and '      fail-fast: false\n' in tests
     proof = json.loads(subprocess.check_output(['yq', '-o=json', '.github/workflows/ci-proof.yml'], text=True))
     assert proof['jobs']['selected']['with']['test-event'] == 'pull_request'
     assert 'advisory-scan' in tests and "inputs.working-directory != '.'" in tests
@@ -2705,7 +2710,7 @@ def caller_tools_precede_compiling_operations():
     for job, consumer in [('quality', 'Lint'), ('docs', 'Docs'), ('test-build', 'Build test archive'), ('test-prepare', 'Prepare test setup'), ('tests', 'Isolated tests'),
                           ('targets', 'Check target'), ('browser', 'Build wasm crates')]:
         section = jobs[job]
-        assert section['needs'] == (['declaration', 'test-build', 'test-prepare'] if job == 'tests' else 'declaration'), job
+        assert section['needs'] == (['declaration', 'sandbox-runtime', 'test-build', 'test-prepare'] if job == 'tests' else ['declaration', 'sandbox-runtime']), job
         steps = section['steps']
         bootstrap = [step for step in steps if step.get('run') == body('Mise bootstrap')]
         install = [step for step in steps if step.get('run') == body('Test tools')]
@@ -3066,7 +3071,7 @@ def target_checks_avoid_duplicate_apple_compilation():
     declaration_steps = document['jobs']['declaration']['steps']
     config = next(step for step in declaration_steps if step.get('id') == 'config')
     selection = next(step for step in declaration_steps if step.get('id') == 'selection')
-    assert document['jobs']['targets']['needs'] == 'declaration', 'Native checks must not wait for other PR jobs'
+    assert document['jobs']['targets']['needs'] == ['declaration', 'sandbox-runtime'], 'Native checks must not wait for other PR jobs'
     declared = [
         {'target': 'aarch64-unknown-linux-gnu', 'runner': 'ubuntu-24.04-arm'},
         {'target': 'aarch64-apple-darwin', 'runner': 'macos-latest'},
@@ -4322,7 +4327,7 @@ def quality_extensions_are_validated():
         assert config['git_sources'] == ['https://github.com/example/repo']
         # Each consumer call includes the job: its failure propagates to both required results.
         checks = workflow.split('  checks:\n', 1)[1].split('  targets:\n', 1)[0]
-        assert 'needs: declaration' in checks and not re.search(r'^    continue-on-error:', checks, re.MULTILINE)
+        assert 'needs: [declaration, sandbox-runtime]' in checks and not re.search(r'^    continue-on-error:', checks, re.MULTILINE)
         assert 'QUALITY_CONFIG: $' + '{{ needs.declaration.outputs.quality_config }}' in checks
         assert 'Isolated coverage' not in checks
         aggregate = workflow.split('  tests-result:\n', 1)[1].split('  checks:\n', 1)[0]
@@ -5310,12 +5315,12 @@ def workflow_failures_remain_required():
     assert 'matrix:\n        include: $' + '{{ fromJSON(needs.seams.outputs.targets) }}' in internal
     for name in ['targets', 'browser', 'tests']:
         section = workflow.split(f'  {name}:\n')[1]
-        assert ('needs: [declaration, test-build, test-prepare]' if name == 'tests' else 'needs: declaration') in section
+        assert ('needs: [declaration, sandbox-runtime, test-build, test-prepare]' if name == 'tests' else 'needs: [declaration, sandbox-runtime]') in section
     assert 'pull_request:' in workflow and 'merge_group:' in workflow
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     routed = routed_jobs(document, {})
     # The replaced-group canceller runs in merge groups only.
-    assert routed == set(document['jobs']) - {'advisories', 'fuzz', 'replaced-groups'}, sorted(routed)
+    assert routed == set(document['jobs']) - {'advisories', 'fuzz', 'replaced-groups', 'sandbox-runtime'}, sorted(routed)
     assert 'browser' not in routed_jobs(document, {'needs.declaration.outputs.coverage': 'false'})
     # An advisory scan runs only the declaration and its own job.
     routed = routed_jobs(document, {'inputs.advisory-scan': True})

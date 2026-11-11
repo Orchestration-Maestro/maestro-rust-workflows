@@ -28,7 +28,7 @@
       "default": {}
     },
     "emscripten_crates": {
-      "description": "Exact caller Cargo package names built for wasm32-unknown-emscripten, in execution order. Repetitions are retained. A name matches a package of the root workspace or of a manifest listed in additional_locked_manifests, and the build uses that manifest. A non-empty list installs the pinned Emscripten SDK and the target's standard library in the browser jobs; an empty list installs neither.",
+      "description": "Exact caller Cargo package names built for wasm32-unknown-emscripten, in execution order. Repetitions are retained. A name matches a package of the root workspace or of a manifest listed in additional_locked_manifests, and the build uses that manifest. A non-empty list installs the pinned Emscripten SDK and the target's standard library in the browser jobs, and runs the caller's `just sandbox-runtime` recipe once per run before any job compiles the caller; an empty list installs and runs neither.",
       "type": "array",
       "items": {
         "type": "string"

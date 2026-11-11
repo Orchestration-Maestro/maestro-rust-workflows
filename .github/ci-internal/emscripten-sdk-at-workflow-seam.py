@@ -28,7 +28,7 @@ def steps(job):
 
 
 def opens(condition, context):
-    expression = condition.removeprefix('${{').removesuffix('}}').strip()
+    expression = condition.removeprefix('${{').removesuffix('}}').strip().replace('!cancelled()', 'True')
     for key, value in context.items():
         expression = expression.replace(key, repr(value))
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
@@ -170,7 +170,8 @@ def only_an_opted_in_caller_installs_anything():
                    'github.event_name': 'push', 'github.ref': 'refs/heads/main',
                    "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
                    'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.browser_build': 'false',
-                   'needs.declaration.outputs.emscripten_crates': '["web"]'}
+                   'needs.declaration.outputs.emscripten_crates': '["web"]',
+                   'needs.declaration.result': 'success'}
     assert opens(browser['if'], job_context)
     assert not opens(browser['if'], job_context | {'needs.declaration.outputs.emscripten_crates': '[]'})
     # Both jobs run the very same install, and the build sees the toolchain through the PATH it exports.
@@ -191,7 +192,8 @@ def a_pull_request_builds_the_emscripten_crates_only_when_its_change_reaches_the
                     "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
                     'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.browser_build': 'false',
                     'needs.declaration.outputs.emscripten_crates': '[["web", null]]',
-                    'needs.declaration.outputs.emscripten_changed': 'true'}
+                    'needs.declaration.outputs.emscripten_changed': 'true',
+                    'needs.declaration.result': 'success'}
     untouched = pull_request | {'needs.declaration.outputs.emscripten_changed': 'false'}
     undeclared = pull_request | {'needs.declaration.outputs.emscripten_crates': '[]'}
     assert opens(browser['if'], pull_request), 'a pull request that reaches a listed package runs the job'

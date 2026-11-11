@@ -181,6 +181,7 @@ for job, names in {
  'targets': ['Compile cache', 'Mise bootstrap', 'Test tools'],
  'browser': ['Compile cache', 'Browser mise bootstrap', 'Browser tools', 'Emscripten SDK'],
  'browser-tests': ['Compile cache', 'Emscripten SDK'],
+ 'sandbox-runtime': ['Mise bootstrap', 'Test tools', 'Emscripten SDK'],
 }.items():
     for name in names:
         permit('ci', job, name, 'timeout-minutes', '10')
@@ -195,12 +196,13 @@ for job, names in {
  'fuzz': ['Check tools'], 'advisories': ['Check tools'],
  'browser': ['Compile cache', 'Browser mise bootstrap'],
  'browser-tests': ['Compile cache', 'Browser test mise bootstrap'],
+ 'sandbox-runtime': ['Mise bootstrap'],
 }.items():
     for name in names:
         permit('ci', job, name, '--retry', '3')
 for occurrence in range(1, 5):
     permit('ci', 'browser-tests', 'Browser runtime tools', '--retry', '3', occurrence)
-for job in ['browser', 'browser-tests']:
+for job in ['browser', 'browser-tests', 'sandbox-runtime']:
     for occurrence in range(1, 3):
         permit('ci', job, 'Emscripten SDK', '--retry', '3', occurrence)
 for name in ['Tests', 'Isolated tests']:
@@ -367,7 +369,7 @@ class SearchReleases(unittest.TestCase):
 
     def test_workflow_controls_match_authority(self):
         report = require_recorded_controls(files)
-        self.assertEqual(len(report.splitlines()), 176)
+        self.assertEqual(len(report.splitlines()), 188)
         print(report)
 
     def assert_policy(self, sources, admitted):
@@ -649,7 +651,7 @@ class SearchReleases(unittest.TestCase):
 
     def test_inventory_requires_a_reason_for_each_occurrence(self):
         report = require_recorded_controls(files, authority)
-        self.assertEqual(len(report.splitlines()), 176)
+        self.assertEqual(len(report.splitlines()), 188)
         for row in authority:
             self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
         for row in [next(iter(authority)), next(reversed(authority))]:

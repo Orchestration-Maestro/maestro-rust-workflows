@@ -288,7 +288,8 @@ The test run reaches the pinned `rg` and `fd` only through files the
 `test_prepare` command copied into `TEST_PREPARE_OUTPUT`, never through `PATH`.
 `wasm_examples` is an optional table that maps package names to example names
 and defaults to `{}`. `emscripten_crates` is an optional array of package names
-and defaults to `[]`. The [schema](../.github/ci.schema.json) describes the
+and defaults to `[]`; a non-empty list also makes every compiling job wait for the
+[generated runtime script](#generated-runtime-script). The [schema](../.github/ci.schema.json) describes the
 parsed TOML shape; there is no version key or older-format reader.
 
 `check_targets` also selects native test hosts: `aarch64-apple-darwin` adds
@@ -1393,7 +1394,9 @@ emscripten_crates = ["my-sandbox-runtime"]
 ```
 
 `emscripten_crates` is an optional array of exact locked package names, in
-build order. It defaults to `[]`. Repetitions are kept, and the names reach
+build order. It defaults to `[]`. A non-empty list also requires a
+`sandbox-runtime` recipe in the caller's `justfile`; see the
+[generated runtime script](#generated-runtime-script). Repetitions are kept, and the names reach
 cargo as arguments, never as shell syntax. A name outside the root or the
 additional locked metadata fails declaration validation with the file and key.
 With an empty list or no key, no job installs or builds anything for
@@ -1447,7 +1450,55 @@ unchecked file. The step then checks that `emcc` reports 6.0.10 and exports
 `EMSDK` and `EMSDK_NODE` for later steps. The SDK is MIT and NCSA licensed.
 
 The caller owns the binding step and the browser application. The shared
-workflow only provides the toolchain and the build of the listed packages.
+workflow provides the toolchain, the build of the listed packages and the run of
+the caller's [`sandbox-runtime` recipe](#generated-runtime-script).
+
+### Generated runtime script
+
+Quick start: define a `sandbox-runtime` recipe in the caller's `justfile` that
+writes `target/sandbox-runtime/maestro-sandbox-runtime.js`, and pin `just` and
+any other tool the recipe runs in `mise.toml`. Maestro runs the recipe once per
+run, before any job compiles the caller.
+
+```toml
+# .github/ci.toml
+emscripten_crates = ["my-sandbox-runtime"]
+```
+
+```just
+# justfile
+sandbox-runtime:
+    cargo run --quiet --locked -p my-tooling --bin development -- sandbox-runtime
+```
+
+A caller that embeds a generated file in a crate cannot compile until the file
+exists. When `emscripten_crates` is non-empty, the `Sandbox runtime script` job
+builds that file once and every compiling job fetches it. It runs on pull
+requests too, so a change outside the listed packages still finds the file. An
+empty list skips the job and every other job runs as before.
+
+| Step | What it does |
+| --- | --- |
+| Toolchain | Runs `rustup show` to install the caller's pinned toolchain. |
+| Mise bootstrap, Test tools | Install the caller's `mise.toml` tools, also when `test_tools` is `false`, because the recipe needs them. |
+| Emscripten SDK, Emscripten target | The steps described [above](#emscripten-builds). |
+| Build sandbox runtime script | Runs `mise exec -- just sandbox-runtime`, then fails if the file is missing. |
+| Upload sandbox runtime | Publishes the file as the `sandbox-runtime-<concurrency key or root>` artifact of the run. |
+
+Every step runs on every run. Maestro keeps no cache of the file, so a change to
+the generator, to the listed packages or to a pinned tool is always tested
+against the script it produces.
+
+Every job that compiles the caller waits for `Sandbox runtime script`: Format
+and lint, Docs, Build test archive, Prepare test setup, the test shards,
+Doctests, Dependency, source and coverage checks, the target checks, Wasm and
+browser build, Chromium browser tests and the fuzz job. Each one runs the step
+`Sandbox runtime script` straight after its checkout. It downloads the artifact
+into `target/sandbox-runtime`, before the first cargo command.
+
+A failed generator does not skip those jobs: they start, the download fails
+them, and each required check reports the failure. The job keeps no compile
+snapshot, so the recipe's cargo build starts cold.
 
 ### Emscripten crates on pull requests
 
