@@ -4,7 +4,8 @@ import pathlib
 import re
 import subprocess
 import time
-from typing import Callable, cast
+from collections.abc import Callable
+from typing import cast
 
 workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding="utf-8")
 commands = re.findall(r'^        run: (cargo .+)$', workflow, re.MULTILINE) + ['cargo test --workspace --locked']
@@ -18,6 +19,7 @@ assert commands == expected, f'Unexpected check commands: {commands}'
 code = pathlib.Path('.github/ci-internal/caller-checks-at-workflow-seam.py').read_text(encoding='utf-8')
 tree = ast.parse(code)
 tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'body']
+# The shared body resolver is the module-level function alone: its runner runs the whole seam.
 resolver: dict[str, object] = {'workflow': workflow}
 exec(compile(tree, 'workflow body resolver', 'exec'), resolver)
 body = cast(Callable[[str], str], resolver['body'])
@@ -25,8 +27,8 @@ commands.insert(1, body('Lint'))
 
 def only_cache_housekeeping_fails_open():
     transfers = ['Restore compile cache', 'Save compile cache', 'Restore test setup cache', 'Save test setup cache',
-                 'Test setup candidates', 'Download test setup candidates',
-                 'Restore Cargo git cache', 'Save Cargo git cache']
+                 'Restore Cargo git cache', 'Save Cargo git cache', 'Restore sandbox runtime', 'Save sandbox runtime',
+                 'Test setup candidates', 'Download test setup candidates']
     transferred = pruned = cancelled = 0
     for step in re.split(r'^      - name: ', workflow, flags=re.M)[1:]:
         if not re.search(r'^        continue-on-error:', step, re.M):
@@ -44,7 +46,7 @@ def only_cache_housekeeping_fails_open():
             assert re.search(r'^        uses: actions/cache/(restore|save)@0400d5f644dc74513175e3cd8d07132dd4860809 ', step, re.M) or name in ('Test setup candidates', 'Download test setup candidates'), name
             transferred += 1
         assert '        continue-on-error: true\n' in step
-    assert transferred == 31
+    assert transferred == 33
     assert pruned == 1
     assert cancelled == 1
     assert not re.search(r'^    continue-on-error:', workflow, re.M)

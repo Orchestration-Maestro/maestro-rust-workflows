@@ -148,22 +148,17 @@ def the_declaration_names_the_paths_that_decide_each_build():
                 'Cargo.lock', 'Cargo.toml', 'isolated', 'isolated/Cargo.lock', 'isolated/Cargo.toml', 'other'], (spelling, values)
 
 
-def only_an_opted_in_caller_installs_anything():
-    context = {'needs.declaration.outputs.coverage': 'true', 'needs.declaration.outputs.tests_reused': 'false',
-               'needs.declaration.outputs.emscripten_crates': '["web"]'}
-    closed = context | {'needs.declaration.outputs.emscripten_crates': '[]'}
-    for job in [browser, chromium]:
-        for name in [SDK, TARGET]:
-            step = steps(job)[name]
-            assert opens(step['if'], context), (name, 'the opted-in caller installs')
-            assert not opens(step['if'], closed), (name, 'a caller without the key installs nothing')
-    # A pull request builds only when its change reaches a listed package; otherwise the opt-in costs it nothing.
-    pull_request = context | {'needs.declaration.outputs.coverage': 'false', 'needs.declaration.outputs.emscripten_changed': 'false'}
-    for name in [SDK, TARGET, BUILD]:
-        assert not opens(steps(browser)[name]['if'], pull_request), name
-    assert opens(steps(browser)[BUILD]['if'], context)
-    assert not opens(steps(browser)[BUILD]['if'], closed)
-    # A caller that only builds for Emscripten still gets the browser job.
+def only_the_script_job_installs_the_sdk():
+    # The script job builds the one artifact every consumer downloads, so no other job runs the compiler.
+    script = steps(document['jobs']['sandbox-runtime'])
+    for name in [SDK, TARGET]:
+        assert name in script, name
+    for name in ['browser', 'browser-tests']:
+        assert not {SDK, TARGET, BUILD} & set(steps(document['jobs'][name])), (name, sorted({SDK, TARGET, BUILD} & set(steps(document['jobs'][name]))))
+    assert steps(document['jobs']['sandbox-runtime'])[SDK]['env'] == {'GH_TOKEN': '${{ github.token }}'}
+    order = [step['name'] for step in document['jobs']['sandbox-runtime']['steps']]
+    assert order.index('Test tools') < order.index(SDK) < order.index(TARGET) < order.index('Build sandbox runtime script'), order
+    # A caller that only builds for Emscripten still gets the browser job, and a caller without the key does not.
     job_context = {'inputs.browser-only': False, 'needs.declaration.outputs.coverage': 'true',
                    'needs.declaration.outputs.tests_reused': 'false', 'needs.declaration.outputs.wasm_examples': '[]',
                    'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'inputs.warm-cache': False,
@@ -174,17 +169,9 @@ def only_an_opted_in_caller_installs_anything():
                    'needs.declaration.result': 'success'}
     assert opens(browser['if'], job_context)
     assert not opens(browser['if'], job_context | {'needs.declaration.outputs.emscripten_crates': '[]'})
-    # Both jobs run the very same install, and the build sees the toolchain through the PATH it exports.
-    assert steps(chromium)[SDK]['run'] == steps(browser)[SDK]['run']
-    assert steps(chromium)[TARGET]['run'] == steps(browser)[TARGET]['run']
-    assert steps(chromium)[SDK]['env'] == steps(browser)[SDK]['env'] == {'GH_TOKEN': '${{ github.token }}'}
-    order = [step['name'] for step in browser['steps']]
-    assert order.index('Browser tools') < order.index(SDK) < order.index(TARGET) < order.index(BUILD) < order.index('Browser recipe'), order
-    order = [step['name'] for step in chromium['steps']]
-    assert order.index('Browser test caller tools') < order.index(SDK) < order.index(TARGET) < order.index('Browser test recipe'), order
 
 
-def a_pull_request_builds_the_emscripten_crates_only_when_its_change_reaches_them():
+def a_pull_request_builds_only_what_its_change_reaches():
     pull_request = {'inputs.browser-only': False, 'needs.declaration.outputs.coverage': 'false',
                     'needs.declaration.outputs.tests_reused': 'false', 'needs.declaration.outputs.wasm_examples': '[]',
                     'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'inputs.warm-cache': False,
@@ -199,11 +186,6 @@ def a_pull_request_builds_the_emscripten_crates_only_when_its_change_reaches_the
     assert opens(browser['if'], pull_request), 'a pull request that reaches a listed package runs the job'
     assert not opens(browser['if'], untouched), 'a pull request that reaches none keeps it closed'
     assert not opens(browser['if'], undeclared), 'a caller without the key never runs it for this'
-    for name in [SDK, TARGET, BUILD]:
-        step = steps(browser)[name]
-        assert opens(step['if'], pull_request), name
-        assert not opens(step['if'], untouched), name
-        assert not opens(step['if'], undeclared), name
     # The Chromium job and the library sweep stay off a pull request.
     assert not opens(chromium['if'], pull_request | {'needs.declaration.outputs.browser_tests': 'true'})
     assert steps(browser)['Build wasm crates']['if'] and not opens(steps(browser)['Build wasm crates']['if'], pull_request)
@@ -219,7 +201,7 @@ def recorded(directory, tool, step, extra=None):
     (tools / tool).write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_LOG"\n', encoding='utf-8')
     (tools / tool).chmod(0o700)
     env = os.environ | {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'FAKE_LOG': str(directory / 'log')} | (extra or {})
-    result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', steps(browser)[step]['run']],
+    result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', steps(document['jobs']['sandbox-runtime'])[step]['run']],
                             cwd=directory, env=env, text=True, capture_output=True)
     log = directory / 'log'
     return result, log.read_text(encoding='utf-8').splitlines() if log.exists() else []
@@ -242,7 +224,6 @@ def each_crate_builds_for_emscripten_in_order():
                          for name, manifest in names], calls
         # A package name is an argument, never shell text.
         assert not (directory / 'injected').exists()
-
 
 FAKE_CURL = '''#!/usr/bin/env python3
 import json, os, pathlib, shutil, sys
@@ -283,7 +264,7 @@ def archive_of(path, entries):
 def installation(directory, mismatch=None, compiler='6.0.10'):
     # Serves a stand-in for each pinned URL and swaps its pinned digest for the stand-in's, except
     # for the archive at index `mismatch`, which keeps the real digest and so fails verification.
-    body = steps(browser)[SDK]['run']
+    body = steps(document['jobs']['sandbox-runtime'])[SDK]['run']
     pinned = re.findall(r'\b[0-9a-f]{64}\b', body)
     urls = re.findall(r'https://\S+', body)
     assert len(pinned) == 3 and len(urls) == 3 and '6.0.10' in urls[0], (pinned, urls)
@@ -362,9 +343,9 @@ def a_compiler_of_another_version_stops_the_install():
 
 
 for check in [the_declaration_checks_types_and_packages, the_declaration_names_the_paths_that_decide_each_build,
-              only_an_opted_in_caller_installs_anything, a_pull_request_builds_the_emscripten_crates_only_when_its_change_reaches_them,
+              only_the_script_job_installs_the_sdk, a_pull_request_builds_only_what_its_change_reaches,
               the_target_comes_from_rustup,
-              each_crate_builds_for_emscripten_in_order, the_sdk_is_downloaded_with_the_job_token_and_installed_from_verified_archives,
+              the_sdk_is_downloaded_with_the_job_token_and_installed_from_verified_archives,
               a_wrong_checksum_stops_the_install_before_the_installer_runs, a_compiler_of_another_version_stops_the_install]:
     check()
     print('PASS ' + check.__name__, flush=True)

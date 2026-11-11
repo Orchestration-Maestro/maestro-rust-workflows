@@ -1,8 +1,11 @@
 import ast
 import json
+import os
 import pathlib
 import re
+import shutil
 import subprocess
+import tempfile
 
 root = pathlib.Path.cwd()
 workflow = (root / '.github/workflows/ci.yml').read_text(encoding='utf-8')
@@ -55,30 +58,121 @@ def the_job_exists_only_for_a_caller_that_declares_emscripten_crates():
     assert opens(job['if'], context({'inputs.browser-only': True})), 'the browser-only proof compiles the caller'
     assert not opens(job['if'], context(crates='[]')), 'a caller with an empty list installs and runs nothing'
     assert not opens(job['if'], context({'inputs.advisory-scan': True})), 'the advisory scan compiles nothing'
-    assert 'emscripten_paths' not in jobs['declaration']['outputs'], 'only the cache key read it'
+    # Only the cache key reads the inputs of the script, and the declaration is what names them.
+    assert jobs['declaration']['outputs']['sandbox_runtime_paths'] == '${{ steps.config.outputs.sandbox_runtime_paths }}'
 
 
-def the_script_is_built_on_every_run_with_the_installed_sdk():
+def the_cached_script_skips_every_step_that_prepares_it():
     job = steps(jobs[JOB])
-    # A cached script would hide a change to the generator, so no step restores, saves or skips on a cache.
-    # Only the runner-hardware record carries a condition: the guards require it on every Linux job.
-    assert not any('cache' in step.get('uses', '') or ('if' in step and step['name'] != 'Runner hardware')
-                   for step in jobs[JOB]['steps']), 'every step runs on every run'
-    # The generator reuses the one SDK, target and tool install of the other jobs.
-    browser, quality = steps(jobs['browser']), steps(jobs['quality'])
-    for name in ['Emscripten SDK', 'Emscripten target']:
-        assert job[name]['run'] == browser[name]['run'] and job[name].get('env') == browser[name].get('env'), name
-    for name in ['Mise bootstrap', 'Test tools']:
-        assert job[name]['run'] == quality[name]['run'] and job[name]['env'] == quality[name]['env'], name
     order = [step['name'] for step in jobs[JOB]['steps']]
-    assert order == ['Runner hardware', 'Checkout', 'Toolchain', 'Mise bootstrap', 'Test tools', 'Emscripten SDK', 'Emscripten target',
-                     'Build sandbox runtime script', 'Upload sandbox runtime'], order
+    assert order == ['Runner hardware', 'Checkout', 'Script identity', 'Restore sandbox runtime', 'Toolchain', 'Mise bootstrap',
+                     'Test tools', 'Emscripten SDK', 'Emscripten target', 'Build sandbox runtime script', 'Save sandbox runtime',
+                     'Upload sandbox runtime'], order
+    hit = {'steps.script-cache.outputs.cache-hit': 'true'}
+    miss = {'steps.script-cache.outputs.cache-hit': 'false'}
+    # A hit costs the checkout, the key and the restore: no toolchain, no tools, no SDK, no target and no build.
+    for name in ['Toolchain', 'Mise bootstrap', 'Test tools', 'Emscripten SDK', 'Emscripten target', 'Build sandbox runtime script']:
+        assert not opens(job[name]['if'], hit), (name, 'a hit runs nothing that prepares the script')
+        assert opens(job[name]['if'], miss), (name, 'a miss prepares it')
+    # The consumers still receive the file on a hit, and a file that never arrived fails the upload.
+    upload = job['Upload sandbox runtime']
+    assert 'if' not in upload, upload
+    assert upload['uses'].startswith('actions/upload-artifact@')
+    assert upload['with'] == {'name': ARTIFACT, 'path': "${{ inputs.working-directory || '.' }}/" + SCRIPT, 'if-no-files-found': 'error'}, upload['with']
+    # One key for both: the entry the restore reads is the entry the build writes.
+    script = "${{ inputs.working-directory || '.' }}/" + SCRIPT
+    restore, save = job['Restore sandbox runtime'], job['Save sandbox runtime']
+    assert restore['uses'].startswith('actions/cache/restore@') and restore['with'] == {'path': script, 'key': '${{ steps.script-identity.outputs.key }}'}, restore
+    assert save['uses'].startswith('actions/cache/save@') and save['with'] == restore['with'], save
+    # A cache that cannot be read or written costs the preparation, never the job.
+    assert restore['continue-on-error'] is True and save['continue-on-error'] is True
+    # Only a default-branch push writes, so a merge group reads what the last push saved.
+    written = {'steps.script-cache.outputs.cache-hit': 'false', 'github.event_name': 'push', 'github.ref': 'refs/heads/main',
+               'github.event.repository.default_branch': 'main', "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main'}
+    assert opens(save['if'], written), save['if']
+    for branch in [written | {'github.event_name': 'pull_request', 'github.ref': 'refs/pull/363/merge'},
+                   written | {'github.ref': 'refs/heads/topic'}, written | {'github.event_name': 'merge_group'}]:
+        assert not opens(save['if'], branch), (save['if'], branch)
+    assert not opens(save['if'], written | {'steps.script-cache.outputs.cache-hit': 'true'}), 'a hit writes nothing'
     build = job['Build sandbox runtime script']['run'].splitlines()
     assert build[0] == 'mise exec -- just sandbox-runtime', build
     assert build[1] == 'test -f ' + SCRIPT, 'a recipe that writes nothing fails here'
-    upload = job['Upload sandbox runtime']
-    assert upload['uses'].startswith('actions/upload-artifact@')
-    assert upload['with'] == {'name': ARTIFACT, 'path': "${{ inputs.working-directory || '.' }}/" + SCRIPT, 'if-no-files-found': 'error'}, upload['with']
+    # The job reaches the toolchain and the tools through the shared step bodies, not a second copy.
+    for name in ['Mise bootstrap', 'Test tools']:
+        assert job[name]['run'] == steps(jobs['quality'])[name]['run'] and job[name]['env'] == steps(jobs['quality'])[name]['env'], name
+    assert job['Emscripten SDK']['env'] == {'GH_TOKEN': '${{ github.token }}'}
+
+
+DECLARATION = next(step for step in jobs['declaration']['steps'] if step['name'] == 'Read caller declaration')['run']
+IDENTITY = steps(jobs[JOB])['Script identity']['run']
+
+
+def declared(directory, text):
+    (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n' + text, encoding='utf-8')
+    output = directory / 'declaration-output'
+    output.write_text('', encoding='utf-8')
+    env = os.environ | {'GITHUB_OUTPUT': str(output), 'TEST_EVENT': 'merge_group', 'WARM': 'false'}
+    result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', DECLARATION], cwd=directory, env=env, text=True, capture_output=True)
+    lines = output.read_text(encoding='utf-8').splitlines()
+    return result, dict(line.split('=', 1) for line in lines if '=' in line)
+
+
+def identity(directory, paths, sha='workflow-sha'):
+    output = directory.parent / 'identity-output'
+    output.write_text('', encoding='utf-8')
+    env = os.environ | {'SANDBOX_RUNTIME_PATHS': json.dumps(paths), 'WORKFLOW_SHA': sha, 'GITHUB_OUTPUT': str(output)}
+    result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', IDENTITY], cwd=directory, env=env, text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['key']
+
+
+def the_cache_key_covers_every_input_of_the_script():
+    # The listed crates and the packages the recipe runs generate the script; the tool pins and the recipe complete it.
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary, 'checkout')
+        shutil.copytree(root / 'fixtures/wasm-witnesses', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
+        (directory / '.github').mkdir()
+        (directory / 'justfile').write_text('sandbox-runtime:\n    @cargo run --quiet --locked -p witness -- sandbox-runtime\n', encoding='utf-8')
+        (directory / 'mise.toml').write_text('[tools]\njust = "1"\n', encoding='utf-8')
+        result, values = declared(directory, 'emscripten_crates=["other"]\n')
+        assert result.returncode == 0, result.stdout + result.stderr
+        paths = json.loads(values['sandbox_runtime_paths'])
+        assert paths == ['Cargo.lock', 'Cargo.toml', 'justfile', 'mise.toml', 'other', 'rust-toolchain.toml', 'witness'], paths
+        key = identity(directory, paths)
+        # Nothing that decides the script changed: the key stands, so the next run starts without preparing it.
+        (directory / 'docs.md').write_text('Documentation\n', encoding='utf-8')
+        assert identity(directory, paths) == key
+        def changing(name, text, sha='workflow-sha'):
+            original = (directory / name).read_text(encoding='utf-8')
+            (directory / name).write_text(text, encoding='utf-8')
+            try:
+                return identity(directory, paths, sha)
+            finally:
+                (directory / name).write_text(original, encoding='utf-8')
+        # Every input misses the cache: the generator's own sources first, then the lock, the recipe and the tool pins.
+        for name, text in [
+                ('witness/src/lib.rs', 'pub fn changed() {}\n'),
+                ('Cargo.lock', (directory / 'Cargo.lock').read_text(encoding='utf-8') + '# changed\n'),
+                ('Cargo.toml', (directory / 'Cargo.toml').read_text(encoding='utf-8') + '# changed\n'),
+                ('justfile', 'sandbox-runtime:\n    @cargo run --quiet --locked -p witness -- sandbox-runtime --check\n'),
+                ('mise.toml', '[tools]\njust = "2"\n'),
+                ('rust-toolchain.toml', (directory / 'rust-toolchain.toml').read_text(encoding='utf-8') + '# changed\n'),
+                ('other/src/lib.rs', 'pub fn changed() {}\n')]:
+            assert changing(name, text) != key, name
+        # The workflow that runs the recipe decides the script too.
+        assert identity(directory, paths, 'other-workflow') != key
+        # A recipe that names no package leaves the whole checkout to decide the key, so it can never serve an old script.
+        (directory / 'justfile').write_text('sandbox-runtime:\n    @sh build-sandbox-runtime.sh\n', encoding='utf-8')
+        result, values = declared(directory, 'emscripten_crates=["other"]\n')
+        assert result.returncode == 0, result.stdout + result.stderr
+        whole = json.loads(values['sandbox_runtime_paths'])
+        assert whole == ['.'], whole
+        key = identity(directory, whole)
+        (directory / 'docs.md').write_text('Documentation, changed\n', encoding='utf-8')
+        assert identity(directory, whole) != key
+        # A caller that lists no Emscripten crate names no input, so the job stays off.
+        result, values = declared(directory, '')
+        assert json.loads(values['sandbox_runtime_paths']) == [], values
 
 
 def every_compiling_job_waits_for_the_script_and_downloads_it_before_compiling():
@@ -111,8 +205,10 @@ def a_skipped_generator_does_not_skip_a_job_and_a_failed_one_fails_it():
 
 the_job_exists_only_for_a_caller_that_declares_emscripten_crates()
 print('PASS the_job_exists_only_for_a_caller_that_declares_emscripten_crates', flush=True)
-the_script_is_built_on_every_run_with_the_installed_sdk()
-print('PASS the_script_is_built_on_every_run_with_the_installed_sdk', flush=True)
+the_cached_script_skips_every_step_that_prepares_it()
+print('PASS the_cached_script_skips_every_step_that_prepares_it', flush=True)
+the_cache_key_covers_every_input_of_the_script()
+print('PASS the_cache_key_covers_every_input_of_the_script', flush=True)
 every_compiling_job_waits_for_the_script_and_downloads_it_before_compiling()
 print('PASS every_compiling_job_waits_for_the_script_and_downloads_it_before_compiling', flush=True)
 a_skipped_generator_does_not_skip_a_job_and_a_failed_one_fails_it()
