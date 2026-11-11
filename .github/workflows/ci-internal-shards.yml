@@ -3005,7 +3005,11 @@ jobs:
               assert 'GB' not in snapshots.replace('GiB', ''), 'one unit, GiB, as the finding prints'
               budget = guide.split('Source: no rate is fixed in advance', 1)[1].split('### Compile-cache hit-rate floor', 1)[0]
               assert 'cache usage' in budget and 'storage limit' not in budget and 'cache list' in budget and 'floor annotations' in budget, 'the call budget counts the cache reads'
-              assert "github.event.workflow_run.event == 'push'" in guide and "github.event.workflow_run.event == 'merge_group'" in guide
+              # The documented listener hands every guard the runs it judges: pull requests for the selection guard, and every workflow that calls the suite.
+              listener = guide.split('## CI speed guards', 1)[1].split('```yaml', 1)[1].split('```', 1)[0]
+              assert 'workflows: [Rust CI, Full suite after landing]' in listener, listener
+              for event in ('pull_request', 'merge_group', 'push'):
+                  assert f"github.event.workflow_run.event == '{event}'" in listener, event
 
           required_checks_and_documented_defaults_stay_pinned()
           print('PASS required_checks_and_documented_defaults_stay_pinned')
