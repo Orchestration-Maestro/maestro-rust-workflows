@@ -426,25 +426,25 @@ branches or manual runs.
 
 ### Jobs that keep no snapshot
 
-A Linux job saves a snapshot only when a later job of the same run restores it:
-the warm coverage build, Build test archive and Prepare test setup feed the test
-shards, the Dependency, source and coverage checks job is the whole build of
+A Linux job saves a snapshot only when a job restores it: the warm coverage
+build, Build test archive and Prepare test setup feed the test shards of the
+same run, the Dependency, source and coverage checks job is the whole build of
 a caller without the archive, and the Wasm build's `wasm32` snapshot is what the
-Chromium browser tests restore. Format and lint, Docs, Doctests and the Linux
-target checks restore nothing and save nothing, because one snapshot for each of
-them would not fit the cache limit next to the others (see
-[One entry per prefix](#one-entry-per-prefix)). They
-compile cold, and a job on another host keeps its snapshot. Compile cache
-identity decides this once, in its `snapshot` output. The Chromium browser tests
-keep the `wasm32` snapshot and never write it: a shape has one writer, the Wasm
-build. The restore step runs only
-when `snapshot` is `true`, the save step needs the `writer` output that is `true`
-only for a snapshot-keeping job on a default-branch push, and the hit-rate floor
-reports the job's compile count without judging a hit rate it cannot reach.
+Chromium browser tests restore on a later run. Format and lint, Docs, Doctests
+and the Linux target checks restore nothing and save nothing, because one
+snapshot for each of them would not fit the cache limit next to the others (see
+[One entry per prefix](#one-entry-per-prefix)). They compile cold, and a job on
+another host keeps its snapshot. Compile cache identity decides this once, in
+its `snapshot` output. The restore step runs only when `snapshot` is `true`, the
+save step needs the `writer` output that is `true` only for a snapshot-keeping
+job on a default-branch push, and the hit-rate floor reports the job's compile
+count without judging a hit rate it cannot reach.
 
 The Wasm build and the Chromium browser tests compile the same wasm32 graph, so
-they share one shape and one entry: the Wasm build writes it on default-branch
-pushes and the Chromium job restores it read-only. Its cap is the default 1 GiB.
+they share one shape and one entry. The Wasm build is its only writer, on
+default-branch pushes. The Chromium job restores it read-only, and because it
+does not wait for the Wasm build it reads the entry the previous push saved. Its
+cap is the default 1 GiB.
 
 Cold times measured on Maestro, against the warm time of the same job:
 
@@ -560,10 +560,10 @@ first.
 
 ### Cargo git dependency cache
 
-No caller setting is needed. On Linux, Lint, Docs, dependency/source/coverage
-checks, declared target checks, Build test archive, Prepare test setup and every
-test shard restore Cargo's `git/db` and `git/checkouts` before resolving
-dependencies. Doctests share the test-shard route. A hit containing the locked
+No caller setting is needed. Linux jobs restore Cargo's `git/db` and
+`git/checkouts` before resolving dependencies: Lint, Docs,
+dependency/source/coverage checks, declared target checks, Build test archive,
+Prepare test setup and every test shard. Doctests share the test-shard route. A hit containing the locked
 revision avoids fetching that git source; Cargo still downloads missing registry
 packages.
 

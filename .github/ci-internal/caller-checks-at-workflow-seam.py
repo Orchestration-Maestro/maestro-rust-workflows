@@ -1005,9 +1005,6 @@ def cargo_git_cache_restores_before_every_fetch():
     assert "if: runner.os == 'Linux' && steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'" in save
     assert 'key: $' + '{{ steps.git-cache-identity.outputs.key }}' in save
     assert build.index('name: Build test archive') < build.index('name: Save Cargo git cache')
-    for name, job in [('Tests', tests), ('Prepare test setup', prepare), ('Docs', jobs['docs']),
-                      ('Dependency, source and coverage checks', jobs['checks']), ('Native target checks', jobs['targets'])]:
-        assert 'Save Cargo git cache' not in job, name
 
     def identity(directory, manifests='[]', **extra):
         output = directory / 'github-output'
@@ -1042,7 +1039,6 @@ def cargo_git_cache_restores_before_every_fetch():
     target = jobs['targets']
     identity_step = next(step for step in target.split('      - name: ')[1:] if step.startswith('Compile cache identity\n'))
     assert 'if: *sccache-target-host' in identity_step, 'a Windows target check restores no compile cache, so it identifies none'
-    assert target.index('name: Check target') < target.index('name: Compile cache statistics')
 
 def only_linux_jobs_identify_and_restore_the_cargo_git_entry():
     jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',

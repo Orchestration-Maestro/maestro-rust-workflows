@@ -147,10 +147,9 @@ cold, because one snapshot for each of them would not fit the repository's cache
 limit. The Wasm and browser build keeps the one `wasm32` shape and is its only
 writer; Chromium browser tests restore it and never save it.
 See [Jobs that keep no snapshot](docs/caller-checks.md#jobs-that-keep-no-snapshot).
-A default-branch push warm call also runs those jobs when declared, with their
-normal commands, paths and compiler output modes, so it seeds the `wasm32` shape
-and nothing else. Other
-warm calls skip them. Declared arm64 macOS target checks seed their shapes on
+A default-branch push warm call also runs the Wasm and browser build when
+declared, with its normal commands, paths and compiler output modes, so it seeds
+the `wasm32` shape and nothing else. Other warm calls skip it. Declared arm64 macOS target checks seed their shapes on
 default-branch push warm calls.
 
 Missing snapshots build cold. Failed restores discard partial data before

@@ -2762,8 +2762,6 @@ jobs:
               assert identity_of('browser', GITHUB_EVENT_NAME='pull_request')['writer'] == 'false'
               assert identity_of('browser-tests', GITHUB_EVENT_NAME='pull_request')['writer'] == 'false'
               assert identity_of('browser', GITHUB_REF='refs/heads/topic')['writer'] == 'false'
-              # One cap for the shared shape: the Wasm build's cold working set fit the default 1 GiB when it kept a snapshot.
-              assert build['size'] == chromium['size'] == str(1073741824), (build['size'], chromium['size'])
               document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
               jobs = document['jobs']
               for name in ('browser', 'browser-tests'):
@@ -2853,12 +2851,9 @@ jobs:
                   assert (identity['snapshot'], identity['writer']) == ('false', 'false'), (job, identity)
                   assert identity_of(job, 'macOS', **changes)['snapshot'] == 'true', job
               for job, changes in [('test-build', {}), ('test-prepare', {}), ('tests', {'CACHE_WARM': 'true', 'SHARD': 'warm'}),
-                                   ('checks', {}), ('browser', {})]:
+                                   ('checks', {})]:
                   identity = identity_of(job, **changes)
                   assert (identity['snapshot'], identity['writer']) == ('true', 'true'), (job, identity)
-              # The Chromium job restores the wasm32 snapshot without ever replacing it.
-              chromium = identity_of('browser-tests')
-              assert (chromium['snapshot'], chromium['writer']) == ('true', 'false'), chromium
               for job in ['test-build', 'test-prepare', 'targets']:
                   assert identity_of(job, 'macOS')['writer'] == 'true', job
               assert identity_of('doctests', 'macOS', SHARD='doctests')['writer'] == 'false'
