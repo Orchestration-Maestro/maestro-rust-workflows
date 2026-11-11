@@ -1940,11 +1940,12 @@ listener, and runs it without a run id on pull requests for the exception check:
 ```yaml
 on:
   workflow_run:
-    workflows: [Rust CI]
+    workflows: [Rust CI, Full suite after landing]
     types: [completed]
 jobs:
   guards:
     if: >-
+      github.event.workflow_run.event == 'pull_request' ||
       github.event.workflow_run.event == 'merge_group' ||
       (github.event.workflow_run.event == 'push' &&
        github.event.workflow_run.head_branch == github.event.repository.default_branch)
@@ -1957,11 +1958,16 @@ jobs:
       run-id: ${{ github.event.workflow_run.id }}
 ```
 
-The listener passes default-branch pushes as well as merge groups, because those
-runs save the compile snapshots every other run restores, and it passes a
-cancelled one too: a cancelled seeding run is a finding, not silence. A
-default-branch push that calls the shared suite through one reusable job is
-judged too. GitHub titles its jobs `<calling job> / <shared job>`, and every
+List every workflow whose runs hold the shared jobs. On Maestro those are
+`Rust CI`, the shared workflow itself, for pull requests and merge groups, and
+`Full suite after landing`, its caller for main pushes. The macOS test shards
+run only in the second, so a listener that leaves it out never judges them. The
+listener passes pull-request runs, the only runs the selection guard judges. It
+passes default-branch pushes as well as merge groups, because those runs save
+the compile snapshots every other run restores, and it passes a cancelled one
+too: a cancelled seeding run is a finding, not silence. A default-branch push
+that calls the shared suite through one reusable job is judged too. GitHub
+titles its jobs `<calling job> / <shared job>`, and every
 guard matches a job against a pinned name after the last ` / `, so
 `suite / Caller declaration` counts as `Caller declaration`. The reuse,
 required-checks, time-per-unit, shard-balance and slow-test guards read those
