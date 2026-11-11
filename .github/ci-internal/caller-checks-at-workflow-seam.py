@@ -2052,10 +2052,14 @@ def isolated_cleanup_stops_leaked_processes_and_keeps_test_status():
             return pathlib.Path(f'/proc/{pid}/stat').read_text(encoding='utf-8').rsplit(')', 1)[1].split()[0] != 'Z'
         except FileNotFoundError:
             return False
+    # The stand-ins are copies of perl, not of sleep: a multicall coreutils binary picks its program from its own
+    # file name, so a copy of sleep named sccache exits as an unknown program on the 26.04 image.
+    perl = shutil.which('perl')
+    assert perl, 'the leak stand-ins need perl on PATH'
     def stand_in_status(executable):
         # A stand-in that exits at once leaves the check with no process to find; this names why on any image.
-        probe = subprocess.run([shutil.which('sleep'), '0'], executable=executable, capture_output=True, text=True)
-        return f'\nstand-in {executable} started as sleep exits {probe.returncode}: {probe.stderr.strip()}'
+        probe = subprocess.run([perl, '-e', 'exit 0'], executable=executable, capture_output=True, text=True)
+        return f'\nstand-in {executable} exits {probe.returncode}: {probe.stderr.strip()}'
     for status, leak, removal_fails in [(0, 'writer', False), (3, 'writer', False), (0, 'compile cache', False),
                                         (3, 'compile cache', False), (0, None, True), (3, None, True),
                                         (0, 'environment', False), (0, 'working directory', False),
@@ -2076,7 +2080,7 @@ def isolated_cleanup_stops_leaked_processes_and_keeps_test_status():
                     time.sleep(60)
             '''), encoding='utf-8')
             # The compile cache server is a real executable named sccache; its owner stops it after the tests.
-            shutil.copy(shutil.which('sleep'), tools / 'sccache')
+            shutil.copy(perl, tools / 'sccache')
             runner = tools / 'cargo-nextest'
             runner.write_text('#!/usr/bin/env python3\n' + textwrap.dedent(f'''
                 import os, pathlib, shutil, subprocess, sys, time
@@ -2085,12 +2089,11 @@ def isolated_cleanup_stops_leaked_processes_and_keeps_test_status():
                     isolated_tmp = os.environ['TMPDIR']
                     # Each sleeper is visible to one check only: it has no isolated environment, directory, file or executable except the one named.
                     command, cwd, env, stdout = [shutil.which('sleep'), '600'], '/', {{}}, subprocess.DEVNULL
-                    # A copy runs under the name `sleep` (a multicall sleep picks its applet from argv[0]).
                     executable = None
                     if leak == 'writer':
                         command, cwd, env = [sys.executable, {str(writer)!r}], None, None
                     elif leak == 'compile cache':
-                        command, cwd, env, executable = [shutil.which('sleep'), '600'], None, None, {str(tools / 'sccache')!r}
+                        command, cwd, env, executable = [{perl!r}, '-e', 'sleep 600'], None, None, {str(tools / 'sccache')!r}
                     elif leak == 'environment':
                         env = None
                     elif leak == 'working directory':
@@ -2098,7 +2101,7 @@ def isolated_cleanup_stops_leaked_processes_and_keeps_test_status():
                     elif leak == 'open file':
                         stdout = open(isolated_tmp + '/held', 'w')
                     elif leak == 'executable':
-                        executable = shutil.copy(command[0], isolated_tmp + '/sleeper')
+                        command, executable = [{perl!r}, '-e', 'sleep 600'], shutil.copy({perl!r}, isolated_tmp + '/sleeper')
                     process = subprocess.Popen(command, executable=executable, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=stdout,
                                                stderr=subprocess.DEVNULL, start_new_session=True)
                     pathlib.Path({str(directory / 'leaked.pid')!r}).write_text(str(process.pid), encoding='utf-8')
