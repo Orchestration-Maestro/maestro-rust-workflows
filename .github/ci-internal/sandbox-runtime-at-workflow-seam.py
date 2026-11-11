@@ -44,6 +44,15 @@ def settle(node):
     return left == right if isinstance(node.ops[0], ast.Eq) else left != right
 
 
+def add_isolated(directory):
+    # A package of its own locked workspace, reachable only through the manifest that declares it.
+    manifest = directory / 'isolated/Cargo.toml'
+    (manifest.parent / 'src').mkdir(parents=True)
+    (manifest.parent / 'src/lib.rs').write_text('', encoding='utf-8')
+    manifest.write_text('[workspace]\n[package]\nname = "isolated"\nversion = "0.1.0"\nedition = "2021"\nlicense = "MIT"\n', encoding='utf-8')
+    subprocess.run(['cargo', 'generate-lockfile', '--offline', '--manifest-path', str(manifest)], check=True, capture_output=True)
+
+
 def context(extra=None, crates='[["web", null]]'):
     values = {'inputs.browser-only': False, 'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'inputs.warm-cache': False,
               'needs.declaration.outputs.emscripten_crates': crates}
@@ -117,10 +126,14 @@ def declared(directory, text):
     return result, dict(line.split('=', 1) for line in lines if '=' in line)
 
 
-def identity(directory, paths, sha='workflow-sha'):
+WORKFLOW = 'c' * 40
+
+
+def identity(directory, paths, sha=WORKFLOW, run='1'):
     output = directory.parent / 'identity-output'
     output.write_text('', encoding='utf-8')
-    env = os.environ | {'SANDBOX_RUNTIME_PATHS': json.dumps(paths), 'WORKFLOW_SHA': sha, 'GITHUB_OUTPUT': str(output)}
+    env = os.environ | {'SANDBOX_RUNTIME_PATHS': json.dumps(paths), 'WORKFLOW_SHA': sha, 'GITHUB_OUTPUT': str(output),
+                        'GITHUB_RUN_ID': run, 'GITHUB_RUN_ATTEMPT': '1'}
     result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', IDENTITY], cwd=directory, env=env, text=True, capture_output=True)
     assert result.returncode == 0, result.stdout + result.stderr
     return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['key']
@@ -137,21 +150,24 @@ def the_cache_key_covers_every_input_of_the_script():
         result, values = declared(directory, 'emscripten_crates=["other"]\n')
         assert result.returncode == 0, result.stdout + result.stderr
         paths = json.loads(values['sandbox_runtime_paths'])
-        assert paths == ['Cargo.lock', 'Cargo.toml', 'justfile', 'mise.toml', 'other', 'rust-toolchain.toml', 'witness'], paths
+        assert paths == ['Cargo.lock', 'Cargo.toml', 'justfile', 'mise.toml', 'other', 'rust-toolchain.toml',
+                         'witness', 'witness-support'], paths
         key = identity(directory, paths)
         # Nothing that decides the script changed: the key stands, so the next run starts without preparing it.
         (directory / 'docs.md').write_text('Documentation\n', encoding='utf-8')
         assert identity(directory, paths) == key
-        def changing(name, text, sha='workflow-sha'):
+        def changing(name, text, sha=WORKFLOW):
             original = (directory / name).read_text(encoding='utf-8')
             (directory / name).write_text(text, encoding='utf-8')
             try:
                 return identity(directory, paths, sha)
             finally:
                 (directory / name).write_text(original, encoding='utf-8')
-        # Every input misses the cache: the generator's own sources first, then the lock, the recipe and the tool pins.
+        # Every input misses the cache: the generator's own sources and the path dependencies it declares first, then
+        # the lock, the recipe and the tool pins.
         for name, text in [
                 ('witness/src/lib.rs', 'pub fn changed() {}\n'),
+                ('witness-support/src/lib.rs', 'pub fn changed() {}\n'),
                 ('Cargo.lock', (directory / 'Cargo.lock').read_text(encoding='utf-8') + '# changed\n'),
                 ('Cargo.toml', (directory / 'Cargo.toml').read_text(encoding='utf-8') + '# changed\n'),
                 ('justfile', 'sandbox-runtime:\n    @cargo run --quiet --locked -p witness -- sandbox-runtime --check\n'),
@@ -160,7 +176,14 @@ def the_cache_key_covers_every_input_of_the_script():
                 ('other/src/lib.rs', 'pub fn changed() {}\n')]:
             assert changing(name, text) != key, name
         # The workflow that runs the recipe decides the script too.
-        assert identity(directory, paths, 'other-workflow') != key
+        assert identity(directory, paths, 'd' * 40) != key
+        # A listed crate of an additional locked workspace is an input, with the manifest and lock file that declare it.
+        add_isolated(directory)
+        result, values = declared(directory, 'additional_locked_manifests=["isolated/Cargo.toml"]\nemscripten_crates=["isolated"]\n')
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert json.loads(values['sandbox_runtime_paths']) == [
+            'Cargo.lock', 'Cargo.toml', 'isolated', 'isolated/Cargo.lock', 'isolated/Cargo.toml', 'justfile', 'mise.toml',
+            'rust-toolchain.toml', 'witness', 'witness-support'], values
         # A recipe that names no package leaves the whole checkout to decide the key, so it can never serve an old script.
         (directory / 'justfile').write_text('sandbox-runtime:\n    @sh build-sandbox-runtime.sh\n', encoding='utf-8')
         result, values = declared(directory, 'emscripten_crates=["other"]\n')
@@ -173,6 +196,26 @@ def the_cache_key_covers_every_input_of_the_script():
         # A caller that lists no Emscripten crate names no input, so the job stays off.
         result, values = declared(directory, '')
         assert json.loads(values['sandbox_runtime_paths']) == [], values
+
+
+def the_cache_key_uses_the_shared_workflow_revision():
+    # A called workflow sees the caller's commit in `github.workflow_sha`, so the key takes the one revision this
+    # workflow resolved for the run, and a revision that stays unresolved never matches a saved entry.
+    assert steps(jobs[JOB])['Script identity']['env'] == {
+        'SANDBOX_RUNTIME_PATHS': '${{ needs.declaration.outputs.sandbox_runtime_paths }}',
+        'WORKFLOW_SHA': '${{ needs.declaration.outputs.workflow_revision }}'}, steps(jobs[JOB])['Script identity']['env']
+    assert jobs['declaration']['outputs']['workflow_revision'] == '${{ steps.workflow-revision.outputs.revision }}'
+    revision = steps(jobs['declaration'])['Shared workflow revision']
+    # The script job runs on pull requests too, so the revision is resolved on every event.
+    assert 'if' not in revision, revision
+    assert revision['env'] == {'GH_TOKEN': '${{ github.token }}', 'CURRENT_WORKFLOW_REF': '${{ github.workflow_ref }}',
+                               'CURRENT_WORKFLOW_SHA': '${{ github.workflow_sha }}'}, revision['env']
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary, 'checkout')
+        directory.mkdir()
+        (directory / 'input.txt').write_text('input\n', encoding='utf-8')
+        assert identity(directory, ['input.txt']) == identity(directory, ['input.txt'], run='2')
+        assert identity(directory, ['input.txt'], '') != identity(directory, ['input.txt'], '', run='2')
 
 
 def every_compiling_job_waits_for_the_script_and_downloads_it_before_compiling():
@@ -209,6 +252,8 @@ the_cached_script_skips_every_step_that_prepares_it()
 print('PASS the_cached_script_skips_every_step_that_prepares_it', flush=True)
 the_cache_key_covers_every_input_of_the_script()
 print('PASS the_cache_key_covers_every_input_of_the_script', flush=True)
+the_cache_key_uses_the_shared_workflow_revision()
+print('PASS the_cache_key_uses_the_shared_workflow_revision', flush=True)
 every_compiling_job_waits_for_the_script_and_downloads_it_before_compiling()
 print('PASS every_compiling_job_waits_for_the_script_and_downloads_it_before_compiling', flush=True)
 a_skipped_generator_does_not_skip_a_job_and_a_failed_one_fails_it()

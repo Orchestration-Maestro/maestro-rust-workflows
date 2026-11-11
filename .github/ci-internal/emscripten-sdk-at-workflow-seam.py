@@ -126,28 +126,6 @@ def the_declaration_checks_types_and_packages():
     assert 'emscripten_crates' not in schema['required']
 
 
-def the_declaration_names_the_paths_that_decide_each_build():
-    with tempfile.TemporaryDirectory() as temporary:
-        directory = pathlib.Path(temporary)
-        shutil.copytree(root / 'fixtures/wasm-witnesses', directory, dirs_exist_ok=True, ignore=shutil.ignore_patterns('target'))
-        (directory / '.github').mkdir()
-        result, values = declared(directory, '')
-        assert result.returncode == 0, result.stderr
-        assert values['emscripten_paths'] == '[]', values
-        # A root package is decided by its directory and the root manifest and lock file.
-        result, values = declared(directory, 'emscripten_crates=["witness", "witness"]\n')
-        assert result.returncode == 0, result.stderr
-        assert json.loads(values['emscripten_paths']) == ['Cargo.lock', 'Cargo.toml', 'witness'], values
-        # A package of an additional manifest is decided by its directory, that manifest and its lock file,
-        # whichever way the declaration spells the manifest path.
-        add_isolated(directory)
-        for spelling in ['isolated/Cargo.toml', './isolated/../isolated/Cargo.toml']:
-            result, values = declared(directory, f'additional_locked_manifests=[{json.dumps(spelling)}]\nemscripten_crates=["isolated", "other"]\n')
-            assert result.returncode == 0, result.stderr
-            assert json.loads(values['emscripten_paths']) == [
-                'Cargo.lock', 'Cargo.toml', 'isolated', 'isolated/Cargo.lock', 'isolated/Cargo.toml', 'other'], (spelling, values)
-
-
 def only_the_script_job_installs_the_sdk():
     # The script job builds the one artifact every consumer downloads, so no other job runs the compiler.
     script = steps(document['jobs']['sandbox-runtime'])
@@ -179,19 +157,16 @@ def a_pull_request_builds_only_what_its_change_reaches():
                     "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
                     'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.browser_build': 'false',
                     'needs.declaration.outputs.emscripten_crates': '[["web", null]]',
-                    'needs.declaration.outputs.emscripten_changed': 'true',
                     'needs.declaration.result': 'success'}
-    untouched = pull_request | {'needs.declaration.outputs.emscripten_changed': 'false'}
+    witnesses = pull_request | {'needs.declaration.outputs.wasm_examples': json.dumps([['witness', 'first']])}
     undeclared = pull_request | {'needs.declaration.outputs.emscripten_crates': '[]'}
-    assert opens(browser['if'], pull_request), 'a pull request that reaches a listed package runs the job'
-    assert not opens(browser['if'], untouched), 'a pull request that reaches none keeps it closed'
+    assert opens(browser['if'], witnesses), 'a pull request with declared witnesses runs the job'
+    # A listed Emscripten crate alone leaves the job nothing to build: the sandbox job compiles it on every run.
+    assert not opens(browser['if'], pull_request), 'a listed package alone keeps the job closed'
     assert not opens(browser['if'], undeclared), 'a caller without the key never runs it for this'
     # The Chromium job and the library sweep stay off a pull request.
     assert not opens(chromium['if'], pull_request | {'needs.declaration.outputs.browser_tests': 'true'})
     assert steps(browser)['Build wasm crates']['if'] and not opens(steps(browser)['Build wasm crates']['if'], pull_request)
-    # Selection hands the verdict to the job: the declaration job exposes it, and the selection step reads the paths from the declaration.
-    assert document['jobs']['declaration']['outputs']['emscripten_changed'] == '${{ steps.selection.outputs.emscripten_changed }}'
-    assert steps(document['jobs']['declaration'])['Select test packages']['env']['EMSCRIPTEN_PATHS'] == '${{ steps.config.outputs.emscripten_paths }}'
 
 
 def recorded(directory, tool, step, extra=None):
@@ -342,7 +317,7 @@ def a_compiler_of_another_version_stops_the_install():
         assert (directory / 'GITHUB_ENV').read_text(encoding='utf-8') == ''
 
 
-for check in [the_declaration_checks_types_and_packages, the_declaration_names_the_paths_that_decide_each_build,
+for check in [the_declaration_checks_types_and_packages,
               only_the_script_job_installs_the_sdk, a_pull_request_builds_only_what_its_change_reaches,
               the_target_comes_from_rustup,
               the_sdk_is_downloaded_with_the_job_token_and_installed_from_verified_archives,

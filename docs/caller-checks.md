@@ -1425,9 +1425,9 @@ spelling, still names one package. Two different packages with the same name
 fail validation, because the build would reach only one of them.
 
 A non-empty list makes the [`Sandbox runtime script`](#generated-runtime-script)
-job the one place the listed packages compile. That job installs the caller's
-toolchain and tools, the SDK and the target, and runs the caller's
-`sandbox-runtime` recipe once per run. No other job runs `emcc` or builds for
+job the one place the listed packages compile. On a cache miss it installs the
+caller's toolchain and tools, the SDK and the target, and runs the caller's
+`sandbox-runtime` recipe. No other job runs `emcc` or builds for
 `wasm32-unknown-emscripten`; every other job downloads the file the recipe
 writes. The Chromium browser tests job no longer installs the SDK: a browser
 recipe that needs it runs its own build.
@@ -1498,8 +1498,15 @@ The key covers every input of the script:
 - the directories of the packages the `sandbox-runtime` recipe runs, found from
   the `-p` and `--package` arguments of its recipe body, so a change to the
   generator misses the cache;
+- every path dependency the listed and named packages declare, followed through
+  the caller's `cargo metadata`, so a change to a crate the generator builds on
+  misses too;
 - the `justfile`, the root `Cargo.toml` and `Cargo.lock`, `mise.toml` and
-  `rust-toolchain.toml`, and the revision of this workflow.
+  `rust-toolchain.toml`;
+- the revision of this workflow, resolved once per run from the run's referenced
+  workflows, the way the merge-queue evidence resolves it, so a caller's commit
+  never enters the key. A revision that cannot be resolved makes the key new on
+  every run, so such a run never serves a script it did not build.
 
 A recipe that names no package cannot be read that way, so the whole checkout
 decides its key: such a caller never serves an old script, and never hits
@@ -1518,21 +1525,15 @@ snapshot, so a miss runs the recipe's cargo build cold.
 
 ### Emscripten crates on pull requests
 
-A pull request runs the Wasm and browser build job, as a merge group does, when
-its change touches any of:
+The listed packages compile in `Sandbox runtime script`, which runs on every
+pull request that lists them, so a pull request always builds the script it
+changes and no browser job installs the compiler.
 
-- a file under the directory of a listed package;
-- the manifest that declares a listed package: the root `Cargo.toml` for a root
-  workspace package, or its `additional_locked_manifests` entry;
-- the `Cargo.lock` beside that manifest;
-- the `emscripten_crates` key of `.github/ci.toml`.
-
-The listed packages themselves compile in `Sandbox runtime script`, on every
-run that lists them, so a pull request always builds the script it changes. The
-Chromium browser tests job does not run on pull requests. A change in another
-directory that a listed package depends on does not match the job selection;
-the merge group builds it. A package at the repository root owns every file, so
-every pull request runs the job.
+`Wasm and browser build` runs on a pull request only for the declared
+[example witnesses](#wasm-example-witnesses). A listed Emscripten crate has
+nothing left to build there, so a change that reaches one does not start the
+job; the sandbox job still compiles it. The Chromium browser tests job does not
+run on pull requests.
 
 ## Chromium browser tests
 
@@ -2375,8 +2376,8 @@ groups and main pushes. The native test archive covers arm64 Apple compilation
 on main pushes only. A failed target check fails the workflow.
 Undeclared targets do not create required results. Pull requests keep the test
 and build job names but skip their work, except that `Wasm and browser build`
-compiles the declared [example witnesses](#wasm-example-witnesses), builds the
-Emscripten crates a change reaches, and reports its required name. The
+compiles the declared [example witnesses](#wasm-example-witnesses) and reports
+its required name. The
 required-checks guard enforces execution only on merge groups and main pushes,
 so intentional PR skips do not file missing-check findings.
 
