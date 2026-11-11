@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.32](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.31...v0.19.32) (2026-11-11)
+
+
+### Continuous Integration
+
+* pin maestro-rust-workflows callers to v0.19.31 ([#460](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/460)) ([776222f](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/776222f1204683f8cae67ee31bc145cef25d7925))
+
+
+### Bug Fixes
+
+* **ci:** read macOS test seconds from earlier macOS shards ([#462](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/462)) ([8886ee8](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/8886ee8e4202624f2dfe4fcbae77a886a59a1acf))
+
 ## [0.19.31](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.30...v0.19.31) (2026-11-11)
 
 
