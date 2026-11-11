@@ -870,6 +870,14 @@ unset. Reader runs still skip the command on an exact hit. Writers leave
 snapshots without uploading the test archive or setup artifacts, since no test
 shard in those runs needs them.
 
+Every step that runs the workspace tests starts them with `TEST_PREPARE_BASE`
+set to `<runner temp>/maestro-test-prepare-base`, a path that holds no bundle.
+The build host exports the variable for every job, so without it a test that
+starts a setup child passes here and fails after landing: the child reads a
+prepared bundle the test never asked for. A test that clears the variable before
+it starts its child is unaffected, and nothing reads the path. The isolated test
+environment starts empty, so the tests step passes the variable in explicitly.
+
 ```toml
 test_prepare = "sh .config/prepare-tests.sh"
 test_prepare_setups = ["author-component"]

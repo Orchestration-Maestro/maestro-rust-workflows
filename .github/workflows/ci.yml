@@ -2506,6 +2506,10 @@ jobs:
       - name: Tests
         timeout-minutes: 45
         if: ${{ env.WARM_CACHE != 'true' && needs.declaration.outputs.enabled != 'true' }}
+        env:
+          # The build host exports a non-empty base for every job, so a test that starts a setup child
+          # without clearing it fails here as it does there. Nothing reads the path.
+          TEST_PREPARE_BASE: ${{ runner.temp }}/maestro-test-prepare-base
         run: |
           cargo fetch --locked
           packages=()
@@ -2552,6 +2556,9 @@ jobs:
         if: env.WARM_CACHE == 'true' || needs.declaration.outputs.enabled == 'true'
         env:
           CARGO_COVERAGE_MIN_LINES: ''
+          # The build host exports a non-empty base for every job, so a test that starts a setup child
+          # without clearing it fails here as it does there. Nothing reads the path.
+          TEST_PREPARE_BASE: ${{ runner.temp }}/maestro-test-prepare-base
         run: |
           python3 - <<'PYTHON'
           import os
@@ -2681,6 +2688,7 @@ jobs:
             XDG_RUNTIME_DIR="$isolation/runtime" XDG_CONFIG_DIRS="$isolation/config-dirs" \
             XDG_DATA_DIRS="$isolation/data-dirs" MAESTRO_NO_LOCAL_LLM=1 MAESTRO_TEST_DIAGNOSTICS_DIR="$diagnostics" \
             TEST_PREPARE_OUTPUT="$(native "$PWD/target/test-setup")" ${TEST_ARCHIVE:+TEST_ARCHIVE=1} \
+            TEST_PREPARE_BASE="${TEST_PREPARE_BASE-}" \
             CARGO_BUILD_RUSTC_WRAPPER="${CARGO_BUILD_RUSTC_WRAPPER-}" CARGO_INCREMENTAL="${CARGO_INCREMENTAL-}" \
             ${CARGO_NET_GIT_FETCH_WITH_CLI+CARGO_NET_GIT_FETCH_WITH_CLI="$CARGO_NET_GIT_FETCH_WITH_CLI"} \
             ${HOST_CC+HOST_CC="$HOST_CC"} ${CC+CC="$CC"} \
@@ -3173,6 +3181,9 @@ jobs:
       - name: Coverage
         timeout-minutes: 45
         if: needs.declaration.outputs.enabled != 'true' && needs.declaration.outputs.coverage == 'true'
+        env:
+          # The build host exports a non-empty base for every job; see the tests job's environment.
+          TEST_PREPARE_BASE: ${{ runner.temp }}/maestro-test-prepare-base
         run: |
           unset LLVM_COV LLVM_PROFDATA CARGO_LLVM_COV_FLAGS CARGO_LLVM_PROFDATA_FLAGS
           for name in ${!LLVM_@}; do

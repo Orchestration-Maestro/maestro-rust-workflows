@@ -1317,6 +1317,7 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
                                          git_fetch_with_cli=os.environ.get('CARGO_NET_GIT_FETCH_WITH_CLI'),
                                          ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
                                          test_prepare_output=os.environ.get('TEST_PREPARE_OUTPUT'),
+                                         test_prepare_base=os.environ.get('TEST_PREPARE_BASE'),
                                          test_archive=os.environ.get('TEST_ARCHIVE'),
                                          path=os.environ.get('PATH'),
                                          coverage_env={{name: value for name, value in os.environ.items() if name.startswith('CARGO_LLVM_COV')}},

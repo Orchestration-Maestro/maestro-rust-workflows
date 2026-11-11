@@ -109,7 +109,10 @@ packages from the caller's `.config/nextest.toml` filters and prepares only when
 one is selected. Without
 the key every run that tests prepares. Changes to the nextest configuration or
 the setup list select the full workspace. `test_prepare_inputs` caches the output
-across runs. Doctests compile and run in
+across runs. Every step that runs the workspace tests also starts them with
+`TEST_PREPARE_BASE` set to a path that holds no bundle, so a test that starts a
+setup child has to clear the variable, as on a host that exports it for every
+job. Doctests compile and run in
 parallel in their own leg. See [test shards](docs/caller-checks.md#test-shards).
 
 ## Compile cache
