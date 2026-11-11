@@ -222,6 +222,8 @@ jobs:
         run: python3 .github/ci-internal/archived-shards-at-workflow-seam.py
       - name: Example sources in coverage at workflow seam
         run: python3 .github/ci-internal/example-sources-in-coverage-at-workflow-seam.py
+      - name: Coverage profiles at workflow seam
+        run: python3 .github/ci-internal/coverage-profiles-at-workflow-seam.py
       - name: Compile cache in every Rust job
         run: python3 .github/ci-internal/compile-cache-in-every-rust-job.py
       - name: Cache storage failures keep builds running

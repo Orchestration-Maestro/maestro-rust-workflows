@@ -637,7 +637,17 @@ run no test shards and upload no coverage.
 
 Declared Linux callers run `cargo llvm-cov nextest` in the same isolated environment
 with their opted-in tools. Only the Linux numeric shards upload LCOV, without
-individual thresholds. `Tests (ubuntu-latest)` requires all matrix legs,
+individual thresholds. The run writes its raw profiles without a report, the
+step checks every profile, and `cargo llvm-cov report` merges them into the
+report. A process that a test stops while it exits leaves its profile empty or
+cut. The check fails the step for an empty profile or one the toolchain's own
+merge tool rejects, the same tool the report merges with, so another
+`llvm-profdata` earlier on `PATH` reads nothing here. It names each file with
+the binary whose merge signature it carries, without the pool index the runtime
+appends. It finds the binary by running each program of the instrumented build
+once, and only when a profile is damaged; it prints the seconds it took either
+way. The merge then runs as before: no profile is skipped or deleted.
+`Tests (ubuntu-latest)` requires all matrix legs,
 including native shards and every `Doctests` leg, to succeed on full runs.
 Native legs run plain nextest without coverage instrumentation. On a main push
 that reuses merge-queue Linux results, the aggregate requires successful native
@@ -695,7 +705,9 @@ holds the token.
 
 Each numeric shard downloads only its own archive and runs every test in it with
 `--archive-file`. No partition flag applies, so every test runs on exactly one
-shard. When a caller has fewer test binaries than shards, the extra shards hold
+shard. Its coverage report reads that same archive with
+`--nextest-archive-file`, so the report finds the binaries the shard ran. When a
+caller has fewer test binaries than shards, the extra shards hold
 no binary: they run nothing and upload an empty coverage report, so the union
 still receives one report per shard. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
@@ -874,6 +886,14 @@ unset. Reader runs still skip the command on an exact hit. Writers leave
 `TEST_PREPARE_BASE` unset. Pushes that reuse merge-queue tests save compiled-cache
 snapshots without uploading the test archive or setup artifacts, since no test
 shard in those runs needs them.
+
+Every step that runs the workspace tests starts them with `TEST_PREPARE_BASE`
+set to `<runner temp>/maestro-test-prepare-base`, a path that holds no bundle.
+The build host exports the variable for every job, so without it a test that
+starts a setup child passes here and fails after landing: the child reads a
+prepared bundle the test never asked for. A test that clears the variable before
+it starts its child is unaffected, and nothing reads the path. The isolated test
+environment starts empty, so the tests step passes the variable in explicitly.
 
 ```toml
 test_prepare = "sh .config/prepare-tests.sh"
