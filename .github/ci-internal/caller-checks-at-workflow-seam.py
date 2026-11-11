@@ -1041,8 +1041,21 @@ def cargo_git_cache_restores_before_every_fetch():
 
     target = jobs['targets']
     identity_step = next(step for step in target.split('      - name: ')[1:] if step.startswith('Compile cache identity\n'))
-    assert '        if:' not in identity_step, 'Windows needs the shared writer decision, not the compiler cache'
+    assert 'if: *sccache-target-host' in identity_step, 'a Windows target check restores no compile cache, so it identifies none'
     assert target.index('name: Check target') < target.index('name: Compile cache statistics')
+
+def only_linux_jobs_identify_and_restore_the_cargo_git_entry():
+    jobs = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)',
+                           workflow.split('\njobs:\n', 1)[1], re.MULTILINE | re.DOTALL))
+    for name, job in jobs.items():
+        if '      - name: Restore Cargo git cache\n' not in job:
+            continue
+        # One Linux writer keeps one entry, and archives never cross operating systems: another host has nothing to restore.
+        linux_only = re.search(r'^    runs-on: ubuntu-latest\n', job, re.MULTILINE) is not None
+        for step_name in ('Cargo git cache identity', 'Restore Cargo git cache'):
+            step = next(step for step in job.split('      - name: ')[1:] if step.startswith(step_name + '\n'))
+            if not linux_only:
+                assert "        if: runner.os == 'Linux'\n" in step, (name, step_name)
 
 def cargo_git_cache_reuses_exact_locked_sources():
     import shutil
@@ -1532,6 +1545,8 @@ cargo_git_transport_reaches_every_job_and_isolated_child()
 print('PASS cargo_git_transport_reaches_every_job_and_isolated_child')
 cargo_git_cache_restores_before_every_fetch()
 print('PASS cargo_git_cache_restores_before_every_fetch')
+only_linux_jobs_identify_and_restore_the_cargo_git_entry()
+print('PASS only_linux_jobs_identify_and_restore_the_cargo_git_entry')
 archive_signal_reaches_only_archived_shards()
 print('PASS archive_signal_reaches_only_archived_shards')
 

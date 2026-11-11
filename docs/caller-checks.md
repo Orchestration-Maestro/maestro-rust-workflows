@@ -559,11 +559,12 @@ first.
 
 ### Cargo git dependency cache
 
-No caller setting is needed. Lint, Docs, dependency/source/coverage checks,
-declared target checks, Build test archive, Prepare test setup and every test
-shard restore Cargo's `git/db` and `git/checkouts` before resolving dependencies.
-Doctests share the test-shard route. A hit containing the locked revision avoids
-fetching that git source; Cargo still downloads missing registry packages.
+No caller setting is needed. On Linux, Lint, Docs, dependency/source/coverage
+checks, declared target checks, Build test archive, Prepare test setup and every
+test shard restore Cargo's `git/db` and `git/checkouts` before resolving
+dependencies. Doctests share the test-shard route. A hit containing the locked
+revision avoids fetching that git source; Cargo still downloads missing registry
+packages.
 
 All Cargo jobs use Git's CLI transport through
 `CARGO_NET_GIT_FETCH_WITH_CLI=true`. Isolated test children keep this setting.
@@ -581,10 +582,9 @@ change its result.
 Only a default-branch push that missed the exact key saves an entry, and only
 Build test archive on Linux saves it. The locked sources are the same on every
 host, and one entry per native host does not fit the cache beside the compile
-snapshots, so macOS and Windows write none: their target checks and archive
-builds fetch those sources cold. Each host still restores only its own entry,
-because archives never cross operating systems. Windows reuses git sources
-without enabling the compile cache.
+snapshots, so macOS and Windows write none and restore none: their target
+checks, archive builds and test shards fetch those git sources cold. Only Linux
+jobs restore the entry, because archives never cross operating systems.
 
 These entries count against the 10 GB repository allowance. One measured Linux
 entry for Maestro's `wasmtime` revision and submodules is 436 MB compressed.
