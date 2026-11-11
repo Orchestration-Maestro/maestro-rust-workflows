@@ -40,9 +40,10 @@ Clippy and the Windows target check select changed crates and their workspace
 dependents; formatting still checks the whole workspace. Pull requests skip the
 test archive, test setup, test shards, doctests and wasm/browser builds. Two
 exceptions still compile: the declared [example witnesses](#wasm-example-witnesses),
-and the declared [Emscripten crates](#emscripten-builds) that the change
-reaches. Every required check name still reports; skipped jobs count as
-success. Merge groups run the full Linux shard matrix, Linux doctests,
+and the [Emscripten crates](#emscripten-builds), which the sandbox runtime job
+builds, or restores from its cache, on every run when the list is non-empty.
+Every required check name still reports; skipped jobs count as success.
+Merge groups run the full Linux shard matrix, Linux doctests,
 coverage and all declared builds and foreign-target checks except the native
 arm64 macOS route. They keep `Check (x86_64-apple-darwin)`. Main pushes also
 run the claimed macOS host's test archive, preparation, four test shards and
@@ -957,8 +958,9 @@ checks still report success. An absent base selects every package for lint.
 Wasm Clippy ignores the selection and lints every `wasm_crates` package on every
 run; see [Wasm and browser builds](#wasm-and-browser-builds). Pull requests
 skip the test archive, preparation, test shards, doctests and wasm/browser
-builds regardless of package selection, except for the example witnesses and
-the Emscripten crates a change reaches.
+builds regardless of package selection, except for the example witnesses. The
+Emscripten crates compile in the sandbox runtime job, which runs on every pull
+request that lists them, so no browser job installs the compiler.
 
 A crate manifest selects its crate; lockfile changes compare the resolved transitive dependency identities
 and features at base and head, selecting affected crates. Root manifest,
@@ -1429,20 +1431,13 @@ belongs to the root workspace. Listing a manifest twice, or under another
 spelling, still names one package. Two different packages with the same name
 fail validation, because the build would reach only one of them.
 
-A non-empty list adds these steps to the Wasm and browser build job on merge
-groups, main pushes and the pull requests described
-[below](#emscripten-crates-on-pull-requests). The job runs even when
-`wasm_crates` is empty:
-
-| Step | What it does |
-| --- | --- |
-| Emscripten SDK | Installs Emscripten 6.0.10 and puts `emcc` on the `PATH`. |
-| Emscripten target | Runs `rustup target add wasm32-unknown-emscripten` for the caller's toolchain. |
-| Build emscripten crates | Runs `cargo build --locked --target wasm32-unknown-emscripten -p "$CRATE"` for each package, adding `--manifest-path` for a package from an additional manifest. |
-
-The Chromium browser tests job installs the same SDK and target before the
-caller's `browser-test` recipe, so a recipe can build for Emscripten itself. It
-does not build the listed packages.
+A non-empty list makes the [`Sandbox runtime script`](#generated-runtime-script)
+job the one place the listed packages compile. On a cache miss it installs the
+caller's toolchain and tools, the SDK and the target, and runs the caller's
+`sandbox-runtime` recipe. No other job runs `emcc` or builds for
+`wasm32-unknown-emscripten`; every other job downloads the file the recipe
+writes. The Chromium browser tests job installs no SDK: a browser
+recipe that needs it runs its own build.
 
 The SDK comes from the emsdk 6.0.10 release archive on github.com. That request
 is the only one that carries the job token, and the step drops the token before
@@ -1489,15 +1484,40 @@ empty list skips the job and every other job runs as before.
 
 | Step | What it does |
 | --- | --- |
-| Toolchain | Runs `rustup show` to install the caller's pinned toolchain. |
-| Mise bootstrap, Test tools | Install the caller's `mise.toml` tools, also when `test_tools` is `false`, because the recipe needs them. |
-| Emscripten SDK, Emscripten target | The steps described [above](#emscripten-builds). |
+| Script identity | Hashes every input of the script into one cache key. |
+| Restore sandbox runtime | Restores the file on an exact hit. A cache it cannot read costs the preparation, never the job. |
+| Toolchain, Mise bootstrap, Test tools | Install the caller's pinned toolchain and `mise.toml` tools, also when `test_tools` is `false`, because the recipe needs them. |
+| Emscripten SDK, Emscripten target | Install Emscripten 6.0.10 and put `emcc` on the `PATH`, then `rustup target add wasm32-unknown-emscripten`. |
 | Build sandbox runtime script | Runs `mise exec -- just sandbox-runtime`, then fails if the file is missing. |
-| Upload sandbox runtime | Publishes the file as the `sandbox-runtime-<concurrency key or root>` artifact of the run. |
+| Save sandbox runtime | Saves the file under the same key, on a push to the default branch. |
+| Upload sandbox runtime | Publishes the file as the `sandbox-runtime-<concurrency key or root>` artifact of the run, on a hit and on a miss. |
 
-Every step runs on every run. Maestro keeps no cache of the file, so a change to
-the generator, to the listed packages or to a pinned tool is always tested
-against the script it produces.
+On a hit the job costs the checkout, the key and the restore: the toolchain,
+the tools, the SDK, the target and the build are skipped, about 110 to 125
+seconds of a 145-second job. On a miss every one of them runs, so a miss costs
+what the job cost before the cache. A merge group reads what the last push to
+the default branch saved; a pull request reads the same entry.
+
+The key covers every input of the script:
+
+- the directories of the packages `emscripten_crates` lists, and the manifests
+  and lock files that declare them;
+- the directories of the packages the `sandbox-runtime` recipe runs, found from
+  the `-p` and `--package` arguments of its recipe body, so a change to the
+  generator misses the cache;
+- every path dependency the named packages declare, followed through
+  the caller's `cargo metadata`, so a change to a crate the generator builds on
+  misses too;
+- the `justfile`, the root `Cargo.toml` and `Cargo.lock`, `mise.toml` and
+  `rust-toolchain.toml`;
+- the revision of this workflow, resolved once per run from the run's referenced
+  workflows, the way the merge-queue evidence resolves it, so a caller's commit
+  never enters the key. A revision that cannot be resolved makes the key new on
+  every run, so such a run never serves a script it did not build.
+
+A recipe that names no package cannot be read that way, so the whole checkout
+decides its key: such a caller never serves an old script, and never hits
+either.
 
 Every job that compiles the caller waits for `Sandbox runtime script`: Format
 and lint, Docs, Build test archive, Prepare test setup, the test shards,
@@ -1508,26 +1528,19 @@ into `target/sandbox-runtime`, before the first cargo command.
 
 A failed generator does not skip those jobs: they start, the download fails
 them, and each required check reports the failure. The job keeps no compile
-snapshot, so the recipe's cargo build starts cold.
+snapshot, so a miss runs the recipe's cargo build cold.
 
 ### Emscripten crates on pull requests
 
-A pull request builds the listed packages, as a merge group does, when its
-change touches any of:
+The listed packages compile in `Sandbox runtime script`, which runs on every
+pull request that lists them, so a pull request always builds the script it
+changes and no browser job installs the compiler.
 
-- a file under the directory of a listed package;
-- the manifest that declares a listed package: the root `Cargo.toml` for a root
-  workspace package, or its `additional_locked_manifests` entry;
-- the `Cargo.lock` beside that manifest;
-- the `emscripten_crates` key of `.github/ci.toml`.
-
-A pull request that touches none of these skips the three steps. The build
-starts from an empty compile cache, because Wasm and browser build keeps no
-snapshot; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot). A
-change in another directory that a listed package depends on does not match;
-the merge group builds it. A package at the repository root owns every file, so
-every pull request builds it. The Chromium browser tests job does not run on pull
-requests.
+`Wasm and browser build` runs on a pull request only for the declared
+[example witnesses](#wasm-example-witnesses). A listed Emscripten crate has
+nothing left to build there, so a change that reaches one does not start the
+job; the sandbox job still compiles it. The Chromium browser tests job does not
+run on pull requests.
 
 ## Chromium browser tests
 
@@ -2406,8 +2419,8 @@ groups and main pushes. The native test archive covers arm64 Apple compilation
 on main pushes only. A failed target check fails the workflow.
 Undeclared targets do not create required results. Pull requests keep the test
 and build job names but skip their work, except that `Wasm and browser build`
-compiles the declared [example witnesses](#wasm-example-witnesses), builds the
-Emscripten crates a change reaches, and reports its required name. The
+compiles the declared [example witnesses](#wasm-example-witnesses) and reports
+its required name. The
 required-checks guard enforces execution only on merge groups and main pushes,
 so intentional PR skips do not file missing-check findings.
 

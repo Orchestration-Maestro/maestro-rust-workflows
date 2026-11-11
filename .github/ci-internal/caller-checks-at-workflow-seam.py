@@ -38,7 +38,7 @@ def routed_jobs(document, values):
         'needs.declaration.outputs.tested_runners': '["ubuntu-latest"]',
         'needs.declaration.outputs.targets': '[{}]', 'needs.declaration.outputs.fuzz_targets': '["target"]',
         'needs.declaration.outputs.wasm_crates': '["web"]', 'needs.declaration.outputs.wasm_examples': '[]',
-        'needs.declaration.outputs.emscripten_changed': 'false', 'needs.declaration.outputs.emscripten_crates': '[]',
+        'needs.declaration.outputs.emscripten_crates': '[]',
         'needs.declaration.result': 'success', 'needs.sandbox-runtime.result': 'skipped',
         'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.browser_tests': 'true',
         # Longer names first: evaluate substitutes by prefix.
@@ -209,8 +209,6 @@ def execute(name, cwd, extra=None, prelude=''):
     env['TEST_SHARD_COUNT'] = wired_shard_count(name)
     # The declaration's output without test_prepare_setups.
     env['TEST_PREPARE_CONSUMERS'] = 'null'
-    # The declaration's output for a caller that lists no Emscripten crates.
-    env['EMSCRIPTEN_PATHS'] = '[]'
     env.update(extra or {})
     if name == 'Select test packages':
         env.setdefault('TEST_HOSTS', json.dumps({'ubuntu-latest': int(env['TEST_SHARD_COUNT'])}))
@@ -1242,7 +1240,7 @@ print('PASS preparation_runs_beside_host_compilation')
 def absent_keeps_base_checks():
     result, values = declaration(root / 'fixtures/sample')
     assert result.returncode == 0, result.stdout + result.stderr
-    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'emscripten_crates': '[]', 'emscripten_paths': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}'}
+    assert values == {'test_prepare_consumers': 'null', 'test_prepare_inputs': '[]', 'warm_test_filter': json.dumps('none()'), 'test_shard_count': '16', 'additional_locked_manifests': '[]', 'quality_config': '{}', 'enabled': 'false', 'wasm_crates': '[]', 'wasm_examples': '[]', 'emscripten_crates': '[]', 'sandbox_runtime_paths': '[]', 'browser_test_crates': '[]', 'targets': '[]', 'browser_build': 'false', 'test_tools': 'false', 'reserved_ports': '', 'fuzz_manifest': '', 'fuzz_targets': '[]', 'test_hosts': '{"ubuntu-latest": 16}'}, values
     assert 'if: needs.declaration.outputs.enabled != \'true\'' in workflow
     assert 'if: needs.declaration.outputs.enabled == \'true\'' in workflow
     assert "inputs.working-directory != '.'" in workflow
@@ -3070,7 +3068,6 @@ def event_policy_keeps_pull_requests_fast():
                            'needs.declaration.outputs.targets': '[{}]',
                            'needs.declaration.outputs.wasm_crates': '["sample"]',
                            'needs.declaration.outputs.wasm_examples': '[]',
-                           'needs.declaration.outputs.emscripten_changed': 'false',
                            'needs.declaration.outputs.browser_build': 'true',
                            'needs.declaration.outputs.browser_tests': 'true'}
                 expected = not advisory and not fuzz
@@ -3819,15 +3816,18 @@ def merge_queue_identity_is_exact_and_shared():
     from unittest.mock import patch
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     steps = document['jobs']['declaration']['steps']
+    revision = next(step for step in steps if step['name'] == 'Shared workflow revision')
+    assert revision['env'] == {'GH_TOKEN': '${{ github.token }}', 'CURRENT_WORKFLOW_REF': '${{ github.workflow_ref }}',
+                               'CURRENT_WORKFLOW_SHA': '${{ github.workflow_sha }}'}
+    # The sandbox script job runs on pull requests too, so every event resolves the revision once.
+    assert 'if' not in revision, revision
     identity = next(step for step in steps if step['name'] == 'Test evidence identity')
-    assert identity['env']['GH_TOKEN'] == '${{ github.token }}'
-    assert identity['env']['CURRENT_WORKFLOW_REF'] == '${{ github.workflow_ref }}'
-    assert identity['env']['CURRENT_WORKFLOW_SHA'] == '${{ github.workflow_sha }}'
+    assert identity['env']['WORKFLOW_REVISION'] == '${{ steps.workflow-revision.outputs.revision }}'
     for name in ['Check merge queue result', 'Record merge queue evidence']:
         step = next(step for step in steps if step['name'] == name)
         for key in ['WORKFLOW_REF', 'WORKFLOW_SHA']:
             assert step['env'][key] == '${{ steps.evidence-scope.outputs.' + key.lower() + ' }}'
-    match = re.search(r"python3 -I - <<'PYTHON'\n(.*?)\nPYTHON", body('Test evidence identity'), re.S)
+    match = re.search(r"python3 -I - <<'PYTHON'\n(.*?)\nPYTHON", body('Shared workflow revision'), re.S)
     assert match
     path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
     reference = {'path': path + '@v1', 'sha': 'c' * 40}
@@ -3848,13 +3848,11 @@ def merge_queue_identity_is_exact_and_shared():
                 return json.dumps({'referenced_workflows': references})
             with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'owner/repo', 'GITHUB_RUN_ID': '9',
                     'GITHUB_OUTPUT': str(output), 'CURRENT_WORKFLOW_REF': raw, 'CURRENT_WORKFLOW_SHA': sha,
-                    'CALLER_DIRECTORY': '.', 'CALL_KEY': '', 'GH_TOKEN': 'read-token'}), \
+                    'GH_TOKEN': 'read-token'}), \
                     patch('subprocess.check_output', side_effect=api):
-                exec(compile(match[1], 'Test evidence identity', 'exec'), {})
+                exec(compile(match[1], 'Shared workflow revision', 'exec'), {})
             values = dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
-            assert values['workflow_sha'] == expected, (raw, references, values)
-            assert values['workflow_ref'] == (path + '@' + expected if expected else ''), values
-            assert re.fullmatch('[0-9a-f]{64}', values['scope'])
+            assert values['revision'] == expected, (raw, references, values)
 
 merge_queue_identity_is_exact_and_shared()
 print('PASS merge_queue_identity_is_exact_and_shared')
@@ -4814,71 +4812,6 @@ def broken_wasm_example_stops_at_first_failure():
 broken_wasm_example_stops_at_first_failure()
 print('PASS broken_wasm_example_stops_at_first_failure')
 
-def pull_requests_build_the_emscripten_crates_their_change_reaches():
-    from functools import partial
-    with tempfile.TemporaryDirectory() as temporary:
-        directory = pathlib.Path(temporary)
-        def crate(parent, name):
-            (parent / 'src').mkdir(parents=True)
-            (parent / 'Cargo.toml').write_text(f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n', encoding='utf-8')
-            (parent / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
-        (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b"]\n', encoding='utf-8')
-        crate(directory / 'a', 'a')
-        crate(directory / 'b', 'b')
-        # A package of an additional locked workspace, and a sibling directory whose name starts like a listed one.
-        crate(directory / 'sandbox', 's')
-        (directory / 'sandbox/Cargo.toml').write_text(
-            '[workspace]\n' + (directory / 'sandbox/Cargo.toml').read_text(encoding='utf-8'), encoding='utf-8')
-        (directory / 'bx').mkdir()
-        (directory / 'bx/notes.txt').write_text('notes\n', encoding='utf-8')
-        subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=directory, check=True)
-        subprocess.run(['cargo', 'generate-lockfile', '--offline'], cwd=directory / 'sandbox', check=True)
-        subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
-        git = partial(fixture_git, directory)
-        (directory / '.github').mkdir()
-        declared = 'wasm_crates=[]\ncheck_targets=[]\nadditional_locked_manifests=["sandbox/Cargo.toml"]\n'
-        ci_toml = directory / '.github/ci.toml'
-        ci_toml.write_text(declared + 'emscripten_crates=["b", "s"]\n', encoding='utf-8')
-        git('add', '.')
-        git('commit', '-qm', 'base')
-        base = git('rev-parse', 'HEAD')
-        def changing(files, event='pull_request'):
-            # The verdict for a change to `files`, from the declaration step's paths through the selection step.
-            git('reset', '--hard', base)
-            for name, text in files.items():
-                (directory / name).write_text(text, encoding='utf-8')
-            git('add', '.')
-            git('commit', '-qm', 'change')
-            result, values = declaration(directory)
-            assert result.returncode == 0, result.stdout + result.stderr
-            with output_file() as output:
-                result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
-                                                     'EMSCRIPTEN_PATHS': values['emscripten_paths']})
-                assert result.returncode == 0, result.stdout + result.stderr
-                return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())['emscripten_changed']
-        source = 'pub fn changed() {}\n'
-        lock = (directory / 'Cargo.lock').read_text(encoding='utf-8') + '# changed\n'
-        sandbox_lock = (directory / 'sandbox/Cargo.lock').read_text(encoding='utf-8') + '# changed\n'
-        for files in [{'b/src/lib.rs': source}, {'b/Cargo.toml': (directory / 'b/Cargo.toml').read_text(encoding='utf-8') + '# changed\n'},
-                      {'sandbox/src/lib.rs': source}, {'sandbox/Cargo.lock': sandbox_lock}, {'Cargo.lock': lock},
-                      {'.github/ci.toml': declared + 'emscripten_crates=["b"]\n'}]:
-            assert changing(files) == 'true', files
-        for files in [{'a/src/lib.rs': source}, {'bx/notes.txt': 'changed\n'}, {'docs.md': 'Documentation\n'},
-                      {'.github/ci.toml': declared + 'emscripten_crates=["b", "s"]\nwarm_test_filter="none()"\n'}]:
-            assert changing(files) == 'false', files
-        # Merge groups and pushes build through the full run, not through this verdict.
-        for event in ['merge_group', 'push']:
-            assert changing({'b/src/lib.rs': source}, event) == 'false', event
-        # A caller that lists no Emscripten crate never builds, whatever the change.
-        git('reset', '--hard', base)
-        ci_toml.write_text(declared, encoding='utf-8')
-        git('add', '.')
-        git('commit', '-qm', 'no crates')
-        base = git('rev-parse', 'HEAD')
-        assert changing({'b/src/lib.rs': source}) == 'false'
-
-pull_requests_build_the_emscripten_crates_their_change_reaches()
-print('PASS pull_requests_build_the_emscripten_crates_their_change_reaches')
 
 def pull_requests_compile_only_the_declared_witnesses():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
@@ -4888,7 +4821,7 @@ def pull_requests_compile_only_the_declared_witnesses():
                'github.repository_id': 'caller', 'inputs.working-directory': '.',
                'needs.declaration.outputs.coverage': 'false', 'needs.declaration.outputs.tests_reused': 'false',
                'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.browser_build': 'true',
-               'needs.declaration.outputs.test_tools': 'false', 'needs.declaration.outputs.emscripten_changed': 'false',
+               'needs.declaration.outputs.test_tools': 'false',
                'needs.declaration.outputs.wasm_examples': json.dumps([['witness', 'first']])}
     assert evaluate(job['if'], context), 'a pull request with declared witnesses runs the browser job'
     assert not evaluate(job['if'], context | {'needs.declaration.outputs.wasm_examples': '[]'}), \
