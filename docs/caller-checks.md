@@ -392,7 +392,9 @@ still instrument workspace builds and send their compiles through the cache.
 | Jobs | Host | Restore | Save |
 | --- | --- | --- | --- |
 | Warm coverage build, Build test archive, Prepare test setup, Dependency/source/coverage checks | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
-| Format and lint, Docs, Doctests, Wasm and browser build, Chromium browser tests, declared target checks | Linux | Never | Never; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) |
+| Wasm and browser build | Linux | Every call that runs the job | Default-branch pushes only; the one writer of the `wasm32` shape |
+| Chromium browser tests | Linux | Every call that runs the job | Never; they read the `wasm32` shape the Wasm build saves |
+| Format and lint, Docs, Doctests, declared target checks | Linux | Never | Never; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) |
 | Native test archive builds and test preparation | arm64 macOS | Every call that runs the job | Default-branch pushes only, including those that reuse merge-queue tests |
 | Native doctests | arm64 macOS | Every call that runs the job | Never; they restore the native archive's snapshot |
 | Declared target checks | arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
@@ -416,25 +418,33 @@ Only a default-branch push warm call also runs Format and lint, Docs,
 Doctests, Wasm and browser build, and declared Chromium browser tests.
 They run their existing checks, not substitute builds. Browser tests and
 doctests execute during these warm calls; the coverage warm build still uses
-its optional test filter. These Linux jobs keep no snapshot, so the warm call
-runs them without saving anything. Other warm calls skip these additional jobs.
+its optional test filter. The Wasm build seeds the `wasm32` snapshot there and
+the other Linux jobs keep none, so the warm call saves only that shape. Other
+warm calls skip these additional jobs.
 No extra cache writer is enabled for pull requests, merge groups, feature
 branches or manual runs.
 
 ### Jobs that keep no snapshot
 
-A Linux job saves a snapshot only when a later job of the same run restores it:
-the warm coverage build, Build test archive and Prepare test setup feed the test
-shards, and the Dependency, source and coverage checks job is the whole build of
-a caller without the archive. Format and lint, Docs, Doctests, Wasm and browser
-build, Chromium browser tests and the Linux target checks restore nothing and
-save nothing, because one snapshot for each of them would not fit the cache
-limit next to the others (see [One entry per prefix](#one-entry-per-prefix)). They
-compile cold, and a job on another host keeps its snapshot. Compile cache
-identity decides this once, in its `snapshot` output. The restore step runs only
-when `snapshot` is `true`, the save step needs the `writer` output that is `true`
-only for a snapshot-keeping job on a default-branch push, and the hit-rate floor
-reports the job's compile count without judging a hit rate it cannot reach.
+A Linux job saves a snapshot only when a job restores it: the warm coverage
+build, Build test archive and Prepare test setup feed the test shards of the
+same run, the Dependency, source and coverage checks job is the whole build of
+a caller without the archive, and the Wasm build's `wasm32` snapshot is what the
+Chromium browser tests restore on a later run. Format and lint, Docs, Doctests
+and the Linux target checks restore nothing and save nothing, because one
+snapshot for each of them would not fit the cache limit next to the others (see
+[One entry per prefix](#one-entry-per-prefix)). They compile cold, and a job on
+another host keeps its snapshot. Compile cache identity decides this once, in
+its `snapshot` output. The restore step runs only when `snapshot` is `true`, the
+save step needs the `writer` output that is `true` only for a snapshot-keeping
+job on a default-branch push, and the hit-rate floor reports the job's compile
+count without judging a hit rate it cannot reach.
+
+The Wasm build and the Chromium browser tests compile the same wasm32 graph, so
+they share one shape and one entry. The Wasm build is its only writer, on
+default-branch pushes. The Chromium job restores it read-only, and because it
+does not wait for the Wasm build it reads the entry the previous push saved. Its
+cap is the default 1 GiB.
 
 Cold times measured on Maestro, against the warm time of the same job:
 
@@ -446,7 +456,10 @@ Cold times measured on Maestro, against the warm time of the same job:
 | Check (aarch64-unknown-linux-gnu) | 4.7 to 5.5 min | 3.0 min |
 
 The table records Linux job costs; macOS tests run after landing. The extra
-Linux minutes add no cost on a public repository.
+Linux minutes add no cost on a public repository. The Chromium browser tests
+have no warm row yet: their cold baseline is the compile work inside the
+`browser-exports` setup, and the first default-branch push that writes the
+`wasm32` snapshot measures their warm time.
 
 An entry a job saved before it stopped keeping a snapshot stays in the cache
 until GitHub's seven-day expiry removes it, because nothing restores it and the
@@ -490,7 +503,7 @@ number sets the cap.
 The bound applies to each save, not the repository's 10 GB cache allowance.
 Compressed snapshot sizes are measured separately, and GitHub eviction can
 remove even the newest snapshot of a shape. On 2026-11-03 one Maestro generation
-held 5,606,616,026 bytes: the other compile snapshots, three Cargo git entries
+held 5,606,616,026 bytes: the other compile snapshots, the Cargo git entry
 and one test setup bundle. The setup snapshot adds one entry of about 1.1 GB to
 each generation: at most 1.6 GB of objects, plus about 6 MB of preprocessor
 entries. GitHub evicts by last access, so the previous generation goes first:
@@ -521,8 +534,9 @@ the shapes restored least recently, and those shapes then compile cold. One
 snapshot for each of the twelve shapes Maestro compiled needed 11.66 GiB, so the
 Linux jobs listed in [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot)
 stopped saving. Measured from Maestro's default-branch push 42428071607 on
-2026-11-08, one entry per kept shape holds 8.33 GiB; with the browser packages
-entry, 8.35 GiB, 83.5% of the limit:
+2026-11-08, with the `wasm32` shape at its cap in place of the two native Cargo
+git entries, one entry per kept shape holds 8.19 GiB; with the browser packages
+entry, 8.21 GiB, 82.1% of the limit:
 
 | Entry | Host | GiB |
 | --- | --- | --- |
@@ -532,9 +546,8 @@ entry, 8.35 GiB, 83.5% of the limit:
 | `tests-plain` | macOS | 0.81 |
 | `targets-clippy-x86_64-apple-darwin` | macOS | 0.37 |
 | `targets-clippy-aarch64-apple-darwin` | macOS | 0.36 |
+| `wasm32` | Linux | 1.00 |
 | `cargo-git` | Linux | 0.41 |
-| `cargo-git` | macOS | 0.41 |
-| `cargo-git` | Windows | 0.74 |
 | `test-setup` | Linux | 0.82 |
 | `test-setup` | macOS | 0.76 |
 | `browser-packages` | Linux | 0.02 |
@@ -553,11 +566,12 @@ nothing has read since the run began, normally goes first.
 
 ### Cargo git dependency cache
 
-No caller setting is needed. Lint, Docs, dependency/source/coverage checks,
-declared target checks, Build test archive, Prepare test setup and every test
-shard restore Cargo's `git/db` and `git/checkouts` before resolving dependencies.
-Doctests share the test-shard route. A hit containing the locked revision avoids
-fetching that git source; Cargo still downloads missing registry packages.
+No caller setting is needed. Linux jobs restore Cargo's `git/db` and
+`git/checkouts` before resolving dependencies: Lint, Docs,
+dependency/source/coverage checks, declared target checks, Build test archive,
+Prepare test setup and every test shard. Doctests share the test-shard route. A hit containing the locked
+revision avoids fetching that git source; Cargo still downloads missing registry
+packages.
 
 All Cargo jobs use Git's CLI transport through
 `CARGO_NET_GIT_FETCH_WITH_CLI=true`. Isolated test children keep this setting.
@@ -572,15 +586,17 @@ file falls back to the newest entry in that scope; Cargo fetches any missing
 revision normally. A cache miss or transfer failure does not bypass a check or
 change its result.
 
-Only a default-branch push that missed the exact key saves an entry. Build test
-archive seeds Linux; native target checks seed macOS and Windows after a
-successful check. Each uses its native Cargo home. Archives never cross operating
-systems. Windows reuses git sources without enabling the compile cache.
+Only a default-branch push that missed the exact key saves an entry, and only
+Build test archive on Linux saves it. The locked sources are the same on every
+host, and one entry per native host does not fit the cache beside the compile
+snapshots, so macOS and Windows write none and restore none: their target
+checks, archive builds and test shards fetch those git sources cold. Only Linux
+jobs restore the entry, because archives never cross operating systems.
 
 These entries count against the 10 GB repository allowance. One measured Linux
 entry for Maestro's `wasmtime` revision and submodules is 436 MB compressed.
-Allow for a separate entry per native host and retained lock-file revision;
-measure native sizes and restore time before claiming a saving. Cache eviction
+Allow one entry per caller scope and retained lock-file revision; measure a new
+lock file's size before claiming a saving. Cache eviction
 can remove an entry before the next reader runs.
 
 ## Test shards
