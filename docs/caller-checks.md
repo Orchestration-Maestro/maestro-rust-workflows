@@ -40,9 +40,10 @@ Clippy and the Windows target check select changed crates and their workspace
 dependents; formatting still checks the whole workspace. Pull requests skip the
 test archive, test setup, test shards, doctests and wasm/browser builds. Two
 exceptions still compile: the declared [example witnesses](#wasm-example-witnesses),
-and the declared [Emscripten crates](#emscripten-builds) that the change
-reaches. Every required check name still reports; skipped jobs count as
-success. Merge groups run the full Linux shard matrix, Linux doctests,
+and the [Emscripten crates](#emscripten-builds), which the sandbox runtime job
+builds, or restores from its cache, on every run when the list is non-empty.
+Every required check name still reports; skipped jobs count as success.
+Merge groups run the full Linux shard matrix, Linux doctests,
 coverage and all declared builds and foreign-target checks except the native
 arm64 macOS route. They keep `Check (x86_64-apple-darwin)`. Main pushes also
 run the claimed macOS host's test archive, preparation, four test shards and
@@ -391,7 +392,9 @@ still instrument workspace builds and send their compiles through the cache.
 | Jobs | Host | Restore | Save |
 | --- | --- | --- | --- |
 | Warm coverage build, Build test archive, Prepare test setup, Dependency/source/coverage checks | Linux | Every call that runs the job | Default-branch pushes only; one writer per test shape |
-| Format and lint, Docs, Doctests, Wasm and browser build, Chromium browser tests, declared target checks | Linux | Never | Never; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) |
+| Wasm and browser build | Linux | Every call that runs the job | Default-branch pushes only; the one writer of the `wasm32` shape |
+| Chromium browser tests | Linux | Every call that runs the job | Never; they read the `wasm32` shape the Wasm build saves |
+| Format and lint, Docs, Doctests, declared target checks | Linux | Never | Never; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) |
 | Native test archive builds and test preparation | arm64 macOS | Every call that runs the job | Default-branch pushes only, including those that reuse merge-queue tests |
 | Native doctests | arm64 macOS | Every call that runs the job | Never; they restore the native archive's snapshot |
 | Declared target checks | arm64 macOS | Every call that runs the job | Default-branch pushes only; each target-matrix entry saves, including repeated targets |
@@ -415,25 +418,33 @@ Only a default-branch push warm call also runs Format and lint, Docs,
 Doctests, Wasm and browser build, and declared Chromium browser tests.
 They run their existing checks, not substitute builds. Browser tests and
 doctests execute during these warm calls; the coverage warm build still uses
-its optional test filter. These Linux jobs keep no snapshot, so the warm call
-runs them without saving anything. Other warm calls skip these additional jobs.
+its optional test filter. The Wasm build seeds the `wasm32` snapshot there and
+the other Linux jobs keep none, so the warm call saves only that shape. Other
+warm calls skip these additional jobs.
 No extra cache writer is enabled for pull requests, merge groups, feature
 branches or manual runs.
 
 ### Jobs that keep no snapshot
 
-A Linux job saves a snapshot only when a later job of the same run restores it:
-the warm coverage build, Build test archive and Prepare test setup feed the test
-shards, and the Dependency, source and coverage checks job is the whole build of
-a caller without the archive. Format and lint, Docs, Doctests, Wasm and browser
-build, Chromium browser tests and the Linux target checks restore nothing and
-save nothing, because one snapshot for each of them would not fit the cache
-limit next to the others (see [One entry per prefix](#one-entry-per-prefix)). They
-compile cold, and a job on another host keeps its snapshot. Compile cache
-identity decides this once, in its `snapshot` output. The restore step runs only
-when `snapshot` is `true`, the save step needs the `writer` output that is `true`
-only for a snapshot-keeping job on a default-branch push, and the hit-rate floor
-reports the job's compile count without judging a hit rate it cannot reach.
+A Linux job saves a snapshot only when a job restores it: the warm coverage
+build, Build test archive and Prepare test setup feed the test shards of the
+same run, the Dependency, source and coverage checks job is the whole build of
+a caller without the archive, and the Wasm build's `wasm32` snapshot is what the
+Chromium browser tests restore on a later run. Format and lint, Docs, Doctests
+and the Linux target checks restore nothing and save nothing, because one
+snapshot for each of them would not fit the cache limit next to the others (see
+[One entry per prefix](#one-entry-per-prefix)). They compile cold, and a job on
+another host keeps its snapshot. Compile cache identity decides this once, in
+its `snapshot` output. The restore step runs only when `snapshot` is `true`, the
+save step needs the `writer` output that is `true` only for a snapshot-keeping
+job on a default-branch push, and the hit-rate floor reports the job's compile
+count without judging a hit rate it cannot reach.
+
+The Wasm build and the Chromium browser tests compile the same wasm32 graph, so
+they share one shape and one entry. The Wasm build is its only writer, on
+default-branch pushes. The Chromium job restores it read-only, and because it
+does not wait for the Wasm build it reads the entry the previous push saved. Its
+cap is the default 1 GiB.
 
 Cold times measured on Maestro, against the warm time of the same job:
 
@@ -445,7 +456,10 @@ Cold times measured on Maestro, against the warm time of the same job:
 | Check (aarch64-unknown-linux-gnu) | 4.7 to 5.5 min | 3.0 min |
 
 The table records Linux job costs; macOS tests run after landing. The extra
-Linux minutes add no cost on a public repository.
+Linux minutes add no cost on a public repository. The Chromium browser tests
+have no warm row yet: their cold baseline is the compile work inside the
+`browser-exports` setup, and the first default-branch push that writes the
+`wasm32` snapshot measures their warm time.
 
 An entry a job saved before it stopped keeping a snapshot stays in the cache
 until GitHub's seven-day expiry removes it, because nothing restores it and the
@@ -489,7 +503,7 @@ number sets the cap.
 The bound applies to each save, not the repository's 10 GB cache allowance.
 Compressed snapshot sizes are measured separately, and GitHub eviction can
 remove even the newest snapshot of a shape. On 2026-11-03 one Maestro generation
-held 5,606,616,026 bytes: the other compile snapshots, three Cargo git entries
+held 5,606,616,026 bytes: the other compile snapshots, the Cargo git entry
 and one test setup bundle. The setup snapshot adds one entry of about 1.1 GB to
 each generation: at most 1.6 GB of objects, plus about 6 MB of preprocessor
 entries. GitHub evicts by last access, so the previous generation goes first:
@@ -516,12 +530,12 @@ The repository cache holds one generation, so the snapshots every kept shape
 saves, plus the Cargo git entries, the test setup bundles and the browser
 packages, must add up to under 90% of the 10 GiB limit, the level at which the
 usage guard files an issue. Over the limit GitHub evicts the newest snapshots of
-the shapes restored least recently, and those shapes then compile cold. One
-snapshot for each of the twelve shapes Maestro compiled needed 11.66 GiB, so the
-Linux jobs listed in [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot)
-stopped saving. Measured from Maestro's default-branch push 42428071607 on
-2026-11-08, one entry per kept shape holds 8.33 GiB; with the browser packages
-entry, 8.35 GiB, 83.5% of the limit:
+the shapes restored least recently, and those shapes then compile cold. One snapshot for each of the
+twelve shapes Maestro compiled needed 11.66 GiB, so the Linux jobs listed in
+[Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) stopped saving. Measured
+from Maestro's default-branch push 42428071607 on 2026-11-08, with the `wasm32`
+shape at its cap in place of the two native Cargo git entries, one entry per kept
+shape holds 8.19 GiB; with the browser packages entry, 8.21 GiB, 82.1% of the limit:
 
 | Entry | Host | GiB |
 | --- | --- | --- |
@@ -531,9 +545,8 @@ entry, 8.35 GiB, 83.5% of the limit:
 | `tests-plain` | macOS | 0.81 |
 | `targets-clippy-x86_64-apple-darwin` | macOS | 0.37 |
 | `targets-clippy-aarch64-apple-darwin` | macOS | 0.36 |
+| `wasm32` | Linux | 1.00 |
 | `cargo-git` | Linux | 0.41 |
-| `cargo-git` | macOS | 0.41 |
-| `cargo-git` | Windows | 0.74 |
 | `test-setup` | Linux | 0.82 |
 | `test-setup` | macOS | 0.76 |
 | `browser-packages` | Linux | 0.02 |
@@ -552,11 +565,12 @@ nothing has read since the run began, normally goes first.
 
 ### Cargo git dependency cache
 
-No caller setting is needed. Lint, Docs, dependency/source/coverage checks,
-declared target checks, Build test archive, Prepare test setup and every test
-shard restore Cargo's `git/db` and `git/checkouts` before resolving dependencies.
-Doctests share the test-shard route. A hit containing the locked revision avoids
-fetching that git source; Cargo still downloads missing registry packages.
+No caller setting is needed. Linux jobs restore Cargo's `git/db` and
+`git/checkouts` before resolving dependencies: Lint, Docs,
+dependency/source/coverage checks, declared target checks, Build test archive,
+Prepare test setup and every test shard. Doctests share the test-shard route. A hit containing the locked
+revision avoids fetching that git source; Cargo still downloads missing registry
+packages.
 
 All Cargo jobs use Git's CLI transport through
 `CARGO_NET_GIT_FETCH_WITH_CLI=true`. Isolated test children keep this setting.
@@ -571,15 +585,17 @@ file falls back to the newest entry in that scope; Cargo fetches any missing
 revision normally. A cache miss or transfer failure does not bypass a check or
 change its result.
 
-Only a default-branch push that missed the exact key saves an entry. Build test
-archive seeds Linux; native target checks seed macOS and Windows after a
-successful check. Each uses its native Cargo home. Archives never cross operating
-systems. Windows reuses git sources without enabling the compile cache.
+Only a default-branch push that missed the exact key saves an entry, and only
+Build test archive on Linux saves it. The locked sources are the same on every
+host, and one entry per native host does not fit the cache beside the compile
+snapshots, so macOS and Windows write none and restore none: their target
+checks, archive builds and test shards fetch those git sources cold. Only Linux
+jobs restore the entry, because archives never cross operating systems.
 
 These entries count against the 10 GB repository allowance. One measured Linux
 entry for Maestro's `wasmtime` revision and submodules is 436 MB compressed.
-Allow for a separate entry per native host and retained lock-file revision;
-measure native sizes and restore time before claiming a saving. Cache eviction
+Allow one entry per caller scope and retained lock-file revision; measure a new
+lock file's size before claiming a saving. Cache eviction
 can remove an entry before the next reader runs.
 
 ## Test shards
@@ -957,8 +973,9 @@ checks still report success. An absent base selects every package for lint.
 Wasm Clippy ignores the selection and lints every `wasm_crates` package on every
 run; see [Wasm and browser builds](#wasm-and-browser-builds). Pull requests
 skip the test archive, preparation, test shards, doctests and wasm/browser
-builds regardless of package selection, except for the example witnesses and
-the Emscripten crates a change reaches.
+builds regardless of package selection, except for the example witnesses. The
+Emscripten crates compile in the sandbox runtime job, which runs on every pull
+request that lists them, so no browser job installs the compiler.
 
 A crate manifest selects its crate; lockfile changes compare the resolved transitive dependency identities
 and features at base and head, selecting affected crates. Root manifest,
@@ -1429,20 +1446,13 @@ belongs to the root workspace. Listing a manifest twice, or under another
 spelling, still names one package. Two different packages with the same name
 fail validation, because the build would reach only one of them.
 
-A non-empty list adds these steps to the Wasm and browser build job on merge
-groups, main pushes and the pull requests described
-[below](#emscripten-crates-on-pull-requests). The job runs even when
-`wasm_crates` is empty:
-
-| Step | What it does |
-| --- | --- |
-| Emscripten SDK | Installs Emscripten 6.0.10 and puts `emcc` on the `PATH`. |
-| Emscripten target | Runs `rustup target add wasm32-unknown-emscripten` for the caller's toolchain. |
-| Build emscripten crates | Runs `cargo build --locked --target wasm32-unknown-emscripten -p "$CRATE"` for each package, adding `--manifest-path` for a package from an additional manifest. |
-
-The Chromium browser tests job installs the same SDK and target before the
-caller's `browser-test` recipe, so a recipe can build for Emscripten itself. It
-does not build the listed packages.
+A non-empty list makes the [`Sandbox runtime script`](#generated-runtime-script)
+job the one place the listed packages compile. On a cache miss it installs the
+caller's toolchain and tools, the SDK and the target, and runs the caller's
+`sandbox-runtime` recipe. No other job runs `emcc` or builds for
+`wasm32-unknown-emscripten`; every other job downloads the file the recipe
+writes. The Chromium browser tests job installs no SDK: a browser
+recipe that needs it runs its own build.
 
 The SDK comes from the emsdk 6.0.10 release archive on github.com. That request
 is the only one that carries the job token, and the step drops the token before
@@ -1489,15 +1499,40 @@ empty list skips the job and every other job runs as before.
 
 | Step | What it does |
 | --- | --- |
-| Toolchain | Runs `rustup show` to install the caller's pinned toolchain. |
-| Mise bootstrap, Test tools | Install the caller's `mise.toml` tools, also when `test_tools` is `false`, because the recipe needs them. |
-| Emscripten SDK, Emscripten target | The steps described [above](#emscripten-builds). |
+| Script identity | Hashes every input of the script into one cache key. |
+| Restore sandbox runtime | Restores the file on an exact hit. A cache it cannot read costs the preparation, never the job. |
+| Toolchain, Mise bootstrap, Test tools | Install the caller's pinned toolchain and `mise.toml` tools, also when `test_tools` is `false`, because the recipe needs them. |
+| Emscripten SDK, Emscripten target | Install Emscripten 6.0.10 and put `emcc` on the `PATH`, then `rustup target add wasm32-unknown-emscripten`. |
 | Build sandbox runtime script | Runs `mise exec -- just sandbox-runtime`, then fails if the file is missing. |
-| Upload sandbox runtime | Publishes the file as the `sandbox-runtime-<concurrency key or root>` artifact of the run. |
+| Save sandbox runtime | Saves the file under the same key, on a push to the default branch. |
+| Upload sandbox runtime | Publishes the file as the `sandbox-runtime-<concurrency key or root>` artifact of the run, on a hit and on a miss. |
 
-Every step runs on every run. Maestro keeps no cache of the file, so a change to
-the generator, to the listed packages or to a pinned tool is always tested
-against the script it produces.
+On a hit the job costs the checkout, the key and the restore: the toolchain,
+the tools, the SDK, the target and the build are skipped, about 110 to 125
+seconds of a 145-second job. On a miss every one of them runs, so a miss costs
+what the job cost before the cache. A merge group reads what the last push to
+the default branch saved; a pull request reads the same entry.
+
+The key covers every input of the script:
+
+- the directories of the packages `emscripten_crates` lists, and the manifests
+  and lock files that declare them;
+- the directories of the packages the `sandbox-runtime` recipe runs, found from
+  the `-p` and `--package` arguments of its recipe body, so a change to the
+  generator misses the cache;
+- every path dependency the named packages declare, followed through
+  the caller's `cargo metadata`, so a change to a crate the generator builds on
+  misses too;
+- the `justfile`, the root `Cargo.toml` and `Cargo.lock`, `mise.toml` and
+  `rust-toolchain.toml`;
+- the revision of this workflow, resolved once per run from the run's referenced
+  workflows, the way the merge-queue evidence resolves it, so a caller's commit
+  never enters the key. A revision that cannot be resolved makes the key new on
+  every run, so such a run never serves a script it did not build.
+
+A recipe that names no package cannot be read that way, so the whole checkout
+decides its key: such a caller never serves an old script, and never hits
+either.
 
 Every job that compiles the caller waits for `Sandbox runtime script`: Format
 and lint, Docs, Build test archive, Prepare test setup, the test shards,
@@ -1508,26 +1543,19 @@ into `target/sandbox-runtime`, before the first cargo command.
 
 A failed generator does not skip those jobs: they start, the download fails
 them, and each required check reports the failure. The job keeps no compile
-snapshot, so the recipe's cargo build starts cold.
+snapshot, so a miss runs the recipe's cargo build cold.
 
 ### Emscripten crates on pull requests
 
-A pull request builds the listed packages, as a merge group does, when its
-change touches any of:
+The listed packages compile in `Sandbox runtime script`, which runs on every
+pull request that lists them, so a pull request always builds the script it
+changes and no browser job installs the compiler.
 
-- a file under the directory of a listed package;
-- the manifest that declares a listed package: the root `Cargo.toml` for a root
-  workspace package, or its `additional_locked_manifests` entry;
-- the `Cargo.lock` beside that manifest;
-- the `emscripten_crates` key of `.github/ci.toml`.
-
-A pull request that touches none of these skips the three steps. The build
-starts from an empty compile cache, because Wasm and browser build keeps no
-snapshot; see [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot). A
-change in another directory that a listed package depends on does not match;
-the merge group builds it. A package at the repository root owns every file, so
-every pull request builds it. The Chromium browser tests job does not run on pull
-requests.
+`Wasm and browser build` runs on a pull request only for the declared
+[example witnesses](#wasm-example-witnesses). A listed Emscripten crate has
+nothing left to build there, so a change that reaches one does not start the
+job; the sandbox job still compiles it. The Chromium browser tests job does not
+run on pull requests.
 
 ## Chromium browser tests
 
@@ -2406,8 +2434,8 @@ groups and main pushes. The native test archive covers arm64 Apple compilation
 on main pushes only. A failed target check fails the workflow.
 Undeclared targets do not create required results. Pull requests keep the test
 and build job names but skip their work, except that `Wasm and browser build`
-compiles the declared [example witnesses](#wasm-example-witnesses), builds the
-Emscripten crates a change reaches, and reports its required name. The
+compiles the declared [example witnesses](#wasm-example-witnesses) and reports
+its required name. The
 required-checks guard enforces execution only on merge groups and main pushes,
 so intentional PR skips do not file missing-check findings.
 

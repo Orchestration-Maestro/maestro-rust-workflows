@@ -32,10 +32,11 @@ docs and fixtures route only to readers. See
 for root-package boundaries. Pull requests skip the test archive, test setup,
 test shards, doctests and wasm/browser builds. The declared
 [wasm example witnesses](docs/caller-checks.md#wasm-example-witnesses) are the
-exception: they compile on every pull request, and so do the declared
+exception: they compile on every pull request. The declared
 [Emscripten crates](docs/caller-checks.md#emscripten-crates-on-pull-requests)
-that a change reaches. Their job names remain present; skipped jobs count as
-successful required checks. Merge groups and main pushes
+compile in the sandbox runtime job, on every pull request that lists them.
+Their job names remain present; skipped jobs count as successful required
+checks. Merge groups and main pushes
 run the full shard matrix, coverage, doctests, wasm/browser builds and every
 declared foreign-target check. A main push skips the test legs when its exact
 commit already passed a completed merge-group run of the same shared workflow
@@ -140,13 +141,15 @@ Only pushes to the caller's default branch save snapshots. Pull-request and
 merge-group jobs restore but never save. Each test shape has one writer per
 call: the warm build or the archive build; the plain doctest leg writes none. Other
 cached compiling jobs each write their own shape, except the Linux jobs that
-no later job restores: Format and lint, Docs, Doctests, Wasm and browser build,
-Chromium browser tests and the Linux target checks keep no snapshot and compile
+no later job restores: Format and lint, Docs, Doctests and the Linux target
+checks keep no snapshot and compile
 cold, because one snapshot for each of them would not fit the repository's cache
-limit. See [Jobs that keep no snapshot](docs/caller-checks.md#jobs-that-keep-no-snapshot).
-A default-branch push warm call also runs those jobs when declared, with their
-normal commands, paths and compiler output modes, but they save nothing. Other
-warm calls skip them. Declared arm64 macOS target checks seed their shapes on
+limit. The Wasm and browser build keeps the one `wasm32` shape and is its only
+writer; Chromium browser tests restore it and never save it.
+See [Jobs that keep no snapshot](docs/caller-checks.md#jobs-that-keep-no-snapshot).
+A default-branch push warm call also runs the Wasm and browser build when
+declared, with its normal commands, paths and compiler output modes, so it seeds
+the `wasm32` shape and nothing else. Other warm calls skip it. Declared arm64 macOS target checks seed their shapes on
 default-branch push warm calls.
 
 Missing snapshots build cold. Failed restores discard partial data before
@@ -165,7 +168,7 @@ cap skip saving. The archive contains compiler objects, never `target/`,
 registry sources, credentials or diagnostics. Compressed archive bytes are a
 separate measurement. This per-save bound does not bound the repository's 10 GB
 allowance; the sum of one snapshot per kept shape does, and the guide measures
-it at 8.35 GiB, under 90% of the limit
+it at 8.21 GiB, under 90% of the limit
 ([One entry per prefix](docs/caller-checks.md#one-entry-per-prefix)). After each
 job that saves a cache on a default-branch push, a pruning job keeps only the
 newest entry of each compile, Cargo git, test setup and browser packages prefix,

@@ -155,7 +155,9 @@ def snapshot_key_matches_consuming_shape():
     assert 'CACHE_ENABLED: $' + '{{ needs.declaration.outputs.enabled }}' in workflow
     shapes = [snapshot_keys(CACHE_JOB=job)['prefix'] for job in
               ['quality', 'docs', 'checks', 'browser', 'browser-tests']]
-    assert len(set(shapes + [plain, coverage])) == 7
+    # The Chromium job reads the wasm32 snapshot the Wasm build writes, so the two share one shape and one entry.
+    assert shapes[3] == shapes[4] and shapes[3] not in (shapes[0], shapes[1], shapes[2], plain, coverage)
+    assert len(set(shapes + [plain, coverage])) == 6
     assert snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-unknown-linux-gnu')['prefix'] != snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='x86_64-unknown-linux-gnu')['prefix']
 
     apple = snapshot_keys(CACHE_JOB='targets', CACHE_TARGET='aarch64-apple-darwin', HOST_OS='macOS', HOST_ARCH='ARM64')['prefix']
@@ -185,13 +187,19 @@ def snapshot_only_default_branch_writers_save():
     plain_prefix = snapshot_keys(CACHE_COVERAGE='false')['prefix']
     jobs = ['quality', 'docs', 'test-build', 'test-prepare', 'tests', 'checks', 'targets', 'browser', 'browser-tests']
     # No later job restores the snapshot of these on Linux, so they keep none; another host keeps its own.
-    leaves = ['quality', 'docs', 'browser', 'browser-tests', 'targets']
+    leaves = ['quality', 'docs', 'targets']
+    # The Chromium job only reads the wasm32 snapshot the Wasm build writes, so it never writes one.
+    readers = ['browser-tests']
+    writers = [job for job in jobs if job not in leaves and job not in readers]
     for job in jobs:
         for event in ['pull_request', 'merge_group', 'workflow_dispatch', 'push']:
             for ref in ['refs/pull/119/merge', 'refs/heads/feature', 'refs/heads/main', 'refs/tags/main']:
                 observed = snapshot_keys(CACHE_JOB=job, GITHUB_EVENT_NAME=event, GITHUB_REF=ref)
-                expected = 'true' if event == 'push' and ref == 'refs/heads/main' and job not in leaves else 'false'
+                expected = 'true' if event == 'push' and ref == 'refs/heads/main' and job in writers else 'false'
                 assert observed.get('writer') == expected, (job, event, ref, observed)
+    for job in readers:
+        assert snapshot_keys(CACHE_JOB=job)['snapshot'] == 'true', job
+        assert snapshot_keys(CACHE_JOB=job)['writer'] == 'false', job
     for job in leaves:
         assert snapshot_keys(CACHE_JOB=job, HOST_OS='macOS', HOST_ARCH='ARM64')['writer'] == 'true', job
         assert snapshot_keys(CACHE_JOB=job, HOST_OS='macOS', HOST_ARCH='ARM64')['snapshot'] == 'true', job

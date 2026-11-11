@@ -133,7 +133,8 @@ jobs:
       wasm_crates: ${{ steps.config.outputs.wasm_crates }}
       wasm_examples: ${{ steps.config.outputs.wasm_examples }}
       emscripten_crates: ${{ steps.config.outputs.emscripten_crates }}
-      emscripten_changed: ${{ steps.selection.outputs.emscripten_changed }}
+      sandbox_runtime_paths: ${{ steps.config.outputs.sandbox_runtime_paths }}
+      workflow_revision: ${{ steps.workflow-revision.outputs.revision }}
       targets: ${{ steps.config.outputs.targets }}
       browser_test_crates: ${{ steps.config.outputs.browser_test_crates }}
       browser_tests: ${{ steps.selection.outputs.browser_tests }}
@@ -203,7 +204,7 @@ jobs:
               config = None
           except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
               raise SystemExit(f'{path}: {error}') from error
-          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', wasm_examples='[]', emscripten_crates='[]', emscripten_paths='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
+          values = dict(test_prepare_consumers='null', test_prepare_inputs='[]', warm_test_filter=json.dumps('none()'), test_shard_count='16', additional_locked_manifests='[]', quality_config='{}', enabled='false', wasm_crates='[]', wasm_examples='[]', emscripten_crates='[]', sandbox_runtime_paths='[]', browser_test_crates='[]', targets='[]', browser_build='false', test_tools='false', reserved_ports='', fuzz_manifest='', fuzz_targets='[]')
           if config is not None:
               if 'test_shards' in config:
                   raise SystemExit(f'{path}: test_shards was removed; nextest partitions tests automatically')
@@ -368,6 +369,8 @@ jobs:
                       if name not in examples[crate]:
                           raise SystemExit(f'{path}: wasm_examples[{json.dumps(crate)}] contains unknown example {name!r}')
               owners = {}
+              # A reached package's sources decide what the script job builds, and so do the path dependencies it declares.
+              path_dependencies = {}
               if emscripten:
                   try:
                       for manifest in (None, *config.get('additional_locked_manifests', [])):
@@ -375,6 +378,10 @@ jobs:
                               ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked', '--manifest-path', manifest], text=True))
                           for package in listed['packages']:
                               owners.setdefault(package['name'], {}).setdefault(str(pathlib.Path(package['manifest_path']).resolve()), manifest)
+                              directory = pathlib.Path(package['manifest_path']).resolve().parent
+                              path_dependencies.setdefault(str(directory), set()).update(
+                                  str((directory / dependency['path']).resolve())
+                                  for dependency in package['dependencies'] if dependency.get('path'))
                   except (subprocess.CalledProcessError, OSError, ValueError) as error:
                       raise SystemExit(f'{path}: caller metadata/toolchain failed') from error
               builds = []
@@ -538,9 +545,38 @@ jobs:
                       continue
                   targets.append(dict(target=target, runner=runners[target]))
               values.update(targets=json.dumps(targets))
+              def script_paths():
+                  # The recipe the sandbox job runs generates the script, so the recipe, the packages it runs, the
+                  # listed crates, the manifests and lock file and the pinned tools all decide the script's cache key.
+                  recipe = next((name for name in ('justfile', 'Justfile', '.justfile') if pathlib.Path(name).is_file()), None)
+                  body, collecting = [], False
+                  for line in (pathlib.Path(recipe).read_text(encoding='utf-8').splitlines() if recipe else []):
+                      if not line[:1].isspace() and line.split(':')[0].split()[:1] == ['sandbox-runtime']:
+                          collecting = True
+                      elif collecting and line[:1].isspace():
+                          body.append(line)
+                      elif collecting and line.strip():
+                          break
+                  named = re.findall(r'(?:^|\s)(?:-p|--package)(?:\s+|=)([A-Za-z0-9][A-Za-z0-9_-]*)', '\n'.join(body))
+                  # A generator's own path dependencies decide its output too, transitively.
+                  reached, pending = set(), [os.path.dirname(manifest) for name in named for manifest in owners.get(name, {})]
+                  while pending:
+                      directory = pending.pop()
+                      if directory not in reached:
+                          reached.add(directory)
+                          pending.extend(path_dependencies.get(directory, ()))
+                  packages = {os.path.relpath(directory, pathlib.Path.cwd().resolve()) for directory in reached}
+                  # A path outside the checkout is not an input this run can hash.
+                  packages = {name for name in packages if not name.startswith('..')}
+                  if not packages:
+                      # A recipe that names no package is decided by the whole checkout, so it never serves an old script.
+                      return ['.']
+                  pinned = {name for name in ('Cargo.toml', 'Cargo.lock', 'mise.toml', 'rust-toolchain.toml', recipe) if pathlib.Path(name).is_file()}
+                  return sorted(watched | packages | pinned)
               values.update(enabled='true', wasm_crates=json.dumps(config['wasm_crates']),
                             wasm_examples=json.dumps([[crate, name] for crate, names in witnesses.items() for name in names]),
-                            emscripten_crates=json.dumps(builds), emscripten_paths=json.dumps(sorted(watched)),
+                            emscripten_crates=json.dumps(builds),
+                            sandbox_runtime_paths=json.dumps(script_paths() if emscripten else []),
                             browser_build=str(config.get('browser_build', False)).lower(),
                             test_tools=str(config.get('test_tools', False)).lower())
           # The test jobs carry a Windows leg, but Windows is not a native test host until its cold setup fits the job limit.
@@ -568,24 +604,20 @@ jobs:
             echo "::error::${GITHUB_REF} no longer holds ${GITHUB_SHA}: the merge queue replaced this group"
             exit 1
           fi
-      - name: Test evidence identity
-        id: evidence-scope
-        if: github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan)
+      - name: Shared workflow revision
+        id: workflow-revision
         env:
           GH_TOKEN: ${{ github.token }}
           CURRENT_WORKFLOW_REF: ${{ github.workflow_ref }}
           CURRENT_WORKFLOW_SHA: ${{ github.workflow_sha }}
-          CALLER_DIRECTORY: ${{ inputs.working-directory || '.' }}
-          CALL_KEY: ${{ inputs.concurrency-key }}
         run: |
           python3 -I - <<'PYTHON'
-          import hashlib
           import json
           import os
           import re
           import subprocess
-          identity = [os.environ['GITHUB_REPOSITORY'], os.environ['CALLER_DIRECTORY'], os.environ['CALL_KEY']]
-          scope = hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode('utf-8')).hexdigest()
+          # A caller's `github.workflow_sha` is the caller's commit, so a reusable run resolves this workflow's own
+          # revision once, from the run's referenced workflows.
           path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
           revision = ''
           try:
@@ -601,6 +633,27 @@ jobs:
                   raise ValueError('Reusable workflow identity is unresolved or conflicting')
               revision = revisions.pop()
           except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
+              print('Shared workflow revision unavailable; nothing may be reused across revisions')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'revision={revision}\n')
+          PYTHON
+      - name: Test evidence identity
+        id: evidence-scope
+        if: github.event_name == 'merge_group' || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && !inputs.warm-cache && !inputs.advisory-scan && !inputs.fuzz-scan)
+        env:
+          WORKFLOW_REVISION: ${{ steps.workflow-revision.outputs.revision }}
+          CALLER_DIRECTORY: ${{ inputs.working-directory || '.' }}
+          CALL_KEY: ${{ inputs.concurrency-key }}
+        run: |
+          python3 -I - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          identity = [os.environ['GITHUB_REPOSITORY'], os.environ['CALLER_DIRECTORY'], os.environ['CALL_KEY']]
+          scope = hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode('utf-8')).hexdigest()
+          path = 'Orchestration-Maestro/maestro-rust-workflows/.github/workflows/ci.yml'
+          revision = os.environ['WORKFLOW_REVISION']
+          if not revision:
               print('Reusable workflow identity unavailable; merge queue tests cannot be reused')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'scope={scope}\nworkflow_sha={revision}\nworkflow_ref=' + (path + '@' + revision if revision else '') + '\n')
@@ -669,7 +722,6 @@ jobs:
           TEST_HOSTS: ${{ steps.config.outputs.test_hosts }}
           TEST_PREPARE_CONSUMERS: ${{ steps.config.outputs.test_prepare_consumers }}
           TESTS_REUSED: ${{ steps.queue.outputs.tests_reused }}
-          EMSCRIPTEN_PATHS: ${{ steps.config.outputs.emscripten_paths }}
         run: |
           python3 - <<'PYTHON'
           import ast
@@ -722,12 +774,8 @@ jobs:
           # Declared paths outside every member select only the packages whose tests read them.
           inputs = {pathlib.Path(key): {ids[name] for name in readers} for key, readers in config.get('test_inputs', {}).items()}
           changed = None
-          emscripten_changed = False
           if event == 'pull_request' and base:
               changed = subprocess.check_output(['git', 'diff', '--relative', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
-              # A pull request builds the declared Emscripten crates when its change reaches their paths.
-              watched = [pathlib.PurePosixPath(name) for name in json.loads(os.environ['EMSCRIPTEN_PATHS'])]
-              emscripten_changed = any(pathlib.PurePosixPath(name).is_relative_to(path) for name in changed for path in watched)
           if changed is not None:
               # Literal compile-input paths are relative to the Rust source, not the package root.
               changed_paths = {(pathlib.Path.cwd() / name).resolve() for name in changed}
@@ -800,7 +848,6 @@ jobs:
               if '.github/ci.toml' in changed:
                   before, after = declarations()
                   browser_changed = before.get('browser_test_crates', []) != after.get('browser_test_crates', [])
-                  emscripten_changed = emscripten_changed or before.get('emscripten_crates', []) != after.get('emscripten_crates', [])
                   if any(before.get(key) != after.get(key) for key in ('test_prepare', 'test_prepare_setups', 'test_prepare_inputs', 'test_tools', 'reserved_ports', 'coverage_min_lines', 'additional_locked_manifests', 'test_inputs')) or bool(before) != bool(after):
                       selected = set(members)
                       trigger = 'shared input: .github/ci.toml'
@@ -864,7 +911,6 @@ jobs:
           print(f'Advisory check ({event}): {"required" if check_advisories else "skipped, no change to Cargo.lock or the declared exceptions"}')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write('browser_tests=' + str(browser_tests).lower() + '\n')
-              output.write('emscripten_changed=' + str(emscripten_changed).lower() + '\n')
               # The preparation job runs only when a selected package reads its output.
               consumers = json.loads(os.environ['TEST_PREPARE_CONSUMERS'])
               prepare = json.dumps(config.get('test_prepare', '') if consumers is None or set(consumers) & set(names) else '')
@@ -1036,7 +1082,10 @@ jobs:
           import os
           import re
           import subprocess
-          shape = os.environ['CACHE_JOB']
+          job = os.environ['CACHE_JOB']
+          # The Wasm build and the Chromium tests compile one wasm32 graph, so both read the shape one of them writes.
+          shared = job in ('browser', 'browser-tests')
+          shape = 'wasm32' if shared else job
           if shape in ('tests', 'test-build', 'doctests'):
               coverage = os.environ['HOST_OS'] == 'Linux' and shape != 'doctests' and (os.environ['CACHE_WARM'] == 'true' or (os.environ['CACHE_ENABLED'] == 'true' and os.environ['CACHE_COVERAGE'] == 'true' and (shape == 'test-build' or os.environ.get('SHARD', '') not in ('', 'doctests'))))
               shape = 'tests-coverage' if coverage else 'tests-plain'
@@ -1048,13 +1097,18 @@ jobs:
           namespace = 'maestro-compile-v1-'
           prefix = f'{namespace}{digest}-'
           # The host system in the key keeps a job's legs apart: one leg never takes another host's snapshot for its own.
-          seeder = r'-\d+-' + re.escape(os.environ['CACHE_JOB']) + r'-\d+-' + re.escape(os.environ['HOST_OS']) + '-'
+          # The pattern finds the entries of the job that writes the shape: the Chromium job reads the Wasm build's.
+          seeder = r'-\d+-' + re.escape('browser' if shared else job) + r'-\d+-' + re.escape(os.environ['HOST_OS']) + '-'
           call = hashlib.sha256(os.environ['CACHE_CALL'].encode('utf-8')).hexdigest()
           suffix = '-'.join(os.environ[name] for name in ['GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'CACHE_JOB', 'CACHE_INDEX', 'HOST_OS']) + '-' + call
           # A Linux job that no later job restores keeps no snapshot: the repository cache holds one snapshot per
-          # other shape, and a snapshot for each of these would not fit the cache limit next to them.
-          snapshot = not (os.environ['HOST_OS'] == 'Linux' and os.environ['CACHE_JOB'] in ('quality', 'docs', 'doctests', 'browser', 'browser-tests', 'targets'))
+          # other shape, and a snapshot for each of these would not fit the cache limit next to them. The Chromium job
+          # restores the wasm32 snapshot, so the Wasm build keeps it.
+          snapshot = not (os.environ['HOST_OS'] == 'Linux' and job in ('quality', 'docs', 'doctests', 'targets'))
           writer = snapshot and os.environ['GITHUB_EVENT_NAME'] == 'push' and os.environ['GITHUB_REF'] == 'refs/heads/' + os.environ['CACHE_DEFAULT_BRANCH']
+          # One writer per shape: the Chromium job only reads the wasm32 snapshot the Wasm build saves.
+          if job == 'browser-tests':
+              writer = False
           if os.environ['CACHE_JOB'] in ('tests', 'doctests') and not (os.environ['CACHE_JOB'] == 'doctests' and os.environ['CACHE_WARM'] == 'true'):
               writer = writer and os.environ.get('SHARD', '') in ('warm', '1')
           # Prepare test setup also builds every wasm example extension; its working set passed 1 GiB.
@@ -1613,10 +1667,12 @@ jobs:
           echo "TOOLS=$bin" >> "$GITHUB_ENV"
           echo "$bin" >> "$GITHUB_PATH"
       - name: Cargo git cache identity
+        if: runner.os == 'Linux'
         id: git-cache-identity
         env: *sccache-identity-env
         run: *git-cache-identity
       - name: Restore Cargo git cache
+        if: runner.os == 'Linux'
         id: git-cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -1825,10 +1881,11 @@ jobs:
             "$TOOLS/cargo-nextest" nextest archive "${build[@]}" -E "${filters[$shard]}" --archive-file "test-archives/shard-$((shard + 1)).tar.zst"
           done
       - name: Save Cargo git cache
-        if: steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
+        # The locked sources are the same on every host: one writer keeps the single entry the cache budget allows.
+        if: runner.os == 'Linux' && steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with: &git-cache-save
+        with:
           path: |
             ${{ steps.git-cache-identity.outputs.home }}/git/db
             ${{ steps.git-cache-identity.outputs.home }}/git/checkouts
@@ -1926,10 +1983,12 @@ jobs:
         timeout-minutes: 10
         run: *sccache-install
       - name: Cargo git cache identity
+        if: runner.os == 'Linux'
         id: git-cache-identity
         env: *sccache-identity-env
         run: *git-cache-identity
       - name: Restore Cargo git cache
+        if: runner.os == 'Linux'
         id: git-cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -2390,10 +2449,12 @@ jobs:
         env: *release-auth
         run: *coverage-tools
       - name: Cargo git cache identity
+        if: runner.os == 'Linux'
         id: git-cache-identity
         env: *sccache-identity-env
         run: *git-cache-identity
       - name: Restore Cargo git cache
+        if: runner.os == 'Linux'
         id: git-cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -3364,6 +3425,7 @@ jobs:
       - name: Toolchain
         run: rustup show
       - name: Compile cache identity
+        if: *sccache-target-host
         id: cache-identity
         env: *sccache-identity-env
         run: *sccache-identity
@@ -3379,10 +3441,12 @@ jobs:
         timeout-minutes: 10
         run: *sccache-install
       - name: Cargo git cache identity
+        if: runner.os == 'Linux'
         id: git-cache-identity
         env: *sccache-identity-env
         run: *git-cache-identity
       - name: Restore Cargo git cache
+        if: runner.os == 'Linux'
         id: git-cache-restore
         continue-on-error: true
         uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -3403,11 +3467,6 @@ jobs:
           COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
           TARGET: ${{ matrix.target }}
         run: *clippy
-      - name: Save Cargo git cache
-        if: runner.os != 'Linux' && steps.cache-identity.outputs.writer == 'true' && steps.git-cache-restore.outputs.cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with: *git-cache-save
       - name: Compile cache statistics
         id: cache-statistics
         if: always() && runner.os != 'Windows'
@@ -3437,9 +3496,9 @@ jobs:
     name: Wasm and browser build
     needs: [declaration, sandbox-runtime]
     # A push that reuses merge-queue tests still builds, to seed this shape's snapshot.
-    # A pull request runs the job only for declared example witnesses and for a change that reaches a listed Emscripten
-    # crate; the other steps skip.
-    if: ${{ !cancelled() && needs.declaration.result == 'success' && (!inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_changed == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_crates != '[]' || needs.declaration.outputs.browser_build == 'true')) }}
+    # A pull request runs the job only for declared example witnesses; the listed Emscripten crates compile in the
+    # sandbox job, so this job has nothing to build for them.
+    if: ${{ !cancelled() && needs.declaration.result == 'success' && (!inputs.browser-only && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.wasm_examples != '[]') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && (needs.declaration.outputs.wasm_crates != '[]' || needs.declaration.outputs.wasm_examples != '[]' || needs.declaration.outputs.emscripten_crates != '[]' || needs.declaration.outputs.browser_build == 'true')) }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -3498,40 +3557,6 @@ jobs:
         if: needs.declaration.outputs.test_tools == 'true' || (needs.declaration.outputs.browser_build == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true'))
         env: *release-auth
         run: *caller-tools
-      - name: Emscripten SDK
-        timeout-minutes: 10
-        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.emscripten_changed == 'true')
-        env: &emscripten-sdk-env
-          GH_TOKEN: ${{ github.token }}
-        run: &emscripten-sdk |
-          # emsdk 6.0.10 from its release archive, then the two archives its installer fetches for that release
-          # (node and the toolchain binaries). Each is checksummed and placed where the installer looks first.
-          emsdk=$(mktemp -d "$RUNNER_TEMP/maestro-emsdk.XXXXXX")
-          archive=$(mktemp)
-          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location https://github.com/emscripten-core/emsdk/archive/refs/tags/6.0.10.tar.gz --output "$archive"
-          unset GH_TOKEN
-          printf '%s  %s\n' 09cbafdf00e5a7b4275fc27229d69befafc5ca6070543124219977101310dade "$archive" | sha256sum --check --status
-          tar -xzf "$archive" -C "$emsdk" --strip-components=1
-          rm "$archive"
-          mkdir "$emsdk/downloads"
-          while read -r url digest name; do
-            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --proto '=https' --proto-redir '=https' --location "$url" --output "$emsdk/downloads/$name"
-            printf '%s  %s\n' "$digest" "$emsdk/downloads/$name" | sha256sum --check --status
-          done <<'ARCHIVES'
-          https://storage.googleapis.com/webassembly/emscripten-releases-builds/deps/node-v24.19.0-linux-x64.tar.xz 14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647 node-v24.19.0-linux-x64.tar.xz
-          https://storage.googleapis.com/webassembly/emscripten-releases-builds/linux/666337b525e673e769121856d175f6f52b8ead64/wasm-binaries.tar.xz a51dd2829bdf725d268974728e032533b106ea01cb482a62288ec12627a7abbe 666337b525e673e769121856d175f6f52b8ead64-wasm-binaries.tar.xz
-          ARCHIVES
-          EMSDK_KEEP_DOWNLOADS=1 "$emsdk/emsdk" install 6.0.10
-          "$emsdk/emsdk" activate 6.0.10
-          node="$emsdk/node/24.19.0_64bit/bin/node"
-          PATH="$emsdk/upstream/emscripten:$PATH" EMSDK="$emsdk" EMSDK_NODE="$node" emcc --version | head -n 1 | grep -F ' 6.0.10 '
-          echo "$emsdk/upstream/emscripten" >> "$GITHUB_PATH"
-          echo "EMSDK=$emsdk" >> "$GITHUB_ENV"
-          echo "EMSDK_NODE=$node" >> "$GITHUB_ENV"
-      - name: Emscripten target
-        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.emscripten_changed == 'true')
-        run: &emscripten-target |
-          rustup target add wasm32-unknown-emscripten
       - name: Build wasm crates
         if: &browser-sweep (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true')
         env:
@@ -3546,18 +3571,6 @@ jobs:
               subprocess.run(['rustup', 'target', 'add', 'wasm32-unknown-unknown'], check=True)
           for crate in crates:
               subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-unknown', '-p', crate], check=True)
-          PYTHON
-      - name: Build emscripten crates
-        if: needs.declaration.outputs.emscripten_crates != '[]' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true' || needs.declaration.outputs.emscripten_changed == 'true')
-        env:
-          EMSCRIPTEN_CRATES: ${{ needs.declaration.outputs.emscripten_crates }}
-        run: |
-          python3 - <<'PYTHON'
-          import json
-          import os
-          import subprocess
-          for crate, manifest in json.loads(os.environ['EMSCRIPTEN_CRATES']):
-              subprocess.run(['cargo', 'build', '--locked', '--target', 'wasm32-unknown-emscripten', *(['--manifest-path', manifest] if manifest else []), '-p', crate], check=True)
           PYTHON
       - name: Build wasm examples
         env:
@@ -3639,26 +3652,101 @@ jobs:
           repository: ${{ inputs.checkout-repository || github.repository }}
           path: ${{ inputs.checkout-repository && inputs.working-directory || '.' }}
           ref: ${{ inputs.checkout-ref || github.sha }}
+      - name: Script identity
+        id: script-identity
+        env:
+          SANDBOX_RUNTIME_PATHS: ${{ needs.declaration.outputs.sandbox_runtime_paths }}
+          WORKFLOW_SHA: ${{ needs.declaration.outputs.workflow_revision }}
+        run: |
+          python3 - <<'PYTHON'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          # The declared inputs are the caller's files and directories; `.git` and `target` hold no input of the script.
+          skipped = {'.git', 'target'}
+          revision = os.environ['WORKFLOW_SHA']
+          if not re.fullmatch('[0-9a-f]{40}', revision):
+              # An unresolved revision proves nothing about the script, so this run's own identity keeps the key new.
+              revision = 'unresolved-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT']
+          files = {}
+          for entry in json.loads(os.environ['SANDBOX_RUNTIME_PATHS']):
+              path = pathlib.Path(entry)
+              names = [name for name in path.rglob('*') if name.is_file() and not skipped & set(name.parts)] if path.is_dir() else [path]
+              if not names:
+                  raise SystemExit(f'{entry}: sandbox runtime input names no file')
+              for name in names:
+                  with open(name, 'rb') as source:
+                      files[name.as_posix()] = hashlib.file_digest(source, 'sha256').hexdigest()
+          digest = hashlib.sha256(json.dumps([revision, sorted(files.items())], ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'key=maestro-sandbox-runtime-v1-{digest}\n')
+          PYTHON
+      - name: Restore sandbox runtime
+        id: script-cache
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: &sandbox-runtime-cache
+          path: ${{ inputs.working-directory || '.' }}/target/sandbox-runtime/maestro-sandbox-runtime.js
+          key: ${{ steps.script-identity.outputs.key }}
       - name: Toolchain
+        if: steps.script-cache.outputs.cache-hit != 'true'
         run: rustup show
       - name: Mise bootstrap
         timeout-minutes: 10
+        if: steps.script-cache.outputs.cache-hit != 'true'
         env: *release-auth
         run: *mise-bootstrap
       - name: Test tools
         timeout-minutes: 10
+        if: steps.script-cache.outputs.cache-hit != 'true'
         env: *release-auth
         run: *caller-tools
       - name: Emscripten SDK
         timeout-minutes: 10
-        env: *emscripten-sdk-env
-        run: *emscripten-sdk
+        if: steps.script-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # emsdk 6.0.10 from its release archive, then the two archives its installer fetches for that release
+          # (node and the toolchain binaries). Each is checksummed and placed where the installer looks first.
+          emsdk=$(mktemp -d "$RUNNER_TEMP/maestro-emsdk.XXXXXX")
+          archive=$(mktemp)
+          curl --fail --retry 3 --retry-all-errors --retry-delay 30 --header "Authorization: Bearer $GH_TOKEN" --proto '=https' --proto-redir '=https' --location https://github.com/emscripten-core/emsdk/archive/refs/tags/6.0.10.tar.gz --output "$archive"
+          unset GH_TOKEN
+          printf '%s  %s\n' 09cbafdf00e5a7b4275fc27229d69befafc5ca6070543124219977101310dade "$archive" | sha256sum --check --status
+          tar -xzf "$archive" -C "$emsdk" --strip-components=1
+          rm "$archive"
+          mkdir "$emsdk/downloads"
+          while read -r url digest name; do
+            curl --fail --retry 3 --retry-all-errors --retry-delay 30 --proto '=https' --proto-redir '=https' --location "$url" --output "$emsdk/downloads/$name"
+            printf '%s  %s\n' "$digest" "$emsdk/downloads/$name" | sha256sum --check --status
+          done <<'ARCHIVES'
+          https://storage.googleapis.com/webassembly/emscripten-releases-builds/deps/node-v24.19.0-linux-x64.tar.xz 14b342e71204f811bde6153be8e04b62aef63c236fef92b55f9c83154b409647 node-v24.19.0-linux-x64.tar.xz
+          https://storage.googleapis.com/webassembly/emscripten-releases-builds/linux/666337b525e673e769121856d175f6f52b8ead64/wasm-binaries.tar.xz a51dd2829bdf725d268974728e032533b106ea01cb482a62288ec12627a7abbe 666337b525e673e769121856d175f6f52b8ead64-wasm-binaries.tar.xz
+          ARCHIVES
+          EMSDK_KEEP_DOWNLOADS=1 "$emsdk/emsdk" install 6.0.10
+          "$emsdk/emsdk" activate 6.0.10
+          node="$emsdk/node/24.19.0_64bit/bin/node"
+          PATH="$emsdk/upstream/emscripten:$PATH" EMSDK="$emsdk" EMSDK_NODE="$node" emcc --version | head -n 1 | grep -F ' 6.0.10 '
+          echo "$emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+          echo "EMSDK=$emsdk" >> "$GITHUB_ENV"
+          echo "EMSDK_NODE=$node" >> "$GITHUB_ENV"
       - name: Emscripten target
-        run: *emscripten-target
+        if: steps.script-cache.outputs.cache-hit != 'true'
+        run: |
+          rustup target add wasm32-unknown-emscripten
       - name: Build sandbox runtime script
+        if: steps.script-cache.outputs.cache-hit != 'true'
         run: |
           mise exec -- just sandbox-runtime
           test -f target/sandbox-runtime/maestro-sandbox-runtime.js
+      - name: Save sandbox runtime
+        if: steps.script-cache.outputs.cache-hit != 'true' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with: *sandbox-runtime-cache
       - name: Upload sandbox runtime
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -3672,7 +3760,6 @@ jobs:
       actions: read
     name: Chromium browser tests
     needs: [declaration, sandbox-runtime]
-    # A push that reuses merge-queue tests still runs browser tests, to seed this shape's snapshot.
     if: ${{ !cancelled() && needs.declaration.result == 'success' && ((needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') && !inputs.advisory-scan && !inputs.fuzz-scan && (!inputs.warm-cache || (github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch))) && needs.declaration.outputs.browser_tests == 'true') }}
     runs-on: ubuntu-latest
     env:
@@ -3727,14 +3814,6 @@ jobs:
       - name: Browser test caller tools
         env: *release-auth
         run: *caller-tools
-      - name: Emscripten SDK
-        timeout-minutes: 10
-        if: needs.declaration.outputs.emscripten_crates != '[]'
-        env: *emscripten-sdk-env
-        run: *emscripten-sdk
-      - name: Emscripten target
-        if: needs.declaration.outputs.emscripten_crates != '[]'
-        run: *emscripten-target
       - name: Browser runtime tools
         env: *release-auth
         run: |

@@ -9,3 +9,10 @@ version = "0.1.0"
 [[package]]
 name = "witness"
 version = "0.1.0"
+dependencies = [
+ "witness-support",
+]
+
+[[package]]
+name = "witness-support"
+version = "0.1.0"

@@ -26,8 +26,8 @@ def snapshot_jobs_share_one_owner():
                 parsed = next(item for item in document['jobs'][name]['steps'] if item.get('name') == stage)
                 condition = parsed.get('if', '')
                 host = "runner.os != 'Windows'"
-                if stage == 'Compile cache identity':
-                    assert condition == '', 'Windows still needs the shared default-branch writer decision'
+                if stage == 'Compile cache identity' and name == 'targets':
+                    assert condition == host, 'a Windows target check restores no compile cache, so it identifies none'
                 elif stage == 'Compile cache statistics':
                     assert condition == 'always() && ' + host
                 elif stage == 'Restore compile cache' and name == 'targets':
