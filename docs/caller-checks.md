@@ -504,23 +504,24 @@ Cache entries cannot be overwritten, and every default-branch save uses a new
 key, so each push adds one entry per shape beside the one it replaces. A restore
 reads only the newest entry of a prefix. After each job that saves a cache, a
 pruning job named `Prune superseded caches (<job>)` lists the default branch's
-entries, keeps the newest entry of each compile, Cargo git and test setup prefix
-and deletes the others. It runs only on default-branch pushes after its saving
-job succeeds, holds only `actions: write` and checks out nothing. Another pruner
-may delete an entry first; that is not an error. Any other failed deletion
-prints a `Cache prune` warning, marks the step failed and leaves the job green,
-and the next pruner tries again. Entries under other names, such as a caller's
-own caches, are never touched.
+entries, keeps the newest entry of each compile, Cargo git, test setup and
+browser packages prefix and deletes the others. It runs only on default-branch
+pushes after its saving job succeeds, holds only `actions: write` and checks out
+nothing. Another pruner may delete an entry first; that is not an error. Any
+other failed deletion prints a `Cache prune` warning, marks the step failed and
+leaves the job green, and the next pruner tries again. Entries under other
+names, such as a caller's own caches, are never touched.
 
 The repository cache holds one generation, so the snapshots every kept shape
-saves, plus the Cargo git entries and the test setup bundles, must add up to under
-90% of the 10 GiB limit, the level at which the usage guard files an issue. Over
-the limit GitHub evicts the newest snapshots of the shapes restored least
-recently, and those shapes then compile cold. One snapshot for each of the
-twelve shapes Maestro compiled needed 11.66 GiB, so the Linux jobs listed in
-[Jobs that keep no snapshot](#jobs-that-keep-no-snapshot) stopped saving. Measured
-from Maestro's default-branch push 42428071607 on 2026-11-08, one entry per kept
-shape holds 8.33 GiB, 83.3% of the limit:
+saves, plus the Cargo git entries, the test setup bundles and the browser
+packages, must add up to under 90% of the 10 GiB limit, the level at which the
+usage guard files an issue. Over the limit GitHub evicts the newest snapshots of
+the shapes restored least recently, and those shapes then compile cold. One
+snapshot for each of the twelve shapes Maestro compiled needed 11.66 GiB, so the
+Linux jobs listed in [Jobs that keep no snapshot](#jobs-that-keep-no-snapshot)
+stopped saving. Measured from Maestro's default-branch push 42428071607 on
+2026-11-08, one entry per kept shape holds 8.33 GiB; with the browser packages
+entry, 8.35 GiB, 83.5% of the limit:
 
 | Entry | Host | GiB |
 | --- | --- | --- |
@@ -535,14 +536,19 @@ shape holds 8.33 GiB, 83.3% of the limit:
 | `cargo-git` | Windows | 0.74 |
 | `test-setup` | Linux | 0.82 |
 | `test-setup` | macOS | 0.76 |
+| `browser-packages` | Linux | 0.02 |
 
-A shape that joins Maestro needs a row here, and the self-test fails when a kept
-shape has no row or the rows pass 90%. While a run saves, a shape's new entry
-and the one it replaces exist together until the pruner that follows its saving
-job runs. That job waits for the whole matrix, so a Linux entry can outlive its
-replacement by as long as the macOS leg takes. GitHub evicts by last access, so
-the replaced entry, which nothing has read since the run began, normally goes
-first.
+The `browser-packages` row is a bound taken from the uncompressed download size
+of the Chromium job's package step on 2026-11-11 (9 packages, 21.9 MB), not a
+measured cache entry. While a new runner image rolls out, each of the two
+images keeps an entry, 0.04 GiB together, until GitHub evicts the retired
+image's entry after 7 days unread. A shape that joins Maestro needs a
+row here, and the self-test fails when a kept shape has no row or the rows pass
+90%. While a run saves, a shape's new entry and the one it replaces exist
+together until the pruner that follows its saving job runs. That job waits for
+the whole matrix, so a Linux entry can outlive its replacement by as long as the
+macOS leg takes. GitHub evicts by last access, so the replaced entry, which
+nothing has read since the run began, normally goes first.
 
 ### Cargo git dependency cache
 
@@ -1554,28 +1560,60 @@ The [production installer](../.github/workflows/ci.yml) contains the exact
 archive URLs. It verifies each archive before unpacking, installs no npm
 lifecycle scripts or second browser, and checks the two-package JavaScript
 runtime closure. Node must be at least 20; the job logs its actual version,
-Playwright, Chromium and binding CLI versions. Playwright's public `install-deps
-chromium` command installs Linux system libraries and may require sudo.
+Playwright, Chromium and binding CLI versions. The Linux system libraries the
+browser needs install with sudo; see [System packages](#system-packages).
 
 ### System packages
 
-`install-deps chromium` installs the Linux packages the browser links against,
-and that download is the one transfer in the job that can stall for minutes on a
-slow mirror. The `Browser runtime packages` step writes
-`/etc/apt/apt.conf.d/99-maestro-browser-packages` before it runs the install:
+The Chromium job installs the Linux packages the browser links against from a
+cache, so a merge group runs its browser tests even when the Ubuntu archive is
+unreachable. The packages are the ones Playwright 1.64.1 names for its tools and
+for Chromium on Ubuntu 24.04, listed in the job's `BROWSER_PACKAGES`
+environment. Four steps handle them:
+
+| Step | What it does |
+| --- | --- |
+| `Browser runtime packages identity` | Builds the cache key from the runner image (`ImageOS` and `ImageVersion`), the Playwright version and the package list, and decides whether this run saves |
+| `Restore browser runtime packages` | Restores the package files saved under that exact key into `$RUNNER_TEMP/browser-packages` |
+| `Browser runtime packages` | Downloads the packages on a miss, installs the files with `dpkg --install`, then runs Playwright's `install-deps --dry-run chromium` check |
+| `Save browser runtime packages` | Saves the package files on a default-branch push that missed |
+
+On a hit, the step installs the restored files and contacts no archive: it runs
+no `apt-get update` and no download. On a miss, it downloads them. Apt
+resolves the list against the packages the runner image already holds and
+downloads the rest, every transfer bounded:
 
 ```text
-Acquire::http::Timeout "15";
-Acquire::https::Timeout "15";
-Acquire::Retries "3";
+apt-get -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=3 update
+apt-get -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 -o Acquire::Retries=3 \
+  -o Dir::Cache::Archives=<staging>/ install -y --no-install-recommends --download-only <packages>
 ```
 
-A stalled connection then fails over in seconds. The step also carries
-`timeout-minutes: 5`, so a mirror that streams too slowly to trip those timeouts
-still fails the job with the step's name instead of adding minutes to the group.
-Apt still chooses the versions each job installs. The step needs sudo, and the
-drop-in it writes stays on the machine after the run: delete
-`/etc/apt/apt.conf.d/99-maestro-browser-packages` to restore the defaults.
+The staging directory is a fresh `browser-packages.XXXXXX` directory in `/tmp`
+that anyone may enter, because apt downloads as its own unprivileged user. The
+step moves the downloaded `.deb` files into `$RUNNER_TEMP/browser-packages` and
+installs them from there, so a miss and a hit run the same install. The staging
+directory stays on the machine after the run with only apt's lock and its empty
+`partial` directory in it. A stalled connection fails over in seconds, and the
+step's `timeout-minutes: 5` still fails a mirror that streams too slowly to trip
+those timeouts.
+
+Playwright's dry run simulates the install of every package it names and fails
+the step when one is missing, so a Playwright upgrade that names a new package
+fails here until the list follows it. It reads only the local package state and
+downloads nothing.
+
+Only an exact key is a hit: files saved on another runner image could replace
+the packages the image already holds with older ones. A new image version, a
+Playwright upgrade or a list change starts a new key, and the first
+default-branch push after it saves the new entry. Merge groups and later
+default-branch runs read that entry. Each image version has a prefix of its
+own. The pruning job that follows the Chromium job keeps the newest entry of
+each prefix, so a Playwright upgrade or a list change replaces the image's
+entry; see [One entry per prefix](#one-entry-per-prefix). A staged rollout runs
+two images at once, and each keeps its own entry. GitHub evicts a retired
+image's entry after 7 days unread. A failed restore or save never fails the
+job; after a failed restore, the step downloads.
 
 The recipe receives absolute `PLAYWRIGHT_MODULE` and `CHROMIUM_PATH` values.
 The verified binding CLI directory precedes caller tools on PATH. The job runs
@@ -1701,9 +1739,12 @@ def step_body(name):
     return textwrap.dedent(pattern.search(step)[1])
 # The tools and then the install of the packages they need: the two production steps in order.
 commands = [step_body(name) for name in ['Browser runtime tools', 'Browser runtime packages']]
+# The packages step reads its list from the Chromium job's environment.
+packages = re.search(r'\n      BROWSER_PACKAGES: >-\n((?:        .*\n)+)', source)[1].split()
 with tempfile.TemporaryDirectory() as temporary:
     paths, values = pathlib.Path(temporary) / 'paths', pathlib.Path(temporary) / 'env'
-    env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths), 'GITHUB_ENV': str(values)}
+    env = os.environ | {'RUNNER_TEMP': temporary, 'GITHUB_PATH': str(paths), 'GITHUB_ENV': str(values),
+                        'BROWSER_PACKAGES': ' '.join(packages)}
     for command in commands:
         subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', command], env=env, check=True)
         # Each step exports its own environment for the steps after it.
@@ -2255,7 +2296,8 @@ repository cache they fill.
   before that. The usage is read for every judged run. The save window does not
   count: a push leaves the snapshots it replaces on the default branch until its
   pruning jobs finish, so the guard sets those aside (the older entries of each
-  compile, Cargo git and test setup prefix on that branch) and judges what stays,
+  compile, Cargo git, test setup and browser packages prefix on that branch) and
+  judges what stays,
   the at-rest total in [One entry per prefix](#one-entry-per-prefix). An entry
   of another ref, or under another name, counts in full. The issue states the
   reading, the part that is window and the part that stays.
