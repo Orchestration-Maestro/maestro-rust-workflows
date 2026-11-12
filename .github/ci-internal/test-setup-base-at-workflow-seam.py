@@ -1,8 +1,10 @@
+import ast
 import json
 import os
 import pathlib
 import subprocess
 import tempfile
+import textwrap
 
 workflow = pathlib.Path('.github/workflows/ci.yml').read_text(encoding='utf-8')
 document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
@@ -129,3 +131,41 @@ def setup_cache_identity_separates_host_bundles():
 
 setup_cache_identity_separates_host_bundles()
 print('PASS setup_cache_identity_separates_host_bundles')
+
+# The helpers keep one owner: the caller checks step, which runs them against recording tools.
+helpers = {}
+code = pathlib.Path('.github/ci-internal/caller-checks-at-workflow-seam.py').read_text(encoding='utf-8')
+tree = ast.parse(textwrap.dedent(code))
+needed = {'workflow', 'root', 'credential_names', 'coverage_report_args'}
+tree.body = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom, ast.FunctionDef))
+             or (isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id in needed
+                                                     for target in node.targets))]
+exec(compile(tree, 'test prepare base helpers', 'exec'), helpers)  # noqa: S102
+
+# The build host exports a non-empty base for every job; the workflow wires the same expression.
+BASE = '$' + '{{ runner.temp }}/maestro-test-prepare-base'
+
+def workspace_tests_run_with_a_prepare_base():
+    for job, step in [('tests', 'Tests'), ('tests', 'Isolated tests'), ('doctests', 'Tests'), ('checks', 'Coverage')]:
+        chunk, indent = helpers['workflow_steps']()[(job, step)]
+        assert helpers['block_map'](chunk, indent).get('TEST_PREPARE_BASE') == BASE, (job, step)
+
+def isolated_tests_forward_the_prepare_base_to_the_child():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        tools, log = helpers['install_recording_runner'](directory)
+        base = temporary + '/maestro-test-prepare-base'
+        result = helpers['execute']('Isolated tests', directory, {
+            'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
+            'RUNNER_TEMP': temporary, 'SHARD': '2', 'COLLECT_COVERAGE': 'false',
+            'CARGO_COVERAGE_MIN_LINES': '', 'TEST_PACKAGES': '["sample"]', 'TEST_PREPARE_BASE': base})
+        assert result.returncode == 0, result.stdout + result.stderr
+        commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
+        assert commands, result.stdout + result.stderr
+        # The isolated child starts with a cleared environment, so the base reaches it only if the step forwards it.
+        assert [command['test_prepare_base'] for command in commands] == [base] * len(commands), commands
+
+workspace_tests_run_with_a_prepare_base()
+print('PASS workspace_tests_run_with_a_prepare_base')
+isolated_tests_forward_the_prepare_base_to_the_child()
+print('PASS isolated_tests_forward_the_prepare_base_to_the_child')

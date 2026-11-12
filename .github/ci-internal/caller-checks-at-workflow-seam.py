@@ -946,7 +946,8 @@ def archived_shards_provision_child_build_dependencies():
             commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
             assert [command['args'] for command in commands[:2]] == [
                 ['fetch', '--locked', '--manifest-path', 'fixture/Cargo.toml'], ['fetch', '--locked']]
-            assert len(commands) == 3, commands
+            # A coverage run is followed by the report that merges its profiles.
+            assert len(commands) == 3 + (coverage == 'true'), commands
             assert '--archive-file' in commands[2]['args']
             assert '--workspace' not in commands[2]['args'] and '--locked' not in commands[2]['args']
             # The shard's own archive holds exactly its tests, so nothing partitions them again.
@@ -1187,7 +1188,7 @@ def archive_signal_reaches_only_archived_shards():
                 'TEST_PACKAGES': '["sample"]', 'CARGO_COVERAGE_MIN_LINES': ''})
             assert result.returncode == 0, result.stdout + result.stderr
             commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
-            assert len(commands) == 2, commands
+            assert len(commands) == 2 + (coverage == 'true'), commands
             assert commands[1]['test_archive'] == expected, (shard, warm, coverage, commands)
             assert commands[1]['test_prepare_output'] == str(directory / 'target/test-setup')
 
@@ -1330,6 +1331,7 @@ def install_recording_runner(directory, real_cargo=None, manifest=None, status=0
                                          git_fetch_with_cli=os.environ.get('CARGO_NET_GIT_FETCH_WITH_CLI'),
                                          ambient=os.environ.get('UNRELATED_AMBIENT_CANARY'),
                                          test_prepare_output=os.environ.get('TEST_PREPARE_OUTPUT'),
+                                         test_prepare_base=os.environ.get('TEST_PREPARE_BASE'),
                                          test_archive=os.environ.get('TEST_ARCHIVE'),
                                          path=os.environ.get('PATH'),
                                          coverage_env={{name: value for name, value in os.environ.items() if name.startswith('CARGO_LLVM_COV')}},
@@ -1854,9 +1856,12 @@ def coverage_exclusions_have_one_workflow_owner():
         exported_text = exported.read_text(encoding='utf-8')
         assert exported_text.startswith(f'PROOF_STEPS={temporary}/proof-steps\nCOVERAGE_IGNORE_FILENAME_REGEX={policy}\n')
         assert 'COVERAGE_MERGE<<COVERAGE_POLICY\n' + document['env']['COVERAGE_MERGE'] + 'COVERAGE_POLICY\n' in exported_text
+        assert 'COVERAGE_PROFILES<<COVERAGE_POLICY\n' + document['env']['COVERAGE_PROFILES'] + 'COVERAGE_POLICY\n' in exported_text
         assert workflow.count('source = os.path.normpath(record[3:])') == 1
         for name in ['Coverage', 'Isolated tests', 'Merge coverage']:
             assert body(name).count('python3 -c "$COVERAGE_MERGE"') == 1, name
+        for name in ['Coverage', 'Isolated tests']:
+            assert body(name).count('python3 -c "$COVERAGE_PROFILES"') == 1, name
 
 coverage_exclusions_have_one_workflow_owner()
 print('PASS coverage_exclusions_have_one_workflow_owner')
@@ -1904,7 +1909,7 @@ def warm_cache_builds_without_tests_or_reports():
             assert commands[1]['args'] == [
                 'llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                 '--retries', '0', '--final-status-level', 'flaky',
-                '-E', 'none()', '--no-tests', 'pass', '--workspace', '--locked'] + coverage_report_args + ['--no-report']
+                '-E', 'none()', '--no-tests', 'pass', '--workspace', '--locked', '--no-report']
             assert commands[1]['home'] != os.environ.get('HOME')
             assert not list(directory.glob('*.lcov'))
 
@@ -2021,7 +2026,7 @@ def diagnostic_directory_reaches_isolated_runner():
                         'MAESTRO_TEST_DIAGNOSTICS_DIR': temporary + '/decoy'})
                     assert result.returncode == 0, result.stdout + result.stderr
                     commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
-                    children = [c for c in commands if c['args'][:1] != ['fetch']]
+                    children = [c for c in commands if c['args'][:1] != ['fetch'] and c['args'][:2] != ['llvm-cov', 'report']]
                     expected = str(directory.resolve() / 'target/browser-author-diagnostics')
                     assert children and all(c['diagnostics'] == expected for c in children), children
                     assert all(c['ambient'] is None for c in children)
@@ -2251,7 +2256,9 @@ def shard_runner_status_survives_log_capture():
                                      'TOOLS': str(tools), 'RUNNER_TEMP': temporary,
                                      'SHARD': str(shard), 'COLLECT_COVERAGE': coverage})
                     assert result.returncode == status, (step, shard, status, result.stdout, result.stderr)
-                    assert (directory / 'nextest.log').read_text(encoding='utf-8') == 'runner stdout\nrunner stderr\n'
+                    # A passing coverage run is followed by the report, which appends its own output to the log.
+                    reported = step == 'Isolated tests' and coverage == 'true' and status == 0
+                    assert (directory / 'nextest.log').read_text(encoding='utf-8') == 'runner stdout\nrunner stderr\n' * (2 if reported else 1)
                     commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
                     runners = [command for command in commands if '--partition' in command['args']]
                     assert len(runners) == 1
@@ -2260,7 +2267,7 @@ def shard_runner_status_survives_log_capture():
                     doctests = [command for command in commands if command['args'][:1] == ['test']]
                     assert bool(doctests) == (shard == 1 and status == 0 and coverage == 'false'), commands
                     report = directory / f'shard-{shard}.lcov'
-                    assert report.exists() == (step == 'Isolated tests' and coverage == 'true'), (step, shard, status)
+                    assert report.exists() == reported, (step, shard, status)
                     if report.exists():
                         assert report.read_text(encoding='utf-8') == 'SF:/src/lib.rs\nDA:1,1\nend_of_record\n'
 
@@ -2715,15 +2722,17 @@ def locked_manifests_precede_all_test_routes():
                 assert all(c['home'] == str(original_home) for c in runners)
             if shard == 'doctests':
                 expected = ['test', '--locked', '--doc', '-p', 'sample']
-            elif threshold:
+                reported = []
+            elif threshold or (route == 'Isolated tests' and coverage == 'true'):
+                # The run writes the raw profiles, the check reads them, and only then the report merges them.
+                partition = 'slice:1/1' if threshold else f'slice:{shard}/16'
+                output = directory / ('target/single-coverage/shard-1.lcov' if threshold else f'shard-{shard}.lcov')
                 expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
                             '--retries', '0', '--final-status-level', 'flaky',
-                            '--partition', 'slice:1/1', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / 'target/single-coverage/shard-1.lcov')]
-            elif route == 'Isolated tests' and coverage == 'true':
-                expected = ['llvm-cov', 'nextest', '--user-config-file', 'none', '--ignore-default-filter',
-                            '--retries', '0', '--final-status-level', 'flaky',
-                            '--partition', f'slice:{shard}/16', '--no-tests', 'pass', '-p', 'sample', '--locked'] + coverage_report_args + ['--lcov', '--output-path', str(directory / f'shard-{shard}.lcov')]
+                            '--partition', partition, '--no-tests', 'pass', '-p', 'sample', '--locked', '--no-report']
+                reported = [['llvm-cov', 'report'] + coverage_report_args + ['--lcov', '--output-path', str(output)]]
             else:
+                reported = []
                 expected = ['nextest', 'run', '--user-config-file', 'none', '--ignore-default-filter', '--locked',
                             '-p', 'sample', '--retries', '0', '--final-status-level', 'flaky']
                 if route == 'Tests':
@@ -2731,7 +2740,8 @@ def locked_manifests_precede_all_test_routes():
                 else:
                     expected += ['--no-tests', 'pass', '--partition', f'slice:{shard}/16']
             assert runners[0]['args'] == expected, runners[0]['args']
-            assert [c['args'] for c in runners[1:]] == ([['test', '--locked', '--doc', '-p', 'sample']] if shard == 1 and not threshold and coverage == 'false' else [])
+            assert [c['args'] for c in runners[1:]] == reported + (
+                [['test', '--locked', '--doc', '-p', 'sample']] if shard == 1 and not threshold and coverage == 'false' else [])
             print(f'PASS provisioning route {index}: {route}, shard {shard}, coverage {coverage}, threshold {threshold}', flush=True)
 
 locked_manifests_precede_all_test_routes()
