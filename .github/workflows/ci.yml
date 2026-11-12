@@ -1924,15 +1924,16 @@ jobs:
           import subprocess
           import time
           repository = os.environ['GITHUB_REPOSITORY']
+          pause = float(os.environ.get('EARLIER_SECONDS_PAUSE', '1'))
           def gh(*argv):
-              # A failed request is tried again after a growing pause, except a missing route, which stays missing.
+              # A server error is tried again after a growing pause; any other failure stands.
               for attempt in range(4):
                   result = subprocess.run(['gh', 'api', *argv[:-1], f'repos/{repository}/{argv[-1]}'], capture_output=True, text=True)
                   if result.returncode == 0:
                       return result.stdout
-                  if 'HTTP 404' in result.stderr or attempt == 3:
+                  if not re.search(r'HTTP 5\d\d', result.stderr) or attempt == 3:
                       raise OSError(result.stderr.strip())
-                  time.sleep(2 ** attempt)
+                  time.sleep(pause * 2 ** attempt)
           def jobs_of(path):
               return [job for page in json.loads(gh('--paginate', '--slurp', path)) for job in page['jobs']]
           def log_of(job):
@@ -1945,13 +1946,13 @@ jobs:
               # This caller's shards carry this job's prefix and runner: `suite / Build test archive (macos-latest)` runs `suite / Test shard (macos-latest 1/4)`.
               prefix, runner = re.fullmatch(r'(.*)Build test archive(?: \((.+)\))?', built['name']).groups()
               shard = re.compile(re.escape(f"{prefix}Test shard ({runner + ' ' if runner else ''}") + r'\d+/\d+\)')
-              # Main pushes run no Linux shards, so a Linux job reads merge groups only.
-              earlier = sorted((run for event in (('merge_group',) if os.environ['RUNNER_OS'] == 'Linux' else ('merge_group', 'push'))
+              earlier = sorted((run for event in ('merge_group', 'push')
                                 for run in json.loads(gh(f'actions/runs?event={event}&status=success&per_page=100'))['workflow_runs']
                                 if run['workflow_id'] == current['workflow_id'] and run['created_at'] < current['created_at']
                                 and (run['head_repository'] or {}).get('full_name') == repository),
                                key=lambda run: run['created_at'], reverse=True)
-              # A run whose jobs or logs cannot be read is skipped, so one failed request does not drop the lookup.
+              # A run whose jobs or logs cannot be read is skipped, so one failed request does not drop the lookup; three skipped runs end the walk.
+              skipped = 0
               for run in earlier:
                   try:
                       shards = [job for job in jobs_of(f"actions/runs/{run['id']}/jobs?per_page=100") if shard.fullmatch(job['name'])]
@@ -1961,6 +1962,9 @@ jobs:
                           logs = list(pool.map(log_of, shards))
                   except OSError as error:
                       print(f"Skipped earlier run {run['id']}: {error}")
+                      skipped += 1
+                      if skipped == 3:
+                          raise LookupError('three earlier runs could not be read')
                       continue
                   break
               else:
