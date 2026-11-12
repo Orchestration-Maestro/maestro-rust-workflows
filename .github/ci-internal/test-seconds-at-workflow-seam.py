@@ -172,14 +172,14 @@ def a_client_error_is_not_retried():
 def counting_by_tests_follows_three_unreadable_runs():
     # Runs 50, 40 and 30 cannot be read; run 20 could be, but the walk stops after three skipped runs.
     stamps = ['2026-11-05T09:00:00Z', '2026-11-04T09:00:00Z', '2026-11-03T09:00:00Z', '2026-11-02T09:00:00Z']
-    routes = CURRENT | listed('merge_group', *(run(identifier, stamp) for identifier, stamp in zip([50, 40, 30, 20], stamps))) | listed('push') | {
+    routes = CURRENT | listed('merge_group', *(run(identifier, stamp) for identifier, stamp in zip([50, 40, 30, 20], stamps, strict=True))) | listed('push') | {
         f'actions/runs/{identifier}/jobs?per_page=100': {'fail': 0} for identifier in [50, 40, 30]} | jobs(
         20, job(21, named('tests', shard=1)), job(22, named('tests', shard=2))) | {
         'actions/jobs/21/logs': shard_log('        PASS [   3.000s] (1/1) heavy::integration slow_one'),
         'actions/jobs/22/logs': shard_log('        PASS [   1.000s] (1/1) light::bin/light quick')}
     seconds, log = read(routes)
     assert seconds == {}, seconds
-    assert all(f'Skipped earlier run {identifier}: ' in log for identifier in [50, 40, 30]) and 'earlier run 20' not in log, log
+    assert all(f'Skipped earlier run {identifier}: ' in log for identifier in [50, 40, 30]) and 'from run 20' not in log, log
     assert 'three earlier runs could not be read' in log and 'test binaries are grouped by test count' in log, log
 
 def every_host_reads_main_pushes():
