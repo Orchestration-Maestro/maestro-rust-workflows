@@ -971,6 +971,7 @@ def cargo_git_transport_reaches_every_job_and_isolated_child():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         tools, log = install_recording_runner(directory)
+        (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": {"binaries": 1, "filter": "binary_id(=sample::integration)"}}', encoding='utf-8')
         result = execute('Isolated tests', directory, {
             setting: document['env'][setting], 'PATH': str(tools) + os.pathsep + os.environ['PATH'],
             'TOOLS': str(tools), 'RUNNER_TEMP': temporary, 'TEST_PACKAGES': '["sample"]',
@@ -1892,6 +1893,8 @@ def coverage_exclusions_have_one_workflow_owner():
         exported_text = exported.read_text(encoding='utf-8')
         assert exported_text.startswith(f'PROOF_STEPS={temporary}/proof-steps\nCOVERAGE_IGNORE_FILENAME_REGEX={policy}\n')
         assert 'COVERAGE_MERGE<<COVERAGE_POLICY\n' + document['env']['COVERAGE_MERGE'] + 'COVERAGE_POLICY\n' in exported_text
+        for name in ['ARCHIVE_ENTRY', 'COVERAGE_OBJECTS']:
+            assert f'{name}<<COVERAGE_POLICY\n' + document['env'][name] + 'COVERAGE_POLICY\n' in exported_text, name
         assert 'COVERAGE_PROFILES<<COVERAGE_POLICY\n' + document['env']['COVERAGE_PROFILES'] + 'COVERAGE_POLICY\n' in exported_text
         assert workflow.count('source = os.path.normpath(record[3:])') == 1
         for name in ['Coverage', 'Isolated tests', 'Merge coverage']:
