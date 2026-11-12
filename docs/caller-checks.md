@@ -605,7 +605,7 @@ can remove an entry before the next reader runs.
 ## Test shards
 
 Tests use checksum-pinned cargo-nextest 0.9.148. Each of the declared
-`test_shard_count` shards runs whole test binaries, balanced by the seconds
+`test_shard_count` shards runs test binaries, balanced by the seconds
 their tests took on an earlier run when the tests are built (see
 [Build once, test many](#build-once-test-many)). Each claimed native test host
 runs `min(4, test_shard_count)` shards of its own. The `warm-cache` call is
@@ -677,9 +677,11 @@ coverage builds in `target/llvm-cov-target` with the environment
 `CARGO_LLVM_COV_TARGET_DIR` and `CARGO_LLVM_COV_BUILD_DIR`. That is the
 instrumentation, directory and compile-cache key set `cargo llvm-cov` builds
 with, so shards report coverage from the paths it reads. The job then splits the test binaries into one group per
-shard by the seconds their tests took before. The slowest binary goes first, and
-each binary goes whole to the group with the fewest seconds so far. Shard 1 gets
-the slowest group. The job log prints each shard's tests and binaries, with its
+shard by the seconds their tests took before. A binary whose tests take longer
+than the mean shard load cannot fit one shard, so its tests are placed one by
+one. The slowest item goes first, and each goes to the group with the fewest
+seconds so far. Shard 1 gets the slowest group. A binary stays whole when it has
+one test or a test name holding a character outside letters, digits, `_` and `:`. The job log prints each shard's tests and binaries, with its
 seconds when an earlier run timed them, and `cargo nextest archive -E` writes
 one archive per group from the binaries already built.
 
@@ -687,7 +689,7 @@ Each host's job groups the binaries into that host's own shard count: the
 declared `test_shard_count` on Linux and `min(4, test_shard_count)` on a claimed
 native host. That way every group has a shard that runs it.
 
-The job keeps each shard's filter on its own line of `target/test-filters.txt`
+The job keeps each shard's archive filter on its own line of `target/test-filters.txt`
 with a Unix line end, and reads the file with a plain `while read` loop. Windows
 Python would otherwise end each line with a carriage return that nextest rejects,
 and the Bash 3.2 on macOS runners has no `mapfile`.
@@ -695,24 +697,25 @@ and the Bash 3.2 on macOS runners has no `mapfile`.
 The seconds come from the `Earlier test seconds` step, before the build. It takes
 the newest earlier successful merge group or push run of the same workflow in
 which every test shard of this caller on the same host succeeded, adds up the
-`PASS` seconds those shards' logs print for each test binary, and logs the run
+`PASS` seconds those shards' logs print for each test, and logs the run
 it read with its branch, commit and date. Each host reads only its own shards:
 `Build test archive (macos-latest)` times its binaries from the earlier
 `Test shard (macos-latest 1/4)` to `(macos-latest 4/4)` jobs, never from the
-Linux shards, so a run without macOS shards is passed over. A binary that run
-did not time weighs its tests at the timed binaries' seconds per test. With no
+Linux shards, so a run without macOS shards is passed over. A test that run
+did not time weighs the timed tests' mean seconds. With no
 such run, or when the lookup fails, the step says so and every test weighs the
 same: the binaries go by test count. The timing decides only which shard runs
-each binary, never which tests run. This step holds the run's token, and its
+each test, never which tests run. This step holds the run's token, and its
 Python runs isolated, so no module in the caller's checkout is imported while it
 holds the token.
 
-Each numeric shard downloads only its own archive and runs every test in it with
-`--archive-file`. No partition flag applies, so every test runs on exactly one
-shard. Its coverage report reads that same archive with
+Each numeric shard downloads only its own archive and runs the tests its
+filterset selects with `--archive-file`. No partition flag applies. A split binary
+sits in every archive that holds a part of it, and each filterset names that
+shard's tests of it, so every test runs on exactly one shard. Its coverage report reads that same archive with
 `--nextest-archive-file`, so the report finds the binaries the shard ran. When a
-caller has fewer test binaries than shards, the extra shards hold
-no binary: they run nothing and upload an empty coverage report, so the union
+caller has fewer placed items (whole binaries and split tests) than shards, the
+extra shards hold no binary: they run nothing and upload an empty coverage report, so the union
 still receives one report per shard. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
 runs doctests once per tested host on every merge group and main push. On a main
@@ -742,8 +745,9 @@ step before anything is extracted. If the listing has no digest or the transfer 
 the step hands over to the single-stream `download-artifact` action without retrying
 individual ranges.
 
-The test archive artifact holds every shard's archive and `test-binaries.json`, the
-number of test binaries in each. A shard reads the artifact's zip directory, then
+The test archive artifact holds every shard's archive and `test-binaries.json`, which
+records for each archive the number of test binaries in it and the filterset of the
+tests it runs. A shard reads the artifact's zip directory, then
 fetches only `shard-<n>.tar.zst` and `test-binaries.json` in parallel ranges and checks
 each against the size and CRC-32 the zip records. A mismatch fails the step. A
 compressed member, an unreadable directory or a failed range hands over to the

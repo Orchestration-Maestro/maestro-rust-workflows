@@ -899,7 +899,7 @@ def per_shard_archives_run_every_test_once():
             (crate / 'tests/proof.rs').write_text('#[test] #[ignore] fn ignored() {}\n' + ''.join(
                 f'#[test] fn integration_{index}() {{ assert_eq!({name}::value(), 1); }}\n' for index in range(2 * size)), encoding='utf-8')
         subprocess.run(['cargo', 'generate-lockfile'], cwd=source, check=True)
-        # Four shards hold every binary; sixteen leave six shards without one. One build per mode serves both counts.
+        # With four shards every binary fits a shard whole; with sixteen the binaries above the mean shard are split by test, and each test still runs once. One build per mode serves both counts.
         for (coverage, route), count in itertools.product([('false', 'Tests'), ('true', 'Isolated tests')], [4, 16]):
             directory = pathlib.Path(temporary) / f'caller-{coverage}'
             if not directory.exists():
@@ -934,7 +934,7 @@ def archived_shards_provision_child_build_dependencies():
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory)
-            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": 1}', encoding='utf-8')
+            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": {"binaries": 1, "filter": "binary_id(=sample::integration)"}}', encoding='utf-8')
             env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
                    'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': str(directory / 'shard-1.tar.zst'),
                    'TEST_PREPARE_OUTPUT': str(directory / 'untrusted-inherited-output'),
@@ -950,8 +950,9 @@ def archived_shards_provision_child_build_dependencies():
             assert len(commands) == 3 + (coverage == 'true'), commands
             assert '--archive-file' in commands[2]['args']
             assert '--workspace' not in commands[2]['args'] and '--locked' not in commands[2]['args']
-            # The shard's own archive holds exactly its tests, so nothing partitions them again.
+            # The shard's archive holds its test binaries and its filterset selects its tests of each, so nothing partitions them again.
             assert '--partition' not in commands[2]['args'], commands[2]
+            assert commands[2]['args'][commands[2]['args'].index('-E') + 1] == 'binary_id(=sample::integration)', commands[2]
             if route == 'Isolated tests':
                 assert commands[2]['test_prepare_output'] == str(directory / 'target/test-setup'), commands[2]
     tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
@@ -1180,7 +1181,7 @@ def archive_signal_reaches_only_archived_shards():
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory)
-            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": 1, "shard-2.tar.zst": 1}', encoding='utf-8')
+            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": {"binaries": 1, "filter": "binary_id(=sample::integration)"}, "shard-2.tar.zst": {"binaries": 1, "filter": "binary_id(=sample::integration)"}}', encoding='utf-8')
             result = execute('Isolated tests', directory, {
                 'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
                 'RUNNER_TEMP': temporary, 'SHARD': shard, 'WARM_CACHE': warm,
@@ -1437,17 +1438,8 @@ print('PASS archive_build_publishes_cargo_timings')
 def archive_groups_follow_earlier_test_seconds():
     def case(*names):
         return {name: {'filter-match': {'status': 'matches'}} for name in names} | {'ignored': {'filter-match': {'status': 'mismatch'}}}
-    # Test counts 20, 30, 30 and 10; only the earlier run's seconds show that the first binary is the slow one.
-    suites = {f'{name}::integration': {'testcases': case(*(f'test_{index}' for index in range(count)))}
-              for name, count in [('heavy', 20), ('broad', 30), ('wide', 30), ('new', 10)]}
-    for seconds, expected, logged in [
-            # Unmeasured `new` weighs its ten tests at the measured 8.25 seconds per test.
-            ({'heavy::integration': 600, 'broad::integration': 30, 'wide::integration': 30, 'gone::integration': 5},
-             ['binary_id(=heavy::integration)', 'binary_id(=new::integration) | binary_id(=broad::integration) | binary_id(=wide::integration)'],
-             'Shard 1: 600 s, 20 tests in 1 binary: heavy::integration\n'),
-            # Without earlier seconds every test weighs the same.
-            (None, ['binary_id(=broad::integration) | binary_id(=heavy::integration)', 'binary_id(=wide::integration) | binary_id(=new::integration)'],
-             'Shard 1: 50 tests in 2 binaries: broad::integration heavy::integration\n')]:
+    def plan(suites, seconds):
+        """Run the archive step against a listing of `suites` and the earlier per-test seconds; return the archive filters, the manifest and the log."""
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory, suites=suites)
@@ -1460,10 +1452,44 @@ def archive_groups_follow_earlier_test_seconds():
             assert result.returncode == 0, result.stdout + result.stderr
             archives = [command['args'] for command in map(json.loads, log.read_text(encoding='utf-8').splitlines())
                         if command['args'][:2] == ['nextest', 'archive']]
-            assert [args[args.index('-E') + 1] for args in archives] == expected, (seconds, archives)
-            assert logged in result.stdout, result.stdout
-            assert json.loads((directory / 'test-archives/test-binaries.json').read_text(encoding='utf-8')) == {
-                'shard-1.tar.zst': len(expected[0].split(' | ')), 'shard-2.tar.zst': len(expected[1].split(' | '))}
+            manifest = json.loads((directory / 'test-archives/test-binaries.json').read_text(encoding='utf-8'))
+            return [args[args.index('-E') + 1] for args in archives], manifest, result.stdout
+    def suites_of(heavy):
+        return {f'{name}::integration': {'testcases': case(*tests)}
+                for name, tests in [('heavy', heavy), ('broad', [f'test_{index}' for index in range(30)]),
+                                    ('wide', [f'test_{index}' for index in range(30)]), ('new', [f'test_{index}' for index in range(10)])]}
+    heavy = [f'test_{index}' for index in range(20)]
+    # Each binary under the mean shard load goes whole to one shard: the slowest first, each to the shard with the fewest seconds so far.
+    # Unmeasured `new` weighs its ten tests at the measured 3.5 seconds per test.
+    seconds = {'heavy::integration': {name: 5.0 for name in heavy}, 'broad::integration': {f'test_{index}': 3.0 for index in range(30)},
+               'wide::integration': {f'test_{index}': 3.0 for index in range(30)}, 'gone::integration': {'test_0': 5.0}}
+    filters, manifest, output = plan(suites_of(heavy), seconds)
+    assert filters == ['binary_id(=broad::integration) | binary_id(=wide::integration)', 'binary_id(=heavy::integration) | binary_id(=new::integration)'], filters
+    assert manifest == {'shard-1.tar.zst': {'binaries': 2, 'filter': filters[0]}, 'shard-2.tar.zst': {'binaries': 2, 'filter': filters[1]}}, manifest
+    assert 'Shard 1: 180 s, 60 tests in 2 binaries: broad::integration wide::integration\n' in output, output
+    # Without earlier seconds every test weighs the same.
+    filters, manifest, output = plan(suites_of(heavy), None)
+    assert filters == ['binary_id(=broad::integration) | binary_id(=heavy::integration)', 'binary_id(=wide::integration) | binary_id(=new::integration)'], filters
+    assert 'Shard 1: 50 tests in 2 binaries: broad::integration heavy::integration\n' in output, output
+    # A binary above the mean shard load is split by test seconds: every test runs in exactly one shard.
+    seconds['heavy::integration'] = {name: 30.0 for name in heavy}
+    seconds['broad::integration'] = {f'test_{index}': 1.0 for index in range(30)}
+    seconds['wide::integration'] = {f'test_{index}': 1.0 for index in range(30)}
+    filters, manifest, output = plan(suites_of(heavy), seconds)
+    assigned = [re.findall(r'test\(=(\w+)\)', entry['filter']) for entry in manifest.values()]
+    assert sorted(name for names in assigned for name in names) == sorted(heavy), assigned
+    assert all(names for names in assigned), 'both shards run part of the split binary'
+    assert all('binary_id(=heavy::integration)' in entry['filter'] for entry in manifest.values()), manifest
+    # The other binaries stay whole, and the test count across the shards is unchanged.
+    joined = ' '.join(entry['filter'] for entry in manifest.values())
+    assert joined.count('binary_id(=new::integration)') == 1 and '(binary_id(=new::integration) &' not in joined, manifest
+    loads = [float(load) for load in re.findall(r'Shard \d+: (\d+) s,', output)]
+    assert len(loads) == 2 and max(loads) - min(loads) <= 60, loads
+    assert sum(int(count) for count in re.findall(r', (\d+) tests? in ', output)) == 90, output
+    # A test name the filterset would need escaped keeps its binary whole.
+    odd = suites_of(heavy[:-1] + ['test_with space'])
+    filters, manifest, output = plan(odd, seconds)
+    assert not any('test(=' in entry['filter'] for entry in manifest.values()), manifest
 
 archive_groups_follow_earlier_test_seconds()
 print('PASS archive_groups_follow_earlier_test_seconds')

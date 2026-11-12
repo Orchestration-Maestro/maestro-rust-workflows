@@ -98,6 +98,15 @@ env:
     print(f'Merged line coverage: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')
     if percentage < threshold:
         raise SystemExit('Merged line coverage is below threshold')
+  ARCHIVE_ENTRY: |
+    import json
+    import os
+    import pathlib
+    import sys
+
+    # What the archive job recorded for this shard's archive: how many test binaries it holds and the filterset of the tests it runs.
+    archive = pathlib.Path(os.environ['TEST_ARCHIVE'])
+    print(json.loads((archive.parent / 'test-binaries.json').read_text(encoding='utf-8'))[archive.name][sys.argv[1]])
   COVERAGE_OBJECTS: |
     import os
     import pathlib
@@ -1911,8 +1920,9 @@ jobs:
                   logs = list(pool.map(log_of, shards))
               for log in logs:
                   log = re.sub(r'\x1b\[[0-9;]*m', '', log)
-                  for took, binary in re.findall(r'(?m)^\S+Z\s+PASS \[\s*([0-9.]+)s\]\s+(?:\([^)]*\)\s+)?(\S+)\s', log):
-                      seconds[binary] = seconds.get(binary, 0) + float(took)
+                  for took, binary, test in re.findall(r'(?m)^\S+Z\s+PASS \[\s*([0-9.]+)s\]\s+(?:\([^)]*\)\s+)?(\S+)\s+(\S+)', log):
+                      per_test = seconds.setdefault(binary, {})
+                      per_test[test] = per_test.get(test, 0) + float(took)
               print(f"Test seconds from run {run['id']} ({run['event']} on {run['head_branch']} at {run['head_sha']}, {run['created_at']}): "
                     f'{len(seconds)} test binaries')
           except (subprocess.CalledProcessError, ValueError, TypeError, StopIteration, LookupError) as error:
@@ -1946,30 +1956,55 @@ jobs:
           import json
           import os
           import pathlib
+          import re
           suites = json.loads(pathlib.Path('target/test-list.json').read_text(encoding='utf-8'))['rust-suites']
-          tests = {binary: sum(case['filter-match']['status'] == 'matches' for case in suite['testcases'].values())
+          names = {binary: sorted(name for name, case in suite['testcases'].items() if case['filter-match']['status'] == 'matches')
                    for binary, suite in suites.items()}
           timed = pathlib.Path('target/test-seconds.json')
           measured = json.loads(timed.read_text(encoding='utf-8')) if timed.exists() else {}
-          known = [binary for binary in tests if binary in measured]
-          # A binary the earlier run did not time weighs its tests at the timed binaries' seconds per test; with none timed, every test weighs one.
-          rate = sum(measured[binary] for binary in known) / (sum(tests[binary] for binary in known) or 1) if known else 1
-          weight = {binary: measured.get(binary, tests[binary] * rate) for binary in tests}
+          known = [measured[binary][test] for binary in names for test in names[binary] if test in measured.get(binary, {})]
+          # A test the earlier run did not time weighs the timed tests' mean seconds; with none timed, every test weighs one.
+          rate = sum(known) / len(known) if known else 1
+          def seconds(binary, test):
+              return measured.get(binary, {}).get(test, rate)
+          weight = {binary: sum(seconds(binary, test) for test in names[binary]) for binary in names}
+          limit = sum(weight.values()) / int(os.environ['TEST_SHARD_COUNT'])
+          # A filterset names a test literally only while the name holds none of the characters it treats as syntax.
+          splittable = {binary for binary in names if len(names[binary]) > 1 and all(re.fullmatch(r'[A-Za-z0-9_:]+', test) for test in names[binary])}
+          # A binary heavier than the mean shard cannot fit one shard, so its tests are placed one by one, each still run once.
+          items = []
+          for binary in names:
+              if weight[binary] > limit and binary in splittable:
+                  items += [(seconds(binary, test), 1, binary, test) for test in names[binary]]
+              else:
+                  items.append((weight[binary], len(names[binary]), binary, None))
           def load(group):
-              return sum(weight[member] for member in group), sum(tests[member] for member in group)
-          # Each test binary goes whole to one shard: the slowest first, each to the shard with the fewest seconds so far.
+              return sum(item[0] for item in group), sum(item[1] for item in group)
+          # Each item goes to the shard with the fewest seconds so far, the slowest first.
           groups = [[] for _ in range(int(os.environ['TEST_SHARD_COUNT']))]
-          for binary in sorted(tests, key=lambda binary: (-weight[binary], -tests[binary], binary)):
-              min(groups, key=load).append(binary)
+          for item in sorted(items, key=lambda item: (-item[0], -item[1], item[2], item[3] or '')):
+              min(groups, key=load).append(item)
           groups.sort(key=load, reverse=True)
+          def binaries_of(group):
+              return list(dict.fromkeys(item[2] for item in group))
+          def run_filter(group):
+              terms = []
+              for binary in binaries_of(group):
+                  tests = [item[3] for item in group if item[2] == binary and item[3]]
+                  terms.append(f'(binary_id(={binary}) & (' + ' | '.join(f'test(={test})' for test in tests) + '))' if tests else f'binary_id(={binary})')
+              text = ' | '.join(terms) or 'none()'
+              if len(text) > 100000:
+                  raise SystemExit(f'The filterset of a shard is {len(text)} bytes, over the 100000 a command line carries')
+              return text
           for shard, group in enumerate(groups, 1):
-              print(f'Shard {shard}: ' + (f'{load(group)[0]:.0f} s, ' if known else '') + f'{load(group)[1]} tests in {len(group)} {"binary" if len(group) == 1 else "binaries"}: {" ".join(group)}')
+              held = binaries_of(group)
+              print(f'Shard {shard}: ' + (f'{load(group)[0]:.0f} s, ' if known else '') + f'{load(group)[1]} tests in {len(held)} {"binary" if len(held) == 1 else "binaries"}: {" ".join(held)}')
           # Bash reads this file: a Windows text-mode write would end each line with a carriage return that nextest rejects in the filterset.
           pathlib.Path('target/test-filters.txt').write_text(
-              ''.join((' | '.join(f'binary_id(={binary})' for binary in group) or 'none()') + '\n' for group in groups), encoding='utf-8', newline='\n')
-          # How many test binaries each shard's archive holds: a shard with none has nothing to run.
+              ''.join((' | '.join(f'binary_id(={binary})' for binary in binaries_of(group)) or 'none()') + '\n' for group in groups), encoding='utf-8', newline='\n')
+          # What each shard's archive holds and runs: a shard with no test binary has nothing to run, and a split binary runs only the shard's tests.
           pathlib.Path('test-archives/test-binaries.json').write_text(
-              json.dumps({f'shard-{shard}.tar.zst': len(group) for shard, group in enumerate(groups, 1)}), encoding='utf-8')
+              json.dumps({f'shard-{shard}.tar.zst': {'binaries': len(binaries_of(group)), 'filter': run_filter(group)} for shard, group in enumerate(groups, 1)}), encoding='utf-8')
           PYTHON
           filters=()
           while IFS= read -r filter; do filters+=("$filter"); done < target/test-filters.txt
@@ -2629,9 +2664,8 @@ jobs:
             build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
           fi
           if [ "${SHARD:-}" != doctests ]; then
-            # A shard's own archive holds exactly its tests.
-            partition=()
-            if [ -z "${TEST_ARCHIVE:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); fi
+            # A shard's archive holds its test binaries, and its filterset selects its tests of each.
+            if [ -z "${TEST_ARCHIVE:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); else partition=(-E "$(python3 -c "$ARCHIVE_ENTRY" filter)"); fi
             "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${build_args[@]}" --retries 0 --final-status-level flaky "${partition[@]}" --no-tests pass 2>&1 | tee nextest.log
           fi
           if [[ "$SHARD" == doctests || ( -z "${TEST_ARCHIVE:-}" && "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
@@ -2838,8 +2872,8 @@ jobs:
                 coverage_build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
                 # The report reads the same archive the run executed.
                 archive_report=(--nextest-archive-file "$TEST_ARCHIVE")
-                partition=()
-                archived_binaries=$(python3 -c 'import json, os, pathlib; archive = pathlib.Path(os.environ["TEST_ARCHIVE"]); print(json.loads((archive.parent / "test-binaries.json").read_text(encoding="utf-8"))[archive.name])')
+                partition=(-E "$(python3 -c "$ARCHIVE_ENTRY" filter)")
+                archived_binaries=$(python3 -c "$ARCHIVE_ENTRY" binaries)
               fi
               if [ "$archived_binaries" = 0 ]; then
                 # More shards than test binaries: this shard has none, so it runs nothing and covers no line.
@@ -2861,6 +2895,7 @@ jobs:
             else
               partition=()
               if [ -n "${SHARD:-}" ] && [ -z "${TEST_ARCHIVE:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); fi
+              if [ -n "${TEST_ARCHIVE:-}" ]; then partition=(-E "$(python3 -c "$ARCHIVE_ENTRY" filter)"); fi
               run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
                 "${build_args[@]}" --retries 0 --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi

@@ -113,7 +113,7 @@ def an_archived_shard_reports_from_its_archive():
         directory = pathlib.Path(temporary)
         tools, log = install_recording_runner(directory)
         archive = str(directory / 'shard-1.tar.zst')
-        (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": 1}', encoding='utf-8')
+        (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": {"binaries": 1, "filter": "binary_id(=sample::integration)"}}', encoding='utf-8')
         result = execute('Isolated tests', directory, {
             'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
             'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': archive, 'TEST_PACKAGES': '["sample"]',

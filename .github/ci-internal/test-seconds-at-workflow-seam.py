@@ -73,7 +73,7 @@ def read(routes, checkout=None):
         assert result.returncode == 0, result.stdout + result.stderr
         return json.loads((directory / 'target/test-seconds.json').read_text(encoding='utf-8')), result.stdout
 
-def the_newest_earlier_run_of_this_caller_supplies_seconds_per_test_binary():
+def the_newest_earlier_run_of_this_caller_supplies_seconds_per_test():
     routes = CURRENT | listed('merge_group',
         run(90, '2026-11-05T11:00:00Z'),  # Created after the current run.
         run(80, '2026-11-05T09:30:00Z', workflow=56),  # Another workflow.
@@ -94,7 +94,7 @@ def the_newest_earlier_run_of_this_caller_supplies_seconds_per_test_binary():
         'actions/jobs/53/logs': shard_log('        PASS [ 900.000s] (1/1) heavy::integration elsewhere')}
     seconds, log = read(routes)
     # The newest earlier run of the same workflow and caller whose shards all ran, summed over all its shards; never the setup.
-    assert seconds == {'heavy::integration': 63.75, 'light::bin/light': 0.01}, seconds
+    assert seconds == {'heavy::integration': {'slow_one': 1.25, 'slow_two': 60.5, 'slow_three': 2.0}, 'light::bin/light': {'quick': 0.01}}, seconds
     assert 'Test seconds from run 50 (merge_group on gh-readonly-queue/main/pr-1 at sha50, 2026-11-05T09:00:00Z): 2 test binaries' in log, log
 
 def a_failed_shard_keeps_its_run_out():
@@ -119,8 +119,8 @@ def each_runner_takes_seconds_from_its_own_shards():
             'actions/jobs/56/logs': shard_log('        PASS [  10.000s] (1/1) light::bin/light quick'),
             'actions/jobs/57/logs': shard_log('        PASS [   5.000s] (1/1) heavy::integration slow_two')}
     earlier = listed('merge_group', run(60, '2026-11-05T09:30:00Z'), run(50, '2026-11-05T09:00:00Z')) | listed('push') | jobs(60, *linux) | jobs(50, *both)
-    for runner, expected, source in [('ubuntu-latest', {'heavy::integration': 2.0, 'light::bin/light': 1.0}, 60),
-                                     ('macos-latest', {'heavy::integration': 25.0, 'light::bin/light': 10.0}, 50)]:
+    for runner, expected, source in [('ubuntu-latest', {'heavy::integration': {'slow_one': 2.0}, 'light::bin/light': {'quick': 1.0}}, 60),
+                                     ('macos-latest', {'heavy::integration': {'slow_one': 20.0, 'slow_two': 5.0}, 'light::bin/light': {'quick': 10.0}}, 50)]:
         seconds, log = read(current(runner) | earlier | logs)
         assert seconds == expected, (runner, seconds)
         assert f'Test seconds from run {source} ' in log, (runner, log)
@@ -136,7 +136,7 @@ def the_caller_checkout_never_runs_with_the_token():
     seconds, _ = read({}, {'json.py': "raise SystemExit('the caller checkout ran with the token')\n"})
     assert seconds == {}, seconds
 
-for check in [the_newest_earlier_run_of_this_caller_supplies_seconds_per_test_binary, a_failed_shard_keeps_its_run_out,
+for check in [the_newest_earlier_run_of_this_caller_supplies_seconds_per_test, a_failed_shard_keeps_its_run_out,
               each_runner_takes_seconds_from_its_own_shards, without_earlier_timing_the_binaries_go_by_test_count,
               the_caller_checkout_never_runs_with_the_token]:
     check()
