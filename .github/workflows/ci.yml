@@ -1351,16 +1351,28 @@ jobs:
           TARGET: ''
         run: &clippy |
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
-          packages=()
-          while IFS= read -r -d '' argument; do packages+=("$argument"); done < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
-          target=()
-          if [ -n "${TARGET:-}" ]; then
-            rustup target add "$TARGET"
-            rustup component add clippy
-            target=(--target "$TARGET")
+          names=()
+          while IFS= read -r -d '' name; do names+=("$name"); done < <(python3 -c 'import json, os; print("".join(name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          if [ -z "${TARGET:-}" ]; then
+            packages=(--workspace)
+            if [ -n "${TEST_PACKAGES:-}" ] && [ "${COVERAGE_SCOPE:-}" != "full workspace" ]; then
+              packages=()
+              for name in "${names[@]}"; do packages+=(-p "$name"); done
+            fi
+            cargo clippy "${packages[@]}" --all-targets --locked -- -D warnings
+            exit 0
           fi
-          cargo clippy "${packages[@]}" --all-targets --locked "${target[@]}" -- -D warnings
+          rustup target add "$TARGET"
+          rustup component add clippy
+          if [ -z "${TEST_PACKAGES:-}" ]; then
+            cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings
+            exit 0
+          fi
+          # One package per run: a build of several packages unifies their dependency features and hides a package that lacks one of its own.
+          echo "Linting ${names[*]} for $TARGET"
+          for name in "${names[@]}"; do
+            cargo clippy -p "$name" --all-targets --locked --target "$TARGET" -- -D warnings
+          done
       - name: Lint wasm crates
         env:
           WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}

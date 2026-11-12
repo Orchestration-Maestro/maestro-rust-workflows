@@ -37,7 +37,10 @@ test_tools = false
 Pull requests run declaration validation, formatting, Clippy, docs,
 dependency/source checks and the declared Windows target check. Host
 Clippy and the Windows target check select changed crates and their workspace
-dependents; formatting still checks the whole workspace. Pull requests skip the
+dependents; formatting still checks the whole workspace. A declared target
+check prints the selected packages, then lints each one's tests and examples in
+its own run. One run over several packages shares a feature set and would hide a
+package that lacks a dependency feature its tests need. Pull requests skip the
 test archive, test setup, test shards, doctests and wasm/browser builds. Two
 exceptions still compile: the declared [example witnesses](#wasm-example-witnesses),
 and the [Emscripten crates](#emscripten-builds), which the sandbox runtime job

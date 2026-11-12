@@ -1386,10 +1386,12 @@ def clippy_selection_works_without_mapfile():
                     assert not log.exists()
                     continue
                 commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
-                args = next(item['args'] for item in commands if item['tool'] == 'cargo')
-                selection = ['--workspace'] if scope == 'full workspace' or packages is None else ['-p', 'first', '-p', 'second']
-                assert args == ['clippy'] + selection + ['--all-targets', '--locked'] + (
-                    ['--target', target] if target else []) + ['--', '-D', 'warnings'], args
+                runs = [item['args'] for item in commands if item['tool'] == 'cargo']
+                # A foreign target lints one package per run; the host lint runs the selection once.
+                selections = ([['-p', 'first'], ['-p', 'second']] if target and packages is not None
+                              else [['--workspace'] if scope == 'full workspace' or packages is None else ['-p', 'first', '-p', 'second']])
+                assert runs == [['clippy'] + selection + ['--all-targets', '--locked'] + (
+                    ['--target', target] if target else []) + ['--', '-D', 'warnings'] for selection in selections], runs
                 assert [item['args'] for item in commands if item['tool'] == 'rustup'] == (
                     [['target', 'add', target], ['component', 'add', 'clippy']] if target else [])
                 log.unlink()
@@ -3570,14 +3572,15 @@ def changed_packages_include_reverse_dependencies():
                         assert not log.exists(), log.read_text(encoding='utf-8')
                         continue
                     commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
-                    args = next(args for args in commands if args[:1] == ['clippy'])
-                    if selection['coverage'] == 'true':
-                        assert '--workspace' in args and '-p' not in args, args
-                    else:
-                        assert [args[i + 1] for i, arg in enumerate(args) if arg == '-p'] == ['a', 'b', 'c'], args
-                        assert '--workspace' not in args, args
-                    assert '--all-targets' in args and args[-3:] == ['--', '-D', 'warnings'], args
-                    assert ('--target' in args) == (job == 'targets'), args
+                    runs = [args for args in commands if args[:1] == ['clippy']]
+                    # The target check lints each package in its own run; the host lint runs the selection once.
+                    full = selection['coverage'] == 'true'
+                    assert [[args[i + 1] for i, arg in enumerate(args) if arg == '-p'] for args in runs] == (
+                        [[name] for name in json.loads(selection['packages'])] if job == 'targets' else [[] if full else ['a', 'b', 'c']]), runs
+                    for args in runs:
+                        assert ('--workspace' in args) == (job == 'quality' and full), args
+                        assert '--all-targets' in args and args[-3:] == ['--', '-D', 'warnings'], args
+                        assert ('--target' in args) == (job == 'targets'), args
         declared = declaration_path.read_text(encoding='utf-8')
         nextest = directory / '.config/nextest.toml'
         nextest.parent.mkdir()
@@ -4898,6 +4901,24 @@ def foreign_target_failures_are_detected():
 
 foreign_target_failures_are_detected()
 print('PASS foreign_target_failures_are_detected')
+
+def target_check_lints_each_package_alone():
+    target = os.environ.get('TARGET', 'x86_64-unknown-linux-gnu')
+    fixture = root / 'fixtures' / 'unified-features'
+    selection = {'TARGET': target, 'TEST_PACKAGES': '["enabler", "provider", "user"]', 'COVERAGE_SCOPE': 'full workspace'}
+    # One workspace-wide build unifies the provider's feature across packages and hides the gap in `user`.
+    command = ['cargo', 'check', '--workspace', '--all-targets', '--locked']
+    if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+        command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+    unified = subprocess.run(command, cwd=fixture, capture_output=True, text=True)
+    assert unified.returncode == 0, unified.stderr
+    result = execute('Check target', fixture, selection)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0 and 'cannot find function `tick`' in output, output
+    assert 'Linting enabler provider user for ' + target in output, output
+
+target_check_lints_each_package_alone()
+print('PASS target_check_lints_each_package_alone')
 
 def isolation_creates_a_missing_cargo_home():
     with tempfile.TemporaryDirectory() as temporary:
