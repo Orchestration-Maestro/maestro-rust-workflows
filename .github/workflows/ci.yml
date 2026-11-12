@@ -1971,20 +1971,6 @@ jobs:
           limit = sum(weight.values()) / int(os.environ['TEST_SHARD_COUNT'])
           # A filterset names a test literally only while the name holds none of the characters it treats as syntax.
           splittable = {binary for binary in names if len(names[binary]) > 1 and all(re.fullmatch(r'[A-Za-z0-9_:]+', test) for test in names[binary])}
-          # A binary heavier than the mean shard cannot fit one shard, so its tests are placed one by one, each still run once.
-          items = []
-          for binary in names:
-              if weight[binary] > limit and binary in splittable:
-                  items += [(seconds(binary, test), 1, binary, test) for test in names[binary]]
-              else:
-                  items.append((weight[binary], len(names[binary]), binary, None))
-          def load(group):
-              return sum(item[0] for item in group), sum(item[1] for item in group)
-          # Each item goes to the shard with the fewest seconds so far, the slowest first.
-          groups = [[] for _ in range(int(os.environ['TEST_SHARD_COUNT']))]
-          for item in sorted(items, key=lambda item: (-item[0], -item[1], item[2], item[3] or '')):
-              min(groups, key=load).append(item)
-          groups.sort(key=load, reverse=True)
           def binaries_of(group):
               return list(dict.fromkeys(item[2] for item in group))
           def run_filter(group):
@@ -1992,10 +1978,36 @@ jobs:
               for binary in binaries_of(group):
                   tests = [item[3] for item in group if item[2] == binary and item[3]]
                   terms.append(f'(binary_id(={binary}) & (' + ' | '.join(f'test(={test})' for test in tests) + '))' if tests else f'binary_id(={binary})')
-              text = ' | '.join(terms) or 'none()'
-              if len(text) > 100000:
-                  raise SystemExit(f'The filterset of a shard is {len(text)} bytes, over the 100000 a command line carries')
-              return text
+              return ' | '.join(terms) or 'none()'
+          def load(group):
+              return sum(item[0] for item in group), sum(item[1] for item in group)
+          def place(split):
+              items = []
+              for binary in names:
+                  if binary in split:
+                      items += [(seconds(binary, test), 1, binary, test) for test in names[binary]]
+                  else:
+                      items.append((weight[binary], len(names[binary]), binary, None))
+              # Each item goes to the shard with the fewest seconds so far, the slowest first.
+              groups = [[] for _ in range(int(os.environ['TEST_SHARD_COUNT']))]
+              for item in sorted(items, key=lambda item: (-item[0], -item[1], item[2], item[3] or '')):
+                  min(groups, key=load).append(item)
+              groups.sort(key=load, reverse=True)
+              return groups
+          # A binary heavier than the mean shard cannot fit one shard, so its tests are placed one by one, each still run once.
+          split = {binary for binary in splittable if weight[binary] > limit}
+          groups = place(split)
+          # A filterset travels on a command line, which Windows caps at 32767 characters: the split binary adding the most test terms to an overlong shard stays whole.
+          while True:
+              overlong = [group for group in groups if len(run_filter(group)) > 30000]
+              kept = [binary for group in overlong for binary in binaries_of(group) if binary in split]
+              if not kept:
+                  break
+              split.discard(max(kept, key=lambda binary: sum(len(test) for test in names[binary])))
+              groups = place(split)
+          for group in groups:
+              if len(run_filter(group)) > 30000:
+                  raise SystemExit(f'The filterset of a shard is {len(run_filter(group))} characters, over the 30000 a Windows command line carries')
           for shard, group in enumerate(groups, 1):
               held = binaries_of(group)
               print(f'Shard {shard}: ' + (f'{load(group)[0]:.0f} s, ' if known else '') + f'{load(group)[1]} tests in {len(held)} {"binary" if len(held) == 1 else "binaries"}: {" ".join(held)}')

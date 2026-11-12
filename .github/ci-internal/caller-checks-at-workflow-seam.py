@@ -1490,6 +1490,14 @@ def archive_groups_follow_earlier_test_seconds():
     odd = suites_of(heavy[:-1] + ['test_with space'])
     filters, manifest, output = plan(odd, seconds)
     assert not any('test(=' in entry['filter'] for entry in manifest.values()), manifest
+    # A filterset travels on a command line, which Windows caps at 32767 characters: a split whose shard filter would pass 30000 keeps its binary whole.
+    long_names = [f'test_{index:04d}_' + 'x' * 990 for index in range(70)]
+    suites = suites_of(heavy) | {'heavy::integration': {'testcases': case(*long_names)}}
+    seconds['heavy::integration'] = dict.fromkeys(long_names, 30.0)
+    filters, manifest, output = plan(suites, seconds)
+    assert all(len(entry['filter']) <= 30000 for entry in manifest.values()), [len(entry['filter']) for entry in manifest.values()]
+    assert not any('test(=' in entry['filter'] for entry in manifest.values()), manifest
+    assert sum(int(count) for count in re.findall(r', (\d+) tests? in ', output)) == 70 + 70, output
 
 archive_groups_follow_earlier_test_seconds()
 print('PASS archive_groups_follow_earlier_test_seconds')

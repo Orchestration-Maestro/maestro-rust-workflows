@@ -681,7 +681,10 @@ shard by the seconds their tests took before. A binary whose tests take longer
 than the mean shard load cannot fit one shard, so its tests are placed one by
 one. The slowest item goes first, and each goes to the group with the fewest
 seconds so far. Shard 1 gets the slowest group. A binary stays whole when it has
-one test or a test name holding a character outside letters, digits, `_` and `:`. The job log prints each shard's tests and binaries, with its
+one test or a test name holding a character outside letters, digits, `_` and `:`.
+A filterset travels on a command line, which Windows caps at 32767 characters, so
+a split binary whose test names would push a shard's filterset past 30000
+characters stays whole as well, the one adding the most name characters first. The job log prints each shard's tests and binaries, with its
 seconds when an earlier run timed them, and `cargo nextest archive -E` writes
 one archive per group from the binaries already built.
 
@@ -1009,7 +1012,9 @@ included.
 Root manifest and lockfile changes still follow the rules below.
 
 Host Clippy and the declared Windows target check lint the selected packages
-with `--all-targets`. Merge groups and main pushes lint the whole workspace.
+with `--all-targets`. Merge groups and main pushes select every workspace crate:
+host Clippy lints them in one workspace run, and the target check lints each one
+in its own run.
 An empty PR selection performs no host or target Clippy compilation; the named
 checks still report success. An absent base selects every package for lint.
 Wasm Clippy ignores the selection and lints every `wasm_crates` package on every
@@ -1855,12 +1860,17 @@ than treating estimates as deadlines.
 
 ## Foreign-target checks
 
-On full runs, the caller's rustup toolchain installs each requested target and
-Clippy, then runs:
+The caller's rustup toolchain installs each requested target and Clippy. The
+check prints the selected packages, then runs, for each one:
 
 ```bash
-cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings
+cargo clippy -p "$PACKAGE" --all-targets --locked --target "$TARGET" -- -D warnings
 ```
+
+Merge groups and main pushes select every workspace crate, so the check lints
+them one after another. Run alone, a package builds with only the dependency
+features its own manifest asks for, so a test target missing a feature it needs
+fails here, as it does in its own tests.
 
 | Target | Runner |
 | --- | --- |
