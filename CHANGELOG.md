@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.34](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.33...v0.19.34) (2026-11-12)
+
+
+### Continuous Integration
+
+* pin maestro-rust-workflows callers to v0.19.33 ([#479](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/479)) ([cb7c59a](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/cb7c59ac2d7d91c859adc123f1f4b3f2be2cdc93))
+
+
+### Bug Fixes
+
+* **ci:** fail the coverage step on a damaged raw profile and run tests with a prepare base ([#476](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/476)) ([4d99221](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/4d99221b6545ceed2ab92d4a2f9ca46a71bdc5dd))
+
 ## [0.19.33](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.32...v0.19.33) (2026-11-11)
 
 
