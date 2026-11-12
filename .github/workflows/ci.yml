@@ -214,6 +214,7 @@ jobs:
       test_prepare_inputs: ${{ steps.config.outputs.test_prepare_inputs }}
       warm_test_filter: ${{ steps.config.outputs.warm_test_filter }}
       packages: ${{ steps.selection.outputs.packages }}
+      lint_alone: ${{ steps.selection.outputs.lint_alone }}
       check_advisories: ${{ steps.selection.outputs.check_advisories }}
       coverage: ${{ steps.selection.outputs.coverage }}
       tests_reused: ${{ steps.queue.outputs.tests_reused }}
@@ -866,6 +867,38 @@ jobs:
           ids = {packages[p]['name']: p for p in members}
           # Declared paths outside every member select only the packages whose tests read them.
           inputs = {pathlib.Path(key): {ids[name] for name in readers} for key, readers in config.get('test_inputs', {}).items()}
+          def lock_changed():
+              # Resolve both revisions, comparing transitive dependency identities and features.
+              with tempfile.TemporaryDirectory() as temporary:
+                  base_dir = str(pathlib.Path(temporary) / 'base')
+                  subprocess.run(['git', 'worktree', 'add', '--detach', base_dir, base], check=True)
+                  try:
+                      caller = pathlib.Path.cwd().relative_to(pathlib.Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()))
+                      before = metadata(pathlib.Path(base_dir) / caller)
+                  finally:
+                      subprocess.run(['git', 'worktree', 'remove', '--force', base_dir], check=True)
+              def dependencies(data):
+                  pkgs = {p['id']: p for p in data['packages']}
+                  nodes = {n['id']: n for n in data['resolve']['nodes']}
+                  result = {}
+                  for member in data['workspace_members']:
+                      seen, pending = set(), [member]
+                      while pending:
+                          node = pending.pop()
+                          if node not in seen:
+                              seen.add(node)
+                              pending.extend(nodes[node]['dependencies'])
+                      result[pkgs[member]['name']] = {(pkgs[n]['name'], pkgs[n]['version'], pkgs[n]['source'], tuple(sorted(nodes[n]['features']))) for n in seen}
+                  return result
+              old, new = dependencies(before), dependencies(head)
+              return {p for p in members if old.get(packages[p]['name']) != new[packages[p]['name']]}
+          def with_dependents(start):
+              start = set(start)
+              while True:
+                  reverse = {n['id'] for n in head['resolve']['nodes'] if n['id'] in members and set(n['dependencies']) & start}
+                  if reverse <= start:
+                      return start
+                  start |= reverse
           changed = None
           if event == 'pull_request' and base:
               changed = subprocess.check_output(['git', 'diff', '--relative', '--no-renames', '--name-only', '-z', base, 'HEAD'], text=True).split('\0')[:-1]
@@ -945,36 +978,36 @@ jobs:
                       selected = set(members)
                       trigger = 'shared input: .github/ci.toml'
               if 'Cargo.lock' in changed and selected != members:
-                  # Resolve both revisions, comparing transitive dependency identities and features.
-                  with tempfile.TemporaryDirectory() as temporary:
-                      base_dir = str(pathlib.Path(temporary) / 'base')
-                      subprocess.run(['git', 'worktree', 'add', '--detach', base_dir, base], check=True)
-                      try:
-                          caller = pathlib.Path.cwd().relative_to(pathlib.Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()))
-                          before = metadata(pathlib.Path(base_dir) / caller)
-                      finally:
-                          subprocess.run(['git', 'worktree', 'remove', '--force', base_dir], check=True)
-                  def dependencies(data):
-                      pkgs = {p['id']: p for p in data['packages']}
-                      nodes = {n['id']: n for n in data['resolve']['nodes']}
-                      result = {}
-                      for member in data['workspace_members']:
-                          seen, pending = set(), [member]
-                          while pending:
-                              node = pending.pop()
-                              if node not in seen:
-                                  seen.add(node)
-                                  pending.extend(nodes[node]['dependencies'])
-                          result[pkgs[member]['name']] = {(pkgs[n]['name'], pkgs[n]['version'], pkgs[n]['source'], tuple(sorted(nodes[n]['features']))) for n in seen}
-                      return result
-                  old, new = dependencies(before), dependencies(head)
-                  selected.update(p for p in members if old.get(packages[p]['name']) != new[packages[p]['name']])
+                  selected.update(lock_changed())
               selected.update(included_readers)
-              while True:
-                  reverse = {n['id'] for n in head['resolve']['nodes'] if n['id'] in members and set(n['dependencies']) & selected}
-                  if reverse <= selected:
-                      break
-                  selected.update(reverse)
+              selected = with_dependents(selected)
+          # A foreign-target check lints these packages alone: each one a change touches, and the dependents of a package whose manifest or lock file changed. A main push lints none.
+          alone = {}
+          def lint_alone(ids, reason):
+              alone.update({packages[p]['name']: alone.get(packages[p]['name'], reason) for p in ids})
+          touched = changed
+          if event == 'merge_group' and base:
+              diff = subprocess.run(['git', 'diff', '--relative', '--no-renames', '--name-only', '-z', base, 'HEAD'], capture_output=True, text=True)
+              # A base the checkout cannot read, or a graph that did not resolve, lints every package alone.
+              touched = diff.stdout.split('\0')[:-1] if diff.returncode == 0 else None
+              if touched is None:
+                  lint_alone(members, 'changed files unreadable')
+          if fallback:
+              lint_alone(members, fallback)
+          elif touched is not None:
+              manifests = set()
+              for filename in touched:
+                  path = pathlib.Path(filename)
+                  owner = package_owner(path, roots)
+                  if owner is not None:
+                      lint_alone([owner], 'changed file')
+                  if filename == 'Cargo.toml':
+                      manifests = set(members)
+                  elif path.name == 'Cargo.toml' and owner is not None:
+                      manifests.add(owner)
+              if 'Cargo.lock' in touched:
+                  manifests |= lock_changed()
+              lint_alone(with_dependents(manifests), 'depends on a package whose manifest or lock file changed')
           if fallback:
               trigger = fallback
           if trigger:
@@ -1009,6 +1042,7 @@ jobs:
               prepare = json.dumps(config.get('test_prepare', '') if consumers is None or set(consumers) & set(names) else '')
               output.write('test_prepare=' + prepare + '\n')
               output.write('packages=' + json.dumps(names) + '\n')
+              output.write('lint_alone=' + json.dumps(alone) + '\n')
               output.write('coverage_scope=' + ('full workspace' if selected == members else 'selected packages: ' + ', '.join(names)) + '\n')
               output.write('coverage=' + str(event != 'pull_request' and os.environ.get('TESTS_REUSED') != 'true').lower() + '\n')
               # A reused queue result keeps every host: its archive and preparation seed the snapshots each merge group restores.
@@ -1386,26 +1420,24 @@ jobs:
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
           names=()
           while IFS= read -r -d '' name; do names+=("$name"); done < <(python3 -c 'import json, os; print("".join(name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          packages=(--workspace)
+          if [ -n "${TEST_PACKAGES:-}" ] && [ "${COVERAGE_SCOPE:-}" != "full workspace" ]; then
+            packages=()
+            for name in "${names[@]}"; do packages+=(-p "$name"); done
+          fi
           if [ -z "${TARGET:-}" ]; then
-            packages=(--workspace)
-            if [ -n "${TEST_PACKAGES:-}" ] && [ "${COVERAGE_SCOPE:-}" != "full workspace" ]; then
-              packages=()
-              for name in "${names[@]}"; do packages+=(-p "$name"); done
-            fi
             cargo clippy "${packages[@]}" --all-targets --locked -- -D warnings
             exit 0
           fi
           rustup target add "$TARGET"
           rustup component add clippy
-          if [ -z "${TEST_PACKAGES:-}" ]; then
-            cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings
-            exit 0
-          fi
-          # One package per run: a build of several packages unifies their dependency features and hides a package that lacks one of its own.
-          echo "Linting ${names[*]} for $TARGET"
-          for name in "${names[@]}"; do
+          echo "Linting ${packages[*]} for $TARGET"
+          cargo clippy "${packages[@]}" --all-targets --locked --target "$TARGET" -- -D warnings
+          # Run alone, a package builds with only the features its own manifest asks for, which shows a feature it lacks; the declaration lists the packages a change can leave lacking one.
+          echo "Linted alone (package: reason): ${LINT_ALONE:-none}"
+          while IFS= read -r -d '' name; do
             cargo clippy -p "$name" --all-targets --locked --target "$TARGET" -- -D warnings
-          done
+          done < <(python3 -c 'import json, os; print("".join(name + "\0" for name in json.loads(os.environ.get("LINT_ALONE") or "{}")), end="")')
       - name: Lint wasm crates
         env:
           WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}
@@ -3644,6 +3676,7 @@ jobs:
         env:
           TEST_PACKAGES: ${{ needs.declaration.outputs.packages }}
           COVERAGE_SCOPE: ${{ needs.declaration.outputs.coverage_scope }}
+          LINT_ALONE: ${{ needs.declaration.outputs.lint_alone }}
           TARGET: ${{ matrix.target }}
         run: *clippy
       - name: Compile cache statistics

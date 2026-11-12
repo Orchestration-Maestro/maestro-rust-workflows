@@ -1375,7 +1375,8 @@ def clippy_selection_works_without_mapfile():
                                     ('["first", "second"]', 'full workspace'), (None, '')]:
                 env = {key: value for key, value in os.environ.items()
                        if key not in ['TEST_PACKAGES', 'COVERAGE_SCOPE', 'TARGET']}
-                env.update(PATH=str(tools) + os.pathsep + env['PATH'], COVERAGE_SCOPE=scope, TARGET=target)
+                env.update(PATH=str(tools) + os.pathsep + env['PATH'], COVERAGE_SCOPE=scope, TARGET=target,
+                           LINT_ALONE='{"second": "changed file"}')
                 if packages is not None:
                     env['TEST_PACKAGES'] = packages
                 name = 'Check target' if target else 'Lint'
@@ -1389,9 +1390,10 @@ def clippy_selection_works_without_mapfile():
                     continue
                 commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
                 runs = [item['args'] for item in commands if item['tool'] == 'cargo']
-                # A foreign target lints one package per run; the host lint runs the selection once.
-                selections = ([['-p', 'first'], ['-p', 'second']] if target and packages is not None
-                              else [['--workspace'] if scope == 'full workspace' or packages is None else ['-p', 'first', '-p', 'second']])
+                # Both lints run the selection once; a foreign target then lints each package named in LINT_ALONE by itself.
+                selections = [['--workspace'] if scope == 'full workspace' or packages is None else ['-p', 'first', '-p', 'second']]
+                if target:
+                    selections.append(['-p', 'second'])
                 assert runs == [['clippy'] + selection + ['--all-targets', '--locked'] + (
                     ['--target', target] if target else []) + ['--', '-D', 'warnings'] for selection in selections], runs
                 assert [item['args'] for item in commands if item['tool'] == 'rustup'] == (
@@ -3581,6 +3583,10 @@ def changed_packages_include_reverse_dependencies():
         values = select()
         assert json.loads(values['packages']) == ['a', 'b', 'c'] and values['coverage'] == 'false'
         assert json.loads(values['test_shards']) == [], values
+        # A foreign target lints alone the changed package, not its dependents; a merge group reads the same change; a main push lints none alone.
+        assert json.loads(values['lint_alone']) == {'a': 'changed file'}, values
+        assert json.loads(select('merge_group')['lint_alone']) == {'a': 'changed file'}
+        assert json.loads(select('push')['lint_alone']) == {}
         document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
         context = {'cancelled()': False, 'needs.test-build.result': 'success',
                    'needs.test-prepare.result': 'skipped', 'inputs.warm-cache': False,
@@ -3595,6 +3601,7 @@ def changed_packages_include_reverse_dependencies():
             for job, step_name in [('quality', 'Lint'), ('targets', 'Check target')]:
                 step = next(step for step in document['jobs'][job]['steps'] if step.get('name') == step_name)
                 selection_context = {'needs.declaration.outputs.packages': selection['packages'],
+                                     'needs.declaration.outputs.lint_alone': selection['lint_alone'],
                                      'needs.declaration.outputs.coverage_scope': selection['coverage_scope'],
                                      'matrix.target': 'x86_64-pc-windows-msvc'}
                 step_env = {key: evaluate(value, selection_context) if value.startswith('$' + '{{') else value
@@ -3610,12 +3617,13 @@ def changed_packages_include_reverse_dependencies():
                         continue
                     commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
                     runs = [args for args in commands if args[:1] == ['clippy']]
-                    # The target check lints each package in its own run; the host lint runs the selection once.
+                    # Both lints run the selection once; the target check then lints each package of the declaration's list by itself.
                     full = selection['coverage'] == 'true'
-                    assert [[args[i + 1] for i, arg in enumerate(args) if arg == '-p'] for args in runs] == (
-                        [[name] for name in json.loads(selection['packages'])] if job == 'targets' else [[] if full else ['a', 'b', 'c']]), runs
+                    alone = [[name] for name in json.loads(selection['lint_alone'])] if job == 'targets' else []
+                    assert [[args[i + 1] for i, arg in enumerate(args) if arg == '-p'] for args in runs] == [[] if full else ['a', 'b', 'c']] + alone, runs
+                    for args in runs[:1]:
+                        assert ('--workspace' in args) == full, args
                     for args in runs:
-                        assert ('--workspace' in args) == (job == 'quality' and full), args
                         assert '--all-targets' in args and args[-3:] == ['--', '-D', 'warnings'], args
                         assert ('--target' in args) == (job == 'targets'), args
         declared = declaration_path.read_text(encoding='utf-8')
@@ -3659,6 +3667,11 @@ def changed_packages_include_reverse_dependencies():
         git('commit', '-qm', 'dependency identity')
         assert json.loads(select()['packages']) == ['a', 'b', 'c']
         assert select()['check_advisories'] == select('merge_group')['check_advisories'] == 'true'
+        # A manifest and lock change adds the dependents of the package whose manifest changed.
+        dependents = 'depends on a package whose manifest or lock file changed'
+        expected = {'a': 'changed file', 'b': dependents, 'c': dependents}
+        assert json.loads(select()['lint_alone']) == json.loads(select('merge_group')['lint_alone']) == expected
+        assert json.loads(select('push')['lint_alone']) == {}
         git('reset', '--hard', base)
         (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\nspelling_words=["word"]\n', encoding='utf-8')
         git('add', '.')
@@ -3699,6 +3712,13 @@ def changed_packages_include_reverse_dependencies():
         git('add', '.')
         git('commit', '-qm', 'workflow')
         assert json.loads(select()['packages']) == ['a', 'b', 'c', 'd']
+        # A shared input selects every package to test, yet no package has a changed file to lint alone.
+        assert json.loads(select()['lint_alone']) == {}
+        # A root manifest change lints every member alone.
+        (directory / 'Cargo.toml').write_text((directory / 'Cargo.toml').read_text(encoding='utf-8') + '\n', encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'root manifest')
+        assert json.loads(select()['lint_alone']) == {name: 'depends on a package whose manifest or lock file changed' for name in 'abcd'}
 
 changed_packages_include_reverse_dependencies()
 print('PASS changed_packages_include_reverse_dependencies')
@@ -4953,10 +4973,14 @@ def target_check_lints_each_package_alone():
         command.insert(0, os.path.expanduser('~/.local/bin/capped'))
     unified = subprocess.run(command, cwd=fixture, capture_output=True, text=True)
     assert unified.returncode == 0, unified.stderr
-    result = execute('Check target', fixture, selection)
+    # The workspace run passes; only a package linted alone fails.
+    result = execute('Check target', fixture, selection | {'LINT_ALONE': '{}'})
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'Linting --workspace for ' + target in result.stdout, result.stdout
+    result = execute('Check target', fixture, selection | {'LINT_ALONE': '{"user": "changed file"}'})
     output = result.stdout + result.stderr
     assert result.returncode != 0 and 'cannot find function `tick`' in output, output
-    assert 'Linting enabler provider user for ' + target in output, output
+    assert 'Linted alone (package: reason): {"user": "changed file"}' in output, output
 
 target_check_lints_each_package_alone()
 print('PASS target_check_lints_each_package_alone')
