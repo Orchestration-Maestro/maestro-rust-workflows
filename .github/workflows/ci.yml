@@ -98,6 +98,39 @@ env:
     print(f'Merged line coverage: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')
     if percentage < threshold:
         raise SystemExit('Merged line coverage is below threshold')
+  ARCHIVE_ENTRY: |
+    import json
+    import os
+    import pathlib
+    import sys
+
+    # What the archive job recorded for this shard's archive: how many test binaries it holds and the filterset of the tests it runs.
+    archive = pathlib.Path(os.environ['TEST_ARCHIVE'])
+    print(json.loads((archive.parent / 'test-binaries.json').read_text(encoding='utf-8'))[archive.name][sys.argv[1]])
+  COVERAGE_OBJECTS: |
+    import os
+    import pathlib
+    import shutil
+
+    # The report maps the executables of the instrumented build directory, so each instrumented program a preparation left joins them.
+    output = pathlib.Path(os.environ['TEST_PREPARE_OUTPUT'])
+    objects = pathlib.Path('target/llvm-cov-target/debug/prepared')
+    copied = 0
+    for path in sorted(output.rglob('*')) if output.is_dir() else []:
+        # shortcut: the counters' section name marks an instrumented program; read in blocks, so a bundle of large files costs one pass.
+        if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
+            continue
+        with open(path, 'rb') as source:
+            tail = b''
+            for block in iter(lambda: source.read(1 << 20), b''):
+                if b'__llvm_covfun' in tail + block:
+                    destination = objects / path.relative_to(output)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, destination)
+                    copied += 1
+                    break
+                tail = block[-12:]
+    print(f'Prepared coverage objects: {copied}', flush=True)
   COVERAGE_PROFILES: |
     import os
     import pathlib
@@ -113,10 +146,10 @@ env:
         return str(pathlib.Path(sysroot, 'lib', 'rustlib', host, 'bin', 'llvm-profdata'))
 
     def binaries():
-        # The instrumented build's own programs, two levels below the directory the profiles sit in.
-        built = pathlib.Path('target/llvm-cov-target/debug/deps')
+        # The instrumented build's own programs, and the prepared children beside them.
+        built = pathlib.Path('target/llvm-cov-target/debug')
         # shortcut: a build script is not a test binary, so it is skipped by name, not by inspection.
-        return [path for path in sorted(built.glob('*'))
+        return [path for path in sorted([*built.glob('deps/*'), *built.glob('prepared/**/*')])
                 if path.is_file() and os.access(path, os.X_OK) and not path.name.startswith('build_script_build')
                 and path.suffix not in ('.d', '.rlib', '.rmeta', '.so', '.dylib', '.dll', '.a', '.o')]
 
@@ -1351,16 +1384,28 @@ jobs:
           TARGET: ''
         run: &clippy |
           if [ "${TEST_PACKAGES:-}" = '[]' ]; then exit 0; fi
-          packages=()
-          while IFS= read -r -d '' argument; do packages+=("$argument"); done < <(python3 -c 'import json, os; print("".join("-p\0" + name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
-          if [ -z "${TEST_PACKAGES:-}" ] || [ "${COVERAGE_SCOPE:-}" = "full workspace" ]; then packages=(--workspace); fi
-          target=()
-          if [ -n "${TARGET:-}" ]; then
-            rustup target add "$TARGET"
-            rustup component add clippy
-            target=(--target "$TARGET")
+          names=()
+          while IFS= read -r -d '' name; do names+=("$name"); done < <(python3 -c 'import json, os; print("".join(name + "\0" for name in json.loads(os.environ.get("TEST_PACKAGES", "[]"))), end="")')
+          if [ -z "${TARGET:-}" ]; then
+            packages=(--workspace)
+            if [ -n "${TEST_PACKAGES:-}" ] && [ "${COVERAGE_SCOPE:-}" != "full workspace" ]; then
+              packages=()
+              for name in "${names[@]}"; do packages+=(-p "$name"); done
+            fi
+            cargo clippy "${packages[@]}" --all-targets --locked -- -D warnings
+            exit 0
           fi
-          cargo clippy "${packages[@]}" --all-targets --locked "${target[@]}" -- -D warnings
+          rustup target add "$TARGET"
+          rustup component add clippy
+          if [ -z "${TEST_PACKAGES:-}" ]; then
+            cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings
+            exit 0
+          fi
+          # One package per run: a build of several packages unifies their dependency features and hides a package that lacks one of its own.
+          echo "Linting ${names[*]} for $TARGET"
+          for name in "${names[@]}"; do
+            cargo clippy -p "$name" --all-targets --locked --target "$TARGET" -- -D warnings
+          done
       - name: Lint wasm crates
         env:
           WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}
@@ -1875,8 +1920,9 @@ jobs:
                   logs = list(pool.map(log_of, shards))
               for log in logs:
                   log = re.sub(r'\x1b\[[0-9;]*m', '', log)
-                  for took, binary in re.findall(r'(?m)^\S+Z\s+PASS \[\s*([0-9.]+)s\]\s+(?:\([^)]*\)\s+)?(\S+)\s', log):
-                      seconds[binary] = seconds.get(binary, 0) + float(took)
+                  for took, binary, test in re.findall(r'(?m)^\S+Z\s+PASS \[\s*([0-9.]+)s\]\s+(?:\([^)]*\)\s+)?(\S+)\s+(\S+)', log):
+                      per_test = seconds.setdefault(binary, {})
+                      per_test[test] = per_test.get(test, 0) + float(took)
               print(f"Test seconds from run {run['id']} ({run['event']} on {run['head_branch']} at {run['head_sha']}, {run['created_at']}): "
                     f'{len(seconds)} test binaries')
           except (subprocess.CalledProcessError, ValueError, TypeError, StopIteration, LookupError) as error:
@@ -1910,30 +1956,67 @@ jobs:
           import json
           import os
           import pathlib
+          import re
           suites = json.loads(pathlib.Path('target/test-list.json').read_text(encoding='utf-8'))['rust-suites']
-          tests = {binary: sum(case['filter-match']['status'] == 'matches' for case in suite['testcases'].values())
+          names = {binary: sorted(name for name, case in suite['testcases'].items() if case['filter-match']['status'] == 'matches')
                    for binary, suite in suites.items()}
           timed = pathlib.Path('target/test-seconds.json')
           measured = json.loads(timed.read_text(encoding='utf-8')) if timed.exists() else {}
-          known = [binary for binary in tests if binary in measured]
-          # A binary the earlier run did not time weighs its tests at the timed binaries' seconds per test; with none timed, every test weighs one.
-          rate = sum(measured[binary] for binary in known) / (sum(tests[binary] for binary in known) or 1) if known else 1
-          weight = {binary: measured.get(binary, tests[binary] * rate) for binary in tests}
+          known = [measured[binary][test] for binary in names for test in names[binary] if test in measured.get(binary, {})]
+          # A test the earlier run did not time weighs the timed tests' mean seconds; with none timed, every test weighs one.
+          rate = sum(known) / len(known) if known else 1
+          def seconds(binary, test):
+              return measured.get(binary, {}).get(test, rate)
+          weight = {binary: sum(seconds(binary, test) for test in names[binary]) for binary in names}
+          limit = sum(weight.values()) / int(os.environ['TEST_SHARD_COUNT'])
+          # A filterset names a test literally only while the name holds none of the characters it treats as syntax.
+          splittable = {binary for binary in names if len(names[binary]) > 1 and all(re.fullmatch(r'[A-Za-z0-9_:]+', test) for test in names[binary])}
+          def binaries_of(group):
+              return list(dict.fromkeys(item[2] for item in group))
+          def run_filter(group):
+              terms = []
+              for binary in binaries_of(group):
+                  tests = [item[3] for item in group if item[2] == binary and item[3]]
+                  terms.append(f'(binary_id(={binary}) & (' + ' | '.join(f'test(={test})' for test in tests) + '))' if tests else f'binary_id(={binary})')
+              return ' | '.join(terms) or 'none()'
           def load(group):
-              return sum(weight[member] for member in group), sum(tests[member] for member in group)
-          # Each test binary goes whole to one shard: the slowest first, each to the shard with the fewest seconds so far.
-          groups = [[] for _ in range(int(os.environ['TEST_SHARD_COUNT']))]
-          for binary in sorted(tests, key=lambda binary: (-weight[binary], -tests[binary], binary)):
-              min(groups, key=load).append(binary)
-          groups.sort(key=load, reverse=True)
+              return sum(item[0] for item in group), sum(item[1] for item in group)
+          def place(split):
+              items = []
+              for binary in names:
+                  if binary in split:
+                      items += [(seconds(binary, test), 1, binary, test) for test in names[binary]]
+                  else:
+                      items.append((weight[binary], len(names[binary]), binary, None))
+              # Each item goes to the shard with the fewest seconds so far, the slowest first.
+              groups = [[] for _ in range(int(os.environ['TEST_SHARD_COUNT']))]
+              for item in sorted(items, key=lambda item: (-item[0], -item[1], item[2], item[3] or '')):
+                  min(groups, key=load).append(item)
+              groups.sort(key=load, reverse=True)
+              return groups
+          # A binary heavier than the mean shard cannot fit one shard, so its tests are placed one by one, each still run once.
+          split = {binary for binary in splittable if weight[binary] > limit}
+          groups = place(split)
+          # A filterset travels on a command line, which Windows caps at 32767 characters: the split binary in an overlong shard with the most test-name characters stays whole.
+          while True:
+              overlong = [group for group in groups if len(run_filter(group)) > 30000]
+              kept = [binary for group in overlong for binary in binaries_of(group) if binary in split]
+              if not kept:
+                  break
+              split.discard(max(kept, key=lambda binary: sum(len(test) for test in names[binary])))
+              groups = place(split)
+          for group in groups:
+              if len(run_filter(group)) > 30000:
+                  raise SystemExit(f'The filterset of a shard is {len(run_filter(group))} characters, over the 30000 a Windows command line carries')
           for shard, group in enumerate(groups, 1):
-              print(f'Shard {shard}: ' + (f'{load(group)[0]:.0f} s, ' if known else '') + f'{load(group)[1]} tests in {len(group)} {"binary" if len(group) == 1 else "binaries"}: {" ".join(group)}')
+              held = binaries_of(group)
+              print(f'Shard {shard}: ' + (f'{load(group)[0]:.0f} s, ' if known else '') + f'{load(group)[1]} tests in {len(held)} {"binary" if len(held) == 1 else "binaries"}: {" ".join(held)}')
           # Bash reads this file: a Windows text-mode write would end each line with a carriage return that nextest rejects in the filterset.
           pathlib.Path('target/test-filters.txt').write_text(
-              ''.join((' | '.join(f'binary_id(={binary})' for binary in group) or 'none()') + '\n' for group in groups), encoding='utf-8', newline='\n')
-          # How many test binaries each shard's archive holds: a shard with none has nothing to run.
+              ''.join((' | '.join(f'binary_id(={binary})' for binary in binaries_of(group)) or 'none()') + '\n' for group in groups), encoding='utf-8', newline='\n')
+          # What each shard's archive holds and runs: a shard with no test binary has nothing to run, and a split binary runs only the shard's tests.
           pathlib.Path('test-archives/test-binaries.json').write_text(
-              json.dumps({f'shard-{shard}.tar.zst': len(group) for shard, group in enumerate(groups, 1)}), encoding='utf-8')
+              json.dumps({f'shard-{shard}.tar.zst': {'binaries': len(binaries_of(group)), 'filter': run_filter(group)} for shard, group in enumerate(groups, 1)}), encoding='utf-8')
           PYTHON
           filters=()
           while IFS= read -r filter; do filters+=("$filter"); done < target/test-filters.txt
@@ -2002,6 +2085,7 @@ jobs:
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       TEST_PREPARE: ${{ fromJSON(needs.declaration.outputs.test_prepare) }}
+      COLLECT_COVERAGE: ${{ matrix.runner == 'ubuntu-latest' && needs.declaration.outputs.enabled == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') }}
     defaults:
       run:
         shell: bash
@@ -2042,6 +2126,11 @@ jobs:
         env: *sccache-install-env
         timeout-minutes: 10
         run: *sccache-install
+      - name: Coverage tools
+        if: env.COLLECT_COVERAGE == 'true'
+        timeout-minutes: 10
+        env: *release-auth
+        run: *coverage-tools
       - name: Cargo git cache identity
         if: runner.os == 'Linux'
         id: git-cache-identity
@@ -2103,7 +2192,7 @@ jobs:
                       files[name] = hashlib.sha256(source.read()).hexdigest()
           def digest(value):
               return hashlib.sha256(json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
-          prefix = 'maestro-test-setup-v2-' + digest([os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE'], programs]) + '-'
+          prefix = 'maestro-test-setup-v2-' + digest([os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE'], os.environ['COLLECT_COVERAGE'], programs]) + '-'
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'prefix={prefix}\nkey={prefix}{digest(sorted(files.items()))}\n')
           PYTHON
@@ -2116,10 +2205,9 @@ jobs:
           path: ${{ runner.temp }}/test-setup.tar
           key: ${{ steps.setup-identity.outputs.key }}
           restore-keys: ${{ steps.setup-identity.outputs.prefix }}
-          lookup-only: ${{ steps.cache-identity.outputs.writer == 'true' }}
           enableCrossOsArchive: false
           fail-on-cache-miss: false
-      # A merge group adds bundles from the pull request runs that tested the change. Writers compile without bases, so they need no candidates.
+      # A merge group adds bundles from the pull request runs that tested the change. A writer takes none: no snapshot holds the objects of the components those bundles built.
       - name: Test setup candidates
         id: candidates
         if: ${{ steps.cache-identity.outputs.writer != 'true' && steps.setup-cache.outputs.cache-hit != 'true' && needs.declaration.outputs.test_prepare_inputs != '[]' }}
@@ -2361,13 +2449,14 @@ jobs:
         env:
           TEST_SETUP_CANDIDATE_RUNS: ${{ steps.candidates.outputs.runs }}
           CACHE_WRITER: ${{ steps.cache-identity.outputs.writer }}
+          COMPILE_CACHE_RESTORED: ${{ steps.cache-restore.outputs.cache-matched-key != '' }}
         run: |
           export TEST_PREPARE_OUTPUT="$PWD/target/test-setup"
           if [ "${OS:-}" = Windows_NT ]; then TEST_PREPARE_OUTPUT=$(cygpath -m "$TEST_PREPARE_OUTPUT"); fi
           export CARGO_TARGET_DIR="$RUNNER_TEMP/maestro-test-prepare-build"
           mkdir -p "$TEST_PREPARE_OUTPUT"
           # The preparation's bases, in order: a miss on the exact key may still restore the closest earlier bundle, and the candidates follow. Each is extracted to its own directory, apart from the output.
-          unset TEST_PREPARE_BASE
+          unset TEST_PREPARE_BASE TEST_PREPARE_COVERAGE_ENV
           bases=()
           extract() {
             mkdir -p "$2"
@@ -2378,8 +2467,8 @@ jobs:
               rm -rf "$2"
             fi
           }
-          # Writers compile every input to seed objects; reusing prepared files would leave their cache cold.
-          if [ "${CACHE_WRITER:-false}" != true ]; then
+          # A writer seeds the compile snapshot, so it reuses prepared files only when the snapshot it restored is warm: an earlier writer saved the objects of every component the bundle supplies, and the digest check builds each component whose inputs differ. A cold snapshot builds every component.
+          if [ "${CACHE_WRITER:-false}" != true ] || [ "${COMPILE_CACHE_RESTORED:-false}" = true ]; then
             if [ -f "$RUNNER_TEMP/test-setup.tar" ]; then
               extract "$RUNNER_TEMP/test-setup.tar" "$RUNNER_TEMP/test-setup-base"
             fi
@@ -2392,6 +2481,12 @@ jobs:
           if [ "${#bases[@]}" -gt 0 ]; then
             export TEST_PREPARE_BASE
             TEST_PREPARE_BASE=$(python3 -c 'import os, sys; print(os.pathsep.join(sys.argv[1:]))' "${bases[@]}")
+          fi
+          if [ "${COLLECT_COVERAGE:-false}" = true ]; then
+            # The wrapper and flags of the coverage build, which a command that prepares a test child sources around that child's build so the report maps its counters.
+            coverage_env="$RUNNER_TEMP/test-prepare-coverage-env.sh"
+            CARGO_LLVM_COV_TARGET_DIR="$PWD/target/llvm-cov-target" "$TOOLS/cargo-llvm-cov" llvm-cov show-env --sh | grep -v -E '^export CARGO_LLVM_COV_(SHOW_ENV|TARGET_DIR|BUILD_DIR)=' > "$coverage_env"
+            export TEST_PREPARE_COVERAGE_ENV="$coverage_env"
           fi
           bash -e -o pipefail -c "$TEST_PREPARE"
           tar -C target -cf - test-setup > "$RUNNER_TEMP/test-setup.tar"
@@ -2581,9 +2676,8 @@ jobs:
             build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-to "$PWD" --extract-overwrite)
           fi
           if [ "${SHARD:-}" != doctests ]; then
-            # A shard's own archive holds exactly its tests.
-            partition=()
-            if [ -z "${TEST_ARCHIVE:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); fi
+            # A shard's archive holds its test binaries, and its filterset selects its tests of each.
+            if [ -z "${TEST_ARCHIVE:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); else partition=(-E "$(python3 -c "$ARCHIVE_ENTRY" filter)"); fi
             "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter "${build_args[@]}" --retries 0 --final-status-level flaky "${partition[@]}" --no-tests pass 2>&1 | tee nextest.log
           fi
           if [[ "$SHARD" == doctests || ( -z "${TEST_ARCHIVE:-}" && "$SHARD" == 1 && "${COLLECT_COVERAGE:-false}" != true ) ]]; then
@@ -2790,8 +2884,8 @@ jobs:
                 coverage_build_args=(--archive-file "$TEST_ARCHIVE" --workspace-remap "$PWD" --extract-overwrite)
                 # The report reads the same archive the run executed.
                 archive_report=(--nextest-archive-file "$TEST_ARCHIVE")
-                partition=()
-                archived_binaries=$(python3 -c 'import json, os, pathlib; archive = pathlib.Path(os.environ["TEST_ARCHIVE"]); print(json.loads((archive.parent / "test-binaries.json").read_text(encoding="utf-8"))[archive.name])')
+                partition=(-E "$(python3 -c "$ARCHIVE_ENTRY" filter)")
+                archived_binaries=$(python3 -c "$ARCHIVE_ENTRY" binaries)
               fi
               if [ "$archived_binaries" = 0 ]; then
                 # More shards than test binaries: this shard has none, so it runs nothing and covers no line.
@@ -2801,6 +2895,7 @@ jobs:
                 run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
                   --retries 0 --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" --no-report 2>&1 | tee nextest.log
                 if [ ${#report[@]} -gt 0 ]; then
+                  run_isolated python3 -c "$COVERAGE_OBJECTS"
                   run_isolated python3 -c "$COVERAGE_PROFILES"
                   run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov report "${archive_report[@]}" \
                     --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee -a nextest.log
@@ -2812,6 +2907,7 @@ jobs:
             else
               partition=()
               if [ -n "${SHARD:-}" ] && [ -z "${TEST_ARCHIVE:-}" ]; then partition=(--partition "slice:$SHARD/$TEST_SHARD_COUNT"); fi
+              if [ -n "${TEST_ARCHIVE:-}" ]; then partition=(-E "$(python3 -c "$ARCHIVE_ENTRY" filter)"); fi
               run_isolated "$TOOLS/cargo-nextest" nextest run --user-config-file none --ignore-default-filter \
                 "${build_args[@]}" --retries 0 --final-status-level flaky --no-tests pass "${partition[@]}" 2>&1 | tee nextest.log
             fi

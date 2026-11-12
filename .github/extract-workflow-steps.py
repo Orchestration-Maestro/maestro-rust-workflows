@@ -25,7 +25,7 @@ with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as output:
     policy = re.search(r"^  COVERAGE_IGNORE_FILENAME_REGEX: '([^'\n]+)'$", workflow, re.MULTILINE)
     assert policy, 'Missing workflow coverage exclusion policy'
     output.write(f'COVERAGE_IGNORE_FILENAME_REGEX={policy[1]}\n')
-    for name in ('PACKAGE_OWNER', 'COVERAGE_MERGE', 'COVERAGE_PROFILES'):
+    for name in ('PACKAGE_OWNER', 'ARCHIVE_ENTRY', 'COVERAGE_MERGE', 'COVERAGE_OBJECTS', 'COVERAGE_PROFILES'):
         snippet = re.search(rf"^  {name}: \|\n((?:    .*\n|\n)+)", workflow, re.MULTILINE)
         assert snippet, f'Missing workflow {name} snippet'
         output.write(f'{name}<<COVERAGE_POLICY\n' + textwrap.dedent(snippet[1]).rstrip() + '\nCOVERAGE_POLICY\n')

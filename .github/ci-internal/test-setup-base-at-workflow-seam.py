@@ -104,6 +104,40 @@ for check in [prepare_gets_the_restored_bundle_as_its_base, prepare_lists_the_re
     check()
     print('PASS ' + check.__name__, flush=True)
 
+def prepare_hands_the_coverage_build_environment_to_the_command():
+    # A command that prepares a test child builds it with the instrumentation the coverage run uses.
+    assert document['jobs']['test-prepare']['env']['COLLECT_COVERAGE'] == document['jobs']['test-build']['env']['COLLECT_COVERAGE']
+    tools = next(step for step in document['jobs']['test-prepare']['steps'] if step['name'] == 'Coverage tools')
+    assert tools['if'] == "env.COLLECT_COVERAGE == 'true'", tools
+    with tempfile.TemporaryDirectory() as temporary:
+        runner = pathlib.Path(temporary) / 'runner'
+        checkout = pathlib.Path(temporary) / 'caller'
+        stand_in = pathlib.Path(temporary) / 'tools'
+        for directory in (runner, checkout, stand_in):
+            directory.mkdir()
+        (stand_in / 'cargo-llvm-cov').write_text(
+            '#!/bin/sh\necho "$CARGO_LLVM_COV_TARGET_DIR $*" > "$STAND_IN_LOG"\n'
+            "cat <<'ENV'\nexport LLVM_PROFILE_FILE='/shard/maestro-%p-%8m.profraw'\nexport RUSTC_WRAPPER=/tools/cargo-llvm-cov\n"
+            'export CARGO_LLVM_COV=1\nexport CARGO_LLVM_COV_SHOW_ENV=1\nexport CARGO_LLVM_COV_TARGET_DIR=/shard\n'
+            'export CARGO_LLVM_COV_BUILD_DIR=/shard\nENV\n', encoding='utf-8')
+        (stand_in / 'cargo-llvm-cov').chmod(0o755)
+        command = 'echo "environment=${TEST_PREPARE_COVERAGE_ENV-unset}" > "$PWD/probe"; if [ -n "${TEST_PREPARE_COVERAGE_ENV-}" ]; then cp "$TEST_PREPARE_COVERAGE_ENV" "$PWD/environment"; fi'
+        extra = {'RUNNER_TEMP': str(runner), 'TEST_PREPARE': command, 'TOOLS': str(stand_in), 'STAND_IN_LOG': str(runner / 'log')}
+        result = execute(PREPARE, checkout, extra | {'COLLECT_COVERAGE': 'false', 'TEST_PREPARE_COVERAGE_ENV': '/inherited'})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert probe(runner, checkout)['environment'] == 'unset' and not (runner / 'log').exists()
+        result = execute(PREPARE, checkout, extra | {'COLLECT_COVERAGE': 'true'})
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (runner / 'log').read_text(encoding='utf-8') == f'{checkout}/target/llvm-cov-target llvm-cov show-env --sh\n'
+        lines = (checkout / 'environment').read_text(encoding='utf-8').splitlines()
+        assert 'export RUSTC_WRAPPER=/tools/cargo-llvm-cov' in lines and 'export CARGO_LLVM_COV=1' in lines, lines
+        # Only show-env sets these; the compile cache hashes every CARGO_ variable, so they would miss every cached compilation.
+        assert not [line for line in lines if line.startswith(('export CARGO_LLVM_COV_TARGET_DIR', 'export CARGO_LLVM_COV_BUILD_DIR', 'export CARGO_LLVM_COV_SHOW_ENV'))], lines
+
+for check in [prepare_hands_the_coverage_build_environment_to_the_command]:
+    check()
+    print('PASS ' + check.__name__, flush=True)
+
 def setup_cache_identity_separates_host_bundles():
     assert 'test_runners' in document['jobs']['test-prepare']['strategy']['matrix']['runner']
     assert 'steps.cache-identity.outputs.prefix' in steps['Test setup cache identity']['env']['COMPILE_CACHE_PREFIX']
@@ -118,16 +152,18 @@ def setup_cache_identity_separates_host_bundles():
         for name in ('rg', 'fd'):
             (programs / name).write_bytes(b'stand-in')
             (programs / name).chmod(0o755)
-        def key(prefix):
+        def key(prefix, coverage='false'):
             output = directory / 'output'
             output.write_text('', encoding='utf-8')
             result = execute('Test setup cache identity', directory, {'COMPILE_CACHE_PREFIX': prefix, 'TEST_PREPARE_INPUTS': '["input"]',
-                             'GITHUB_WORKSPACE': '/checkout', 'TEST_PREPARE': 'prepare', 'GITHUB_OUTPUT': str(output),
+                             'GITHUB_WORKSPACE': '/checkout', 'TEST_PREPARE': 'prepare', 'GITHUB_OUTPUT': str(output), 'COLLECT_COVERAGE': coverage,
                              'PATH': str(programs) + os.pathsep + os.environ['PATH']})
             assert result.returncode == 0, result.stderr
             return output.read_text(encoding='utf-8')
         assert key('linux-compiler') == key('linux-compiler')
         assert len({key(host + '-compiler') for host in ['linux', 'macos', 'windows']}) == 3
+        # A bundle prepared for the coverage build holds instrumented programs, so it never answers a plain build.
+        assert key('linux-compiler', 'true') != key('linux-compiler', 'false')
 
 setup_cache_identity_separates_host_bundles()
 print('PASS setup_cache_identity_separates_host_bundles')

@@ -899,7 +899,7 @@ def per_shard_archives_run_every_test_once():
             (crate / 'tests/proof.rs').write_text('#[test] #[ignore] fn ignored() {}\n' + ''.join(
                 f'#[test] fn integration_{index}() {{ assert_eq!({name}::value(), 1); }}\n' for index in range(2 * size)), encoding='utf-8')
         subprocess.run(['cargo', 'generate-lockfile'], cwd=source, check=True)
-        # Four shards hold every binary; sixteen leave six shards without one. One build per mode serves both counts.
+        # With four shards every binary fits a shard whole; with sixteen the binaries above the mean shard are split by test, and each test still runs once. One build per mode serves both counts.
         for (coverage, route), count in itertools.product([('false', 'Tests'), ('true', 'Isolated tests')], [4, 16]):
             directory = pathlib.Path(temporary) / f'caller-{coverage}'
             if not directory.exists():
@@ -934,7 +934,7 @@ def archived_shards_provision_child_build_dependencies():
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory)
-            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": 1}', encoding='utf-8')
+            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": {"binaries": 1, "filter": "binary_id(=sample::integration)"}}', encoding='utf-8')
             env = {'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
                    'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': str(directory / 'shard-1.tar.zst'),
                    'TEST_PREPARE_OUTPUT': str(directory / 'untrusted-inherited-output'),
@@ -950,8 +950,9 @@ def archived_shards_provision_child_build_dependencies():
             assert len(commands) == 3 + (coverage == 'true'), commands
             assert '--archive-file' in commands[2]['args']
             assert '--workspace' not in commands[2]['args'] and '--locked' not in commands[2]['args']
-            # The shard's own archive holds exactly its tests, so nothing partitions them again.
+            # The shard's archive holds its test binaries and its filterset selects its tests of each, so nothing partitions them again.
             assert '--partition' not in commands[2]['args'], commands[2]
+            assert commands[2]['args'][commands[2]['args'].index('-E') + 1] == 'binary_id(=sample::integration)', commands[2]
             if route == 'Isolated tests':
                 assert commands[2]['test_prepare_output'] == str(directory / 'target/test-setup'), commands[2]
     tests = workflow.split('  tests:\n', 1)[1].split('\n  tests-result:', 1)[0]
@@ -970,6 +971,7 @@ def cargo_git_transport_reaches_every_job_and_isolated_child():
     with tempfile.TemporaryDirectory() as temporary:
         directory = pathlib.Path(temporary)
         tools, log = install_recording_runner(directory)
+        (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": {"binaries": 1, "filter": "binary_id(=sample::integration)"}}', encoding='utf-8')
         result = execute('Isolated tests', directory, {
             setting: document['env'][setting], 'PATH': str(tools) + os.pathsep + os.environ['PATH'],
             'TOOLS': str(tools), 'RUNNER_TEMP': temporary, 'TEST_PACKAGES': '["sample"]',
@@ -1180,7 +1182,7 @@ def archive_signal_reaches_only_archived_shards():
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory)
-            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": 1, "shard-2.tar.zst": 1}', encoding='utf-8')
+            (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": {"binaries": 1, "filter": "binary_id(=sample::integration)"}, "shard-2.tar.zst": {"binaries": 1, "filter": "binary_id(=sample::integration)"}}', encoding='utf-8')
             result = execute('Isolated tests', directory, {
                 'PATH': str(tools) + os.pathsep + os.environ['PATH'], 'TOOLS': str(tools),
                 'RUNNER_TEMP': temporary, 'SHARD': shard, 'WARM_CACHE': warm,
@@ -1386,10 +1388,12 @@ def clippy_selection_works_without_mapfile():
                     assert not log.exists()
                     continue
                 commands = [json.loads(line) for line in log.read_text(encoding='utf-8').splitlines()]
-                args = next(item['args'] for item in commands if item['tool'] == 'cargo')
-                selection = ['--workspace'] if scope == 'full workspace' or packages is None else ['-p', 'first', '-p', 'second']
-                assert args == ['clippy'] + selection + ['--all-targets', '--locked'] + (
-                    ['--target', target] if target else []) + ['--', '-D', 'warnings'], args
+                runs = [item['args'] for item in commands if item['tool'] == 'cargo']
+                # A foreign target lints one package per run; the host lint runs the selection once.
+                selections = ([['-p', 'first'], ['-p', 'second']] if target and packages is not None
+                              else [['--workspace'] if scope == 'full workspace' or packages is None else ['-p', 'first', '-p', 'second']])
+                assert runs == [['clippy'] + selection + ['--all-targets', '--locked'] + (
+                    ['--target', target] if target else []) + ['--', '-D', 'warnings'] for selection in selections], runs
                 assert [item['args'] for item in commands if item['tool'] == 'rustup'] == (
                     [['target', 'add', target], ['component', 'add', 'clippy']] if target else [])
                 log.unlink()
@@ -1435,17 +1439,8 @@ print('PASS archive_build_publishes_cargo_timings')
 def archive_groups_follow_earlier_test_seconds():
     def case(*names):
         return {name: {'filter-match': {'status': 'matches'}} for name in names} | {'ignored': {'filter-match': {'status': 'mismatch'}}}
-    # Test counts 20, 30, 30 and 10; only the earlier run's seconds show that the first binary is the slow one.
-    suites = {f'{name}::integration': {'testcases': case(*(f'test_{index}' for index in range(count)))}
-              for name, count in [('heavy', 20), ('broad', 30), ('wide', 30), ('new', 10)]}
-    for seconds, expected, logged in [
-            # Unmeasured `new` weighs its ten tests at the measured 8.25 seconds per test.
-            ({'heavy::integration': 600, 'broad::integration': 30, 'wide::integration': 30, 'gone::integration': 5},
-             ['binary_id(=heavy::integration)', 'binary_id(=new::integration) | binary_id(=broad::integration) | binary_id(=wide::integration)'],
-             'Shard 1: 600 s, 20 tests in 1 binary: heavy::integration\n'),
-            # Without earlier seconds every test weighs the same.
-            (None, ['binary_id(=broad::integration) | binary_id(=heavy::integration)', 'binary_id(=wide::integration) | binary_id(=new::integration)'],
-             'Shard 1: 50 tests in 2 binaries: broad::integration heavy::integration\n')]:
+    def plan(suites, seconds):
+        """Run the archive step against a listing of `suites` and the earlier per-test seconds; return the archive filters, the manifest and the log."""
         with tempfile.TemporaryDirectory() as temporary:
             directory = pathlib.Path(temporary)
             tools, log = install_recording_runner(directory, suites=suites)
@@ -1458,10 +1453,52 @@ def archive_groups_follow_earlier_test_seconds():
             assert result.returncode == 0, result.stdout + result.stderr
             archives = [command['args'] for command in map(json.loads, log.read_text(encoding='utf-8').splitlines())
                         if command['args'][:2] == ['nextest', 'archive']]
-            assert [args[args.index('-E') + 1] for args in archives] == expected, (seconds, archives)
-            assert logged in result.stdout, result.stdout
-            assert json.loads((directory / 'test-archives/test-binaries.json').read_text(encoding='utf-8')) == {
-                'shard-1.tar.zst': len(expected[0].split(' | ')), 'shard-2.tar.zst': len(expected[1].split(' | '))}
+            manifest = json.loads((directory / 'test-archives/test-binaries.json').read_text(encoding='utf-8'))
+            return [args[args.index('-E') + 1] for args in archives], manifest, result.stdout
+    def suites_of(heavy):
+        return {f'{name}::integration': {'testcases': case(*tests)}
+                for name, tests in [('heavy', heavy), ('broad', [f'test_{index}' for index in range(30)]),
+                                    ('wide', [f'test_{index}' for index in range(30)]), ('new', [f'test_{index}' for index in range(10)])]}
+    heavy = [f'test_{index}' for index in range(20)]
+    # Each binary under the mean shard load goes whole to one shard: the slowest first, each to the shard with the fewest seconds so far.
+    # Unmeasured `new` weighs its ten tests at the measured 3.5 seconds per test.
+    seconds = {'heavy::integration': {name: 5.0 for name in heavy}, 'broad::integration': {f'test_{index}': 3.0 for index in range(30)},
+               'wide::integration': {f'test_{index}': 3.0 for index in range(30)}, 'gone::integration': {'test_0': 5.0}}
+    filters, manifest, output = plan(suites_of(heavy), seconds)
+    assert filters == ['binary_id(=broad::integration) | binary_id(=wide::integration)', 'binary_id(=heavy::integration) | binary_id(=new::integration)'], filters
+    assert manifest == {'shard-1.tar.zst': {'binaries': 2, 'filter': filters[0]}, 'shard-2.tar.zst': {'binaries': 2, 'filter': filters[1]}}, manifest
+    assert 'Shard 1: 180 s, 60 tests in 2 binaries: broad::integration wide::integration\n' in output, output
+    # Without earlier seconds every test weighs the same.
+    filters, manifest, output = plan(suites_of(heavy), None)
+    assert filters == ['binary_id(=broad::integration) | binary_id(=heavy::integration)', 'binary_id(=wide::integration) | binary_id(=new::integration)'], filters
+    assert 'Shard 1: 50 tests in 2 binaries: broad::integration heavy::integration\n' in output, output
+    # A binary above the mean shard load is split by test seconds: every test runs in exactly one shard.
+    seconds['heavy::integration'] = {name: 30.0 for name in heavy}
+    seconds['broad::integration'] = {f'test_{index}': 1.0 for index in range(30)}
+    seconds['wide::integration'] = {f'test_{index}': 1.0 for index in range(30)}
+    filters, manifest, output = plan(suites_of(heavy), seconds)
+    assigned = [re.findall(r'test\(=(\w+)\)', entry['filter']) for entry in manifest.values()]
+    assert sorted(name for names in assigned for name in names) == sorted(heavy), assigned
+    assert all(names for names in assigned), 'both shards run part of the split binary'
+    assert all('binary_id(=heavy::integration)' in entry['filter'] for entry in manifest.values()), manifest
+    # The other binaries stay whole, and the test count across the shards is unchanged.
+    joined = ' '.join(entry['filter'] for entry in manifest.values())
+    assert joined.count('binary_id(=new::integration)') == 1 and '(binary_id(=new::integration) &' not in joined, manifest
+    loads = [float(load) for load in re.findall(r'Shard \d+: (\d+) s,', output)]
+    assert len(loads) == 2 and max(loads) - min(loads) <= 60, loads
+    assert sum(int(count) for count in re.findall(r', (\d+) tests? in ', output)) == 90, output
+    # A test name the filterset would need escaped keeps its binary whole.
+    odd = suites_of(heavy[:-1] + ['test_with space'])
+    filters, manifest, output = plan(odd, seconds)
+    assert not any('test(=' in entry['filter'] for entry in manifest.values()), manifest
+    # A filterset travels on a command line, which Windows caps at 32767 characters: a split whose shard filter would pass 30000 keeps its binary whole.
+    long_names = [f'test_{index:04d}_' + 'x' * 990 for index in range(70)]
+    suites = suites_of(heavy) | {'heavy::integration': {'testcases': case(*long_names)}}
+    seconds['heavy::integration'] = dict.fromkeys(long_names, 30.0)
+    filters, manifest, output = plan(suites, seconds)
+    assert all(len(entry['filter']) <= 30000 for entry in manifest.values()), [len(entry['filter']) for entry in manifest.values()]
+    assert not any('test(=' in entry['filter'] for entry in manifest.values()), manifest
+    assert sum(int(count) for count in re.findall(r', (\d+) tests? in ', output)) == 70 + 70, output  # 70 long names plus the 70 tests of broad, wide and new
 
 archive_groups_follow_earlier_test_seconds()
 print('PASS archive_groups_follow_earlier_test_seconds')
@@ -1856,6 +1893,8 @@ def coverage_exclusions_have_one_workflow_owner():
         exported_text = exported.read_text(encoding='utf-8')
         assert exported_text.startswith(f'PROOF_STEPS={temporary}/proof-steps\nCOVERAGE_IGNORE_FILENAME_REGEX={policy}\n')
         assert 'COVERAGE_MERGE<<COVERAGE_POLICY\n' + document['env']['COVERAGE_MERGE'] + 'COVERAGE_POLICY\n' in exported_text
+        for name in ['ARCHIVE_ENTRY', 'COVERAGE_OBJECTS']:
+            assert f'{name}<<COVERAGE_POLICY\n' + document['env'][name] + 'COVERAGE_POLICY\n' in exported_text, name
         assert 'COVERAGE_PROFILES<<COVERAGE_POLICY\n' + document['env']['COVERAGE_PROFILES'] + 'COVERAGE_POLICY\n' in exported_text
         assert workflow.count('source = os.path.normpath(record[3:])') == 1
         for name in ['Coverage', 'Isolated tests', 'Merge coverage']:
@@ -3570,14 +3609,15 @@ def changed_packages_include_reverse_dependencies():
                         assert not log.exists(), log.read_text(encoding='utf-8')
                         continue
                     commands = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()]
-                    args = next(args for args in commands if args[:1] == ['clippy'])
-                    if selection['coverage'] == 'true':
-                        assert '--workspace' in args and '-p' not in args, args
-                    else:
-                        assert [args[i + 1] for i, arg in enumerate(args) if arg == '-p'] == ['a', 'b', 'c'], args
-                        assert '--workspace' not in args, args
-                    assert '--all-targets' in args and args[-3:] == ['--', '-D', 'warnings'], args
-                    assert ('--target' in args) == (job == 'targets'), args
+                    runs = [args for args in commands if args[:1] == ['clippy']]
+                    # The target check lints each package in its own run; the host lint runs the selection once.
+                    full = selection['coverage'] == 'true'
+                    assert [[args[i + 1] for i, arg in enumerate(args) if arg == '-p'] for args in runs] == (
+                        [[name] for name in json.loads(selection['packages'])] if job == 'targets' else [[] if full else ['a', 'b', 'c']]), runs
+                    for args in runs:
+                        assert ('--workspace' in args) == (job == 'quality' and full), args
+                        assert '--all-targets' in args and args[-3:] == ['--', '-D', 'warnings'], args
+                        assert ('--target' in args) == (job == 'targets'), args
         declared = declaration_path.read_text(encoding='utf-8')
         nextest = directory / '.config/nextest.toml'
         nextest.parent.mkdir()
@@ -4050,13 +4090,15 @@ def main_setup_writers_prepare_even_with_exact_bundle():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     steps = {step['name']: step for step in document['jobs']['test-prepare']['steps']}
     prepare = steps['Prepare test setup']
-    for writer, hit, expected in [('true', 'true', True), ('true', 'false', True),
-                                  ('false', 'true', False), ('false', 'false', True)]:
+    for writer, hit, expected, matched in [('true', 'true', True, 'compile-snapshot'), ('true', 'false', True, 'compile-snapshot'),
+                                           ('true', 'true', True, ''), ('true', 'false', True, ''),
+                                           ('false', 'true', False, ''), ('false', 'false', True, '')]:
         context = {'steps.setup-cache.outputs.cache-hit': hit, 'steps.cache-identity.outputs.writer': writer,
+                   'steps.cache-restore.outputs.cache-matched-key': matched,
                    'steps.candidates.outputs.runs': '' if writer == 'true' else '7',
                    'needs.declaration.outputs.test_prepare_inputs': '["inputs/**"]'}
         restore = steps['Restore test setup cache']
-        assert bool(evaluate(restore['with'].get('lookup-only', 'False'), context)) == (writer == 'true'), (writer, hit, 'writers must not download bundles')
+        assert 'lookup-only' not in restore['with'], (writer, hit, 'a writer needs the closest earlier bundle as its base')
         candidates = steps['Test setup candidates']
         assert bool(evaluate(candidates['if'], context)) == (writer != 'true' and hit != 'true'), (writer, hit, 'writers must not fetch candidates')
         assert not evaluate(candidates['if'], context | {'needs.declaration.outputs.test_prepare_inputs': '[]'})
@@ -4074,14 +4116,16 @@ def main_setup_writers_prepare_even_with_exact_bundle():
                 candidate = directory / 'test-setup-candidates/7'
                 candidate.mkdir(parents=True)
                 (candidate / 'test-setup.tar').write_bytes((directory / 'test-setup.tar').read_bytes())
-            forwarded = {key: evaluate(value, context) for key, value in prepare['env'].items()}
+            forwarded = {key: str(evaluate(value, context)).lower() if isinstance(evaluate(value, context), bool) else evaluate(value, context)
+                         for key, value in prepare['env'].items()}
             result = execute('Prepare test setup', directory, {'RUNNER_TEMP': temporary,
                 'TEST_PREPARE_BASE': '/inherited', **forwarded,
                 'TEST_PREPARE': 'printf "%s" "${TEST_PREPARE_BASE-unset}" > "$TEST_PREPARE_OUTPUT/bases"'})
             assert result.returncode == 0, result.stdout + result.stderr
             bases = subprocess.check_output(['tar', '-xOf', str(directory / 'test-setup.tar'), 'test-setup/bases'], text=True)
-            expected_base = 'unset' if writer == 'true' else f'{directory}/test-setup-base/test-setup:{directory}/test-setup-candidate-7/test-setup'
-            assert bases == expected_base, (writer, hit, bases)
+            # A writer takes the bundle as a base only when the compile snapshot it restored holds the objects of the components the bundle supplies.
+            expected_base = (f'{directory}/test-setup-base/test-setup' if matched else 'unset') if writer == 'true' else f'{directory}/test-setup-base/test-setup:{directory}/test-setup-candidate-7/test-setup'
+            assert bases == expected_base, (writer, hit, matched, bases)
 
 main_setup_writers_prepare_even_with_exact_bundle()
 print('PASS main_setup_writers_prepare_even_with_exact_bundle')
@@ -4898,6 +4942,24 @@ def foreign_target_failures_are_detected():
 
 foreign_target_failures_are_detected()
 print('PASS foreign_target_failures_are_detected')
+
+def target_check_lints_each_package_alone():
+    target = os.environ.get('TARGET', 'x86_64-unknown-linux-gnu')
+    fixture = root / 'fixtures' / 'unified-features'
+    selection = {'TARGET': target, 'TEST_PACKAGES': '["enabler", "provider", "user"]', 'COVERAGE_SCOPE': 'full workspace'}
+    # One workspace-wide build unifies the provider's feature across packages and hides the gap in `user`.
+    command = ['cargo', 'check', '--workspace', '--all-targets', '--locked']
+    if os.environ.get('MAESTRO_LOCAL_CAPPED'):
+        command.insert(0, os.path.expanduser('~/.local/bin/capped'))
+    unified = subprocess.run(command, cwd=fixture, capture_output=True, text=True)
+    assert unified.returncode == 0, unified.stderr
+    result = execute('Check target', fixture, selection)
+    output = result.stdout + result.stderr
+    assert result.returncode != 0 and 'cannot find function `tick`' in output, output
+    assert 'Linting enabler provider user for ' + target in output, output
+
+target_check_lints_each_package_alone()
+print('PASS target_check_lints_each_package_alone')
 
 def isolation_creates_a_missing_cargo_home():
     with tempfile.TemporaryDirectory() as temporary:

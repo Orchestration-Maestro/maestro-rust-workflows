@@ -259,7 +259,7 @@ def superseded_cache_entries_leave_the_newest_of_each_prefix():
     git = prefix('Cargo git cache identity', CALLER_REPOSITORY='example/caller', CALLER_DIRECTORY='.', CACHE_CALL='',
                  HOST_OS='Linux', ADDITIONAL_LOCKED_MANIFESTS='[]')
     setup = prefix('Test setup cache identity', COMPILE_CACHE_PREFIX=tests, GITHUB_WORKSPACE=str(root), TEST_PREPARE='prepare',
-                   TEST_PREPARE_INPUTS='["README.md"]')
+                   TEST_PREPARE_INPUTS='["README.md"]', COLLECT_COVERAGE='false')
     with tempfile.TemporaryDirectory() as temporary:
         module, output = pathlib.Path(temporary), pathlib.Path(temporary) / 'outputs'
         (module / 'package.json').write_text('{"version": "1.64.1"}', encoding='utf-8')

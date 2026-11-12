@@ -173,7 +173,7 @@ def permit(path, job, step, kind, value, occurrence=1):
 for job, names in {
  'quality': ['Compile cache', 'Mise bootstrap', 'Test tools'],
  'docs': ['Compile cache', 'Mise bootstrap', 'Test tools'],
- 'test-prepare': ['Compile cache', 'Search tools', 'Mise bootstrap', 'Test tools'],
+ 'test-prepare': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap', 'Test tools'],
  'test-build': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap', 'Test tools'],
  'tests': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap', 'Test tools'],
  'checks': ['Check tools', 'Compile cache'],
@@ -189,7 +189,7 @@ for job, names in {
  'quality': ['Compile cache', 'Mise bootstrap'],
  'docs': ['Compile cache', 'Mise bootstrap'],
  'targets': ['Compile cache', 'Mise bootstrap'],
- 'test-prepare': ['Compile cache', 'Search tools', 'Mise bootstrap'],
+ 'test-prepare': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap'],
  'test-build': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap'],
  'tests': ['Compile cache', 'Coverage tools', 'Search tools', 'Mise bootstrap'],
  'checks': ['Check tools', 'Compile cache'],
@@ -370,7 +370,7 @@ class SearchReleases(unittest.TestCase):
 
     def test_workflow_controls_match_authority(self):
         report = require_recorded_controls(files)
-        self.assertEqual(len(report.splitlines()), 174)
+        self.assertEqual(len(report.splitlines()), 178)
         print(report)
 
     def assert_policy(self, sources, admitted):
@@ -652,7 +652,7 @@ class SearchReleases(unittest.TestCase):
 
     def test_inventory_requires_a_reason_for_each_occurrence(self):
         report = require_recorded_controls(files, authority)
-        self.assertEqual(len(report.splitlines()), 174)
+        self.assertEqual(len(report.splitlines()), 178)
         for row in authority:
             self.assertIn(' | '.join(map(str, row)) + ' | ' + authority[row], report)
         for row in [next(iter(authority)), next(reversed(authority))]:

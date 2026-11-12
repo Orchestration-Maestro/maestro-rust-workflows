@@ -37,7 +37,10 @@ test_tools = false
 Pull requests run declaration validation, formatting, Clippy, docs,
 dependency/source checks and the declared Windows target check. Host
 Clippy and the Windows target check select changed crates and their workspace
-dependents; formatting still checks the whole workspace. Pull requests skip the
+dependents; formatting still checks the whole workspace. A declared target
+check prints the selected packages, then lints each one's tests and examples in
+its own run. One run over several packages shares a feature set and would hide a
+package that lacks a dependency feature its tests need. Pull requests skip the
 test archive, test setup, test shards, doctests and wasm/browser builds. Two
 exceptions still compile: the declared [example witnesses](#wasm-example-witnesses),
 and the [Emscripten crates](#emscripten-builds), which the sandbox runtime job
@@ -602,7 +605,7 @@ can remove an entry before the next reader runs.
 ## Test shards
 
 Tests use checksum-pinned cargo-nextest 0.9.148. Each of the declared
-`test_shard_count` shards runs whole test binaries, balanced by the seconds
+`test_shard_count` shards runs test binaries, balanced by the seconds
 their tests took on an earlier run when the tests are built (see
 [Build once, test many](#build-once-test-many)). Each claimed native test host
 runs `min(4, test_shard_count)` shards of its own. The `warm-cache` call is
@@ -674,17 +677,23 @@ coverage builds in `target/llvm-cov-target` with the environment
 `CARGO_LLVM_COV_TARGET_DIR` and `CARGO_LLVM_COV_BUILD_DIR`. That is the
 instrumentation, directory and compile-cache key set `cargo llvm-cov` builds
 with, so shards report coverage from the paths it reads. The job then splits the test binaries into one group per
-shard by the seconds their tests took before. The slowest binary goes first, and
-each binary goes whole to the group with the fewest seconds so far. Shard 1 gets
-the slowest group. The job log prints each shard's tests and binaries, with its
-seconds when an earlier run timed them, and `cargo nextest archive -E` writes
-one archive per group from the binaries already built.
+shard by the seconds their tests took before. A binary whose tests take longer
+than the mean shard load cannot fit one shard, so its tests are placed one by
+one. The slowest item goes first, and each goes to the group with the fewest
+seconds so far. Shard 1 gets the slowest group. A binary stays whole when it has
+one test or a test name holding a character outside letters, digits, `_` and `:`.
+A filterset travels on a command line, which Windows caps at 32767 characters, so
+a split binary whose test names would push a shard's filterset past 30000
+characters stays whole as well, the binary with the longest test names first.
+The job log prints each shard's tests and binaries, with its seconds when an
+earlier run timed them, and `cargo nextest archive -E` writes one archive per
+group from the binaries already built.
 
 Each host's job groups the binaries into that host's own shard count: the
 declared `test_shard_count` on Linux and `min(4, test_shard_count)` on a claimed
 native host. That way every group has a shard that runs it.
 
-The job keeps each shard's filter on its own line of `target/test-filters.txt`
+The job keeps each shard's archive filter on its own line of `target/test-filters.txt`
 with a Unix line end, and reads the file with a plain `while read` loop. Windows
 Python would otherwise end each line with a carriage return that nextest rejects,
 and the Bash 3.2 on macOS runners has no `mapfile`.
@@ -692,24 +701,25 @@ and the Bash 3.2 on macOS runners has no `mapfile`.
 The seconds come from the `Earlier test seconds` step, before the build. It takes
 the newest earlier successful merge group or push run of the same workflow in
 which every test shard of this caller on the same host succeeded, adds up the
-`PASS` seconds those shards' logs print for each test binary, and logs the run
+`PASS` seconds those shards' logs print for each test, and logs the run
 it read with its branch, commit and date. Each host reads only its own shards:
 `Build test archive (macos-latest)` times its binaries from the earlier
 `Test shard (macos-latest 1/4)` to `(macos-latest 4/4)` jobs, never from the
-Linux shards, so a run without macOS shards is passed over. A binary that run
-did not time weighs its tests at the timed binaries' seconds per test. With no
+Linux shards, so a run without macOS shards is passed over. A test that run
+did not time weighs the timed tests' mean seconds. With no
 such run, or when the lookup fails, the step says so and every test weighs the
 same: the binaries go by test count. The timing decides only which shard runs
-each binary, never which tests run. This step holds the run's token, and its
+each test, never which tests run. This step holds the run's token, and its
 Python runs isolated, so no module in the caller's checkout is imported while it
 holds the token.
 
-Each numeric shard downloads only its own archive and runs every test in it with
-`--archive-file`. No partition flag applies, so every test runs on exactly one
-shard. Its coverage report reads that same archive with
+Each numeric shard downloads only its own archive and runs the tests its
+filterset selects with `--archive-file`. No partition flag applies. A split binary
+sits in every archive that holds a part of it, and each filterset names that
+shard's tests of it, so every test runs on exactly one shard. Its coverage report reads that same archive with
 `--nextest-archive-file`, so the report finds the binaries the shard ran. When a
-caller has fewer test binaries than shards, the extra shards hold
-no binary: they run nothing and upload an empty coverage report, so the union
+caller has fewer placed items (whole binaries and split tests) than shards, the
+extra shards hold no binary: they run nothing and upload an empty coverage report, so the union
 still receives one report per shard. Existing locked dependency fetches stay
 available for tests that intentionally start child builds. `Doctests` compiles and
 runs doctests once per tested host on every merge group and main push. On a main
@@ -739,8 +749,9 @@ step before anything is extracted. If the listing has no digest or the transfer 
 the step hands over to the single-stream `download-artifact` action without retrying
 individual ranges.
 
-The test archive artifact holds every shard's archive and `test-binaries.json`, the
-number of test binaries in each. A shard reads the artifact's zip directory, then
+The test archive artifact holds every shard's archive and `test-binaries.json`, which
+records for each archive the number of test binaries in it and the filterset of the
+tests it runs. A shard reads the artifact's zip directory, then
 fetches only `shard-<n>.tar.zst` and `test-binaries.json` in parallel ranges and checks
 each against the size and CRC-32 the zip records. A mismatch fails the step. A
 compressed member, an unreadable directory or a failed range hands over to the
@@ -764,8 +775,18 @@ after the caller's declared tools and locked manifests are available. It starts
 from the caller's working directory. `TEST_PREPARE_OUTPUT` names the fixed
 `target/test-setup` output directory there; write only reusable runtime outputs
 inside it. `CARGO_TARGET_DIR` points at a separate temporary build directory.
-Preparation must not depend on the host test binaries or coverage instrumentation.
-A failing command fails the required test result. The default is no preparation.
+Preparation must not depend on the host test binaries. A failing command fails
+the required test result. The default is no preparation.
+
+On the Linux host of a run that collects coverage, `TEST_PREPARE_COVERAGE_ENV`
+names a file of `export` lines: the compiler wrapper and flags the coverage build
+uses. A command that prepares a test child running workspace code sources the
+file around that child's build only, never around its own tooling. Before the
+report, each shard copies every instrumented executable left in
+`TEST_PREPARE_OUTPUT` into the coverage build directory, so the child's lines
+count. The child must exit on its own: a profile cut by a kill fails the coverage
+step and names the child. On other hosts and on runs without coverage the
+variable is unset. A bundle prepared for coverage has its own cache key.
 
 The workflow transfers the prepared directory separately, preserving file modes,
 and restores it at `target/test-setup` in each numeric shard. Archived isolated
@@ -845,11 +866,13 @@ runs, `Prepare test setup` restores the bundle on an exact hit and skips the
 `test_prepare` command.
 When preparation is enabled, default-branch pushes run the command even on an
 exact hit, including warm builds and pushes that reuse merge-queue tests.
-These writers check whether the bundle is cached without downloading it and
-pass no `TEST_PREPARE_BASE`, so preparation compiles the inputs and seeds its
-compiled-cache snapshot rather than copying prepared files. A cached bundle
-alone does not contain those compiler objects. Without the list a warm build
-does not prepare. Every numeric shard downloads the prepared directory as before.
+These writers download the closest bundle as a base only when the compiled-cache
+snapshot they restored is warm: an earlier writer saved the compiler objects of
+every component that bundle holds, and the digest check builds each component
+whose inputs changed, so what the writer compiles seeds the rest. When the
+snapshot is cold, the writer passes no `TEST_PREPARE_BASE` and compiles every
+input. A cached bundle alone does not contain compiler objects. Without the
+list a warm build does not prepare. Every numeric shard downloads the prepared directory as before.
 Only pushes to the default branch write the cache, so a merge group reads what
 the last push saved.
 Pull requests skip preparation. Declare every input the command reads: an
@@ -866,14 +889,15 @@ commit being merged, whichever workflow ran them:
   yet, whether in this group or queued ahead of it (found from the `(#N)` that
   ends its commit subject), the bundle of that pull request's newest successful
   run at its head.
-- Pushes add no candidates: writers must populate compiler objects.
+- Pushes add no candidates: a merge group saves no snapshot, so no snapshot holds
+  the compiler objects of the components its bundle built.
 - A pull request run adds nothing, so every added bundle was built by the code
   being merged, starting from a bundle the default branch saved. Runs from forks
   are never added: a bundle holds executables that the run then starts.
 
 When the runs cannot be listed, the job logs a warning that names the failed
 request. Reader runs prepare from the bundles found before the failure;
-writers still prepare without bases.
+writers never list candidates.
 
 On reader runs, `Prepare test setup` extracts each bundle to its own directory,
 separate from `TEST_PREPARE_OUTPUT`, and sets `TEST_PREPARE_BASE` to the list of those
@@ -883,7 +907,8 @@ digest check or cannot be read is left out, and the later ones are still tried.
 The command may copy or reuse any file in a listed directory whose own inputs
 are unchanged, and must still write every file it needs to
 `TEST_PREPARE_OUTPUT`. When no bundle is available, `TEST_PREPARE_BASE` is
-unset. Reader runs still skip the command on an exact hit. Writers leave
+unset. Reader runs still skip the command on an exact hit. A writer on a warm
+snapshot lists only the restored bundle; on a cold snapshot it leaves
 `TEST_PREPARE_BASE` unset. Pushes that reuse merge-queue tests save compiled-cache
 snapshots without uploading the test archive or setup artifacts, since no test
 shard in those runs needs them.
@@ -988,7 +1013,9 @@ included.
 Root manifest and lockfile changes still follow the rules below.
 
 Host Clippy and the declared Windows target check lint the selected packages
-with `--all-targets`. Merge groups and main pushes lint the whole workspace.
+with `--all-targets`. Merge groups and main pushes select every workspace crate:
+host Clippy lints them in one workspace run, and the target check lints each one
+in its own run.
 An empty PR selection performs no host or target Clippy compilation; the named
 checks still report success. An absent base selects every package for lint.
 Wasm Clippy ignores the selection and lints every `wasm_crates` package on every
@@ -1834,12 +1861,17 @@ than treating estimates as deadlines.
 
 ## Foreign-target checks
 
-On full runs, the caller's rustup toolchain installs each requested target and
-Clippy, then runs:
+The caller's rustup toolchain installs each requested target and Clippy. The
+check prints the selected packages, then runs, for each one:
 
 ```bash
-cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings
+cargo clippy -p "$PACKAGE" --all-targets --locked --target "$TARGET" -- -D warnings
 ```
+
+Merge groups and main pushes select every workspace crate, so the check lints
+them one after another. Run alone, a package builds with only the dependency
+features its own manifest asks for, so a test target missing a feature it needs
+fails here, as it does in its own tests.
 
 | Target | Runner |
 | --- | --- |
@@ -2009,11 +2041,19 @@ one PR, the issue names all of them, newest first, and the reporter fails with
 the run link without a revert, because the failing PR is unknown. Revert the
 culprit in a normal reviewed PR.
 
+What the report does depends on the job that failed:
+
+| Failed job | Report |
+| --- | --- |
+| Test shard, doctests or Chromium tests | The failure issue and the revert PR described above |
+| Any other job, such as the dependency, source and coverage checks | One issue per landing commit naming the job, its failed step, the commit and the run; no revert, because a check job does not run the landed change's tests |
+| None identifiable, with the run not passed | The report fails with the run link |
+
 A passing suite creates neither artifact. Unknown or ambiguous PR attribution,
 unreadable logs, missing permissions and revert conflicts fail with the original
 run link. A conflict can leave the failure issue without a revert PR: resolve
-the conflict in a normal reviewed PR, not by force-pushing main. Non-suite job
-failures are reported as safeguard failures rather than blamed on another PR.
+the conflict in a normal reviewed PR, not by force-pushing main. A check-job
+issue is reused on repeated handling, as the failure issue is.
 
 ## CI speed guards
 

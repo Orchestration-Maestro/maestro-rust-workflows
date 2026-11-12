@@ -73,7 +73,8 @@ def landing_report_handles(scenario):
                     return subprocess.CompletedProcess(argv, 1, '', 'HTTP 403: Resource not accessible')
                 if endpoint.endswith('/runs/7'): value = run
                 elif endpoint.endswith('/attempts/1/jobs?per_page=100'):
-                    jobs = [] if scenario == 'pass' else [{'id': 8, 'name': {'doctest': 'Doctests', 'non-suite': 'Format'}.get(scenario, 'Tests / Test shard (1)'), 'conclusion': 'failure'}]
+                    jobs = [] if scenario == 'pass' else [{'id': 8, 'name': {'doctest': 'Doctests', 'non-suite': 'Dependency, source and coverage checks'}.get(scenario, 'Tests / Test shard (1)'), 'conclusion': 'failure',
+                             'steps': [{'name': 'Set up job', 'conclusion': 'success'}, {'name': 'Licenses and dependencies', 'conclusion': 'failure'}]}]
                     if scenario == 'pagination':
                         assert '--paginate' in argv and '--slurp' in argv
                         value = [{'jobs': []}, {'jobs': jobs}]
@@ -93,6 +94,12 @@ def landing_report_handles(scenario):
             elif argv[1:3] == ['issue', 'create']:
                 issues.append({'title': argv[argv.index('--title') + 1], 'url': 'https://github.com/owner/repo/issues/43'})
                 assert len(kwargs['input']) < 65536
+                if scenario == 'non-suite':
+                    # A check job does not fail on the landed change's tests: the issue names the job, the step and the run, and no revert follows.
+                    assert 'Dependency, source and coverage checks' in kwargs['input'] and 'Licenses and dependencies' in kwargs['input'], kwargs['input']
+                    assert 'Set up job' not in kwargs['input'] and sha in kwargs['input'] and run['html_url'] in kwargs['input'], kwargs['input']
+                    assert 'Original PR' not in kwargs['input'] and 'sample::broken' not in kwargs['input'], kwargs['input']
+                    return subprocess.CompletedProcess(argv, 0, issues[-1]['url'], '')
                 assert '#42' in kwargs['input'] and sha in kwargs['input'] and 'sample::broken' in kwargs['input'] and run['html_url'] in kwargs['input']
                 assert ('#41' in kwargs['input']) == (scenario == 'batched')
                 return subprocess.CompletedProcess(argv, 0, issues[-1]['url'], '')
@@ -110,13 +117,20 @@ def landing_report_handles(scenario):
             previous = pathlib.Path.cwd()
             os.chdir(checkout)
             try:
-                if scenario in ('unknown', 'permission', 'conflict', 'resume', 'foreign', 'non-suite', 'batched', 'unbounded'):
+                if scenario == 'non-suite':
+                    exec(compile(code, 'post-landing workflow', 'exec'), {})
+                    exec(compile(code, 'post-landing workflow', 'exec'), {})
+                    # The second run finds the issue of the first and files nothing more.
+                    assert len(issues) == 1 and issues[0]['title'].startswith('Full-suite check failed after landing ') and prs == []
+                    assert all(call[1:3] not in (['pr', 'create'], ['pr', 'list']) for call in calls) and sum(call[1:3] == ['issue', 'create'] for call in calls) == 1
+                    return
+                if scenario in ('unknown', 'permission', 'conflict', 'resume', 'foreign', 'batched', 'unbounded'):
                     try:
                         exec(compile(code, 'post-landing workflow', 'exec'), {})
                         raise AssertionError('Expected a clear failure')
                     except SystemExit as error:
                         assert run['html_url'] in str(error), str(error)
-                        diagnostic = {'unknown': 'attribute', 'permission': '403', 'conflict': 'revert', 'resume': 'temporary API failure', 'foreign': 'does not target', 'non-suite': 'no failed suite job', 'batched': 'landed together', 'unbounded': 'No earlier full-suite run'}[scenario]
+                        diagnostic = {'unknown': 'attribute', 'permission': '403', 'conflict': 'revert', 'resume': 'temporary API failure', 'foreign': 'does not target', 'batched': 'landed together', 'unbounded': 'No earlier full-suite run'}[scenario]
                         assert diagnostic in str(error), str(error)
                     if scenario != 'resume':
                         assert prs == []

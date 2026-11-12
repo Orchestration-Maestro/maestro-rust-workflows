@@ -97,8 +97,24 @@ jobs:
                         re.search(r'\b(Tests|Test shard|Doctests|Chromium browser tests)\b', job['name'])]
               if not failed:
                   if run['conclusion'] != 'success':
-                      raise RuntimeError('Run did not pass, but no failed suite job could be identified')
-                  print(f'Full suite passed; no issue or revert: {link}')
+                      checks = [job for job in jobs if job['conclusion'] == 'failure']
+                      if not checks:
+                          raise RuntimeError('Run did not pass, but no failed job could be identified')
+                      # A check job does not fail on the landed change's tests, so it gets an issue and no revert.
+                      title = f'Full-suite check failed after landing {sha}'
+                      details = [f"### {job['name']}\nFailed step: " + ', '.join(step['name'] for step in job.get('steps', []) if step['conclusion'] == 'failure')
+                                 for job in checks]
+                      body = f'Commit: {sha}\nRun: {link}\n\n' + '\n'.join(details) + '\n\nNo revert is proposed: a check job does not run the landed change\'s tests.'
+                      issues = json.loads(command('gh', 'issue', 'list', '-R', repository, '--state', 'all',
+                                                  '--search', f'"{sha}" in:title', '--json', 'title,url', '--limit', '100'))
+                      matches = [issue for issue in issues if issue['title'] == title]
+                      if len(matches) > 1:
+                          raise RuntimeError('Multiple check failure issues already exist for this landing')
+                      issue = matches[0]['url'] if matches else command('gh', 'issue', 'create', '-R', repository,
+                                                                      '--title', title, '--body-file', '-', body=body)
+                      print(f'Check job failed; no revert proposed: {issue}')
+                  else:
+                      print(f'Full suite passed; no issue or revert: {link}')
               else:
                   # A merge-queue push can squash several PRs, but only its head commit gets a suite run.
                   pushed = []
