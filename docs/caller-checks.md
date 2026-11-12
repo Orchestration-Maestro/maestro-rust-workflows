@@ -2022,11 +2022,19 @@ one PR, the issue names all of them, newest first, and the reporter fails with
 the run link without a revert, because the failing PR is unknown. Revert the
 culprit in a normal reviewed PR.
 
+What the report does depends on the job that failed:
+
+| Failed job | Report |
+| --- | --- |
+| Test shard, doctests or Chromium tests | The failure issue and the revert PR described above |
+| Any other job, such as the dependency, source and coverage checks | One issue per landing commit naming the job, its failed step, the commit and the run; no revert, because a check job does not run the landed change's tests |
+| None identifiable, with the run not passed | The report fails with the run link |
+
 A passing suite creates neither artifact. Unknown or ambiguous PR attribution,
 unreadable logs, missing permissions and revert conflicts fail with the original
 run link. A conflict can leave the failure issue without a revert PR: resolve
-the conflict in a normal reviewed PR, not by force-pushing main. Non-suite job
-failures are reported as safeguard failures rather than blamed on another PR.
+the conflict in a normal reviewed PR, not by force-pushing main. A check-job
+issue is reused on repeated handling, as the failure issue is.
 
 ## CI speed guards
 
