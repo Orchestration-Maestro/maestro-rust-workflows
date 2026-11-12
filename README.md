@@ -174,11 +174,12 @@ cap skip saving. The archive contains compiler objects, never `target/`,
 registry sources, credentials or diagnostics. Compressed archive bytes are a
 separate measurement. This per-save bound does not bound the repository's 10 GB
 allowance; the sum of one snapshot per kept shape does, and the guide measures
-it at 8.19 GiB, under 90% of the limit
-([One entry per prefix](docs/caller-checks.md#one-entry-per-prefix)). After each job that saves a
-cache on a default-branch push, a pruning job keeps only the newest entry of each
-compile, Cargo git and test setup prefix, the entry a restore reads, so the
-repository holds one generation. Pruning jobs and the merge-group canceller
+it at 8.21 GiB, under 90% of the limit
+([One entry per prefix](docs/caller-checks.md#one-entry-per-prefix)). After each
+job that saves a cache on a default-branch push, a pruning job keeps only the
+newest entry of each compile, Cargo git, test setup and browser packages prefix,
+the entry a restore reads, so the repository holds one generation. Pruning jobs
+and the merge-group canceller
 ([Superseded merge-group runs](docs/caller-checks.md#superseded-merge-group-runs))
 are the only jobs that hold `actions: write`, and they run no caller code;
 callers grant that permission to the reusable call. See

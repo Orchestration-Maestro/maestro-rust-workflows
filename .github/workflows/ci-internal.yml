@@ -535,8 +535,31 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           MISE_GITHUB_TOKEN: ${{ github.token }}
         run: bash -e -o pipefail "$PROOF_STEPS/Browser runtime tools"
+      - name: Browser runtime packages identity
+        id: packages-identity
+        env:
+          CACHE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: bash -e -o pipefail "$PROOF_STEPS/Browser runtime packages identity"
+      - name: Restore browser runtime packages
+        id: packages-restore
+        continue-on-error: true
+        uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ${{ runner.temp }}/browser-packages
+          key: ${{ steps.packages-identity.outputs.key }}
+          enableCrossOsArchive: false
+          fail-on-cache-miss: false
       - name: Browser runtime packages
+        env:
+          PACKAGES_HIT: ${{ steps.packages-restore.outputs.cache-hit }}
         run: bash -e -o pipefail "$PROOF_STEPS/Browser runtime packages"
+      - name: Save browser runtime packages
+        if: steps.packages-identity.outputs.writer == 'true' && steps.packages-restore.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809
+        with:
+          path: ${{ runner.temp }}/browser-packages
+          key: ${{ steps.packages-identity.outputs.key }}
       - name: Immutable shared recipe qualification
         run: |
           import json, os, pathlib, subprocess, time
