@@ -1997,7 +1997,7 @@ jobs:
           # A binary heavier than the mean shard cannot fit one shard, so its tests are placed one by one, each still run once.
           split = {binary for binary in splittable if weight[binary] > limit}
           groups = place(split)
-          # A filterset travels on a command line, which Windows caps at 32767 characters: the split binary adding the most test terms to an overlong shard stays whole.
+          # A filterset travels on a command line, which Windows caps at 32767 characters: the split binary in an overlong shard with the most test-name characters stays whole.
           while True:
               overlong = [group for group in groups if len(run_filter(group)) > 30000]
               kept = [binary for group in overlong for binary in binaries_of(group) if binary in split]

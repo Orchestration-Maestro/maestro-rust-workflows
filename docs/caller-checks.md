@@ -684,9 +684,10 @@ seconds so far. Shard 1 gets the slowest group. A binary stays whole when it has
 one test or a test name holding a character outside letters, digits, `_` and `:`.
 A filterset travels on a command line, which Windows caps at 32767 characters, so
 a split binary whose test names would push a shard's filterset past 30000
-characters stays whole as well, the one adding the most name characters first. The job log prints each shard's tests and binaries, with its
-seconds when an earlier run timed them, and `cargo nextest archive -E` writes
-one archive per group from the binaries already built.
+characters stays whole as well, the binary with the longest test names first.
+The job log prints each shard's tests and binaries, with its seconds when an
+earlier run timed them, and `cargo nextest archive -E` writes one archive per
+group from the binaries already built.
 
 Each host's job groups the binaries into that host's own shard count: the
 declared `test_shard_count` on Linux and `min(4, test_shard_count)` on a claimed

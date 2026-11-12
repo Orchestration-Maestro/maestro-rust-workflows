@@ -1497,7 +1497,7 @@ def archive_groups_follow_earlier_test_seconds():
     filters, manifest, output = plan(suites, seconds)
     assert all(len(entry['filter']) <= 30000 for entry in manifest.values()), [len(entry['filter']) for entry in manifest.values()]
     assert not any('test(=' in entry['filter'] for entry in manifest.values()), manifest
-    assert sum(int(count) for count in re.findall(r', (\d+) tests? in ', output)) == 70 + 70, output
+    assert sum(int(count) for count in re.findall(r', (\d+) tests? in ', output)) == 70 + 70, output  # 70 long names plus the 70 tests of broad, wide and new
 
 archive_groups_follow_earlier_test_seconds()
 print('PASS archive_groups_follow_earlier_test_seconds')
