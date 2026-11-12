@@ -16,6 +16,7 @@ install_recording_runner = resolver['install_recording_runner']
 
 document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
 CHECK = document['env']['COVERAGE_PROFILES']
+OBJECTS = document['env'].get('COVERAGE_OBJECTS')
 # The profile runtime appends the merge pool index to the signature, and prints the signature in decimal.
 SIGNATURE = '9182736455463728'
 
@@ -125,6 +126,61 @@ def an_archived_shard_reports_from_its_archive():
         run = next(command['args'] for command in commands if command['args'][:2] == ['llvm-cov', 'nextest'])
         assert not {'--no-report', '--no-clean'} <= set(run), run
 
+def prepared_children_become_coverage_objects():
+    # The report maps every executable of the instrumented build directory, so a prepared child counts only once it sits there.
+    assert OBJECTS, 'the workflow has no prepared coverage object snippet'
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        checkout(directory)
+        prepared = directory / 'target/test-setup'
+        (prepared / 'bin').mkdir(parents=True)
+        child = prepared / 'bin/child'
+        child.write_bytes(b'\x7fELF-section-names:__llvm_covfun:__llvm_covmap')
+        plain = prepared / 'bin/plain'
+        plain.write_bytes(b'\x7fELF-no-counters')
+        notes = prepared / 'notes.txt'
+        notes.write_bytes(b'mentions __llvm_covfun but is data')
+        for path in (child, plain):
+            path.chmod(0o755)
+        result = subprocess.run(['python3', '-c', OBJECTS], cwd=directory, env=os.environ | {'TEST_PREPARE_OUTPUT': str(prepared)},
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        objects = directory / 'target/llvm-cov-target/debug/prepared'
+        copy = objects / 'bin/child'
+        assert copy.read_bytes() == child.read_bytes() and os.access(copy, os.X_OK), sorted(objects.rglob('*'))
+        assert sorted(path.relative_to(objects).as_posix() for path in objects.rglob('*') if path.is_file()) == ['bin/child']
+        assert 'Prepared coverage objects: 1' in result.stdout, result.stdout
+
+def a_run_without_prepared_files_hands_over_no_objects():
+    assert OBJECTS, 'the workflow has no prepared coverage object snippet'
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        checkout(directory)
+        result = subprocess.run(['python3', '-c', OBJECTS], cwd=directory, env=os.environ | {'TEST_PREPARE_OUTPUT': str(directory / 'target/test-setup')},
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert 'Prepared coverage objects: 0' in result.stdout and not (directory / 'target/llvm-cov-target/debug/prepared').exists()
+
+def a_damaged_profile_of_a_prepared_child_names_the_child():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        site = checkout(directory)
+        (site / 'debug/prepared').mkdir()
+        child = site / 'debug/prepared/child'
+        child.write_text('#!/bin/bash\n'
+                         f'printf PROFILE > "${{LLVM_PROFILE_FILE//%4m/{SIGNATURE}_0}}"\n', encoding='utf-8')
+        child.chmod(0o755)
+        (site / f'maestro-999-{SIGNATURE}_1.profraw').write_text('', encoding='utf-8')
+        result = check(directory, toolchain(directory, 'PROFILE'))
+        assert result.returncode != 0, result.stdout + result.stderr
+        assert f'maestro-999-{SIGNATURE}_1.profraw is empty; its binary is child' in result.stdout + result.stderr, result.stdout + result.stderr
+
+def prepared_objects_are_handed_over_between_the_run_and_the_profile_check():
+    command = body('Isolated tests')
+    handover = 'run_isolated python3 -c "$COVERAGE_OBJECTS"'
+    assert command.count(handover) == 1
+    assert command.index('llvm-cov nextest') < command.index(handover) < command.index('python3 -c "$COVERAGE_PROFILES"') < command.index('llvm-cov report')
+
 def the_check_reads_the_profiles_before_the_report_merges_them():
     for name in ['Coverage', 'Isolated tests']:
         command = body(name)
@@ -144,6 +200,8 @@ def the_check_reads_the_profiles_before_the_report_merges_them():
 
 for case in [complete_profiles_pass, no_profiles_pass, damaged_profiles_fail_naming_each_file_and_its_program,
              the_check_reads_profiles_with_the_tool_the_report_merges_them, an_archived_shard_reports_from_its_archive,
-             the_check_reads_the_profiles_before_the_report_merges_them]:
+             the_check_reads_the_profiles_before_the_report_merges_them, prepared_children_become_coverage_objects,
+             a_run_without_prepared_files_hands_over_no_objects, a_damaged_profile_of_a_prepared_child_names_the_child,
+             prepared_objects_are_handed_over_between_the_run_and_the_profile_check]:
     case()
     print('PASS ' + case.__name__, flush=True)

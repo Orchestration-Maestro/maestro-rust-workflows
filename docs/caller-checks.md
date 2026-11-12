@@ -767,8 +767,18 @@ after the caller's declared tools and locked manifests are available. It starts
 from the caller's working directory. `TEST_PREPARE_OUTPUT` names the fixed
 `target/test-setup` output directory there; write only reusable runtime outputs
 inside it. `CARGO_TARGET_DIR` points at a separate temporary build directory.
-Preparation must not depend on the host test binaries or coverage instrumentation.
-A failing command fails the required test result. The default is no preparation.
+Preparation must not depend on the host test binaries. A failing command fails
+the required test result. The default is no preparation.
+
+On the Linux host of a run that collects coverage, `TEST_PREPARE_COVERAGE_ENV`
+names a file of `export` lines: the compiler wrapper and flags the coverage build
+uses. A command that prepares a test child running workspace code sources the
+file around that child's build only, never around its own tooling. Before the
+report, each shard copies every instrumented executable left in
+`TEST_PREPARE_OUTPUT` into the coverage build directory, so the child's lines
+count. The child must exit on its own: a profile cut by a kill fails the coverage
+step and names the child. On other hosts and on runs without coverage the
+variable is unset. A bundle prepared for coverage has its own cache key.
 
 The workflow transfers the prepared directory separately, preserving file modes,
 and restores it at `target/test-setup` in each numeric shard. Archived isolated

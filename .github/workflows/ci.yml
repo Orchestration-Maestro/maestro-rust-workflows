@@ -98,6 +98,30 @@ env:
     print(f'Merged line coverage: {percentage:.2f}% ({covered}/{len(lines)}), minimum {threshold}%')
     if percentage < threshold:
         raise SystemExit('Merged line coverage is below threshold')
+  COVERAGE_OBJECTS: |
+    import os
+    import pathlib
+    import shutil
+
+    # The report maps the executables of the instrumented build directory, so each instrumented program a preparation left joins them.
+    output = pathlib.Path(os.environ['TEST_PREPARE_OUTPUT'])
+    objects = pathlib.Path('target/llvm-cov-target/debug/prepared')
+    copied = 0
+    for path in sorted(output.rglob('*')) if output.is_dir() else []:
+        # shortcut: the counters' section name marks an instrumented program; read in blocks, so a bundle of large files costs one pass.
+        if path.is_symlink() or not path.is_file() or not os.access(path, os.X_OK):
+            continue
+        with open(path, 'rb') as source:
+            tail = b''
+            for block in iter(lambda: source.read(1 << 20), b''):
+                if b'__llvm_covfun' in tail + block:
+                    destination = objects / path.relative_to(output)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, destination)
+                    copied += 1
+                    break
+                tail = block[-12:]
+    print(f'Prepared coverage objects: {copied}', flush=True)
   COVERAGE_PROFILES: |
     import os
     import pathlib
@@ -113,10 +137,10 @@ env:
         return str(pathlib.Path(sysroot, 'lib', 'rustlib', host, 'bin', 'llvm-profdata'))
 
     def binaries():
-        # The instrumented build's own programs, two levels below the directory the profiles sit in.
-        built = pathlib.Path('target/llvm-cov-target/debug/deps')
+        # The instrumented build's own programs, and the prepared children beside them.
+        built = pathlib.Path('target/llvm-cov-target/debug')
         # shortcut: a build script is not a test binary, so it is skipped by name, not by inspection.
-        return [path for path in sorted(built.glob('*'))
+        return [path for path in sorted([*built.glob('deps/*'), *built.glob('prepared/**/*')])
                 if path.is_file() and os.access(path, os.X_OK) and not path.name.startswith('build_script_build')
                 and path.suffix not in ('.d', '.rlib', '.rmeta', '.so', '.dylib', '.dll', '.a', '.o')]
 
@@ -2014,6 +2038,7 @@ jobs:
     env:
       ADDITIONAL_LOCKED_MANIFESTS: ${{ needs.declaration.outputs.additional_locked_manifests }}
       TEST_PREPARE: ${{ fromJSON(needs.declaration.outputs.test_prepare) }}
+      COLLECT_COVERAGE: ${{ matrix.runner == 'ubuntu-latest' && needs.declaration.outputs.enabled == 'true' && (needs.declaration.outputs.coverage == 'true' || needs.declaration.outputs.tests_reused == 'true') }}
     defaults:
       run:
         shell: bash
@@ -2054,6 +2079,11 @@ jobs:
         env: *sccache-install-env
         timeout-minutes: 10
         run: *sccache-install
+      - name: Coverage tools
+        if: env.COLLECT_COVERAGE == 'true'
+        timeout-minutes: 10
+        env: *release-auth
+        run: *coverage-tools
       - name: Cargo git cache identity
         if: runner.os == 'Linux'
         id: git-cache-identity
@@ -2115,7 +2145,7 @@ jobs:
                       files[name] = hashlib.sha256(source.read()).hexdigest()
           def digest(value):
               return hashlib.sha256(json.dumps(value, ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
-          prefix = 'maestro-test-setup-v2-' + digest([os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE'], programs]) + '-'
+          prefix = 'maestro-test-setup-v2-' + digest([os.environ['COMPILE_CACHE_PREFIX'], os.environ['GITHUB_WORKSPACE'], os.environ['TEST_PREPARE'], os.environ['COLLECT_COVERAGE'], programs]) + '-'
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
               output.write(f'prefix={prefix}\nkey={prefix}{digest(sorted(files.items()))}\n')
           PYTHON
@@ -2379,7 +2409,7 @@ jobs:
           export CARGO_TARGET_DIR="$RUNNER_TEMP/maestro-test-prepare-build"
           mkdir -p "$TEST_PREPARE_OUTPUT"
           # The preparation's bases, in order: a miss on the exact key may still restore the closest earlier bundle, and the candidates follow. Each is extracted to its own directory, apart from the output.
-          unset TEST_PREPARE_BASE
+          unset TEST_PREPARE_BASE TEST_PREPARE_COVERAGE_ENV
           bases=()
           extract() {
             mkdir -p "$2"
@@ -2404,6 +2434,12 @@ jobs:
           if [ "${#bases[@]}" -gt 0 ]; then
             export TEST_PREPARE_BASE
             TEST_PREPARE_BASE=$(python3 -c 'import os, sys; print(os.pathsep.join(sys.argv[1:]))' "${bases[@]}")
+          fi
+          if [ "${COLLECT_COVERAGE:-false}" = true ]; then
+            # The wrapper and flags the coverage build uses: a command that prepares a test child sources them around that child's build, so the report maps its counters.
+            coverage_env="$RUNNER_TEMP/test-prepare-coverage-env.sh"
+            CARGO_LLVM_COV_TARGET_DIR="$PWD/target/llvm-cov-target" "$TOOLS/cargo-llvm-cov" llvm-cov show-env --sh | grep -v -E '^export CARGO_LLVM_COV_(SHOW_ENV|TARGET_DIR|BUILD_DIR)=' > "$coverage_env"
+            export TEST_PREPARE_COVERAGE_ENV="$coverage_env"
           fi
           bash -e -o pipefail -c "$TEST_PREPARE"
           tar -C target -cf - test-setup > "$RUNNER_TEMP/test-setup.tar"
@@ -2813,6 +2849,7 @@ jobs:
                 run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov nextest --user-config-file none --ignore-default-filter \
                   --retries 0 --final-status-level flaky "${partition[@]}" --no-tests pass "${coverage_build_args[@]}" --no-report 2>&1 | tee nextest.log
                 if [ ${#report[@]} -gt 0 ]; then
+                  run_isolated python3 -c "$COVERAGE_OBJECTS"
                   run_isolated python3 -c "$COVERAGE_PROFILES"
                   run_isolated "$TOOLS/cargo-llvm-cov" llvm-cov report "${archive_report[@]}" \
                     --no-default-ignore-filename-regex --ignore-filename-regex "$COVERAGE_IGNORE_FILENAME_REGEX" "${report[@]}" 2>&1 | tee -a nextest.log
