@@ -2483,7 +2483,7 @@ jobs:
             TEST_PREPARE_BASE=$(python3 -c 'import os, sys; print(os.pathsep.join(sys.argv[1:]))' "${bases[@]}")
           fi
           if [ "${COLLECT_COVERAGE:-false}" = true ]; then
-            # The wrapper and flags the coverage build uses: a command that prepares a test child sources them around that child's build, so the report maps its counters.
+            # The wrapper and flags of the coverage build, which a command that prepares a test child sources around that child's build so the report maps its counters.
             coverage_env="$RUNNER_TEMP/test-prepare-coverage-env.sh"
             CARGO_LLVM_COV_TARGET_DIR="$PWD/target/llvm-cov-target" "$TOOLS/cargo-llvm-cov" llvm-cov show-env --sh | grep -v -E '^export CARGO_LLVM_COV_(SHOW_ENV|TARGET_DIR|BUILD_DIR)=' > "$coverage_env"
             export TEST_PREPARE_COVERAGE_ENV="$coverage_env"
