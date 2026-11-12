@@ -38,9 +38,10 @@ Pull requests run declaration validation, formatting, Clippy, docs,
 dependency/source checks and the declared Windows target check. Host
 Clippy and the Windows target check select changed crates and their workspace
 dependents; formatting still checks the whole workspace. A declared target
-check prints the selected packages, then lints each one's tests and examples in
-its own run. One run over several packages shares a feature set and would hide a
-package that lacks a dependency feature its tests need. Pull requests skip the
+check lints the selection once, then lints alone each package a change touches.
+A run over several packages shares a feature set and would hide a package that
+lacks a dependency feature its tests need; see
+[Foreign-target checks](#foreign-target-checks). Pull requests skip the
 test archive, test setup, test shards, doctests and wasm/browser builds. Two
 exceptions still compile: the declared [example witnesses](#wasm-example-witnesses),
 and the [Emscripten crates](#emscripten-builds), which the sandbox runtime job
@@ -705,13 +706,19 @@ which every test shard of this caller on the same host succeeded, adds up the
 it read with its branch, commit and date. Each host reads only its own shards:
 `Build test archive (macos-latest)` times its binaries from the earlier
 `Test shard (macos-latest 1/4)` to `(macos-latest 4/4)` jobs, never from the
-Linux shards, so a run without macOS shards is passed over. A test that run
-did not time weighs the timed tests' mean seconds. With no
-such run, or when the lookup fails, the step says so and every test weighs the
-same: the binaries go by test count. The timing decides only which shard runs
-each test, never which tests run. This step holds the run's token, and its
-Python runs isolated, so no module in the caller's checkout is imported while it
-holds the token.
+Linux shards, so a run without macOS shards is passed over. A test that run did
+not time weighs the timed tests' mean seconds.
+
+A request that fails with a server error is tried again, up to three times,
+after a pause of 1, 2 and 4 seconds. Any other failure, a missing route or a
+rate limit included, is not retried. When a run's jobs or logs still cannot be
+read, the step logs `Skipped earlier run <id>` with the reason and goes on to the
+next earlier run; after three skipped runs it stops. With no readable run, after
+three skipped runs, or when the lookup of the current run or the run lists fails,
+the step says so and every test weighs the same: the binaries go by test count.
+The timing decides only which shard runs each test, never which tests run. This
+step holds the run's token, and its Python runs isolated, so no module in the
+caller's checkout is imported while it holds the token.
 
 Each numeric shard downloads only its own archive and runs the tests its
 filterset selects with `--archive-file`. No partition flag applies. A split binary
@@ -1014,8 +1021,8 @@ Root manifest and lockfile changes still follow the rules below.
 
 Host Clippy and the declared Windows target check lint the selected packages
 with `--all-targets`. Merge groups and main pushes select every workspace crate:
-host Clippy lints them in one workspace run, and the target check lints each one
-in its own run.
+host Clippy and the target check lint them in one workspace run, and the target
+check then lints alone only the packages a change can break.
 An empty PR selection performs no host or target Clippy compilation; the named
 checks still report success. An absent base selects every package for lint.
 Wasm Clippy ignores the selection and lints every `wasm_crates` package on every
@@ -1862,16 +1869,28 @@ than treating estimates as deadlines.
 ## Foreign-target checks
 
 The caller's rustup toolchain installs each requested target and Clippy. The
-check prints the selected packages, then runs, for each one:
+check lints the selection once, as the host lint does, then lints alone the
+packages a change can break:
 
 ```bash
+cargo clippy --workspace --all-targets --locked --target "$TARGET" -- -D warnings
 cargo clippy -p "$PACKAGE" --all-targets --locked --target "$TARGET" -- -D warnings
 ```
 
-Merge groups and main pushes select every workspace crate, so the check lints
-them one after another. Run alone, a package builds with only the dependency
-features its own manifest asks for, so a test target missing a feature it needs
-fails here, as it does in its own tests.
+The first run covers the whole workspace when the selection is every crate, and
+only the selected packages otherwise. Run alone, a package builds with only the
+dependency features its own manifest asks for, so a test target missing a
+feature it needs fails here, as it does in its own tests. Only a package that a
+change touches can lose a feature that way, so the declaration lists the
+packages to lint alone:
+
+- every package with a changed file in the pull request or merge group;
+- when a manifest or the lock file changed, every package that depends on a
+  package whose manifest or locked dependencies changed. A change to the root
+  manifest selects every member.
+
+A push to the default branch lints no package alone. The log prints the first
+run, then the list as `package: reason`.
 
 | Target | Runner |
 | --- | --- |

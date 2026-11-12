@@ -49,7 +49,7 @@ CURRENT = current()
 def shard_log(*lines):
     return ''.join(f'2026-11-05T09:00:00.0000000Z {line}\n' for line in lines)
 
-def read(routes, checkout=None):
+def read(routes, checkout=None, runner_os='Linux'):
     """Run the step in a checkout holding the given files, against a gh that answers only the given routes, a None route as GitHub's 404;
     return the seconds it wrote and its log."""
     with tempfile.TemporaryDirectory() as temporary:
@@ -59,15 +59,24 @@ def read(routes, checkout=None):
         (directory / 'routes.json').write_text(json.dumps(routes), encoding='utf-8')
         (directory / 'bin').mkdir()
         gh = directory / 'bin/gh'
-        gh.write_text('#!/usr/bin/env python3\nimport json, sys\n'
+        # A route {'fail': n, 'then': payload} answers HTTP 502 (or its 'error') to its first n requests (all of them without 'then'), then the payload.
+        gh.write_text('#!/usr/bin/env python3\nimport json, pathlib, sys\n'
                       f'routes = json.load(open({str(directory / "routes.json")!r}))\n'
                       'path = sys.argv[-1].removeprefix("repos/o/r/")\n'
-                      'if routes.get(path) is None:\n    sys.exit("gh: Not Found (HTTP 404)")\n'
-                      'print(routes[path] if isinstance(routes[path], str) else json.dumps(routes[path]))\n', encoding='utf-8')
+                      'route = routes.get(path)\n'
+                      'if route is None:\n    sys.exit("gh: Not Found (HTTP 404)")\n'
+                      'if isinstance(route, dict) and "fail" in route:\n'
+                      f'    count = pathlib.Path({str(directory / "requests")!r} + path.replace("/", "_"))\n'
+                      '    seen = int(count.read_text()) if count.exists() else 0\n'
+                      '    count.write_text(str(seen + 1))\n'
+                      '    if "then" not in route or seen < route["fail"]:\n        sys.exit(route.get("error", "gh: Bad Gateway (HTTP 502)"))\n'
+                      '    route = route["then"]\n'
+                      'print(route if isinstance(route, str) else json.dumps(route))\n', encoding='utf-8')
         gh.chmod(0o700)
         env = {key: value for key, value in os.environ.items() if not key.startswith('GITHUB_')} | {
             'PATH': f'{directory / "bin"}:' + os.environ['PATH'], 'GITHUB_REPOSITORY': 'o/r', 'GITHUB_RUN_ID': '100',
-            'GITHUB_RUN_ATTEMPT': '1', 'RUNNER_NAME': 'GitHub Actions 7'}
+            'GITHUB_RUN_ATTEMPT': '1', 'RUNNER_NAME': 'GitHub Actions 7', 'RUNNER_OS': runner_os,
+            'EARLIER_SECONDS_PAUSE': '0'}
         result = subprocess.run(['bash', '-e', '-o', 'pipefail', '-c', steps[READ]['run']],
                                 cwd=directory, env=env, text=True, capture_output=True)
         assert result.returncode == 0, result.stdout + result.stderr
@@ -131,6 +140,58 @@ def without_earlier_timing_the_binaries_go_by_test_count():
         assert seconds == {}, seconds
         assert 'Test seconds unavailable' in log and 'test binaries are grouped by test count' in log, log
 
+def an_earlier_run_that_cannot_be_read_is_skipped():
+    # Run 50's jobs listing keeps answering HTTP 502; run 40 is the next earlier run whose shards ran.
+    routes = CURRENT | listed('merge_group', run(50, '2026-11-05T09:00:00Z'), run(40, '2026-11-01T09:00:00Z')) | listed('push') | {
+        'actions/runs/50/jobs?per_page=100': {'fail': 0}} | jobs(
+        40, job(41, named('tests', shard=1)), job(42, named('tests', shard=2))) | {
+        # A request that fails once is retried and its run still serves.
+        'actions/jobs/41/logs': {'fail': 1, 'then': shard_log('        PASS [   3.000s] (1/1) heavy::integration slow_one')},
+        'actions/jobs/42/logs': shard_log('        PASS [   1.000s] (1/1) light::bin/light quick')}
+    seconds, log = read(routes)
+    assert seconds == {'heavy::integration': {'slow_one': 3.0}, 'light::bin/light': {'quick': 1.0}}, seconds
+    assert 'Skipped earlier run 50: gh: Bad Gateway (HTTP 502)' in log and 'Test seconds from run 40 ' in log, log
+
+def counting_by_tests_waits_until_no_earlier_run_can_be_read():
+    routes = CURRENT | listed('merge_group', run(50, '2026-11-05T09:00:00Z')) | listed('push') | {
+        'actions/runs/50/jobs?per_page=100': {'fail': 0}}
+    seconds, log = read(routes)
+    assert seconds == {}, seconds
+    assert 'Skipped earlier run 50: gh: Bad Gateway (HTTP 502)' in log and 'test binaries are grouped by test count' in log, log
+
+def a_client_error_is_not_retried():
+    # Run 50's jobs listing answers HTTP 403 once, then would serve: a retry would read run 50, so run 40 serving proves the 403 stood.
+    routes = CURRENT | listed('merge_group', run(50, '2026-11-05T09:00:00Z'), run(40, '2026-11-01T09:00:00Z')) | listed('push') | {
+        'actions/runs/50/jobs?per_page=100': {'fail': 1, 'error': 'gh: Forbidden (HTTP 403)', 'then': [{'jobs': [job(51, named('tests', shard=1))]}]},
+        'actions/jobs/51/logs': shard_log('        PASS [   9.000s] (1/1) heavy::integration slow_one'),
+        'actions/jobs/41/logs': shard_log('        PASS [   3.000s] (1/1) heavy::integration slow_one')} | jobs(40, job(41, named('tests', shard=1)))
+    seconds, log = read(routes)
+    assert seconds == {'heavy::integration': {'slow_one': 3.0}}, seconds
+    assert 'Skipped earlier run 50: gh: Forbidden (HTTP 403)' in log, log
+
+def counting_by_tests_follows_three_unreadable_runs():
+    # Runs 50, 40 and 30 cannot be read; run 20 could be, but the walk stops after three skipped runs.
+    stamps = ['2026-11-05T09:00:00Z', '2026-11-04T09:00:00Z', '2026-11-03T09:00:00Z', '2026-11-02T09:00:00Z']
+    routes = CURRENT | listed('merge_group', *(run(identifier, stamp) for identifier, stamp in zip([50, 40, 30, 20], stamps, strict=True))) | listed('push') | {
+        f'actions/runs/{identifier}/jobs?per_page=100': {'fail': 0} for identifier in [50, 40, 30]} | jobs(
+        20, job(21, named('tests', shard=1)), job(22, named('tests', shard=2))) | {
+        'actions/jobs/21/logs': shard_log('        PASS [   3.000s] (1/1) heavy::integration slow_one'),
+        'actions/jobs/22/logs': shard_log('        PASS [   1.000s] (1/1) light::bin/light quick')}
+    seconds, log = read(routes)
+    assert seconds == {}, seconds
+    assert all(f'Skipped earlier run {identifier}: ' in log for identifier in [50, 40, 30]) and 'from run 20' not in log, log
+    assert 'three earlier runs could not be read' in log and 'test binaries are grouped by test count' in log, log
+
+def every_host_reads_main_pushes():
+    # A caller whose workflow runs on pushes only still supplies seconds, on Linux as on every other host.
+    shards = [job(51, named('tests', shard=1)), job(52, named('tests', shard=2))]
+    routes = CURRENT | listed('merge_group') | listed('push', run(50, '2026-11-05T09:00:00Z', event='push')) | jobs(50, *shards) | {
+        'actions/jobs/51/logs': shard_log('        PASS [   2.000s] (1/1) heavy::integration slow_one'),
+        'actions/jobs/52/logs': shard_log('        PASS [   1.000s] (1/1) light::bin/light quick')}
+    for runner_os in ['Linux', 'macOS']:
+        seconds, _ = read(routes, runner_os=runner_os)
+        assert seconds == {'heavy::integration': {'slow_one': 2.0}, 'light::bin/light': {'quick': 1.0}}, (runner_os, seconds)
+
 def the_caller_checkout_never_runs_with_the_token():
     # The step runs in the caller's checkout with the token, so a module there must never shadow the one the step imports.
     seconds, _ = read({}, {'json.py': "raise SystemExit('the caller checkout ran with the token')\n"})
@@ -138,6 +199,7 @@ def the_caller_checkout_never_runs_with_the_token():
 
 for check in [the_newest_earlier_run_of_this_caller_supplies_seconds_per_test, a_failed_shard_keeps_its_run_out,
               each_runner_takes_seconds_from_its_own_shards, without_earlier_timing_the_binaries_go_by_test_count,
-              the_caller_checkout_never_runs_with_the_token]:
+              an_earlier_run_that_cannot_be_read_is_skipped, counting_by_tests_waits_until_no_earlier_run_can_be_read,
+              a_client_error_is_not_retried, counting_by_tests_follows_three_unreadable_runs, every_host_reads_main_pushes, the_caller_checkout_never_runs_with_the_token]:
     check()
     print('PASS ' + check.__name__, flush=True)
