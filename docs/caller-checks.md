@@ -706,9 +706,15 @@ which every test shard of this caller on the same host succeeded, adds up the
 it read with its branch, commit and date. Each host reads only its own shards:
 `Build test archive (macos-latest)` times its binaries from the earlier
 `Test shard (macos-latest 1/4)` to `(macos-latest 4/4)` jobs, never from the
-Linux shards, so a run without macOS shards is passed over. A test that run
-did not time weighs the timed tests' mean seconds. With no
-such run, or when the lookup fails, the step says so and every test weighs the
+Linux shards, so a run without macOS shards is passed over. A Linux job reads
+merge group runs only, because a push to the default branch runs no Linux
+shards. A test that run did not time weighs the timed tests' mean seconds.
+
+A request that fails is tried again up to four times, after a pause of 1, 2 and
+4 seconds. A missing route is not retried. When a run's jobs or logs still
+cannot be read, the step logs `Skipped earlier run <id>` with the reason and goes
+on to the next earlier run. With no readable run, or when the lookup of the
+current run or the run lists fails, the step says so and every test weighs the
 same: the binaries go by test count. The timing decides only which shard runs
 each test, never which tests run. This step holds the run's token, and its
 Python runs isolated, so no module in the caller's checkout is imported while it

@@ -1922,9 +1922,17 @@ jobs:
           import pathlib
           import re
           import subprocess
+          import time
           repository = os.environ['GITHUB_REPOSITORY']
           def gh(*argv):
-              return subprocess.check_output(['gh', 'api', *argv[:-1], f'repos/{repository}/{argv[-1]}'], text=True)
+              # A failed request is tried again after a growing pause, except a missing route, which stays missing.
+              for attempt in range(4):
+                  result = subprocess.run(['gh', 'api', *argv[:-1], f'repos/{repository}/{argv[-1]}'], capture_output=True, text=True)
+                  if result.returncode == 0:
+                      return result.stdout
+                  if 'HTTP 404' in result.stderr or attempt == 3:
+                      raise OSError(result.stderr.strip())
+                  time.sleep(2 ** attempt)
           def jobs_of(path):
               return [job for page in json.loads(gh('--paginate', '--slurp', path)) for job in page['jobs']]
           def log_of(job):
@@ -1937,19 +1945,26 @@ jobs:
               # This caller's shards carry this job's prefix and runner: `suite / Build test archive (macos-latest)` runs `suite / Test shard (macos-latest 1/4)`.
               prefix, runner = re.fullmatch(r'(.*)Build test archive(?: \((.+)\))?', built['name']).groups()
               shard = re.compile(re.escape(f"{prefix}Test shard ({runner + ' ' if runner else ''}") + r'\d+/\d+\)')
-              earlier = sorted((run for event in ('merge_group', 'push')
+              # Main pushes run no Linux shards, so a Linux job reads merge groups only.
+              earlier = sorted((run for event in (('merge_group',) if os.environ['RUNNER_OS'] == 'Linux' else ('merge_group', 'push'))
                                 for run in json.loads(gh(f'actions/runs?event={event}&status=success&per_page=100'))['workflow_runs']
                                 if run['workflow_id'] == current['workflow_id'] and run['created_at'] < current['created_at']
                                 and (run['head_repository'] or {}).get('full_name') == repository),
                                key=lambda run: run['created_at'], reverse=True)
+              # A run whose jobs or logs cannot be read is skipped, so one failed request does not drop the lookup.
               for run in earlier:
-                  shards = [job for job in jobs_of(f"actions/runs/{run['id']}/jobs?per_page=100") if shard.fullmatch(job['name'])]
-                  if shards and all(job['conclusion'] == 'success' for job in shards):
-                      break
+                  try:
+                      shards = [job for job in jobs_of(f"actions/runs/{run['id']}/jobs?per_page=100") if shard.fullmatch(job['name'])]
+                      if not shards or not all(job['conclusion'] == 'success' for job in shards):
+                          continue
+                      with concurrent.futures.ThreadPoolExecutor() as pool:
+                          logs = list(pool.map(log_of, shards))
+                  except OSError as error:
+                      print(f"Skipped earlier run {run['id']}: {error}")
+                      continue
+                  break
               else:
                   raise LookupError('no earlier successful run of this workflow ran these test shards')
-              with concurrent.futures.ThreadPoolExecutor() as pool:
-                  logs = list(pool.map(log_of, shards))
               for log in logs:
                   log = re.sub(r'\x1b\[[0-9;]*m', '', log)
                   for took, binary, test in re.findall(r'(?m)^\S+Z\s+PASS \[\s*([0-9.]+)s\]\s+(?:\([^)]*\)\s+)?(\S+)\s+(\S+)', log):
@@ -1957,7 +1972,7 @@ jobs:
                       per_test[test] = per_test.get(test, 0) + float(took)
               print(f"Test seconds from run {run['id']} ({run['event']} on {run['head_branch']} at {run['head_sha']}, {run['created_at']}): "
                     f'{len(seconds)} test binaries')
-          except (subprocess.CalledProcessError, ValueError, TypeError, StopIteration, LookupError) as error:
+          except (OSError, ValueError, TypeError, StopIteration, LookupError) as error:
               seconds = {}
               print(f'Test seconds unavailable ({error}); test binaries are grouped by test count.')
           pathlib.Path('target').mkdir(exist_ok=True)
