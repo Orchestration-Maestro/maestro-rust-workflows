@@ -379,7 +379,7 @@ jobs:
               def key(directory, patterns=('inputs/*.txt',), command='echo ready', extra=None):
                   with output_file() as output:
                       env = {'TEST_PREPARE': command, 'TEST_PREPARE_INPUTS': json.dumps(list(patterns)), 'GITHUB_OUTPUT': str(output),
-                             'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work'} | (extra or {})
+                             'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work', 'COLLECT_COVERAGE': 'false'} | (extra or {})
                       if 'PATH' not in env:
                           env['PATH'] = search_path(programs)
                       result = execute('Test setup cache identity', directory, env)
@@ -464,14 +464,15 @@ jobs:
                   cache.mkdir()
                   saved_keys = []
                   # The command copies the base it is given, when there is one, next to the file it writes.
-                  def run(name, printed, writer, command='if [ -n "${TEST_PREPARE_BASE-}" ]; then cp "$TEST_PREPARE_BASE/count" "$TEST_PREPARE_OUTPUT/base-count"; fi; echo once >> "$TEST_PREPARE_OUTPUT/count"'):
+                  def run(name, printed, writer, warm=True, command='if [ -n "${TEST_PREPARE_BASE-}" ]; then cp "$TEST_PREPARE_BASE/count" "$TEST_PREPARE_OUTPUT/base-count"; fi; echo once >> "$TEST_PREPARE_OUTPUT/count"'):
                       runner = pathlib.Path(temporary) / name
                       checkout = runner / 'caller'
                       checkout.mkdir(parents=True)
                       (checkout / 'key.txt').write_text(printed, encoding='utf-8')
                       env = {'TEST_PREPARE': command, 'TEST_PREPARE_INPUTS': json.dumps(['key.txt']), 'RUNNER_TEMP': str(runner),
-                             'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work',
-                             'CACHE_WRITER': 'true' if writer else 'false', 'PATH': search_path(temporary)}
+                             'COMPILE_CACHE_PREFIX': 'maestro-compile-v1-abc-', 'GITHUB_WORKSPACE': '/work', 'COLLECT_COVERAGE': 'false',
+                             'CACHE_WRITER': 'true' if writer else 'false', 'COMPILE_CACHE_RESTORED': 'true' if warm else 'false',
+                             'PATH': search_path(temporary)}
                       with output_file() as output:
                           result = execute('Test setup cache identity', checkout, env | {'GITHUB_OUTPUT': str(output)})
                           assert result.returncode == 0, result.stderr
@@ -498,17 +499,22 @@ jobs:
                   # A pull request reads the cache and never writes it.
                   assert run('pull-request', 'inputs-1', False)[:3] == (False, True, False)
                   assert not list(cache.iterdir())
-                  # Writers compile on exact hits too, but never overwrite an existing bundle key.
-                  assert run('push-1', 'inputs-1', True)[:3] == (False, True, True)
+                  # Writers prepare on exact hits too, but never overwrite an existing bundle key. With a cold compile snapshot they take no base.
+                  assert run('push-1', 'inputs-1', True, warm=False)[:3] == (False, True, True)
+                  # With a warm snapshot a writer takes the bundle as its base on an exact hit.
                   hit, prepared, saved, tarball = run('push-2', 'inputs-1', True)
                   assert (hit, prepared, saved) == (True, True, False)
                   listing = subprocess.check_output(['tar', '-tf', str(tarball)], text=True)
-                  assert 'test-setup/count' in listing and 'test-setup/base-count' not in listing, listing
+                  assert 'test-setup/count' in listing and 'test-setup/base-count' in listing, listing
                   assert subprocess.check_output(['tar', '-xOf', str(tarball), 'test-setup/count'], text=True) == 'once\n'
                   # A pull request restores the same bundle without preparing.
                   assert run('pull-request-2', 'inputs-1', False)[:3] == (True, False, False)
-                  # Changed inputs miss the exact key, prepare again and save under the new key.
+                  # Changed inputs miss the exact key: a warm writer takes the closest bundle as its base and saves under the new key; a cold one takes none.
                   hit, prepared, saved, tarball = run('push-3', 'inputs-2', True)
+                  assert (hit, prepared, saved) == (False, True, True)
+                  listing = subprocess.check_output(['tar', '-tf', str(tarball)], text=True)
+                  assert 'test-setup/base-count' in listing, listing
+                  hit, prepared, saved, tarball = run('push-cold', 'inputs-4', True, warm=False)
                   assert (hit, prepared, saved) == (False, True, True)
                   listing = subprocess.check_output(['tar', '-tf', str(tarball)], text=True)
                   assert 'test-setup/base-count' not in listing, listing

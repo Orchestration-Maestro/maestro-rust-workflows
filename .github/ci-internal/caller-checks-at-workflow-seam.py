@@ -4053,13 +4053,15 @@ def main_setup_writers_prepare_even_with_exact_bundle():
     document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
     steps = {step['name']: step for step in document['jobs']['test-prepare']['steps']}
     prepare = steps['Prepare test setup']
-    for writer, hit, expected in [('true', 'true', True), ('true', 'false', True),
-                                  ('false', 'true', False), ('false', 'false', True)]:
+    for writer, hit, expected, matched in [('true', 'true', True, 'compile-snapshot'), ('true', 'false', True, 'compile-snapshot'),
+                                           ('true', 'true', True, ''), ('true', 'false', True, ''),
+                                           ('false', 'true', False, ''), ('false', 'false', True, '')]:
         context = {'steps.setup-cache.outputs.cache-hit': hit, 'steps.cache-identity.outputs.writer': writer,
+                   'steps.cache-restore.outputs.cache-matched-key': matched,
                    'steps.candidates.outputs.runs': '' if writer == 'true' else '7',
                    'needs.declaration.outputs.test_prepare_inputs': '["inputs/**"]'}
         restore = steps['Restore test setup cache']
-        assert bool(evaluate(restore['with'].get('lookup-only', 'False'), context)) == (writer == 'true'), (writer, hit, 'writers must not download bundles')
+        assert 'lookup-only' not in restore['with'], (writer, hit, 'a writer needs the closest earlier bundle as its base')
         candidates = steps['Test setup candidates']
         assert bool(evaluate(candidates['if'], context)) == (writer != 'true' and hit != 'true'), (writer, hit, 'writers must not fetch candidates')
         assert not evaluate(candidates['if'], context | {'needs.declaration.outputs.test_prepare_inputs': '[]'})
@@ -4077,14 +4079,16 @@ def main_setup_writers_prepare_even_with_exact_bundle():
                 candidate = directory / 'test-setup-candidates/7'
                 candidate.mkdir(parents=True)
                 (candidate / 'test-setup.tar').write_bytes((directory / 'test-setup.tar').read_bytes())
-            forwarded = {key: evaluate(value, context) for key, value in prepare['env'].items()}
+            forwarded = {key: str(evaluate(value, context)).lower() if isinstance(evaluate(value, context), bool) else evaluate(value, context)
+                         for key, value in prepare['env'].items()}
             result = execute('Prepare test setup', directory, {'RUNNER_TEMP': temporary,
                 'TEST_PREPARE_BASE': '/inherited', **forwarded,
                 'TEST_PREPARE': 'printf "%s" "${TEST_PREPARE_BASE-unset}" > "$TEST_PREPARE_OUTPUT/bases"'})
             assert result.returncode == 0, result.stdout + result.stderr
             bases = subprocess.check_output(['tar', '-xOf', str(directory / 'test-setup.tar'), 'test-setup/bases'], text=True)
-            expected_base = 'unset' if writer == 'true' else f'{directory}/test-setup-base/test-setup:{directory}/test-setup-candidate-7/test-setup'
-            assert bases == expected_base, (writer, hit, bases)
+            # A writer takes the bundle as a base only when the compile snapshot it restored holds the objects of the components the bundle supplies.
+            expected_base = (f'{directory}/test-setup-base/test-setup' if matched else 'unset') if writer == 'true' else f'{directory}/test-setup-base/test-setup:{directory}/test-setup-candidate-7/test-setup'
+            assert bases == expected_base, (writer, hit, matched, bases)
 
 main_setup_writers_prepare_even_with_exact_bundle()
 print('PASS main_setup_writers_prepare_even_with_exact_bundle')

@@ -2158,10 +2158,9 @@ jobs:
           path: ${{ runner.temp }}/test-setup.tar
           key: ${{ steps.setup-identity.outputs.key }}
           restore-keys: ${{ steps.setup-identity.outputs.prefix }}
-          lookup-only: ${{ steps.cache-identity.outputs.writer == 'true' }}
           enableCrossOsArchive: false
           fail-on-cache-miss: false
-      # A merge group adds bundles from the pull request runs that tested the change. Writers compile without bases, so they need no candidates.
+      # A merge group adds bundles from the pull request runs that tested the change. A writer takes none: no snapshot holds the objects of the components those bundles built.
       - name: Test setup candidates
         id: candidates
         if: ${{ steps.cache-identity.outputs.writer != 'true' && steps.setup-cache.outputs.cache-hit != 'true' && needs.declaration.outputs.test_prepare_inputs != '[]' }}
@@ -2403,6 +2402,7 @@ jobs:
         env:
           TEST_SETUP_CANDIDATE_RUNS: ${{ steps.candidates.outputs.runs }}
           CACHE_WRITER: ${{ steps.cache-identity.outputs.writer }}
+          COMPILE_CACHE_RESTORED: ${{ steps.cache-restore.outputs.cache-matched-key != '' }}
         run: |
           export TEST_PREPARE_OUTPUT="$PWD/target/test-setup"
           if [ "${OS:-}" = Windows_NT ]; then TEST_PREPARE_OUTPUT=$(cygpath -m "$TEST_PREPARE_OUTPUT"); fi
@@ -2420,8 +2420,8 @@ jobs:
               rm -rf "$2"
             fi
           }
-          # Writers compile every input to seed objects; reusing prepared files would leave their cache cold.
-          if [ "${CACHE_WRITER:-false}" != true ]; then
+          # A writer seeds the compile snapshot, so it reuses prepared files only when the snapshot it restored is warm: an earlier writer saved the objects of every component the bundle supplies, and the digest check builds each component whose inputs differ. A cold snapshot builds every component.
+          if [ "${CACHE_WRITER:-false}" != true ] || [ "${COMPILE_CACHE_RESTORED:-false}" = true ]; then
             if [ -f "$RUNNER_TEMP/test-setup.tar" ]; then
               extract "$RUNNER_TEMP/test-setup.tar" "$RUNNER_TEMP/test-setup-base"
             fi

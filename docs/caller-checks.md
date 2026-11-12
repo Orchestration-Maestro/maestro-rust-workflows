@@ -858,11 +858,13 @@ runs, `Prepare test setup` restores the bundle on an exact hit and skips the
 `test_prepare` command.
 When preparation is enabled, default-branch pushes run the command even on an
 exact hit, including warm builds and pushes that reuse merge-queue tests.
-These writers check whether the bundle is cached without downloading it and
-pass no `TEST_PREPARE_BASE`, so preparation compiles the inputs and seeds its
-compiled-cache snapshot rather than copying prepared files. A cached bundle
-alone does not contain those compiler objects. Without the list a warm build
-does not prepare. Every numeric shard downloads the prepared directory as before.
+These writers download the closest bundle as a base only when the compiled-cache
+snapshot they restored is warm: an earlier writer saved the compiler objects of
+every component that bundle holds, and the digest check builds each component
+whose inputs changed, so what the writer compiles seeds the rest. When the
+snapshot is cold, the writer passes no `TEST_PREPARE_BASE` and compiles every
+input. A cached bundle alone does not contain compiler objects. Without the
+list a warm build does not prepare. Every numeric shard downloads the prepared directory as before.
 Only pushes to the default branch write the cache, so a merge group reads what
 the last push saved.
 Pull requests skip preparation. Declare every input the command reads: an
@@ -879,14 +881,15 @@ commit being merged, whichever workflow ran them:
   yet, whether in this group or queued ahead of it (found from the `(#N)` that
   ends its commit subject), the bundle of that pull request's newest successful
   run at its head.
-- Pushes add no candidates: writers must populate compiler objects.
+- Pushes add no candidates: a merge group saves no snapshot, so no snapshot holds
+  the compiler objects of the components its bundle built.
 - A pull request run adds nothing, so every added bundle was built by the code
   being merged, starting from a bundle the default branch saved. Runs from forks
   are never added: a bundle holds executables that the run then starts.
 
 When the runs cannot be listed, the job logs a warning that names the failed
 request. Reader runs prepare from the bundles found before the failure;
-writers still prepare without bases.
+writers never list candidates.
 
 On reader runs, `Prepare test setup` extracts each bundle to its own directory,
 separate from `TEST_PREPARE_OUTPUT`, and sets `TEST_PREPARE_BASE` to the list of those
@@ -896,7 +899,8 @@ digest check or cannot be read is left out, and the later ones are still tried.
 The command may copy or reuse any file in a listed directory whose own inputs
 are unchanged, and must still write every file it needs to
 `TEST_PREPARE_OUTPUT`. When no bundle is available, `TEST_PREPARE_BASE` is
-unset. Reader runs still skip the command on an exact hit. Writers leave
+unset. Reader runs still skip the command on an exact hit. A writer on a warm
+snapshot lists only the restored bundle; on a cold snapshot it leaves
 `TEST_PREPARE_BASE` unset. Pushes that reuse merge-queue tests save compiled-cache
 snapshots without uploading the test archive or setup artifacts, since no test
 shard in those runs needs them.
