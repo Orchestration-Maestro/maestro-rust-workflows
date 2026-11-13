@@ -38,12 +38,14 @@ Pull requests run declaration validation, formatting, Clippy, docs,
 dependency/source checks and the declared Windows target check. Host
 Clippy and the Windows target check select changed crates and their workspace
 dependents; formatting still checks the whole workspace. A declared target
-check lints the selection once, then lints alone each package a change touches.
+check lints the selection once, then lints alone each package a change touches
+and each dependent whose own features the change moves.
 A run over several packages shares a feature set and would hide a package that
 lacks a dependency feature its tests need; see
 [Foreign-target checks](#foreign-target-checks). Pull requests skip the
-test archive, test setup, test shards, doctests and wasm/browser builds. Two
-exceptions still compile: the declared [example witnesses](#wasm-example-witnesses),
+test archive, test setup, test shards, doctests and the browser recipe. Three
+exceptions still compile: the declared wasm crates the selection reaches (built
+and documented for the wasm target), the declared [example witnesses](#wasm-example-witnesses),
 and the [Emscripten crates](#emscripten-builds), which the sandbox runtime job
 builds, or restores from its cache, on every run when the list is non-empty.
 Every required check name still reports; skipped jobs count as success.
@@ -320,7 +322,8 @@ test archive, test setup, full shard matrix, doctests, coverage, wasm/browser
 builds, Chromium tests and declared foreign-target checks. The native macOS
 test route runs only after landing on main; merge groups keep the x86_64 macOS
 compile check. Main pushes may reuse the Linux results as described above.
-Pull requests skip these jobs without removing their required check names.
+Pull requests skip these jobs without removing their required check names, except
+that the wasm job builds and documents the listed packages the selection reaches.
 An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
 member or non-boolean tool/build flag fails declaration validation. An empty
@@ -643,15 +646,19 @@ run no test shards and upload no coverage.
 Declared Linux callers run `cargo llvm-cov nextest` in the same isolated environment
 with their opted-in tools. Only the Linux numeric shards upload LCOV, without
 individual thresholds. The run writes its raw profiles without a report, the
-step checks every profile, and `cargo llvm-cov report` merges them into the
-report. A process that a test stops while it exits leaves its profile empty or
-cut. The check fails the step for an empty profile or one the toolchain's own
-merge tool rejects, the same tool the report merges with, so another
-`llvm-profdata` earlier on `PATH` reads nothing here. It names each file with
-the binary whose merge signature it carries, without the pool index the runtime
-appends. It finds the binary by running each program of the instrumented build
-once, and only when a profile is damaged; it prints the seconds it took either
-way. The merge then runs as before: no profile is skipped or deleted.
+step checks the size of every profile, and `cargo llvm-cov report` merges them
+into the report. A process that a test stops while it exits leaves its profile
+empty or cut. The merge passes an empty profile unseen, so the size check fails
+the step for it before the merge, without starting a tool. The merge refuses a
+cut profile itself; only when the merge fails does the step read every profile,
+on all the runner's cores, with the toolchain's own merge tool, the same tool
+the report merges with, so another `llvm-profdata` earlier on `PATH` reads
+nothing here. Either way the step names each damaged file with the binary whose
+merge signature it carries, without the pool index the runtime appends. It
+finds the binary by running each program of the instrumented build once, and
+only when a profile is damaged. The log line `Coverage profiles: N not empty in
+S s` gives the cost on a green run. The merge runs as before: no profile is
+skipped or deleted.
 `Tests (ubuntu-latest)` requires all matrix legs,
 including native shards and every `Doctests` leg, to succeed on full runs.
 Native legs run plain nextest without coverage instrumentation. On a main push
@@ -1008,7 +1015,10 @@ and once the test stops writing there, the next run is green.
 Pull-request host Clippy and Windows checks select changed workspace crates,
 literal `include_str!`, `include_bytes!` or `#[path = "..."]` input readers and
 declared test-input readers, plus their direct or transitive workspace dependents. Normal, build,
-development and target-specific dependency edges count. The deepest package root
+development, optional and target-specific dependency edges count. The selection
+reads those edges from the members' own manifests: a member depends on each
+member its manifest names. It resolves the dependency graph, and so fetches
+dependency sources, only when a manifest or the lock file changed. The deepest package root
 owns a changed source file. Including a package input adds its readers without
 dropping its owner or the owner's dependents. Non-root packages own their whole
 directory. A root package owns `Cargo.toml`, its Cargo target source directories
@@ -1027,13 +1037,18 @@ An empty PR selection performs no host or target Clippy compilation; the named
 checks still report success. An absent base selects every package for lint.
 Wasm Clippy ignores the selection and lints every `wasm_crates` package on every
 run; see [Wasm and browser builds](#wasm-and-browser-builds). Pull requests
-skip the test archive, preparation, test shards, doctests and wasm/browser
-builds regardless of package selection, except for the example witnesses. The
+skip the test archive, preparation, test shards, doctests and the browser recipe
+regardless of package selection, except for the declared wasm crates the selection
+reaches and the example witnesses. The
 Emscripten crates compile in the sandbox runtime job, which runs on every pull
 request that lists them, so no browser job installs the compiler.
 
 A crate manifest selects its crate; lockfile changes compare the resolved transitive dependency identities
-and features at base and head, selecting affected crates. Root manifest,
+and features at base and head, selecting affected crates. A pull request whose
+changed graph does not resolve, such as a manifest change the lock file does not
+cover, fails the declaration; a merge group stays on the
+full suite, logs `Full-suite fallback: workspace graph could not be resolved`
+and lints every package alone. Root manifest,
 toolchain or CI workflow/schema changes select everything. Non-test declaration
 keys (such as spelling, wasm and foreign-target lists) select no extra packages;
 changes to test tools, coverage policy, additional locked manifests, declared
@@ -1385,8 +1400,11 @@ change merges. The run checks library targets only, as the wasm build does,
 because test targets may depend on native-only crates. It lints every listed
 package whatever the pull request changed; an empty list compiles nothing.
 
-On merge groups and main pushes, Linux also runs this command for
-each listed package:
+Linux also runs this command for each listed package. A pull request builds and
+documents only the listed packages its selection reaches (the changed packages
+and their dependents), so a wasm build error or a documentation error in a
+changed crate fails the pull request's own `Wasm and browser build` job. Merge
+groups and main pushes build and document every listed package:
 
 ```bash
 cargo build --locked --target wasm32-unknown-unknown -p "$CRATE"
@@ -1409,7 +1427,9 @@ tools once before wasm compilation. The browser flag is independent: it does
 not enable tools in other jobs. With `browser_build = true`, the workflow runs
 `mise exec -- just browser-build` after successful wasm builds, including when
 the wasm array is empty. Both wasm builds and the browser recipe run on every
-merge group and main push. Pull requests, advisory scans, fuzz scans and warm
+merge group and main push. A pull request builds and documents the listed
+packages its selection reaches and skips the browser recipe; it skips the job
+when it reaches none and declares no witness. Advisory scans, fuzz scans and warm
 calls outside a default-branch push skip them, except for the
 [example witnesses](#wasm-example-witnesses). A failed wasm build prevents
 the recipe. False or omitted `browser_build` skips the recipe and its
@@ -1454,9 +1474,10 @@ that broke. Declaring examples installs the wasm target even when `wasm_crates`
 is empty.
 
 Witnesses compile on pull requests, so a broken one fails the pull request that
-breaks it. That run does only the witness compile. The crate builds,
-documentation, `browser_build` tools and the browser recipe stay on merge groups
-and main pushes. `test_tools = true` still installs the caller's tools first.
+breaks it. That run compiles the witnesses, and builds and documents the listed
+packages the selection reaches. The `browser_build` tools and the browser recipe
+stay on merge groups and main pushes. `test_tools = true` still installs the
+caller's tools first.
 
 Declaration validation fails with the file and key when a package is not in the
 locked Cargo metadata or an example is not a target of its package. Repetitions
@@ -1881,16 +1902,36 @@ The first run covers the whole workspace when the selection is every crate, and
 only the selected packages otherwise. Run alone, a package builds with only the
 dependency features its own manifest asks for, so a test target missing a
 feature it needs fails here, as it does in its own tests. Only a package that a
-change touches can lose a feature that way, so the declaration lists the
-packages to lint alone:
+change touches can lose a feature that way, so the declaration lists, for each
+target, the packages to lint alone:
 
 - every package with a changed file in the pull request or merge group;
-- when a manifest or the lock file changed, every package that depends on a
-  package whose manifest or locked dependencies changed. A change to the root
-  manifest selects every member.
+- when a manifest or the lock file changed, each dependent of a package whose
+  manifest or locked dependencies changed, if it resolves other features alone
+  on that target than it did at the base. A change to the root manifest
+  compares every member.
 
-A push to the default branch lints no package alone. The log prints the first
-run, then the list as `package: reason`.
+The comparison asks Cargo what a lint of the dependent alone would build, at
+the base and at the head:
+
+```bash
+cargo tree --locked -p "$PACKAGE" --target "$TARGET" -e normal,build,dev --prefix none -f $'{p}\t{f}'
+```
+
+Each line is a package of the dependent's own dependency closure with the
+features it resolves there. The dependent is listed when a package both
+revisions build has other features, or another version, at the head. A package
+only one revision builds is new or gone, and its own changed files list it. A
+workspace member's version is ignored: its code changes with its files. A
+dependent Cargo cannot resolve at either revision is listed. So a manifest
+that takes a feature away from a dependent on Windows lists that dependent for
+the Windows check and for no other target, and a new crate lists itself and the
+packages whose manifests now name it, not everything above them.
+
+A push to the default branch lints no package alone. The declaration log prints
+how many dependents it compared, on how many targets and in how many seconds.
+The check's log prints the first run, then its target's list as
+`package: reason`.
 
 | Target | Runner |
 | --- | --- |

@@ -38,6 +38,7 @@ def routed_jobs(document, values):
         'needs.declaration.outputs.tested_runners': '["ubuntu-latest"]',
         'needs.declaration.outputs.targets': '[{}]', 'needs.declaration.outputs.fuzz_targets': '["target"]',
         'needs.declaration.outputs.wasm_crates': '["web"]', 'needs.declaration.outputs.wasm_examples': '[]',
+        'needs.declaration.outputs.wasm_selected': '["web"]',
         'needs.declaration.outputs.emscripten_crates': '[]',
         'needs.declaration.result': 'success', 'needs.sandbox-runtime.result': 'skipped',
         'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.browser_tests': 'true',
@@ -212,6 +213,9 @@ def execute(name, cwd, extra=None, prelude=''):
     env.update(extra or {})
     if name == 'Select test packages':
         env.setdefault('TEST_HOSTS', json.dumps({'ubuntu-latest': int(env['TEST_SHARD_COUNT'])}))
+        # The declaration's output without wasm_crates or check_targets.
+        env.setdefault('WASM_CRATES', '[]')
+        env.setdefault('CHECK_TARGETS', '[]')
     if name in ['Tests', 'Isolated tests']:
         env.update(toolchain_environment(cwd, env))
     if name == 'Isolated tests':
@@ -1376,7 +1380,7 @@ def clippy_selection_works_without_mapfile():
                 env = {key: value for key, value in os.environ.items()
                        if key not in ['TEST_PACKAGES', 'COVERAGE_SCOPE', 'TARGET']}
                 env.update(PATH=str(tools) + os.pathsep + env['PATH'], COVERAGE_SCOPE=scope, TARGET=target,
-                           LINT_ALONE='{"second": "changed file"}')
+                           LINT_ALONE=json.dumps({target: {'second': 'changed file'}}))
                 if packages is not None:
                     env['TEST_PACKAGES'] = packages
                 name = 'Check target' if target else 'Lint'
@@ -1902,7 +1906,8 @@ def coverage_exclusions_have_one_workflow_owner():
         for name in ['Coverage', 'Isolated tests', 'Merge coverage']:
             assert body(name).count('python3 -c "$COVERAGE_MERGE"') == 1, name
         for name in ['Coverage', 'Isolated tests']:
-            assert body(name).count('python3 -c "$COVERAGE_PROFILES"') == 1, name
+            # Once before the merge, and once where the merge fails.
+            assert body(name).count('python3 -c "$COVERAGE_PROFILES"') == 2, name
 
 coverage_exclusions_have_one_workflow_owner()
 print('PASS coverage_exclusions_have_one_workflow_owner')
@@ -3130,6 +3135,8 @@ def event_policy_keeps_pull_requests_fast():
                            'needs.declaration.outputs.tests_reused': 'false',
                            'needs.declaration.outputs.targets': '[{}]',
                            'needs.declaration.outputs.wasm_crates': '["sample"]',
+                           # A pull request here reaches no declared wasm crate.
+                           'needs.declaration.outputs.wasm_selected': '[]' if event == 'pull_request' else '["sample"]',
                            'needs.declaration.outputs.wasm_examples': '[]',
                            'needs.declaration.outputs.browser_build': 'true',
                            'needs.declaration.outputs.browser_tests': 'true'}
@@ -3546,12 +3553,17 @@ def changed_packages_include_reverse_dependencies():
         git('add', '.')
         git('commit', '-qm', 'base')
         base = git('rev-parse', 'HEAD')
+        windows = 'x86_64-pc-windows-msvc'
         def select(event='pull_request', extra=None):
             output = directory / '.git/selection'
             output.write_text('', encoding='utf-8')
-            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)} | (extra or {}))
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                 'CHECK_TARGETS': json.dumps([{'target': windows}])} | (extra or {}))
             assert result.returncode == 0, result.stdout + result.stderr
+            (directory / '.git/selection-log').write_text(result.stdout, encoding='utf-8')
             return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+        def alone(values):
+            return json.loads(values['lint_alone'])[windows]
         declaration_path = directory / '.github/ci.toml'
         for value in ['test(child_build)', 'none()', None]:
             declaration_path.write_text('wasm_crates=[]\ncheck_targets=[]\n' + (
@@ -3584,9 +3596,9 @@ def changed_packages_include_reverse_dependencies():
         assert json.loads(values['packages']) == ['a', 'b', 'c'] and values['coverage'] == 'false'
         assert json.loads(values['test_shards']) == [], values
         # A foreign target lints alone the changed package, not its dependents; a merge group reads the same change; a main push lints none alone.
-        assert json.loads(values['lint_alone']) == {'a': 'changed file'}, values
-        assert json.loads(select('merge_group')['lint_alone']) == {'a': 'changed file'}
-        assert json.loads(select('push')['lint_alone']) == {}
+        assert alone(values) == {'a': 'changed file'}, values
+        assert alone(select('merge_group')) == {'a': 'changed file'}
+        assert alone(select('push')) == {}
         document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
         context = {'cancelled()': False, 'needs.test-build.result': 'success',
                    'needs.test-prepare.result': 'skipped', 'inputs.warm-cache': False,
@@ -3619,8 +3631,8 @@ def changed_packages_include_reverse_dependencies():
                     runs = [args for args in commands if args[:1] == ['clippy']]
                     # Both lints run the selection once; the target check then lints each package of the declaration's list by itself.
                     full = selection['coverage'] == 'true'
-                    alone = [[name] for name in json.loads(selection['lint_alone'])] if job == 'targets' else []
-                    assert [[args[i + 1] for i, arg in enumerate(args) if arg == '-p'] for args in runs] == [[] if full else ['a', 'b', 'c']] + alone, runs
+                    listed = [[name] for name in alone(selection)] if job == 'targets' else []
+                    assert [[args[i + 1] for i, arg in enumerate(args) if arg == '-p'] for args in runs] == [[] if full else ['a', 'b', 'c']] + listed, runs
                     for args in runs[:1]:
                         assert ('--workspace' in args) == full, args
                     for args in runs:
@@ -3667,11 +3679,9 @@ def changed_packages_include_reverse_dependencies():
         git('commit', '-qm', 'dependency identity')
         assert json.loads(select()['packages']) == ['a', 'b', 'c']
         assert select()['check_advisories'] == select('merge_group')['check_advisories'] == 'true'
-        # A manifest and lock change adds the dependents of the package whose manifest changed.
-        dependents = 'depends on a package whose manifest or lock file changed'
-        expected = {'a': 'changed file', 'b': dependents, 'c': dependents}
-        assert json.loads(select()['lint_alone']) == json.loads(select('merge_group')['lint_alone']) == expected
-        assert json.loads(select('push')['lint_alone']) == {}
+        # A manifest and lock change that leaves the dependents' own features as they were lists none of them.
+        assert alone(select()) == alone(select('merge_group')) == {'a': 'changed file'}
+        assert alone(select('push')) == {}
         git('reset', '--hard', base)
         (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\nspelling_words=["word"]\n', encoding='utf-8')
         git('add', '.')
@@ -3713,15 +3723,116 @@ def changed_packages_include_reverse_dependencies():
         git('commit', '-qm', 'workflow')
         assert json.loads(select()['packages']) == ['a', 'b', 'c', 'd']
         # A shared input selects every package to test, yet no package has a changed file to lint alone.
-        assert json.loads(select()['lint_alone']) == {}
-        # A root manifest change lints every member alone.
+        assert alone(select()) == {}
+        # A root manifest change compares every member, and lists none whose features stay.
         (directory / 'Cargo.toml').write_text((directory / 'Cargo.toml').read_text(encoding='utf-8') + '\n', encoding='utf-8')
         git('add', '.')
         git('commit', '-qm', 'root manifest')
-        assert json.loads(select()['lint_alone']) == {name: 'depends on a package whose manifest or lock file changed' for name in 'abcd'}
+        selection = select()
+        assert alone(selection) == {}
+        assert 'Features resolved alone: 4 dependents compared with the base on 1 target' in pathlib.Path(directory / '.git/selection-log').read_text(encoding='utf-8')
 
 changed_packages_include_reverse_dependencies()
 print('PASS changed_packages_include_reverse_dependencies')
+
+def selection_fetches_no_dependency_source_until_the_graph_changes():
+    from functools import partial
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        # `a` depends on a git source nothing can fetch, so any step that resolves the graph fails here.
+        unreachable = 'file:///nonexistent/unreachable'
+        (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c"]\n', encoding='utf-8')
+        for name, dependency in [('a', f'unreachable={{git="{unreachable}"}}'), ('b', 'renamed={path="../a",package="a"}'), ('c', None)]:
+            (directory / name / 'src').mkdir(parents=True)
+            manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n' + (f'[dev-dependencies]\n{dependency}\n' if dependency else '')
+            (directory / name / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+            (directory / name / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+        lock = ('version = 4\n\n[[package]]\nname = "a"\nversion = "0.1.0"\ndependencies = [\n "unreachable",\n]\n\n'
+                '[[package]]\nname = "b"\nversion = "0.1.0"\ndependencies = [\n "a",\n]\n\n[[package]]\nname = "c"\nversion = "0.1.0"\n\n'
+                f'[[package]]\nname = "unreachable"\nversion = "0.1.0"\nsource = "git+{unreachable}#{"0" * 40}"\n')
+        (directory / 'Cargo.lock').write_text(lock, encoding='utf-8')
+        (directory / '.github').mkdir()
+        (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
+        subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+        git = partial(fixture_git, directory)
+        git('add', '.')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        target = 'x86_64-pc-windows-msvc'
+        def select(event):
+            output = directory / '.git/selection'
+            output.write_text('', encoding='utf-8')
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                 'CHECK_TARGETS': json.dumps([{'target': target}])})
+            return result, dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+        (directory / 'a/src/lib.rs').write_text('pub fn changed() {}\n', encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'source')
+        # A source change selects the package and the member whose manifest names it, under any name and kind, without resolving.
+        for event, expected in [('pull_request', ['a', 'b']), ('merge_group', ['a', 'b', 'c']), ('push', ['a', 'b', 'c'])]:
+            result, values = select(event)
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert json.loads(values['packages']) == expected, (event, values)
+            assert json.loads(values['lint_alone']) == {target: {} if event == 'push' else {'a': 'changed file'}}, (event, values)
+            assert 'Full-suite fallback' not in result.stdout, result.stdout
+        # A lock file change resolves the graph: a pull request fails on it, and a merge group stays on the full suite with every package linted alone.
+        (directory / 'Cargo.lock').write_text(lock + '\n', encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'lock file')
+        result, _ = select('pull_request')
+        assert result.returncode != 0 and 'unreachable' in result.stderr, result.stdout + result.stderr
+        result, values = select('merge_group')
+        assert result.returncode == 0, result.stdout + result.stderr
+        unresolved = 'workspace graph could not be resolved'
+        assert 'Full-suite fallback: ' + unresolved in result.stdout, result.stdout
+        assert json.loads(values['packages']) == ['a', 'b', 'c']
+        assert json.loads(values['lint_alone']) == {target: {'a': 'changed file', 'b': unresolved, 'c': unresolved}}, values
+
+selection_fetches_no_dependency_source_until_the_graph_changes()
+print('PASS selection_fetches_no_dependency_source_until_the_graph_changes')
+
+def a_changed_manifest_the_lock_file_does_not_cover_fails_the_declaration():
+    from functools import partial
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c"]\n', encoding='utf-8')
+        for name, dependency in [('a', None), ('b', 'a'), ('c', None)]:
+            (directory / name / 'src').mkdir(parents=True)
+            manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n[dependencies]\n' + (f'{dependency}={{path="../{dependency}"}}\n' if dependency else '')
+            (directory / name / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+            (directory / name / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+        subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+        subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+        git = partial(fixture_git, directory)
+        git('add', '.')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        # `a` gains a dependency that its entry in the committed lock file does not name.
+        with open(directory / 'a/Cargo.toml', 'a', encoding='utf-8') as manifest:
+            manifest.write('c={path="../c"}\n')
+        git('add', '.')
+        git('commit', '-qm', 'manifest alone')
+        target = 'x86_64-pc-windows-msvc'
+        def select(event, targets):
+            output = directory / '.git/selection'
+            output.write_text('', encoding='utf-8')
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                 'CHECK_TARGETS': json.dumps([{'target': name} for name in targets])})
+            return result, dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+        # With or without a foreign target to compare on, the pull request fails here, and the merge group stays on the full suite.
+        unresolved = 'workspace graph could not be resolved'
+        for targets in [[target], []]:
+            result, _ = select('pull_request', targets)
+            assert result.returncode != 0 and '--locked was passed' in result.stderr, (targets, result.stdout + result.stderr)
+            result, values = select('merge_group', targets)
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert 'Full-suite fallback: ' + unresolved in result.stdout, (targets, result.stdout)
+            assert json.loads(values['packages']) == ['a', 'b', 'c'], (targets, values)
+            alone = {'a': 'changed file', 'b': unresolved, 'c': unresolved}
+            assert json.loads(values['lint_alone']) == {name: alone for name in targets}, (targets, values)
+
+a_changed_manifest_the_lock_file_does_not_cover_fails_the_declaration()
+print('PASS a_changed_manifest_the_lock_file_does_not_cover_fails_the_declaration')
 
 def included_docs_run_only_readers_and_reverse_dependencies():
     from functools import partial
@@ -4073,6 +4184,7 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 'needs.declaration.outputs.tests_reused': values['tests_reused'],
                 'needs.declaration.outputs.enabled': 'true', 'needs.declaration.outputs.browser_tests': 'true',
                 'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.wasm_crates': '["web"]',
+                'needs.declaration.outputs.wasm_selected': '["web"]',
                 'needs.declaration.outputs.test_prepare_inputs': '[]', 'needs.declaration.outputs.test_prepare': '"prepare"',
                 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                 'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True,
@@ -4906,13 +5018,13 @@ def pull_requests_compile_only_the_declared_witnesses():
                'github.event_name': 'pull_request', 'github.ref': 'refs/pull/1/merge', default_ref: 'refs/heads/main',
                'github.repository_id': 'caller', 'inputs.working-directory': '.',
                'needs.declaration.outputs.coverage': 'false', 'needs.declaration.outputs.tests_reused': 'false',
-               'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.browser_build': 'true',
-               'needs.declaration.outputs.test_tools': 'false',
+               'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.wasm_selected': '[]',
+               'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.test_tools': 'false',
                'needs.declaration.outputs.wasm_examples': json.dumps([['witness', 'first']])}
     assert evaluate(job['if'], context), 'a pull request with declared witnesses runs the browser job'
     assert not evaluate(job['if'], context | {'needs.declaration.outputs.wasm_examples': '[]'}), \
         'a pull request without witnesses keeps the browser job closed'
-    sweep = ['Browser tool pin', 'Browser mise bootstrap', 'Browser tools', 'Build wasm crates', 'Document wasm crates', 'Browser recipe']
+    sweep = ['Browser tool pin', 'Browser mise bootstrap', 'Browser tools', 'Browser recipe']
     steps = {step['name']: step for step in job['steps']}
     names = list(steps)
     for name in sweep:
@@ -4930,6 +5042,81 @@ def pull_requests_compile_only_the_declared_witnesses():
 
 pull_requests_compile_only_the_declared_witnesses()
 print('PASS pull_requests_compile_only_the_declared_witnesses')
+
+def a_pull_request_builds_and_documents_the_wasm_crates_it_selects():
+    from functools import partial
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c"]\n', encoding='utf-8')
+        for name, dependency in [('a', None), ('b', 'a'), ('c', None)]:
+            (directory / name / 'src').mkdir(parents=True)
+            manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n'
+            if dependency:
+                manifest += f'[dependencies]\n{dependency}={{path="../{dependency}"}}\n'
+            (directory / name / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+            (directory / name / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+        (directory / '.github').mkdir()
+        (directory / '.github/ci.toml').write_text('wasm_crates=["b","c"]\ncheck_targets=[]\n', encoding='utf-8')
+        subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+        subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+        git = partial(fixture_git, directory)
+        git('add', '.')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        def select(event, reused='false'):
+            output = directory / '.git/selection'
+            output.write_text('', encoding='utf-8')
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                 'TESTS_REUSED': reused, 'WASM_CRATES': '["b","c","b"]'})
+            assert result.returncode == 0, result.stdout + result.stderr
+            return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+        (directory / 'a/src/lib.rs').write_text('pub fn changed() {}\n', encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'dependency source')
+        # A pull request takes the declared crates its selection reaches, in declared order with repeats; every other event takes all.
+        assert json.loads(select('pull_request')['wasm_selected']) == ['b', 'b'], select('pull_request')
+        for event, reused in [('merge_group', 'false'), ('push', 'false'), ('push', 'true')]:
+            assert json.loads(select(event, reused)['wasm_selected']) == ['b', 'c', 'b'], (event, reused)
+        (directory / 'a/src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+        (directory / 'docs.md').write_text('Documentation', encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'docs')
+        assert json.loads(select('pull_request')['wasm_selected']) == []
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    declaration_step = next(step for step in document['jobs']['declaration']['steps'] if step.get('name') == 'Select test packages')
+    assert declaration_step['env']['WASM_CRATES'] == '${{ steps.config.outputs.wasm_crates }}'
+    assert document['jobs']['declaration']['outputs']['wasm_selected'] == '${{ steps.selection.outputs.wasm_selected }}'
+    job = document['jobs']['browser']
+    context = {'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'inputs.warm-cache': False,
+               'github.event_name': 'pull_request', 'github.ref': 'refs/pull/1/merge', default_ref: 'refs/heads/main',
+               'github.repository_id': 'caller', 'inputs.working-directory': '.',
+               'needs.declaration.outputs.coverage': 'false', 'needs.declaration.outputs.tests_reused': 'false',
+               'needs.declaration.outputs.wasm_crates': '["b"]', 'needs.declaration.outputs.browser_build': 'false',
+               'needs.declaration.outputs.emscripten_crates': '[]', 'needs.declaration.outputs.wasm_examples': '[]',
+               'needs.declaration.outputs.wasm_selected': '["b"]'}
+    assert evaluate(job['if'], context), 'a pull request that selects a declared wasm crate runs the job'
+    assert not evaluate(job['if'], context | {'needs.declaration.outputs.wasm_selected': '[]'}), \
+        'a pull request that selects none keeps the job closed'
+    steps = {step['name']: step for step in job['steps']}
+    for name, command in [('Build wasm crates', 'build'), ('Document wasm crates', 'doc')]:
+        assert 'if' not in steps[name], f'{name}: the selection decides what it runs'
+        assert steps[name]['env']['WASM_CRATES'] == '${{ needs.declaration.outputs.wasm_selected }}', name
+        # The step runs the selected crates for the wasm target, and nothing when the selection reaches none.
+        for selected in [['b', 'b'], []]:
+            with tempfile.TemporaryDirectory() as temporary:
+                tools, log = install_recording_runner(pathlib.Path(temporary))
+                (tools / 'rustup').symlink_to(tools / 'cargo')
+                result = execute(name, temporary, {'WASM_CRATES': json.dumps(selected),
+                                                   'PATH': str(tools) + os.pathsep + os.environ['PATH']})
+                assert result.returncode == 0, result.stdout + result.stderr
+                runs = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()] if log.exists() else []
+                runs = [args for args in runs if args[:1] == [command]]
+                assert [args[args.index('-p') + 1] for args in runs] == selected, (name, runs)
+                assert all(args[args.index('--target') + 1] == 'wasm32-unknown-unknown' for args in runs), (name, runs)
+                assert selected or not log.exists(), name
+
+a_pull_request_builds_and_documents_the_wasm_crates_it_selects()
+print('PASS a_pull_request_builds_and_documents_the_wasm_crates_it_selects')
 
 def foreign_target_warnings_are_denied():
     target = os.environ.get('TARGET', 'x86_64-unknown-linux-gnu')
@@ -4974,16 +5161,73 @@ def target_check_lints_each_package_alone():
     unified = subprocess.run(command, cwd=fixture, capture_output=True, text=True)
     assert unified.returncode == 0, unified.stderr
     # The workspace run passes; only a package linted alone fails.
-    result = execute('Check target', fixture, selection | {'LINT_ALONE': '{}'})
+    # The declaration lists the packages of each target; a list for another target lints nothing here.
+    result = execute('Check target', fixture, selection | {'LINT_ALONE': json.dumps({'another-target': {'user': 'changed file'}})})
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'Linting --workspace for ' + target in result.stdout, result.stdout
-    result = execute('Check target', fixture, selection | {'LINT_ALONE': '{"user": "changed file"}'})
+    assert 'Linted alone (package: reason): {}' in result.stdout, result.stdout
+    result = execute('Check target', fixture, selection | {'LINT_ALONE': json.dumps({target: {'user': 'changed file'}})})
     output = result.stdout + result.stderr
     assert result.returncode != 0 and 'cannot find function `tick`' in output, output
     assert 'Linted alone (package: reason): {"user": "changed file"}' in output, output
 
 target_check_lints_each_package_alone()
 print('PASS target_check_lints_each_package_alone')
+
+def a_dependent_is_linted_alone_only_where_its_features_change():
+    from functools import partial
+    host = os.environ.get('TARGET', 'x86_64-unknown-linux-gnu')
+    other = 'x86_64-unknown-linux-gnu' if 'windows' in host else 'x86_64-pc-windows-msvc'
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary) / 'workspace'
+        shutil.copytree(root / 'fixtures/unified-features', directory, ignore=shutil.ignore_patterns('target'))
+        (directory / 'Cargo.toml').write_text('[workspace]\nresolver = "2"\nmembers = ["provider", "user", "enabler", "middle", "keeper"]\n', encoding='utf-8')
+        package = '[package]\nname = "{}"\nversion = "0.1.0"\nedition = "2021"\nlicense = "MIT"\n'
+        # `middle` asks for the provider's `clock` on both targets; `user` and `keeper` depend on it, and `keeper` also on `enabler`, which asks for `clock` itself.
+        clock = '[target.{}.dependencies]\nprovider = {{ path = "../provider", features = ["clock"] }}\n'
+        plain = '[target.{}.dependencies]\nprovider = {{ path = "../provider" }}\n'
+        manifests = {'middle': package.format('middle') + clock.format(host) + clock.format(other),
+                     'keeper': package.format('keeper') + '[dependencies]\nmiddle = { path = "../middle" }\nenabler = { path = "../enabler" }\n'}
+        for name, manifest in manifests.items():
+            (directory / name / 'src').mkdir(parents=True)
+            (directory / name / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+            (directory / name / 'src/lib.rs').write_text(f'//! The `{name}` library.\n', encoding='utf-8')
+        with open(directory / 'user/Cargo.toml', 'a', encoding='utf-8') as manifest:
+            manifest.write('\n[dependencies]\nmiddle = { path = "../middle" }\n')
+        subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+        subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+        git = partial(fixture_git, directory)
+        git('add', '.')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        def select(event):
+            output = directory / '.git/selection'
+            output.write_text('', encoding='utf-8')
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                 'CHECK_TARGETS': json.dumps([{'target': host}, {'target': other}])})
+            assert result.returncode == 0, result.stdout + result.stderr
+            return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines()), result.stdout
+        # The changed manifest takes `clock` away on the host target only.
+        (directory / 'middle/Cargo.toml').write_text(package.format('middle') + plain.format(host) + clock.format(other), encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'drop the feature on one target')
+        # `user` loses `clock` when linted alone on the host target, so it is listed there; `keeper` keeps it through `enabler` and is listed nowhere.
+        differs = 'resolves other features alone than at the base'
+        expected = {host: {'middle': 'changed file', 'user': differs}, other: {'middle': 'changed file'}}
+        for event in ['merge_group', 'pull_request']:
+            selection, log = select(event)
+            assert json.loads(selection['lint_alone']) == expected, (event, selection['lint_alone'])
+            assert 'Features resolved alone: 2 dependents compared with the base on 2 targets in ' in log, log
+        assert json.loads(select('push')[0]['lint_alone']) == {host: {}, other: {}}
+        # The workspace run still passes on the host target; the lint of `user` alone fails for the feature it lost.
+        result = execute('Check target', directory, {'TARGET': host, 'TEST_PACKAGES': selection['packages'],
+                                                     'COVERAGE_SCOPE': selection['coverage_scope'], 'LINT_ALONE': selection['lint_alone']})
+        output = result.stdout + result.stderr
+        assert result.returncode != 0 and 'cannot find function `tick`' in output, output
+        assert 'Linted alone (package: reason): ' + json.dumps(expected[host]) in output, output
+
+a_dependent_is_linted_alone_only_where_its_features_change()
+print('PASS a_dependent_is_linted_alone_only_where_its_features_change')
 
 def isolation_creates_a_missing_cargo_home():
     with tempfile.TemporaryDirectory() as temporary:
@@ -5384,7 +5628,8 @@ def workflow_failures_remain_required():
     routed = routed_jobs(document, {})
     # The replaced-group canceller runs in merge groups only.
     assert routed == set(document['jobs']) - {'advisories', 'fuzz', 'replaced-groups', 'sandbox-runtime'}, sorted(routed)
-    assert 'browser' not in routed_jobs(document, {'needs.declaration.outputs.coverage': 'false'})
+    assert 'browser' not in routed_jobs(document, {'needs.declaration.outputs.coverage': 'false',
+                                                   'needs.declaration.outputs.wasm_selected': '[]'})
     # An advisory scan runs only the declaration and its own job.
     routed = routed_jobs(document, {'inputs.advisory-scan': True})
     assert routed == {'declaration', 'advisories'}, sorted(routed)
@@ -5506,11 +5751,10 @@ def wasm_rustdoc_denies_missing_docs():
     names = [step.get('name') for step in steps]
     document_step = next(step for step in steps if step.get('name') == 'Document wasm crates')
     assert document_step['env']['RUSTDOCFLAGS'] == '-D warnings -D missing_docs'
-    assert document_step['env']['WASM_CRATES'] == '${{ needs.declaration.outputs.wasm_crates }}', \
-        'every declared crate is documented'
+    assert document_step['env']['WASM_CRATES'] == '${{ needs.declaration.outputs.wasm_selected }}', \
+        'every selected declared crate is documented'
     assert names.index('Build wasm crates') < names.index('Document wasm crates') < names.index('Browser recipe')
-    assert document_step['if'] == next(step for step in steps if step.get('name') == 'Build wasm crates')['if'], \
-        'every declared crate is documented on each library sweep'
+    assert 'if' not in document_step, 'the selection decides which declared crates are documented'
     flags = {'WASM_CRATES': '["wasm-undocumented"]', 'RUSTDOCFLAGS': '-D warnings -D missing_docs'}
     result = execute('Document wasm crates', root / 'fixtures/wasm-undocumented', flags)
     output = result.stdout + result.stderr
