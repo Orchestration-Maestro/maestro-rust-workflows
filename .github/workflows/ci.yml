@@ -1054,7 +1054,8 @@ jobs:
                       started = time.monotonic()
                       differing = resolves_differently(candidates, targets)
                       dependents = {target: [name for name in candidates if (target, name) in differing] for target in targets}
-                      print(f'Features resolved alone: {len(candidates)} dependents compared with the base on {len(targets)} targets in {time.monotonic() - started:.1f}s')
+                      compared = f'{len(candidates)} dependents compared with the base on {len(targets)} target' + ('' if len(targets) == 1 else 's')
+                      print(f'Features resolved alone: {compared} in {time.monotonic() - started:.1f}s')
               except (subprocess.CalledProcessError, ValueError, KeyError):
                   if event != 'merge_group':
                       raise

@@ -3730,7 +3730,7 @@ def changed_packages_include_reverse_dependencies():
         git('commit', '-qm', 'root manifest')
         selection = select()
         assert alone(selection) == {}
-        assert 'Features resolved alone: 4 dependents compared with the base on 1 targets' in pathlib.Path(directory / '.git/selection-log').read_text(encoding='utf-8')
+        assert 'Features resolved alone: 4 dependents compared with the base on 1 target' in pathlib.Path(directory / '.git/selection-log').read_text(encoding='utf-8')
 
 changed_packages_include_reverse_dependencies()
 print('PASS changed_packages_include_reverse_dependencies')
