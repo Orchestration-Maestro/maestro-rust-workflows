@@ -3734,6 +3734,62 @@ def changed_packages_include_reverse_dependencies():
 changed_packages_include_reverse_dependencies()
 print('PASS changed_packages_include_reverse_dependencies')
 
+def selection_fetches_no_dependency_source_until_the_graph_changes():
+    from functools import partial
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        # `a` depends on a git source nothing can fetch, so any step that resolves the graph fails here.
+        unreachable = 'file:///nonexistent/unreachable'
+        (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c"]\n', encoding='utf-8')
+        for name, dependency in [('a', f'unreachable={{git="{unreachable}"}}'), ('b', 'renamed={path="../a",package="a"}'), ('c', None)]:
+            (directory / name / 'src').mkdir(parents=True)
+            manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n' + (f'[dev-dependencies]\n{dependency}\n' if dependency else '')
+            (directory / name / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+            (directory / name / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+        lock = ('version = 4\n\n[[package]]\nname = "a"\nversion = "0.1.0"\ndependencies = [\n "unreachable",\n]\n\n'
+                '[[package]]\nname = "b"\nversion = "0.1.0"\ndependencies = [\n "a",\n]\n\n[[package]]\nname = "c"\nversion = "0.1.0"\n\n'
+                f'[[package]]\nname = "unreachable"\nversion = "0.1.0"\nsource = "git+{unreachable}#{"0" * 40}"\n')
+        (directory / 'Cargo.lock').write_text(lock, encoding='utf-8')
+        (directory / '.github').mkdir()
+        (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\n', encoding='utf-8')
+        subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+        git = partial(fixture_git, directory)
+        git('add', '.')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        target = 'x86_64-pc-windows-msvc'
+        def select(event):
+            output = directory / '.git/selection'
+            output.write_text('', encoding='utf-8')
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                 'CHECK_TARGETS': json.dumps([{'target': target}])})
+            return result, dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+        (directory / 'a/src/lib.rs').write_text('pub fn changed() {}\n', encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'source')
+        # A source change selects the package and the member whose manifest names it, under any name and kind, without resolving.
+        for event, expected in [('pull_request', ['a', 'b']), ('merge_group', ['a', 'b', 'c']), ('push', ['a', 'b', 'c'])]:
+            result, values = select(event)
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert json.loads(values['packages']) == expected, (event, values)
+            assert json.loads(values['lint_alone']) == {target: {} if event == 'push' else {'a': 'changed file'}}, (event, values)
+            assert 'Full-suite fallback' not in result.stdout, result.stdout
+        # A lock file change resolves the graph: a pull request fails on it, and a merge group stays on the full suite with every package linted alone.
+        (directory / 'Cargo.lock').write_text(lock + '\n', encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'lock file')
+        result, _ = select('pull_request')
+        assert result.returncode != 0 and 'unreachable' in result.stderr, result.stdout + result.stderr
+        result, values = select('merge_group')
+        assert result.returncode == 0, result.stdout + result.stderr
+        unresolved = 'workspace graph could not be resolved'
+        assert 'Full-suite fallback: ' + unresolved in result.stdout, result.stdout
+        assert json.loads(values['packages']) == ['a', 'b', 'c']
+        assert json.loads(values['lint_alone']) == {target: {'a': 'changed file', 'b': unresolved, 'c': unresolved}}, values
+
+selection_fetches_no_dependency_source_until_the_graph_changes()
+print('PASS selection_fetches_no_dependency_source_until_the_graph_changes')
+
 def included_docs_run_only_readers_and_reverse_dependencies():
     from functools import partial
     with tempfile.TemporaryDirectory() as temporary:

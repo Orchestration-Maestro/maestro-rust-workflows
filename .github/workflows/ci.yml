@@ -838,15 +838,9 @@ jobs:
                   ['cargo', 'metadata', '--format-version', '1', '--locked'], cwd=directory, text=True))
           event = os.environ['TEST_EVENT']
           fallback = None
-          try:
-              head = metadata('.')
-          except (subprocess.CalledProcessError, ValueError, KeyError):
-              if event != 'merge_group':
-                  raise
-              # Enumeration without resolution keeps graph failures on the full-suite route.
-              head = json.loads(subprocess.check_output(
-                  ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))
-              fallback = 'workspace graph could not be resolved'
+          # Enumeration reads the manifests alone: a run fetches no dependency source unless a manifest or the lock file changed.
+          head = json.loads(subprocess.check_output(
+              ['cargo', 'metadata', '--no-deps', '--format-version', '1', '--locked'], text=True))
           packages = {p['id']: p for p in head['packages']}
           members = set(head['workspace_members'])
           roots = {p: pathlib.Path(packages[p]['manifest_path']).parent.relative_to(pathlib.Path.cwd()) for p in members}
@@ -901,12 +895,14 @@ jobs:
                               pending.extend(nodes[node]['dependencies'])
                       result[pkgs[member]['name']] = {(pkgs[n]['name'], pkgs[n]['version'], pkgs[n]['source'], tuple(sorted(nodes[n]['features']))) for n in seen}
                   return result
-              old, new = dependencies(before), dependencies(head)
+              old, new = dependencies(before), dependencies(metadata('.'))
               return {p for p in members if old.get(packages[p]['name']) != new[packages[p]['name']]}
+          # A member's own manifest names every member it depends on, so the member graph needs no resolution.
+          uses = {p: {ids[dependency['name']] for dependency in packages[p]['dependencies'] if dependency['name'] in ids} for p in members}
           def with_dependents(start):
               start = set(start)
               while True:
-                  reverse = {n['id'] for n in head['resolve']['nodes'] if n['id'] in members and set(n['dependencies']) & start}
+                  reverse = {p for p in members if uses[p] & start}
                   if reverse <= start:
                       return start
                   start |= reverse
@@ -1029,13 +1025,11 @@ jobs:
           touched = changed
           if event == 'merge_group' and base:
               diff = subprocess.run(['git', 'diff', '--relative', '--no-renames', '--name-only', '-z', base, 'HEAD'], capture_output=True, text=True)
-              # A base the checkout cannot read, or a graph that did not resolve, lints every package alone.
+              # A base the checkout cannot read lints every package alone.
               touched = diff.stdout.split('\0')[:-1] if diff.returncode == 0 else None
               if touched is None:
                   lint_alone(members, 'changed files unreadable')
-          if fallback:
-              lint_alone(members, fallback)
-          elif touched is not None:
+          if touched is not None:
               manifests = set()
               for filename in touched:
                   path = pathlib.Path(filename)
@@ -1046,14 +1040,21 @@ jobs:
                       manifests = set(members)
                   elif path.name == 'Cargo.toml' and owner is not None:
                       manifests.add(owner)
-              if 'Cargo.lock' in touched:
-                  manifests |= lock_changed()
-              candidates = sorted({packages[p]['name'] for p in with_dependents(manifests)} - set(alone))
-              if candidates and targets:
-                  started = time.monotonic()
-                  differing = resolves_differently(candidates, targets)
-                  dependents = {target: [name for name in candidates if (target, name) in differing] for target in targets}
-                  print(f'Features resolved alone: {len(candidates)} dependents compared with the base on {len(targets)} targets in {time.monotonic() - started:.1f}s')
+              try:
+                  if 'Cargo.lock' in touched:
+                      manifests |= lock_changed()
+                  candidates = sorted({packages[p]['name'] for p in with_dependents(manifests)} - set(alone))
+                  if candidates and targets:
+                      started = time.monotonic()
+                      differing = resolves_differently(candidates, targets)
+                      dependents = {target: [name for name in candidates if (target, name) in differing] for target in targets}
+                      print(f'Features resolved alone: {len(candidates)} dependents compared with the base on {len(targets)} targets in {time.monotonic() - started:.1f}s')
+              except (subprocess.CalledProcessError, ValueError, KeyError):
+                  if event != 'merge_group':
+                      raise
+                  # A graph that does not resolve keeps the merge group on the full-suite route, with every package linted alone.
+                  fallback = 'workspace graph could not be resolved'
+                  lint_alone(members, fallback)
           if fallback:
               trigger = fallback
           if trigger:

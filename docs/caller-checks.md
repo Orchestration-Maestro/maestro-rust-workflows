@@ -1011,7 +1011,10 @@ and once the test stops writing there, the next run is green.
 Pull-request host Clippy and Windows checks select changed workspace crates,
 literal `include_str!`, `include_bytes!` or `#[path = "..."]` input readers and
 declared test-input readers, plus their direct or transitive workspace dependents. Normal, build,
-development and target-specific dependency edges count. The deepest package root
+development, optional and target-specific dependency edges count. The selection
+reads those edges from the members' own manifests: a member depends on each
+member its manifest names. It resolves the dependency graph, and so fetches
+dependency sources, only when a manifest or the lock file changed. The deepest package root
 owns a changed source file. Including a package input adds its readers without
 dropping its owner or the owner's dependents. Non-root packages own their whole
 directory. A root package owns `Cargo.toml`, its Cargo target source directories
@@ -1037,7 +1040,10 @@ Emscripten crates compile in the sandbox runtime job, which runs on every pull
 request that lists them, so no browser job installs the compiler.
 
 A crate manifest selects its crate; lockfile changes compare the resolved transitive dependency identities
-and features at base and head, selecting affected crates. Root manifest,
+and features at base and head, selecting affected crates. A pull request whose
+changed graph does not resolve fails the declaration; a merge group stays on the
+full suite, logs `Full-suite fallback: workspace graph could not be resolved`
+and lints every package alone. Root manifest,
 toolchain or CI workflow/schema changes select everything. Non-test declaration
 keys (such as spelling, wasm and foreign-target lists) select no extra packages;
 changes to test tools, coverage policy, additional locked manifests, declared
