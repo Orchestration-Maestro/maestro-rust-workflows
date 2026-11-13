@@ -42,8 +42,9 @@ check lints the selection once, then lints alone each package a change touches.
 A run over several packages shares a feature set and would hide a package that
 lacks a dependency feature its tests need; see
 [Foreign-target checks](#foreign-target-checks). Pull requests skip the
-test archive, test setup, test shards, doctests and wasm/browser builds. Two
-exceptions still compile: the declared [example witnesses](#wasm-example-witnesses),
+test archive, test setup, test shards, doctests and the browser recipe. Three
+exceptions still compile: the declared wasm crates the selection reaches (built
+and documented for the wasm target), the declared [example witnesses](#wasm-example-witnesses),
 and the [Emscripten crates](#emscripten-builds), which the sandbox runtime job
 builds, or restores from its cache, on every run when the list is non-empty.
 Every required check name still reports; skipped jobs count as success.
@@ -320,7 +321,8 @@ test archive, test setup, full shard matrix, doctests, coverage, wasm/browser
 builds, Chromium tests and declared foreign-target checks. The native macOS
 test route runs only after landing on main; merge groups keep the x86_64 macOS
 compile check. Main pushes may reuse the Linux results as described above.
-Pull requests skip these jobs without removing their required check names.
+Pull requests skip these jobs without removing their required check names, except
+that the wasm job builds and documents the listed packages the selection reaches.
 An unreadable file, malformed TOML,
 duplicate key, unknown key, missing array, scalar array value, non-string
 member or non-boolean tool/build flag fails declaration validation. An empty
@@ -1027,8 +1029,9 @@ An empty PR selection performs no host or target Clippy compilation; the named
 checks still report success. An absent base selects every package for lint.
 Wasm Clippy ignores the selection and lints every `wasm_crates` package on every
 run; see [Wasm and browser builds](#wasm-and-browser-builds). Pull requests
-skip the test archive, preparation, test shards, doctests and wasm/browser
-builds regardless of package selection, except for the example witnesses. The
+skip the test archive, preparation, test shards, doctests and the browser recipe
+regardless of package selection, except for the declared wasm crates the selection
+reaches and the example witnesses. The
 Emscripten crates compile in the sandbox runtime job, which runs on every pull
 request that lists them, so no browser job installs the compiler.
 
@@ -1385,8 +1388,11 @@ change merges. The run checks library targets only, as the wasm build does,
 because test targets may depend on native-only crates. It lints every listed
 package whatever the pull request changed; an empty list compiles nothing.
 
-On merge groups and main pushes, Linux also runs this command for
-each listed package:
+Linux also runs this command for each listed package. A pull request builds and
+documents only the listed packages its selection reaches (the changed packages
+and their dependents), so a wasm build error or a documentation error in a
+changed crate fails the pull request's own `Wasm and browser build` job. Merge
+groups and main pushes build and document every listed package:
 
 ```bash
 cargo build --locked --target wasm32-unknown-unknown -p "$CRATE"
@@ -1409,7 +1415,9 @@ tools once before wasm compilation. The browser flag is independent: it does
 not enable tools in other jobs. With `browser_build = true`, the workflow runs
 `mise exec -- just browser-build` after successful wasm builds, including when
 the wasm array is empty. Both wasm builds and the browser recipe run on every
-merge group and main push. Pull requests, advisory scans, fuzz scans and warm
+merge group and main push. A pull request runs the two wasm builds for the
+selected listed packages and skips the browser recipe; it skips the job when it
+selects none and declares no witness. Advisory scans, fuzz scans and warm
 calls outside a default-branch push skip them, except for the
 [example witnesses](#wasm-example-witnesses). A failed wasm build prevents
 the recipe. False or omitted `browser_build` skips the recipe and its
@@ -1454,9 +1462,10 @@ that broke. Declaring examples installs the wasm target even when `wasm_crates`
 is empty.
 
 Witnesses compile on pull requests, so a broken one fails the pull request that
-breaks it. That run does only the witness compile. The crate builds,
-documentation, `browser_build` tools and the browser recipe stay on merge groups
-and main pushes. `test_tools = true` still installs the caller's tools first.
+breaks it. That run compiles the witnesses, and builds and documents the listed
+packages the selection reaches. The `browser_build` tools and the browser recipe
+stay on merge groups and main pushes. `test_tools = true` still installs the
+caller's tools first.
 
 Declaration validation fails with the file and key when a package is not in the
 locked Cargo metadata or an example is not a target of its package. Repetitions

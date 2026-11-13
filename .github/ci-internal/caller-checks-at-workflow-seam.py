@@ -38,6 +38,7 @@ def routed_jobs(document, values):
         'needs.declaration.outputs.tested_runners': '["ubuntu-latest"]',
         'needs.declaration.outputs.targets': '[{}]', 'needs.declaration.outputs.fuzz_targets': '["target"]',
         'needs.declaration.outputs.wasm_crates': '["web"]', 'needs.declaration.outputs.wasm_examples': '[]',
+        'needs.declaration.outputs.wasm_selected': '["web"]',
         'needs.declaration.outputs.emscripten_crates': '[]',
         'needs.declaration.result': 'success', 'needs.sandbox-runtime.result': 'skipped',
         'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.browser_tests': 'true',
@@ -212,6 +213,8 @@ def execute(name, cwd, extra=None, prelude=''):
     env.update(extra or {})
     if name == 'Select test packages':
         env.setdefault('TEST_HOSTS', json.dumps({'ubuntu-latest': int(env['TEST_SHARD_COUNT'])}))
+        # The declaration's output without wasm_crates.
+        env.setdefault('WASM_CRATES', '[]')
     if name in ['Tests', 'Isolated tests']:
         env.update(toolchain_environment(cwd, env))
     if name == 'Isolated tests':
@@ -3130,6 +3133,8 @@ def event_policy_keeps_pull_requests_fast():
                            'needs.declaration.outputs.tests_reused': 'false',
                            'needs.declaration.outputs.targets': '[{}]',
                            'needs.declaration.outputs.wasm_crates': '["sample"]',
+                           # A pull request here reaches no declared wasm crate.
+                           'needs.declaration.outputs.wasm_selected': '[]' if event == 'pull_request' else '["sample"]',
                            'needs.declaration.outputs.wasm_examples': '[]',
                            'needs.declaration.outputs.browser_build': 'true',
                            'needs.declaration.outputs.browser_tests': 'true'}
@@ -4073,6 +4078,7 @@ def main_reuses_only_exact_successful_merge_queue_tests():
                 'needs.declaration.outputs.tests_reused': values['tests_reused'],
                 'needs.declaration.outputs.enabled': 'true', 'needs.declaration.outputs.browser_tests': 'true',
                 'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.wasm_crates': '["web"]',
+                'needs.declaration.outputs.wasm_selected': '["web"]',
                 'needs.declaration.outputs.test_prepare_inputs': '[]', 'needs.declaration.outputs.test_prepare': '"prepare"',
                 'needs.test-build.result': 'success', 'needs.test-prepare.result': 'success',
                 'github.repository_id': 'caller', 'inputs.working-directory': '.', '!cancelled()': True,
@@ -4906,13 +4912,13 @@ def pull_requests_compile_only_the_declared_witnesses():
                'github.event_name': 'pull_request', 'github.ref': 'refs/pull/1/merge', default_ref: 'refs/heads/main',
                'github.repository_id': 'caller', 'inputs.working-directory': '.',
                'needs.declaration.outputs.coverage': 'false', 'needs.declaration.outputs.tests_reused': 'false',
-               'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.browser_build': 'true',
-               'needs.declaration.outputs.test_tools': 'false',
+               'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.wasm_selected': '[]',
+               'needs.declaration.outputs.browser_build': 'true', 'needs.declaration.outputs.test_tools': 'false',
                'needs.declaration.outputs.wasm_examples': json.dumps([['witness', 'first']])}
     assert evaluate(job['if'], context), 'a pull request with declared witnesses runs the browser job'
     assert not evaluate(job['if'], context | {'needs.declaration.outputs.wasm_examples': '[]'}), \
         'a pull request without witnesses keeps the browser job closed'
-    sweep = ['Browser tool pin', 'Browser mise bootstrap', 'Browser tools', 'Build wasm crates', 'Document wasm crates', 'Browser recipe']
+    sweep = ['Browser tool pin', 'Browser mise bootstrap', 'Browser tools', 'Browser recipe']
     steps = {step['name']: step for step in job['steps']}
     names = list(steps)
     for name in sweep:
@@ -4930,6 +4936,81 @@ def pull_requests_compile_only_the_declared_witnesses():
 
 pull_requests_compile_only_the_declared_witnesses()
 print('PASS pull_requests_compile_only_the_declared_witnesses')
+
+def a_pull_request_builds_and_documents_the_wasm_crates_it_selects():
+    from functools import partial
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c"]\n', encoding='utf-8')
+        for name, dependency in [('a', None), ('b', 'a'), ('c', None)]:
+            (directory / name / 'src').mkdir(parents=True)
+            manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n'
+            if dependency:
+                manifest += f'[dependencies]\n{dependency}={{path="../{dependency}"}}\n'
+            (directory / name / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+            (directory / name / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+        (directory / '.github').mkdir()
+        (directory / '.github/ci.toml').write_text('wasm_crates=["b","c"]\ncheck_targets=[]\n', encoding='utf-8')
+        subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+        subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+        git = partial(fixture_git, directory)
+        git('add', '.')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        def select(event, reused='false'):
+            output = directory / '.git/selection'
+            output.write_text('', encoding='utf-8')
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                 'TESTS_REUSED': reused, 'WASM_CRATES': '["b","c","b"]'})
+            assert result.returncode == 0, result.stdout + result.stderr
+            return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+        (directory / 'a/src/lib.rs').write_text('pub fn changed() {}\n', encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'dependency source')
+        # A pull request takes the declared crates its selection reaches, in declared order with repeats; every other event takes all.
+        assert json.loads(select('pull_request')['wasm_selected']) == ['b', 'b'], select('pull_request')
+        for event, reused in [('merge_group', 'false'), ('push', 'false'), ('push', 'true')]:
+            assert json.loads(select(event, reused)['wasm_selected']) == ['b', 'c', 'b'], (event, reused)
+        (directory / 'a/src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+        (directory / 'docs.md').write_text('Documentation', encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'docs')
+        assert json.loads(select('pull_request')['wasm_selected']) == []
+    document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
+    declaration_step = next(step for step in document['jobs']['declaration']['steps'] if step.get('name') == 'Select test packages')
+    assert declaration_step['env']['WASM_CRATES'] == '${{ steps.config.outputs.wasm_crates }}'
+    assert document['jobs']['declaration']['outputs']['wasm_selected'] == '${{ steps.selection.outputs.wasm_selected }}'
+    job = document['jobs']['browser']
+    context = {'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'inputs.warm-cache': False,
+               'github.event_name': 'pull_request', 'github.ref': 'refs/pull/1/merge', default_ref: 'refs/heads/main',
+               'github.repository_id': 'caller', 'inputs.working-directory': '.',
+               'needs.declaration.outputs.coverage': 'false', 'needs.declaration.outputs.tests_reused': 'false',
+               'needs.declaration.outputs.wasm_crates': '["b"]', 'needs.declaration.outputs.browser_build': 'false',
+               'needs.declaration.outputs.emscripten_crates': '[]', 'needs.declaration.outputs.wasm_examples': '[]',
+               'needs.declaration.outputs.wasm_selected': '["b"]'}
+    assert evaluate(job['if'], context), 'a pull request that selects a declared wasm crate runs the job'
+    assert not evaluate(job['if'], context | {'needs.declaration.outputs.wasm_selected': '[]'}), \
+        'a pull request that selects none keeps the job closed'
+    steps = {step['name']: step for step in job['steps']}
+    for name, command in [('Build wasm crates', 'build'), ('Document wasm crates', 'doc')]:
+        assert 'if' not in steps[name], f'{name}: the selection decides what it runs'
+        assert steps[name]['env']['WASM_CRATES'] == '${{ needs.declaration.outputs.wasm_selected }}', name
+        # The step runs the selected crates for the wasm target, and nothing when the selection reaches none.
+        for selected in [['b', 'b'], []]:
+            with tempfile.TemporaryDirectory() as temporary:
+                tools, log = install_recording_runner(pathlib.Path(temporary))
+                (tools / 'rustup').symlink_to(tools / 'cargo')
+                result = execute(name, temporary, {'WASM_CRATES': json.dumps(selected),
+                                                   'PATH': str(tools) + os.pathsep + os.environ['PATH']})
+                assert result.returncode == 0, result.stdout + result.stderr
+                runs = [json.loads(line)['args'] for line in log.read_text(encoding='utf-8').splitlines()] if log.exists() else []
+                runs = [args for args in runs if args[:1] == [command]]
+                assert [args[args.index('-p') + 1] for args in runs] == selected, (name, runs)
+                assert all(args[args.index('--target') + 1] == 'wasm32-unknown-unknown' for args in runs), (name, runs)
+                assert selected or not log.exists(), name
+
+a_pull_request_builds_and_documents_the_wasm_crates_it_selects()
+print('PASS a_pull_request_builds_and_documents_the_wasm_crates_it_selects')
 
 def foreign_target_warnings_are_denied():
     target = os.environ.get('TARGET', 'x86_64-unknown-linux-gnu')
@@ -5384,7 +5465,8 @@ def workflow_failures_remain_required():
     routed = routed_jobs(document, {})
     # The replaced-group canceller runs in merge groups only.
     assert routed == set(document['jobs']) - {'advisories', 'fuzz', 'replaced-groups', 'sandbox-runtime'}, sorted(routed)
-    assert 'browser' not in routed_jobs(document, {'needs.declaration.outputs.coverage': 'false'})
+    assert 'browser' not in routed_jobs(document, {'needs.declaration.outputs.coverage': 'false',
+                                                   'needs.declaration.outputs.wasm_selected': '[]'})
     # An advisory scan runs only the declaration and its own job.
     routed = routed_jobs(document, {'inputs.advisory-scan': True})
     assert routed == {'declaration', 'advisories'}, sorted(routed)
@@ -5506,11 +5588,10 @@ def wasm_rustdoc_denies_missing_docs():
     names = [step.get('name') for step in steps]
     document_step = next(step for step in steps if step.get('name') == 'Document wasm crates')
     assert document_step['env']['RUSTDOCFLAGS'] == '-D warnings -D missing_docs'
-    assert document_step['env']['WASM_CRATES'] == '${{ needs.declaration.outputs.wasm_crates }}', \
-        'every declared crate is documented'
+    assert document_step['env']['WASM_CRATES'] == '${{ needs.declaration.outputs.wasm_selected }}', \
+        'every selected declared crate is documented'
     assert names.index('Build wasm crates') < names.index('Document wasm crates') < names.index('Browser recipe')
-    assert document_step['if'] == next(step for step in steps if step.get('name') == 'Build wasm crates')['if'], \
-        'every declared crate is documented on each library sweep'
+    assert 'if' not in document_step, 'the selection decides which declared crates are documented'
     flags = {'WASM_CRATES': '["wasm-undocumented"]', 'RUSTDOCFLAGS': '-D warnings -D missing_docs'}
     result = execute('Document wasm crates', root / 'fixtures/wasm-undocumented', flags)
     output = result.stdout + result.stderr

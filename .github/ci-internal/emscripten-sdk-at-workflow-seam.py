@@ -142,7 +142,8 @@ def only_the_script_job_installs_the_sdk():
                    'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'inputs.warm-cache': False,
                    'github.event_name': 'push', 'github.ref': 'refs/heads/main',
                    "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
-                   'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.browser_build': 'false',
+                   'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.wasm_selected': '[]',
+                   'needs.declaration.outputs.browser_build': 'false',
                    'needs.declaration.outputs.emscripten_crates': '["web"]',
                    'needs.declaration.result': 'success'}
     assert opens(browser['if'], job_context)
@@ -155,7 +156,8 @@ def a_pull_request_builds_only_what_its_change_reaches():
                     'inputs.advisory-scan': False, 'inputs.fuzz-scan': False, 'inputs.warm-cache': False,
                     'github.event_name': 'pull_request', 'github.ref': 'refs/pull/1/merge',
                     "format('refs/heads/{0}', github.event.repository.default_branch)": 'refs/heads/main',
-                    'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.browser_build': 'false',
+                    'needs.declaration.outputs.wasm_crates': '[]', 'needs.declaration.outputs.wasm_selected': '[]',
+                    'needs.declaration.outputs.browser_build': 'false',
                     'needs.declaration.outputs.emscripten_crates': '[["web", null]]',
                     'needs.declaration.result': 'success'}
     witnesses = pull_request | {'needs.declaration.outputs.wasm_examples': json.dumps([['witness', 'first']])}
@@ -166,7 +168,7 @@ def a_pull_request_builds_only_what_its_change_reaches():
     assert not opens(browser['if'], undeclared), 'a caller without the key never runs it for this'
     # The Chromium job and the library sweep stay off a pull request.
     assert not opens(chromium['if'], pull_request | {'needs.declaration.outputs.browser_tests': 'true'})
-    assert steps(browser)['Build wasm crates']['if'] and not opens(steps(browser)['Build wasm crates']['if'], pull_request)
+    assert steps(browser)['Browser recipe']['if'] and not opens(steps(browser)['Browser recipe']['if'], pull_request)
 
 
 def recorded(directory, tool, step, extra=None):
