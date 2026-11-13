@@ -1426,9 +1426,9 @@ tools once before wasm compilation. The browser flag is independent: it does
 not enable tools in other jobs. With `browser_build = true`, the workflow runs
 `mise exec -- just browser-build` after successful wasm builds, including when
 the wasm array is empty. Both wasm builds and the browser recipe run on every
-merge group and main push. A pull request runs the two wasm builds for the
-selected listed packages and skips the browser recipe; it skips the job when it
-selects none and declares no witness. Advisory scans, fuzz scans and warm
+merge group and main push. A pull request builds and documents the listed
+packages its selection reaches and skips the browser recipe; it skips the job
+when it reaches none and declares no witness. Advisory scans, fuzz scans and warm
 calls outside a default-branch push skip them, except for the
 [example witnesses](#wasm-example-witnesses). A failed wasm build prevents
 the recipe. False or omitted `browser_build` skips the recipe and its
@@ -1914,7 +1914,7 @@ The comparison asks Cargo what a lint of the dependent alone would build, at
 the base and at the head:
 
 ```bash
-cargo tree --locked -p "$PACKAGE" --target "$TARGET" -e normal,build,dev --prefix none -f '{p}	{f}'
+cargo tree --locked -p "$PACKAGE" --target "$TARGET" -e normal,build,dev --prefix none -f $'{p}\t{f}'
 ```
 
 Each line is a package of the dependent's own dependency closure with the
