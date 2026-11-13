@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.36](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.35...v0.19.36) (2026-11-13)
+
+
+### Continuous Integration
+
+* pin maestro-rust-workflows callers to v0.19.35 ([#492](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/492)) ([eaa6581](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/eaa658174b1b68051e6379722c599828387d2361))
+
+
+### Performance
+
+* **ci:** shared-CI bundle for the next release ([#499](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/499)) ([fe2da86](https://github.com/Orchestration-Maestro/maestro-rust-workflows/commit/fe2da86975604120ce66ab2790a4059433de3f3f)), closes [#495](https://github.com/Orchestration-Maestro/maestro-rust-workflows/issues/495)
+
 ## [0.19.35](https://github.com/Orchestration-Maestro/maestro-rust-workflows/compare/v0.19.34...v0.19.35) (2026-11-12)
 
 
