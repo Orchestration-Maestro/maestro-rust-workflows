@@ -1045,7 +1045,8 @@ request that lists them, so no browser job installs the compiler.
 
 A crate manifest selects its crate; lockfile changes compare the resolved transitive dependency identities
 and features at base and head, selecting affected crates. A pull request whose
-changed graph does not resolve fails the declaration; a merge group stays on the
+changed graph does not resolve, such as a manifest change the lock file does not
+cover, fails the declaration; a merge group stays on the
 full suite, logs `Full-suite fallback: workspace graph could not be resolved`
 and lints every package alone. Root manifest,
 toolchain or CI workflow/schema changes select everything. Non-test declaration

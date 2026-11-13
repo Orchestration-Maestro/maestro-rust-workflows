@@ -1046,6 +1046,9 @@ jobs:
               try:
                   if 'Cargo.lock' in touched:
                       manifests |= lock_changed()
+                  elif manifests:
+                      # A changed manifest must still resolve against the lock file as committed.
+                      metadata('.')
                   candidates = sorted({packages[p]['name'] for p in with_dependents(manifests)} - set(alone))
                   if candidates and targets:
                       started = time.monotonic()

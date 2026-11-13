@@ -3791,6 +3791,49 @@ def selection_fetches_no_dependency_source_until_the_graph_changes():
 selection_fetches_no_dependency_source_until_the_graph_changes()
 print('PASS selection_fetches_no_dependency_source_until_the_graph_changes')
 
+def a_changed_manifest_the_lock_file_does_not_cover_fails_the_declaration():
+    from functools import partial
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        (directory / 'Cargo.toml').write_text('[workspace]\nresolver="3"\nmembers=["a","b","c"]\n', encoding='utf-8')
+        for name, dependency in [('a', None), ('b', 'a'), ('c', None)]:
+            (directory / name / 'src').mkdir(parents=True)
+            manifest = f'[package]\nname="{name}"\nversion="0.1.0"\nedition="2024"\n[dependencies]\n' + (f'{dependency}={{path="../{dependency}"}}\n' if dependency else '')
+            (directory / name / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+            (directory / name / 'src/lib.rs').write_text('pub fn value() {}\n', encoding='utf-8')
+        subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+        subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+        git = partial(fixture_git, directory)
+        git('add', '.')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        # `a` gains a dependency that its entry in the committed lock file does not name.
+        with open(directory / 'a/Cargo.toml', 'a', encoding='utf-8') as manifest:
+            manifest.write('c={path="../c"}\n')
+        git('add', '.')
+        git('commit', '-qm', 'manifest alone')
+        target = 'x86_64-pc-windows-msvc'
+        def select(event, targets):
+            output = directory / '.git/selection'
+            output.write_text('', encoding='utf-8')
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                 'CHECK_TARGETS': json.dumps([{'target': name} for name in targets])})
+            return result, dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+        # With or without a foreign target to compare on, the pull request fails here, and the merge group stays on the full suite.
+        unresolved = 'workspace graph could not be resolved'
+        for targets in [[target], []]:
+            result, _ = select('pull_request', targets)
+            assert result.returncode != 0 and '--locked was passed' in result.stderr, (targets, result.stdout + result.stderr)
+            result, values = select('merge_group', targets)
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert 'Full-suite fallback: ' + unresolved in result.stdout, (targets, result.stdout)
+            assert json.loads(values['packages']) == ['a', 'b', 'c'], (targets, values)
+            alone = {'a': 'changed file', 'b': unresolved, 'c': unresolved}
+            assert json.loads(values['lint_alone']) == {name: alone for name in targets}, (targets, values)
+
+a_changed_manifest_the_lock_file_does_not_cover_fails_the_declaration()
+print('PASS a_changed_manifest_the_lock_file_does_not_cover_fails_the_declaration')
+
 def included_docs_run_only_readers_and_reverse_dependencies():
     from functools import partial
     with tempfile.TemporaryDirectory() as temporary:
@@ -5171,13 +5214,12 @@ def a_dependent_is_linted_alone_only_where_its_features_change():
         # `user` loses `clock` when linted alone on the host target, so it is listed there; `keeper` keeps it through `enabler` and is listed nowhere.
         differs = 'resolves other features alone than at the base'
         expected = {host: {'middle': 'changed file', 'user': differs}, other: {'middle': 'changed file'}}
-        for event in ['pull_request', 'merge_group']:
+        for event in ['merge_group', 'pull_request']:
             selection, log = select(event)
             assert json.loads(selection['lint_alone']) == expected, (event, selection['lint_alone'])
             assert 'Features resolved alone: 2 dependents compared with the base on 2 targets in ' in log, log
         assert json.loads(select('push')[0]['lint_alone']) == {host: {}, other: {}}
         # The workspace run still passes on the host target; the lint of `user` alone fails for the feature it lost.
-        selection, _ = select('pull_request')
         result = execute('Check target', directory, {'TARGET': host, 'TEST_PACKAGES': selection['packages'],
                                                      'COVERAGE_SCOPE': selection['coverage_scope'], 'LINT_ALONE': selection['lint_alone']})
         output = result.stdout + result.stderr
