@@ -38,7 +38,8 @@ Pull requests run declaration validation, formatting, Clippy, docs,
 dependency/source checks and the declared Windows target check. Host
 Clippy and the Windows target check select changed crates and their workspace
 dependents; formatting still checks the whole workspace. A declared target
-check lints the selection once, then lints alone each package a change touches.
+check lints the selection once, then lints alone each package a change touches
+and each dependent whose own features the change moves.
 A run over several packages shares a feature set and would hide a package that
 lacks a dependency feature its tests need; see
 [Foreign-target checks](#foreign-target-checks). Pull requests skip the
@@ -1890,16 +1891,36 @@ The first run covers the whole workspace when the selection is every crate, and
 only the selected packages otherwise. Run alone, a package builds with only the
 dependency features its own manifest asks for, so a test target missing a
 feature it needs fails here, as it does in its own tests. Only a package that a
-change touches can lose a feature that way, so the declaration lists the
-packages to lint alone:
+change touches can lose a feature that way, so the declaration lists, for each
+target, the packages to lint alone:
 
 - every package with a changed file in the pull request or merge group;
-- when a manifest or the lock file changed, every package that depends on a
-  package whose manifest or locked dependencies changed. A change to the root
-  manifest selects every member.
+- when a manifest or the lock file changed, each dependent of a package whose
+  manifest or locked dependencies changed, if it resolves other features alone
+  on that target than it did at the base. A change to the root manifest
+  compares every member.
 
-A push to the default branch lints no package alone. The log prints the first
-run, then the list as `package: reason`.
+The comparison asks Cargo what a lint of the dependent alone would build, at
+the base and at the head:
+
+```bash
+cargo tree --locked -p "$PACKAGE" --target "$TARGET" -e normal,build,dev --prefix none -f '{p}	{f}'
+```
+
+Each line is a package of the dependent's own dependency closure with the
+features it resolves there. The dependent is listed when a package both
+revisions build has other features, or another version, at the head. A package
+only one revision builds is new or gone, and its own changed files list it. A
+workspace member's version is ignored: its code changes with its files. A
+dependent Cargo cannot resolve at either revision is listed. So a manifest
+that takes a feature away from a dependent on Windows lists that dependent for
+the Windows check and for no other target, and a new crate lists itself and the
+packages whose manifests now name it, not everything above them.
+
+A push to the default branch lints no package alone. The declaration log prints
+how many dependents it compared, on how many targets and in how many seconds.
+The check's log prints the first run, then its target's list as
+`package: reason`.
 
 | Target | Runner |
 | --- | --- |

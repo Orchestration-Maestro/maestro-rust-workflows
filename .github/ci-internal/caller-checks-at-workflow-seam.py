@@ -213,8 +213,9 @@ def execute(name, cwd, extra=None, prelude=''):
     env.update(extra or {})
     if name == 'Select test packages':
         env.setdefault('TEST_HOSTS', json.dumps({'ubuntu-latest': int(env['TEST_SHARD_COUNT'])}))
-        # The declaration's output without wasm_crates.
+        # The declaration's output without wasm_crates or check_targets.
         env.setdefault('WASM_CRATES', '[]')
+        env.setdefault('CHECK_TARGETS', '[]')
     if name in ['Tests', 'Isolated tests']:
         env.update(toolchain_environment(cwd, env))
     if name == 'Isolated tests':
@@ -1379,7 +1380,7 @@ def clippy_selection_works_without_mapfile():
                 env = {key: value for key, value in os.environ.items()
                        if key not in ['TEST_PACKAGES', 'COVERAGE_SCOPE', 'TARGET']}
                 env.update(PATH=str(tools) + os.pathsep + env['PATH'], COVERAGE_SCOPE=scope, TARGET=target,
-                           LINT_ALONE='{"second": "changed file"}')
+                           LINT_ALONE=json.dumps({target: {'second': 'changed file'}}))
                 if packages is not None:
                     env['TEST_PACKAGES'] = packages
                 name = 'Check target' if target else 'Lint'
@@ -3551,12 +3552,17 @@ def changed_packages_include_reverse_dependencies():
         git('add', '.')
         git('commit', '-qm', 'base')
         base = git('rev-parse', 'HEAD')
+        windows = 'x86_64-pc-windows-msvc'
         def select(event='pull_request', extra=None):
             output = directory / '.git/selection'
             output.write_text('', encoding='utf-8')
-            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output)} | (extra or {}))
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                 'CHECK_TARGETS': json.dumps([{'target': windows}])} | (extra or {}))
             assert result.returncode == 0, result.stdout + result.stderr
+            (directory / '.git/selection-log').write_text(result.stdout, encoding='utf-8')
             return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines())
+        def alone(values):
+            return json.loads(values['lint_alone'])[windows]
         declaration_path = directory / '.github/ci.toml'
         for value in ['test(child_build)', 'none()', None]:
             declaration_path.write_text('wasm_crates=[]\ncheck_targets=[]\n' + (
@@ -3589,9 +3595,9 @@ def changed_packages_include_reverse_dependencies():
         assert json.loads(values['packages']) == ['a', 'b', 'c'] and values['coverage'] == 'false'
         assert json.loads(values['test_shards']) == [], values
         # A foreign target lints alone the changed package, not its dependents; a merge group reads the same change; a main push lints none alone.
-        assert json.loads(values['lint_alone']) == {'a': 'changed file'}, values
-        assert json.loads(select('merge_group')['lint_alone']) == {'a': 'changed file'}
-        assert json.loads(select('push')['lint_alone']) == {}
+        assert alone(values) == {'a': 'changed file'}, values
+        assert alone(select('merge_group')) == {'a': 'changed file'}
+        assert alone(select('push')) == {}
         document = json.loads(subprocess.check_output(['yq', '-o=json', '-'], input=workflow, text=True))
         context = {'cancelled()': False, 'needs.test-build.result': 'success',
                    'needs.test-prepare.result': 'skipped', 'inputs.warm-cache': False,
@@ -3624,8 +3630,8 @@ def changed_packages_include_reverse_dependencies():
                     runs = [args for args in commands if args[:1] == ['clippy']]
                     # Both lints run the selection once; the target check then lints each package of the declaration's list by itself.
                     full = selection['coverage'] == 'true'
-                    alone = [[name] for name in json.loads(selection['lint_alone'])] if job == 'targets' else []
-                    assert [[args[i + 1] for i, arg in enumerate(args) if arg == '-p'] for args in runs] == [[] if full else ['a', 'b', 'c']] + alone, runs
+                    listed = [[name] for name in alone(selection)] if job == 'targets' else []
+                    assert [[args[i + 1] for i, arg in enumerate(args) if arg == '-p'] for args in runs] == [[] if full else ['a', 'b', 'c']] + listed, runs
                     for args in runs[:1]:
                         assert ('--workspace' in args) == full, args
                     for args in runs:
@@ -3672,11 +3678,9 @@ def changed_packages_include_reverse_dependencies():
         git('commit', '-qm', 'dependency identity')
         assert json.loads(select()['packages']) == ['a', 'b', 'c']
         assert select()['check_advisories'] == select('merge_group')['check_advisories'] == 'true'
-        # A manifest and lock change adds the dependents of the package whose manifest changed.
-        dependents = 'depends on a package whose manifest or lock file changed'
-        expected = {'a': 'changed file', 'b': dependents, 'c': dependents}
-        assert json.loads(select()['lint_alone']) == json.loads(select('merge_group')['lint_alone']) == expected
-        assert json.loads(select('push')['lint_alone']) == {}
+        # A manifest and lock change that leaves the dependents' own features as they were lists none of them.
+        assert alone(select()) == alone(select('merge_group')) == {'a': 'changed file'}
+        assert alone(select('push')) == {}
         git('reset', '--hard', base)
         (directory / '.github/ci.toml').write_text('wasm_crates=[]\ncheck_targets=[]\nspelling_words=["word"]\n', encoding='utf-8')
         git('add', '.')
@@ -3718,12 +3722,14 @@ def changed_packages_include_reverse_dependencies():
         git('commit', '-qm', 'workflow')
         assert json.loads(select()['packages']) == ['a', 'b', 'c', 'd']
         # A shared input selects every package to test, yet no package has a changed file to lint alone.
-        assert json.loads(select()['lint_alone']) == {}
-        # A root manifest change lints every member alone.
+        assert alone(select()) == {}
+        # A root manifest change compares every member, and lists none whose features stay.
         (directory / 'Cargo.toml').write_text((directory / 'Cargo.toml').read_text(encoding='utf-8') + '\n', encoding='utf-8')
         git('add', '.')
         git('commit', '-qm', 'root manifest')
-        assert json.loads(select()['lint_alone']) == {name: 'depends on a package whose manifest or lock file changed' for name in 'abcd'}
+        selection = select()
+        assert alone(selection) == {}
+        assert 'Features resolved alone: 4 dependents compared with the base on 1 targets' in pathlib.Path(directory / '.git/selection-log').read_text(encoding='utf-8')
 
 changed_packages_include_reverse_dependencies()
 print('PASS changed_packages_include_reverse_dependencies')
@@ -5055,16 +5061,74 @@ def target_check_lints_each_package_alone():
     unified = subprocess.run(command, cwd=fixture, capture_output=True, text=True)
     assert unified.returncode == 0, unified.stderr
     # The workspace run passes; only a package linted alone fails.
-    result = execute('Check target', fixture, selection | {'LINT_ALONE': '{}'})
+    # The declaration lists the packages of each target; a list for another target lints nothing here.
+    result = execute('Check target', fixture, selection | {'LINT_ALONE': json.dumps({'another-target': {'user': 'changed file'}})})
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'Linting --workspace for ' + target in result.stdout, result.stdout
-    result = execute('Check target', fixture, selection | {'LINT_ALONE': '{"user": "changed file"}'})
+    assert 'Linted alone (package: reason): {}' in result.stdout, result.stdout
+    result = execute('Check target', fixture, selection | {'LINT_ALONE': json.dumps({target: {'user': 'changed file'}})})
     output = result.stdout + result.stderr
     assert result.returncode != 0 and 'cannot find function `tick`' in output, output
     assert 'Linted alone (package: reason): {"user": "changed file"}' in output, output
 
 target_check_lints_each_package_alone()
 print('PASS target_check_lints_each_package_alone')
+
+def a_dependent_is_linted_alone_only_where_its_features_change():
+    from functools import partial
+    host = os.environ.get('TARGET', 'x86_64-unknown-linux-gnu')
+    other = 'x86_64-unknown-linux-gnu' if 'windows' in host else 'x86_64-pc-windows-msvc'
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary) / 'workspace'
+        shutil.copytree(root / 'fixtures/unified-features', directory, ignore=shutil.ignore_patterns('target'))
+        (directory / 'Cargo.toml').write_text('[workspace]\nresolver = "2"\nmembers = ["provider", "user", "enabler", "middle", "keeper"]\n', encoding='utf-8')
+        package = '[package]\nname = "{}"\nversion = "0.1.0"\nedition = "2021"\nlicense = "MIT"\n'
+        # `middle` asks for the provider's `clock` on both targets; `user` and `keeper` depend on it, and `keeper` also on `enabler`, which asks for `clock` itself.
+        clock = '[target.{}.dependencies]\nprovider = {{ path = "../provider", features = ["clock"] }}\n'
+        plain = '[target.{}.dependencies]\nprovider = {{ path = "../provider" }}\n'
+        manifests = {'middle': package.format('middle') + clock.format(host) + clock.format(other),
+                     'keeper': package.format('keeper') + '[dependencies]\nmiddle = { path = "../middle" }\nenabler = { path = "../enabler" }\n'}
+        for name, manifest in manifests.items():
+            (directory / name / 'src').mkdir(parents=True)
+            (directory / name / 'Cargo.toml').write_text(manifest, encoding='utf-8')
+            (directory / name / 'src/lib.rs').write_text(f'//! The `{name}` library.\n', encoding='utf-8')
+        with open(directory / 'user/Cargo.toml', 'a', encoding='utf-8') as manifest:
+            manifest.write('\n[dependencies]\nmiddle = { path = "../middle" }\n')
+        subprocess.run(['cargo', 'generate-lockfile'], cwd=directory, check=True)
+        subprocess.run(['git', 'init', '--quiet'], cwd=directory, check=True)
+        git = partial(fixture_git, directory)
+        git('add', '.')
+        git('commit', '-qm', 'base')
+        base = git('rev-parse', 'HEAD')
+        def select(event):
+            output = directory / '.git/selection'
+            output.write_text('', encoding='utf-8')
+            result = select_packages(directory, {'TEST_EVENT': event, 'BASE_REF': base, 'GITHUB_OUTPUT': str(output),
+                                                 'CHECK_TARGETS': json.dumps([{'target': host}, {'target': other}])})
+            assert result.returncode == 0, result.stdout + result.stderr
+            return dict(line.split('=', 1) for line in output.read_text(encoding='utf-8').splitlines()), result.stdout
+        # The changed manifest takes `clock` away on the host target only.
+        (directory / 'middle/Cargo.toml').write_text(package.format('middle') + plain.format(host) + clock.format(other), encoding='utf-8')
+        git('add', '.')
+        git('commit', '-qm', 'drop the feature on one target')
+        # `user` loses `clock` when linted alone on the host target, so it is listed there; `keeper` keeps it through `enabler` and is listed nowhere.
+        differs = 'resolves other features alone than at the base'
+        expected = {host: {'middle': 'changed file', 'user': differs}, other: {'middle': 'changed file'}}
+        for event in ['pull_request', 'merge_group']:
+            selection, log = select(event)
+            assert json.loads(selection['lint_alone']) == expected, (event, selection['lint_alone'])
+            assert 'Features resolved alone: 2 dependents compared with the base on 2 targets in ' in log, log
+        assert json.loads(select('push')[0]['lint_alone']) == {host: {}, other: {}}
+        # The workspace run still passes on the host target; the lint of `user` alone fails for the feature it lost.
+        selection, _ = select('pull_request')
+        result = execute('Check target', directory, {'TARGET': host, 'TEST_PACKAGES': selection['packages'],
+                                                     'COVERAGE_SCOPE': selection['coverage_scope'], 'LINT_ALONE': selection['lint_alone']})
+        output = result.stdout + result.stderr
+        assert result.returncode != 0 and 'cannot find function `tick`' in output, output
+        assert 'Linted alone (package: reason): ' + json.dumps(expected[host]) in output, output
+
+a_dependent_is_linted_alone_only_where_its_features_change()
+print('PASS a_dependent_is_linted_alone_only_where_its_features_change')
 
 def isolation_creates_a_missing_cargo_home():
     with tempfile.TemporaryDirectory() as temporary:

@@ -818,15 +818,19 @@ jobs:
           TEST_PREPARE_CONSUMERS: ${{ steps.config.outputs.test_prepare_consumers }}
           TESTS_REUSED: ${{ steps.queue.outputs.tests_reused }}
           WASM_CRATES: ${{ steps.config.outputs.wasm_crates }}
+          CHECK_TARGETS: ${{ steps.config.outputs.targets }}
         run: |
           python3 - <<'PYTHON'
           import ast
+          import concurrent.futures
+          import contextlib
           import json
           import os
           import pathlib
           import re
           import subprocess
           import tempfile
+          import time
           import tomllib
           exec(os.environ['PACKAGE_OWNER'])
           def metadata(directory):
@@ -869,16 +873,21 @@ jobs:
           ids = {packages[p]['name']: p for p in members}
           # Declared paths outside every member select only the packages whose tests read them.
           inputs = {pathlib.Path(key): {ids[name] for name in readers} for key, readers in config.get('test_inputs', {}).items()}
+          @contextlib.contextmanager
+          def base_tree():
+              # The base revision in a detached worktree: its root, and the caller directory inside it.
+              with tempfile.TemporaryDirectory() as temporary:
+                  base_dir = pathlib.Path(temporary) / 'base'
+                  subprocess.run(['git', 'worktree', 'add', '--detach', str(base_dir), base], check=True)
+                  try:
+                      top = pathlib.Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip())
+                      yield base_dir, base_dir / pathlib.Path.cwd().relative_to(top)
+                  finally:
+                      subprocess.run(['git', 'worktree', 'remove', '--force', str(base_dir)], check=True)
           def lock_changed():
               # Resolve both revisions, comparing transitive dependency identities and features.
-              with tempfile.TemporaryDirectory() as temporary:
-                  base_dir = str(pathlib.Path(temporary) / 'base')
-                  subprocess.run(['git', 'worktree', 'add', '--detach', base_dir, base], check=True)
-                  try:
-                      caller = pathlib.Path.cwd().relative_to(pathlib.Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip()))
-                      before = metadata(pathlib.Path(base_dir) / caller)
-                  finally:
-                      subprocess.run(['git', 'worktree', 'remove', '--force', base_dir], check=True)
+              with base_tree() as (_, caller):
+                  before = metadata(caller)
               def dependencies(data):
                   pkgs = {p['id']: p for p in data['packages']}
                   nodes = {n['id']: n for n in data['resolve']['nodes']}
@@ -983,7 +992,37 @@ jobs:
                   selected.update(lock_changed())
               selected.update(included_readers)
               selected = with_dependents(selected)
-          # A foreign-target check lints these packages alone: each one a change touches, and the dependents of a package whose manifest or lock file changed. A main push lints none.
+          def resolved_alone(directory, top, name, target):
+              # What a lint of this package alone builds on the target: each package of its dependency closure with the features it resolves.
+              shown = subprocess.run(['cargo', 'tree', '--locked', '-p', name, '--target', target, '-e', 'normal,build,dev', '--prefix', 'none', '-f', '{p}\t{f}'],
+                                     cwd=directory, capture_output=True, text=True)
+              if shown.returncode:
+                  return None
+              units = set()
+              for line in shown.stdout.replace(str(top), '').splitlines():
+                  package, _, features = line.removesuffix(' (*)').partition('\t')
+                  crate, _, identity = package.partition(' ')
+                  # A workspace member's code changes with its files, never with its version.
+                  units.add((crate, '' if crate in ids else identity, features))
+              return units
+          def resolves_differently(names, targets):
+              # The (target, package) pairs whose lint alone builds an earlier package with other features, or at another version, than at the base.
+              # shortcut: a package built for the host and for the target reads as one set of lines, so features swapped between the two pass unseen; ask Cargo for the unit graph if that ever happens.
+              head_top = pathlib.Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip())
+              with base_tree() as (base_top, caller), concurrent.futures.ThreadPoolExecutor(os.cpu_count()) as pool:
+                  pairs = [(target, name) for target in targets for name in names]
+                  old = pool.map(lambda pair: resolved_alone(caller, base_top, pair[1], pair[0]), pairs)
+                  new = pool.map(lambda pair: resolved_alone('.', head_top, pair[1], pair[0]), pairs)
+                  differing = set()
+                  for pair, before, after in zip(pairs, list(old), list(new)):
+                      # A package only one revision builds is new or gone; its own files list it.
+                      shared = {unit[0] for unit in before or ()} & {unit[0] for unit in after or ()}
+                      if before is None or after is None or {unit for unit in before if unit[0] in shared} != {unit for unit in after if unit[0] in shared}:
+                          differing.add(pair)
+              return differing
+          # A foreign-target check lints these packages alone: each one a change touches, and each dependent of a changed manifest or lock file that resolves other features alone on that target than at the base. A main push lints none.
+          targets = [entry['target'] for entry in json.loads(os.environ['CHECK_TARGETS'])]
+          dependents = {}
           alone = {}
           def lint_alone(ids, reason):
               alone.update({packages[p]['name']: alone.get(packages[p]['name'], reason) for p in ids})
@@ -1009,7 +1048,12 @@ jobs:
                       manifests.add(owner)
               if 'Cargo.lock' in touched:
                   manifests |= lock_changed()
-              lint_alone(with_dependents(manifests), 'depends on a package whose manifest or lock file changed')
+              candidates = sorted({packages[p]['name'] for p in with_dependents(manifests)} - set(alone))
+              if candidates and targets:
+                  started = time.monotonic()
+                  differing = resolves_differently(candidates, targets)
+                  dependents = {target: [name for name in candidates if (target, name) in differing] for target in targets}
+                  print(f'Features resolved alone: {len(candidates)} dependents compared with the base on {len(targets)} targets in {time.monotonic() - started:.1f}s')
           if fallback:
               trigger = fallback
           if trigger:
@@ -1048,7 +1092,7 @@ jobs:
               wasm = json.loads(os.environ['WASM_CRATES'])
               swept = event != 'pull_request' or os.environ.get('TESTS_REUSED') == 'true'
               output.write('wasm_selected=' + json.dumps(wasm if swept else [crate for crate in wasm if crate in names]) + '\n')
-              output.write('lint_alone=' + json.dumps(alone) + '\n')
+              output.write('lint_alone=' + json.dumps({target: alone | dict.fromkeys(dependents.get(target, []), 'resolves other features alone than at the base') for target in targets}) + '\n')
               output.write('coverage_scope=' + ('full workspace' if selected == members else 'selected packages: ' + ', '.join(names)) + '\n')
               output.write('coverage=' + str(event != 'pull_request' and os.environ.get('TESTS_REUSED') != 'true').lower() + '\n')
               # A reused queue result keeps every host: its archive and preparation seed the snapshots each merge group restores.
@@ -1439,11 +1483,12 @@ jobs:
           rustup component add clippy
           echo "Linting ${packages[*]} for $TARGET"
           cargo clippy "${packages[@]}" --all-targets --locked --target "$TARGET" -- -D warnings
-          # Run alone, a package builds with only the features its own manifest asks for, which shows a feature it lacks; the declaration lists the packages a change can leave lacking one.
-          echo "Linted alone (package: reason): ${LINT_ALONE:-none}"
+          # Run alone, a package builds with only the features its own manifest asks for, which shows a feature it lacks; the declaration lists, for each target, the packages a change can leave lacking one.
+          alone=$(python3 -c 'import json, os; print(json.dumps(json.loads(os.environ.get("LINT_ALONE") or "{}").get(os.environ["TARGET"], {})))')
+          echo "Linted alone (package: reason): $alone"
           while IFS= read -r -d '' name; do
             cargo clippy -p "$name" --all-targets --locked --target "$TARGET" -- -D warnings
-          done < <(python3 -c 'import json, os; print("".join(name + "\0" for name in json.loads(os.environ.get("LINT_ALONE") or "{}")), end="")')
+          done < <(ALONE="$alone" python3 -c 'import json, os; print("".join(name + "\0" for name in json.loads(os.environ["ALONE"])), end="")')
       - name: Lint wasm crates
         env:
           WASM_CRATES: ${{ needs.declaration.outputs.wasm_crates }}
