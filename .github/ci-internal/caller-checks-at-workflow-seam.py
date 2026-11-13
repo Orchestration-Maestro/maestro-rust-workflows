@@ -1906,7 +1906,8 @@ def coverage_exclusions_have_one_workflow_owner():
         for name in ['Coverage', 'Isolated tests', 'Merge coverage']:
             assert body(name).count('python3 -c "$COVERAGE_MERGE"') == 1, name
         for name in ['Coverage', 'Isolated tests']:
-            assert body(name).count('python3 -c "$COVERAGE_PROFILES"') == 1, name
+            # Once before the merge, and once where the merge fails.
+            assert body(name).count('python3 -c "$COVERAGE_PROFILES"') == 2, name
 
 coverage_exclusions_have_one_workflow_owner()
 print('PASS coverage_exclusions_have_one_workflow_owner')

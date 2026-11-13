@@ -646,15 +646,19 @@ run no test shards and upload no coverage.
 Declared Linux callers run `cargo llvm-cov nextest` in the same isolated environment
 with their opted-in tools. Only the Linux numeric shards upload LCOV, without
 individual thresholds. The run writes its raw profiles without a report, the
-step checks every profile, and `cargo llvm-cov report` merges them into the
-report. A process that a test stops while it exits leaves its profile empty or
-cut. The check fails the step for an empty profile or one the toolchain's own
-merge tool rejects, the same tool the report merges with, so another
-`llvm-profdata` earlier on `PATH` reads nothing here. It names each file with
-the binary whose merge signature it carries, without the pool index the runtime
-appends. It finds the binary by running each program of the instrumented build
-once, and only when a profile is damaged; it prints the seconds it took either
-way. The merge then runs as before: no profile is skipped or deleted.
+step checks the size of every profile, and `cargo llvm-cov report` merges them
+into the report. A process that a test stops while it exits leaves its profile
+empty or cut. The merge passes an empty profile unseen, so the size check fails
+the step for it before the merge, without starting a tool. The merge refuses a
+cut profile itself; only when the merge fails does the step read every profile,
+on all the runner's cores, with the toolchain's own merge tool, the same tool
+the report merges with, so another `llvm-profdata` earlier on `PATH` reads
+nothing here. Either way the step names each damaged file with the binary whose
+merge signature it carries, without the pool index the runtime appends. It
+finds the binary by running each program of the instrumented build once, and
+only when a profile is damaged. The log line `Coverage profiles: N not empty in
+S s` gives the cost on a green run. The merge runs as before: no profile is
+skipped or deleted.
 `Tests (ubuntu-latest)` requires all matrix legs,
 including native shards and every `Doctests` leg, to succeed on full runs.
 Native legs run plain nextest without coverage instrumentation. On a main push

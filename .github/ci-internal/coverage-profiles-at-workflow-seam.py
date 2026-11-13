@@ -36,7 +36,8 @@ def toolchain(directory, accepted):
     """A toolchain whose own merge tool is a stand-in, so a complete profile needs no instrumented build."""
     tool = directory / 'toolchain/lib/rustlib/test-host/bin'
     tool.mkdir(parents=True)
-    (tool / 'llvm-profdata').write_text(f'#!/bin/sh\nhead -c 7 "$2" | grep -qx {accepted} || exit 1\n', encoding='utf-8')
+    # Each run is recorded beside the tool, so a case can tell whether a profile was read at all.
+    (tool / 'llvm-profdata').write_text(f'#!/bin/sh\necho "$2" >> "$0.runs"\nhead -c 7 "$2" | grep -qx {accepted} || exit 1\n', encoding='utf-8')
     (tool / 'llvm-profdata').chmod(0o755)
     compiler = directory / 'stand-in-toolchain'
     compiler.mkdir()
@@ -56,9 +57,14 @@ def ambient_toolchain(directory):
     (tool / 'llvm-profdata').chmod(0o755)
     return str(tool) + os.pathsep + os.environ['PATH']
 
-def check(directory, path=None):
+def check(directory, path=None, *arguments):
     environment = os.environ | ({'PATH': path} if path else {})
-    return subprocess.run(['python3', '-c', CHECK], cwd=directory, env=environment, capture_output=True, text=True)
+    return subprocess.run(['python3', '-c', CHECK, *arguments], cwd=directory, env=environment, capture_output=True, text=True)
+
+def reads(directory):
+    """The profiles the stand-in merge tool was run on."""
+    runs = directory / 'toolchain/lib/rustlib/test-host/bin/llvm-profdata.runs'
+    return sorted(pathlib.Path(line).name for line in runs.read_text(encoding='utf-8').splitlines()) if runs.exists() else []
 
 def complete_profiles_pass():
     with tempfile.TemporaryDirectory() as temporary:
@@ -67,10 +73,18 @@ def complete_profiles_pass():
         program(directory, 'maestro-test-process-1a2b3c4d', SIGNATURE)
         (site / f'maestro-999-{SIGNATURE}_0.profraw').write_text('PROFILE', encoding='utf-8')
         (site / f'maestro-999-{SIGNATURE}_1.profraw').write_text('PROFILE', encoding='utf-8')
-        result = check(directory, toolchain(directory, 'PROFILE'))
+        path = toolchain(directory, 'PROFILE')
+        result = check(directory, path)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert 'Coverage profiles: 2 complete' in result.stdout, result.stdout
+        assert 'Coverage profiles: 2 not empty' in result.stdout, result.stdout
         assert '::error' not in result.stdout
+        # Before the merge the check looks at sizes only: it starts no merge tool, whatever the number of profiles.
+        assert reads(directory) == [], reads(directory)
+        # After a merge that failed for another cause, every profile is read once and none is blamed.
+        result = check(directory, path, 'read')
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert 'Coverage profiles: 2 readable' in result.stdout, result.stdout
+        assert reads(directory) == [f'maestro-999-{SIGNATURE}_0.profraw', f'maestro-999-{SIGNATURE}_1.profraw'], reads(directory)
 
 def no_profiles_pass():
     with tempfile.TemporaryDirectory() as temporary:
@@ -78,7 +92,7 @@ def no_profiles_pass():
         checkout(directory)
         result = check(directory)
         assert result.returncode == 0, result.stdout + result.stderr
-        assert 'Coverage profiles: 0 complete' in result.stdout, result.stdout
+        assert 'Coverage profiles: 0 not empty' in result.stdout, result.stdout
 
 def damaged_profiles_fail_naming_each_file_and_its_program():
     with tempfile.TemporaryDirectory() as temporary:
@@ -88,14 +102,26 @@ def damaged_profiles_fail_naming_each_file_and_its_program():
         # A process stopped while it wrote its profile leaves an empty or a cut file; the pool index is not the signature.
         (site / f'maestro-999-{SIGNATURE}_1.profraw').write_text('', encoding='utf-8')
         (site / 'maestro-999-0f1e2d3c4b5a6978_2.profraw').write_text('cut', encoding='utf-8')
+        (site / f'maestro-999-{SIGNATURE}_3.profraw').write_text('cut', encoding='utf-8')
         (site / f'maestro-999-{SIGNATURE}_0.profraw').write_text('PROFILE', encoding='utf-8')
-        result = check(directory, toolchain(directory, 'PROFILE'))
+        path = toolchain(directory, 'PROFILE')
+        # Before the merge, the empty profile fails the check by its size, and no profile is read.
+        result = check(directory, path)
         assert result.returncode != 0, result.stdout + result.stderr
         output = result.stdout + result.stderr
-        assert f'maestro-999-{SIGNATURE}_1.profraw is empty; its binary is maestro-test-process-1a2b3c4d' in output, output
+        empty = f'maestro-999-{SIGNATURE}_1.profraw is empty; its binary is maestro-test-process-1a2b3c4d'
+        assert empty in output and 'is cut' not in output, output
+        assert 'Damaged coverage profiles: 1 of 4' in output, output
+        assert reads(directory) == [], reads(directory)
+        # After a merge that failed, every profile is read and each cut one is named with its binary.
+        result = check(directory, path, 'read')
+        assert result.returncode != 0, result.stdout + result.stderr
+        output = result.stdout + result.stderr
+        assert empty in output, output
+        assert f'maestro-999-{SIGNATURE}_3.profraw is cut; its binary is maestro-test-process-1a2b3c4d' in output, output
         # A signature no program carries still names the file.
         assert 'maestro-999-0f1e2d3c4b5a6978_2.profraw is cut; its binary is unnamed' in output, output
-        assert 'Damaged coverage profiles: 2 of 3' in output, output
+        assert 'Damaged coverage profiles: 3 of 4' in output, output
 
 def the_check_reads_profiles_with_the_tool_the_report_merges_them():
     # The toolchain's own merge tool reads the profiles, so a lax one earlier on PATH cannot pass a cut file.
@@ -103,7 +129,7 @@ def the_check_reads_profiles_with_the_tool_the_report_merges_them():
         directory = pathlib.Path(temporary)
         site = checkout(directory)
         (site / f'maestro-999-{SIGNATURE}_0.profraw').write_bytes(b'not a profile')
-        result = check(directory, ambient_toolchain(directory))
+        result = check(directory, ambient_toolchain(directory), 'read')
         assert result.returncode != 0, result.stdout + result.stderr
         assert 'is cut' in result.stdout + result.stderr, result.stdout + result.stderr
 
@@ -181,11 +207,39 @@ def prepared_objects_are_handed_over_between_the_run_and_the_profile_check():
     assert command.count(handover) == 1
     assert command.index('llvm-cov nextest') < command.index(handover) < command.index('python3 -c "$COVERAGE_PROFILES"') < command.index('llvm-cov report')
 
+def a_failed_merge_has_every_profile_read_and_fails_the_step():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = pathlib.Path(temporary)
+        tools, log = install_recording_runner(directory)
+        site = checkout(directory)
+        program(directory, 'maestro-test-process-1a2b3c4d', SIGNATURE)
+        (site / f'maestro-999-{SIGNATURE}_0.profraw').write_text('cut', encoding='utf-8')
+        # The report refuses the cut profile, as the merge does.
+        report = tools / 'cargo-llvm-cov'
+        report.rename(tools / 'recorded-llvm-cov')
+        report.write_text('#!/bin/sh\nif [ "$2" = report ]; then echo "no profile can be merged" >&2; exit 1; fi\n'
+                          'exec "$(dirname "$0")/recorded-llvm-cov" "$@"\n', encoding='utf-8')
+        report.chmod(0o755)
+        archive = str(directory / 'shard-1.tar.zst')
+        (directory / 'test-binaries.json').write_text('{"shard-1.tar.zst": {"binaries": 1, "filter": "binary_id(=sample::integration)"}}', encoding='utf-8')
+        result = execute('Isolated tests', directory, {
+            'PATH': str(tools) + os.pathsep + toolchain(directory, 'PROFILE'), 'TOOLS': str(tools),
+            'RUNNER_TEMP': temporary, 'TEST_ARCHIVE': archive, 'TEST_PACKAGES': '["sample"]',
+            'SHARD': '1', 'COLLECT_COVERAGE': 'true', 'CARGO_COVERAGE_MIN_LINES': ''})
+        output = result.stdout + result.stderr
+        assert result.returncode != 0, output
+        # Sizes pass before the merge; the failed merge is followed by the read that names the file and its binary.
+        cut = f'maestro-999-{SIGNATURE}_0.profraw is cut; its binary is maestro-test-process-1a2b3c4d'
+        assert output.index('Coverage profiles: 1 not empty') < output.index('no profile can be merged') < output.index(cut), output
+        assert reads(directory) == [f'maestro-999-{SIGNATURE}_0.profraw'], reads(directory)
+
 def the_check_reads_the_profiles_before_the_report_merges_them():
     for name in ['Coverage', 'Isolated tests']:
         command = body(name)
-        assert command.count('python3 -c "$COVERAGE_PROFILES"') == 1, name
-        assert command.index('python3 -c "$COVERAGE_PROFILES"') < command.index('llvm-cov report'), name
+        # Sizes before the merge; the read of every profile only where the merge fails.
+        assert command.count('python3 -c "$COVERAGE_PROFILES"') == 2, name
+        assert command.index('python3 -c "$COVERAGE_PROFILES"\n') < command.index('llvm-cov report') < command.index(
+            '|| { ' + ('run_isolated ' if name == 'Isolated tests' else '') + 'python3 -c "$COVERAGE_PROFILES" read; exit 1; }'), name
         assert '--no-report' in command and 'tee -a nextest.log' in command, name
         assert '--no-clean' not in command, name
     # The extracted proof steps carry the check the way they carry the merge.
@@ -200,6 +254,7 @@ def the_check_reads_the_profiles_before_the_report_merges_them():
 
 for case in [complete_profiles_pass, no_profiles_pass, damaged_profiles_fail_naming_each_file_and_its_program,
              the_check_reads_profiles_with_the_tool_the_report_merges_them, an_archived_shard_reports_from_its_archive,
+             a_failed_merge_has_every_profile_read_and_fails_the_step,
              the_check_reads_the_profiles_before_the_report_merges_them, prepared_children_become_coverage_objects,
              a_run_without_prepared_files_hands_over_no_objects, a_damaged_profile_of_a_prepared_child_names_the_child,
              prepared_objects_are_handed_over_between_the_run_and_the_profile_check]:
